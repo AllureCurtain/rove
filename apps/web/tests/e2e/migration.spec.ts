@@ -18,7 +18,7 @@ test("imports M1 browser state before catalog boot and does not replay after ref
 
   await expect(page).toHaveURL(/\/w\/workspace-1\/s\/session-1$/u);
   await expect(page.getByRole("heading", { name: "Imported session" })).toBeVisible();
-  await expect(page.getByText("Browser data imported (3 records).")).toBeVisible();
+  await expect(page.getByText("浏览器数据已导入（3 条记录）。")).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   expect(api.migrationRequestBodies).toHaveLength(1);
   expect(api.initialStateReadRequests).toBeGreaterThanOrEqual(3);
@@ -35,7 +35,7 @@ test("imports M1 browser state before catalog boot and does not replay after ref
   await page.reload();
   await expect(page.getByRole("heading", { name: "Imported session" })).toBeVisible();
   expect(api.migrationRequestBodies).toHaveLength(1);
-  await expect(page.getByText(/Browser data imported/iu)).toHaveCount(0);
+  await expect(page.getByText(/浏览器数据已导入/iu)).toHaveCount(0);
 });
 
 test("keeps the exact pending payload and verifies it before catalog boot", async ({ page }) => {
@@ -44,13 +44,13 @@ test("keeps the exact pending payload and verifies it before catalog boot", asyn
 
   await page.goto("/");
 
-  await expect(page.getByRole("heading", { name: "Import needs verification" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "导入需要确认" })).toBeVisible();
   expect(api.initialStateReadRequests).toBe(0);
   expect(api.migrationRequestBodies).toHaveLength(1);
   const firstBody = api.migrationRequestBodies[0];
   await expect.poll(() => browserValue(page, M1_BROWSER_STORAGE_KEYS.workspaces)).not.toBeNull();
 
-  await page.getByRole("button", { name: "Verify import" }).click();
+  await page.getByRole("button", { name: "确认导入" }).click();
 
   await expect(page.getByRole("heading", { name: "Imported session" })).toBeVisible();
   expect(api.migrationRequestBodies).toHaveLength(2);
@@ -67,14 +67,14 @@ test("malformed legacy state fails closed and preserves the source key", async (
 
   await page.goto("/");
 
-  await expect(page.getByRole("heading", { name: "Saved browser data needs repair" })).toBeVisible();
-  await expect(page.getByText(/has not deleted your browser-saved/iu)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "浏览器数据需要修复" })).toBeVisible();
+  await expect(page.getByText(/尚未删除/iu)).toBeVisible();
   expect(api.migrationRequestBodies).toHaveLength(0);
   expect(api.initialStateReadRequests).toBe(0);
   expect(await browserValue(page, M1_BROWSER_STORAGE_KEYS.workspaces)).toBe("{not-json");
 
-  await page.getByRole("button", { name: "Check again" }).click();
-  await expect(page.getByRole("heading", { name: "Saved browser data needs repair" })).toBeVisible();
+  await page.getByRole("button", { name: "再次检查" }).click();
+  await expect(page.getByRole("heading", { name: "浏览器数据需要修复" })).toBeVisible();
   expect(api.migrationRequestBodies).toHaveLength(0);
   expect(api.initialStateReadRequests).toBe(0);
 });

@@ -4,6 +4,8 @@ import { CheckIcon, CopyIcon, Cross2Icon } from "@radix-ui/react-icons";
 import { Highlight, type PrismTheme } from "prism-react-renderer";
 import { useEffect, useRef, useState } from "react";
 
+import { useCopy } from "../copy/CopyProvider";
+
 const STEEL_THEME: PrismTheme = {
   plain: { color: "var(--text)", backgroundColor: "transparent" },
   styles: [
@@ -26,6 +28,7 @@ export default function RichCodeBlock({
   code: string;
   language: string;
 }) {
+  const { t } = useCopy();
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const copyResetRef = useRef<number | null>(null);
   const normalizedLanguage = normalizeLanguage(language);
@@ -63,8 +66,10 @@ export default function RichCodeBlock({
           type="button"
           className="ghost icon-button"
           onClick={() => void copyCode()}
-          aria-label={copyState === "copied" ? "Code copied" : "Copy code"}
-          title={copyState === "error" ? "Copy failed" : "Copy code"}
+          aria-label={
+            copyState === "copied" ? t("codeCopy.copied") : t("codeCopy.copy")
+          }
+          title={copyState === "error" ? t("codeCopy.failed") : t("codeCopy.copy")}
         >
           {copyState === "copied" ? (
             <CheckIcon />
@@ -75,7 +80,11 @@ export default function RichCodeBlock({
           )}
         </button>
         <span className="rich-code__copy-state" role="status" aria-live="polite">
-          {copyState === "copied" ? "Copied" : copyState === "error" ? "Copy failed" : null}
+          {copyState === "copied"
+            ? t("codeCopy.copied")
+            : copyState === "error"
+              ? t("codeCopy.failed")
+              : null}
         </span>
       </figcaption>
       <Highlight theme={STEEL_THEME} code={code} language={normalizedLanguage}>

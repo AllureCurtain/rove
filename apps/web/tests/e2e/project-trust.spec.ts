@@ -16,7 +16,7 @@ test("project trust exposes every state, capability decisions, and digest invali
   await page.goto("/settings/workspace");
 
   const trustCard = page.locator(".settings-card").filter({
-    has: page.getByRole("heading", { name: "Project trust" }),
+    has: page.getByRole("heading", { name: "项目信任" }),
   });
   await expect(trustCard).toContainText("Unknown");
 

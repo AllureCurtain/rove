@@ -253,6 +253,9 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(test_provider))
         .routes(routes!(product::routes::list_product_workspaces))
         .routes(routes!(product::routes::create_product_workspace))
+        .routes(routes!(
+            product::workspace_picker::pick_product_workspace_folder
+        ))
         .routes(routes!(product::routes::delete_product_workspace))
         .routes(routes!(product::routes::list_product_sessions))
         .routes(routes!(product::routes::create_product_session))

@@ -774,7 +774,7 @@ async function openWorkspace(
       new URL(response.url()).pathname === "/api/product/sessions" &&
       response.status() === 201,
   );
-  await page.getByLabel("Absolute path").fill(workspaceRoot);
+  await page.getByLabel("绝对路径").fill(workspaceRoot);
   await page.getByRole("button", { name: "Open workspace", exact: true }).click();
 
   const workspaceId = await responseId(await workspaceResponsePromise);
@@ -1095,8 +1095,8 @@ async function selectFakeRawProfile(
   created: CreatedProductRecords,
 ): Promise<string> {
   await expect(page).toHaveURL(/\/settings\/providers$/u);
-  await page.getByLabel("Label").fill("Real API fake raw");
-  await page.getByLabel("Type").selectOption("fake");
+  await page.getByLabel("名称").fill("Real API fake raw");
+  await page.getByLabel("类型").selectOption("fake");
   await expect(page.getByLabel("API base")).toHaveValue("");
   await page.getByLabel("Default model").fill("fake-raw");
 

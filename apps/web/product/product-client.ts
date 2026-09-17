@@ -131,6 +131,12 @@ export interface ProductApiClient {
     request: CreateProductWorkspaceRequest,
   ): Promise<ProductWorkspace>;
   deleteWorkspace(workspaceId: string): Promise<void>;
+  /** Opens the OS folder dialog via the local API and returns the absolute path. */
+  pickWorkspaceFolder(): Promise<
+    | { status: "selected"; path: string }
+    | { status: "canceled" }
+    | { status: "unavailable"; reason: string }
+  >;
   listSessions(
     workspaceId: string,
     query?: {
@@ -444,6 +450,43 @@ export function createProductApiClient(
           `/product/workspaces/${encodeURIComponent(workspaceId)}`,
         ),
       );
+    },
+
+    async pickWorkspaceFolder() {
+      const raw = await requestJson(
+        fetchImpl,
+        productUrl(apiPrefix, "/product/workspace-picker"),
+        { method: "POST" },
+        (value) => value,
+      );
+      const unavailable = {
+        status: "unavailable" as const,
+        reason: "native_folder_picker_unavailable",
+      };
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+        return unavailable;
+      }
+      if (!("status" in raw)) {
+        return unavailable;
+      }
+      switch (raw.status) {
+        case "selected":
+          return "path" in raw && typeof raw.path === "string" && raw.path.trim()
+            ? { status: "selected" as const, path: raw.path }
+            : unavailable;
+        case "canceled":
+          return { status: "canceled" as const };
+        case "unavailable":
+          return {
+            ...unavailable,
+            reason:
+              "reason" in raw && typeof raw.reason === "string" && raw.reason.trim()
+                ? raw.reason
+                : unavailable.reason,
+          };
+        default:
+          return unavailable;
+      }
     },
 
     listSessions(workspaceId, query) {

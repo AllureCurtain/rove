@@ -16,13 +16,14 @@ import type {
   TranscriptRunGroup,
   TranscriptTimelineItem,
 } from "../lib/rove-state";
+import { useCopy } from "../copy/CopyProvider";
+import { DiffView } from "../product-v2/DiffView";
+import { RichText } from "../product-v2/RichText";
+import type { ProductMessage } from "../product/product-api-types";
 import {
   describeTranscriptPartialReason,
   type TranscriptRestoreState,
 } from "../state/transcript-projection";
-import { DiffView } from "../product-v2/DiffView";
-import { RichText } from "../product-v2/RichText";
-import type { ProductMessage } from "../product/product-api-types";
 
 const INITIAL_VISIBLE_RUNS = 24;
 const RUN_PAGE_SIZE = 16;
@@ -56,6 +57,7 @@ export function Transcript({
   onPromoteMessage?: (messageId: string) => void;
   onRevokeMessage?: (messageId: string) => void;
 }) {
+  const { t } = useCopy();
   const [visibleRunCount, setVisibleRunCount] = useState(INITIAL_VISIBLE_RUNS);
   const visibleTimeline = useMemo(
     () => timeline.slice(Math.max(0, timeline.length - visibleRunCount)),
@@ -152,7 +154,7 @@ export function Transcript({
           ) : null}
           {itemCount === 0 &&
           (restoreState.status === "complete" || restoreState.status === "idle") ? (
-            <p className="transcript-empty">Send a message to start a run in this session.</p>
+            <p className="transcript-empty">{t("chat.emptyTranscript")}</p>
           ) : null}
           {visibleTimeline.map((group) => (
           <section
@@ -164,15 +166,15 @@ export function Transcript({
           >
             <header className="transcript-run__header">
               <span className="transcript-run__label">
-                <span>{group.runOrdinal ? `Turn ${group.runOrdinal}` : "Current turn"}</span>
+                <span>
+                  {group.runOrdinal
+                    ? t("chat.turn", { n: group.runOrdinal })
+                    : t("chat.currentTurn")}
+                </span>
                 {group.inherited ? (
-                  <small>
-                    Read-only inherited history
-                    {group.sourceSessionId ? ` from ${shortId(group.sourceSessionId)}` : ""}
-                  </small>
+                  <small>{t("workspace.forked")}</small>
                 ) : null}
               </span>
-              {group.runId ? <code>{shortId(group.runId)}</code> : null}
             </header>
             {group.items.map((item) => (
               <TranscriptItem
@@ -220,13 +222,14 @@ function QueuedMessage({
   onPromote: (messageId: string) => void;
   onRevoke: (messageId: string) => void;
 }) {
+  const { t } = useCopy();
   const promotable = message.status === "queued" && canPromote;
   const revocable = message.status === "queued" || message.status === "needs_attention";
   return (
     <article className="chat-bubble queued-message" data-role="user" data-status={message.status}>
       <div className="message-byline">
-        <strong>You</strong>
-        <span>{messageStatusLabel(message.status)}</span>
+        <strong>{t("chat.you")}</strong>
+        <span>{messageStatusLabel(message.status, t)}</span>
       </div>
       <RichText content={message.content} />
       {message.reason ? <p className="queued-message__reason">{message.reason}</p> : null}
@@ -235,11 +238,11 @@ function QueuedMessage({
           {promotable ? (
             <button type="button" className="secondary" disabled={busy} onClick={() => onPromote(message.id)}>
               <ArrowUpIcon />
-              Apply to current run
+              {t("chat.promote")}
             </button>
           ) : null}
           {revocable ? (
-            <button type="button" className="icon-button" disabled={busy} onClick={() => onRevoke(message.id)} aria-label="Revoke message" title="Revoke message">
+            <button type="button" className="icon-button" disabled={busy} onClick={() => onRevoke(message.id)} aria-label={t("chat.revokeTitle")} title={t("chat.revokeTitle")}>
               <Cross2Icon />
             </button>
           ) : null}
@@ -249,14 +252,23 @@ function QueuedMessage({
   );
 }
 
-function messageStatusLabel(status: ProductMessage["status"]): string {
+function messageStatusLabel(
+  status: ProductMessage["status"],
+  t: (path: string) => string,
+): string {
   switch (status) {
-    case "queued": return "queued for the next turn";
-    case "intervention_requested": return "intervention requested";
-    case "applied_current_run": return "applied to current run";
-    case "claimed_successor": return "claimed for successor turn";
-    case "needs_attention": return "needs attention";
-    case "revoked": return "revoked";
+    case "queued":
+      return t("inspector.statusQueued");
+    case "intervention_requested":
+      return t("chat.promote");
+    case "applied_current_run":
+      return t("chat.promote");
+    case "claimed_successor":
+      return t("chat.queue");
+    case "needs_attention":
+      return t("workspace.needsAttention");
+    case "revoked":
+      return t("chat.revoke");
   }
 }
 
@@ -273,6 +285,7 @@ function TranscriptItem({
   onApproval: (tool: ToolCallView, decision: "approve" | "reject") => void;
   onInputSubmit: (inputId: string, answer: string) => void;
 }) {
+  const { t } = useCopy();
   const content = (() => {
     switch (item.kind) {
       case "message":
@@ -283,8 +296,14 @@ function TranscriptItem({
             data-status={item.message.status}
           >
             <div className="message-byline">
-              <strong>{item.message.role === "user" ? "You" : "rove"}</strong>
-              <span>{item.message.status === "streaming" ? "responding" : "canonical message"}</span>
+              <strong>
+                {item.message.role === "user" ? t("chat.you") : t("chat.assistant")}
+              </strong>
+              <span>
+                {item.message.status === "streaming"
+                  ? t("chat.responding")
+                  : ""}
+              </span>
             </div>
             <RichText content={item.message.content} />
             {item.message.role === "assistant" ? (
@@ -314,7 +333,9 @@ function TranscriptItem({
           <article className="input-card" data-status={item.input.status} role="status">
             <div>
               <strong>
-                {item.input.status === "submitted" ? "Input submitted" : "Input closed"}
+                {item.input.status === "submitted"
+                  ? t("chat.inputSubmitted")
+                  : t("chat.inputClosed")}
               </strong>
               <p>{item.input.prompt}</p>
             </div>
@@ -327,7 +348,6 @@ function TranscriptItem({
     <div className="transcript-item" data-kind={item.kind}>
       <div className="transcript-item__meta" aria-hidden="true">
         <span data-state={timelineItemState(item)} />
-        <code>{item.entry.eventSeq ?? "local"}</code>
       </div>
       <div className="transcript-item__content">{content}</div>
     </div>
@@ -343,22 +363,22 @@ function RestoreNotice({
   onRetry: () => void;
   onStartNewSession: () => void;
 }) {
+  const { t } = useCopy();
   if (state.status === "idle" || state.status === "complete") {
     return null;
   }
   if (state.status === "loading") {
     return (
       <section className="restore-notice" data-tone="loading" role="status">
-        <strong>Restoring conversation</strong>
-        <span>Reading canonical run events for this session.</span>
+        <strong>{t("chat.restoring")}</strong>
       </section>
     );
   }
   if (state.status === "partial") {
     return (
       <section className="restore-notice" data-tone="partial" role="status">
-        <strong>Partial conversation history</strong>
-        <span>Available canonical events are shown. Some durable history could not be rebuilt.</span>
+        <strong>{t("chat.restorePartialTitle")}</strong>
+        <span>{t("chat.restorePartial")}</span>
         <ul>
           {state.reasons.map((reason, index) => (
             <li key={`${reason.code}-${reason.run_ordinal ?? "session"}-${index}`}>
@@ -368,10 +388,10 @@ function RestoreNotice({
         </ul>
         <div className="field-actions">
           <button type="button" className="secondary" onClick={onRetry}>
-            Retry restore
+            {t("chat.restoreRetry")}
           </button>
           <button type="button" className="secondary" onClick={onStartNewSession}>
-            New session
+            {t("nav.newSession")}
           </button>
         </div>
       </section>
@@ -379,15 +399,15 @@ function RestoreNotice({
   }
   return (
     <section className="restore-notice" data-tone="error" role="alert">
-      <strong>Conversation restore failed</strong>
+      <strong>{t("chat.restoreFailed")}</strong>
       <span>{state.error}</span>
-      <span>No empty history has been substituted for the failed read.</span>
+      <span>{t("chat.restoreError")}</span>
       <div className="field-actions">
         <button type="button" onClick={onRetry}>
-          Retry restore
+          {t("chat.restoreRetry")}
         </button>
         <button type="button" className="secondary" onClick={onStartNewSession}>
-          New session
+          {t("nav.newSession")}
         </button>
       </div>
     </section>
@@ -461,9 +481,7 @@ function ToolCard({ tool }: { tool: ToolCallView }) {
                       label={`${mutation.path} diff`}
                       sourcePath={mutation.path}
                     />
-                  ) : (
-                    <p className="tool-detail-note">No inline Diff was included in this canonical result.</p>
-                  )}
+                  ) : null}
                 </article>
               ))}
             </section>
@@ -512,6 +530,7 @@ function ApprovalCard({
   busy: boolean;
   onApproval: (tool: ToolCallView, decision: "approve" | "reject") => void;
 }) {
+  const { t } = useCopy();
   const approvalCardRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -522,13 +541,13 @@ function ApprovalCard({
     <article
       ref={approvalCardRef}
       className="approval-card"
-      aria-label="Pending approval"
+      aria-label={t("inspector.approvalsTitle")}
       role="alert"
       tabIndex={-1}
     >
       <div className="approval-card__head">
         <LockClosedIcon />
-        <span><strong>Approval needed</strong><small>{tool.name}</small></span>
+        <span><strong>{t("inspector.statusWaitingApproval")}</strong><small>{tool.name}</small></span>
       </div>
       <p>{tool.reason ?? tool.details}</p>
       {tool.args !== undefined || tool.pendingApproval ? (
@@ -541,7 +560,7 @@ function ApprovalCard({
           onClick={() => onApproval(tool, "approve")}
         >
           <CheckIcon />
-          Approve
+          {t("chat.approve")}
         </button>
         <button
           type="button"
@@ -550,7 +569,7 @@ function ApprovalCard({
           onClick={() => onApproval(tool, "reject")}
         >
           <Cross2Icon />
-          Reject
+          {t("chat.reject")}
         </button>
       </div>
     </article>
@@ -568,6 +587,7 @@ function InputCard({
   busy: boolean;
   onSubmit: (inputId: string, answer: string) => void;
 }) {
+  const { t } = useCopy();
   const [answer, setAnswer] = useState("");
   const answerRef = useRef<HTMLInputElement>(null);
 
@@ -587,7 +607,7 @@ function InputCard({
   return (
     <article className="input-card" role="status" aria-live="polite">
       <div>
-        <strong>Input requested</strong>
+        <strong>{t("chat.responding")}</strong>
         <p>{prompt}</p>
       </div>
       <form className="chat-composer__row" onSubmit={handleSubmit}>
@@ -596,12 +616,12 @@ function InputCard({
           type="text"
           value={answer}
           onChange={(event) => setAnswer(event.target.value)}
-          placeholder="Type your answer"
+          placeholder={t("chat.placeholder")}
           disabled={busy}
           aria-label={prompt}
         />
         <button type="submit" disabled={busy || !answer.trim()}>
-          Send
+          {t("chat.send")}
         </button>
       </form>
     </article>
@@ -613,29 +633,30 @@ function MessageEvidence({
 }: {
   message: Extract<TranscriptTimelineItem, { kind: "message" }>["message"];
 }) {
+  const { t } = useCopy();
   if (!message.usage && !message.promptBuild && !message.promptCompaction) {
     return null;
   }
   return (
-    <dl className="message-evidence" aria-label="Message usage and context">
+    <dl className="message-evidence" aria-label={t("inspector.usageEvidence")}>
       {message.usage ? (
         <>
-          <div><dt>Total</dt><dd>{formatNumber(message.usage.total_tokens)} tokens</dd></div>
-          <div><dt>Prompt</dt><dd>{formatNumber(message.usage.prompt_tokens)}</dd></div>
-          <div><dt>Completion</dt><dd>{formatNumber(message.usage.completion_tokens)}</dd></div>
+          <div><dt>{t("inspector.total")}</dt><dd>{formatNumber(message.usage.total_tokens)}</dd></div>
+          <div><dt>{t("inspector.prompt")}</dt><dd>{formatNumber(message.usage.prompt_tokens)}</dd></div>
+          <div><dt>{t("inspector.completion")}</dt><dd>{formatNumber(message.usage.completion_tokens)}</dd></div>
           {message.usage.cached_tokens !== undefined ? (
-            <div><dt>Cached</dt><dd>{formatNumber(message.usage.cached_tokens)}</dd></div>
+            <div><dt>{t("inspector.cached")}</dt><dd>{formatNumber(message.usage.cached_tokens)}</dd></div>
           ) : null}
         </>
       ) : null}
       {message.promptBuild ? (
-        <>
-          <div><dt>Context estimate</dt><dd>{formatNumber(message.promptBuild.token_estimate)} tokens</dd></div>
-          <div><dt>History</dt><dd>{message.promptBuild.included_history_messages} included / {message.promptBuild.dropped_history_messages} dropped</dd></div>
-        </>
+        <div>
+          <dt>{t("inspector.contextEstimate")}</dt>
+          <dd>{formatNumber(message.promptBuild.token_estimate)}</dd>
+        </div>
       ) : null}
       {message.promptCompaction ? (
-        <div><dt>Compaction</dt><dd>{message.promptCompaction.mode.replaceAll("_", " ")}</dd></div>
+        <div><dt>{t("inspector.compacted")}</dt><dd>{message.promptCompaction.mode.replaceAll("_", " ")}</dd></div>
       ) : null}
     </dl>
   );

@@ -36,18 +36,18 @@ test("mobile chat reflows, traps both production panels, and honors reduced moti
   await expect(page.getByText("Mobile answer", { exact: true })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
-  const inspector = page.getByLabel("Run inspector");
+  const inspector = page.locator("aside.product-inspector");
   await expect(inspector).toHaveAttribute("data-collapsed", "true");
-  const composerBox = await page.getByRole("textbox", { name: "Message" }).boundingBox();
+  const composerBox = await page.getByRole("textbox", { name: /输入消息/ }).boundingBox();
   expect(composerBox?.width).toBeGreaterThan(240);
 
-  const evidenceTrigger = page.getByRole("button", { name: "Open run evidence" });
+  const evidenceTrigger = page.getByRole("button", { name: "展开详情面板" });
   await evidenceTrigger.click();
   await expect(inspector).toHaveAttribute("role", "dialog");
   await expect(inspector).toHaveAttribute("aria-modal", "true");
-  await expect(inspector.getByRole("button", { name: "Close run evidence" })).toBeFocused();
+  await expect(inspector.getByRole("button", { name: "关闭详情" })).toBeFocused();
   await expect(page.locator(".product-main")).toHaveAttribute("inert", "");
-  const expandedBox = await page.getByLabel("Run inspector").boundingBox();
+  const expandedBox = await page.locator("aside.product-inspector").boundingBox();
   expect(expandedBox).not.toBeNull();
   expect(expandedBox!.x).toBeGreaterThanOrEqual(0);
   expect(expandedBox!.x + expandedBox!.width).toBeLessThanOrEqual(390);
@@ -59,7 +59,7 @@ test("mobile chat reflows, traps both production panels, and honors reduced moti
     inspector.locator(":focus"),
     "Tab must keep focus inside the trapped inspector",
   ).toHaveCount(1);
-  const closeButton = inspector.getByRole("button", { name: "Close run evidence" });
+  const closeButton = inspector.getByRole("button", { name: "关闭详情" });
   await closeButton.focus();
   await page.keyboard.press("Shift+Tab");
   await expect(
@@ -73,28 +73,28 @@ test("mobile chat reflows, traps both production panels, and honors reduced moti
   await expect(evidenceTrigger).toBeFocused();
   await expect(page.locator(".product-main")).not.toHaveAttribute("inert", "");
 
-  const workspaceTrigger = page.getByRole("button", { name: "Open workspaces" });
+  const workspaceTrigger = page.getByRole("button", { name: "展开工作区列表" });
   await workspaceTrigger.click();
   const workspaceDrawer = page.getByRole("dialog", { name: "Workspaces" });
   await expect(workspaceDrawer).toHaveAttribute("role", "dialog");
   await expect(workspaceDrawer).toHaveAttribute("aria-modal", "true");
-  await expect(workspaceDrawer.getByRole("button", { name: "Close workspaces" })).toBeFocused();
+  await expect(workspaceDrawer.getByRole("button", { name: "关闭工作区列表" })).toBeFocused();
   await expect(
-    workspaceDrawer.getByRole("searchbox", { name: "Search workspaces and sessions" }),
+    workspaceDrawer.getByRole("searchbox", { name: "搜索工作区与会话" }),
   ).toBeVisible();
   await expect(
-    workspaceDrawer.getByText("Search workspaces and sessions", { exact: true }),
+    workspaceDrawer.getByText("搜索工作区与会话", { exact: true }),
   ).toHaveCount(0);
-  const lastDrawerAction = workspaceDrawer.getByRole("button", { name: "Product settings" });
+  const lastDrawerAction = workspaceDrawer.getByRole("button", { name: "设置" });
   await lastDrawerAction.focus();
   await page.keyboard.press("Tab");
-  await expect(workspaceDrawer.getByRole("button", { name: "Add workspace" })).toBeFocused();
+  await expect(workspaceDrawer.getByRole("button", { name: "添加工作区" })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(workspaceDrawer).toBeHidden();
   await expect(workspaceTrigger).toBeFocused();
 
   await page.keyboard.press("/");
-  await expect(page.getByRole("textbox", { name: "Message" })).toBeFocused();
+  await expect(page.getByRole("textbox", { name: /输入消息/ })).toBeFocused();
   const motion = await page.locator(".product-root").evaluate((element) => {
     const style = getComputedStyle(element);
     return {
@@ -113,7 +113,7 @@ test("mobile chat reflows, traps both production panels, and honors reduced moti
   await page.setViewportSize({ width: 320, height: 800 });
   await expectNoHorizontalOverflow(page);
   const narrowComposerBox = await page
-    .getByRole("textbox", { name: "Message" })
+    .getByRole("textbox", { name: /输入消息/ })
     .boundingBox();
   expect(narrowComposerBox?.width).toBeGreaterThan(200);
   await page.screenshot({
@@ -130,7 +130,7 @@ test("mobile migration summary stays outside the composer", async ({
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Imported mobile session" })).toBeVisible();
-  const summary = page.getByText("Browser data imported (2 records).");
+  const summary = page.getByText("浏览器数据已导入（2 条记录）。");
   await expect(summary).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
@@ -152,17 +152,17 @@ test("workspace dialog traps focus, closes with Escape, and restores its trigger
   await installMockProductApi(page);
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Open workspaces" }).click();
+  await page.getByRole("button", { name: "展开工作区列表" }).click();
   const workspaceDrawer = page.getByRole("dialog", { name: "Workspaces" });
-  const trigger = page.getByRole("button", { name: "Add workspace" });
+  const trigger = page.getByRole("button", { name: "添加工作区" });
   await trigger.click();
-  const dialog = page.getByRole("dialog", { name: "Open workspace" });
+  const dialog = page.getByRole("dialog", { name: "打开工作区" });
   await expect(dialog).toHaveAttribute("aria-modal", "true");
-  const pathInput = dialog.getByLabel("Absolute path");
+  const pathInput = dialog.getByLabel("绝对路径");
   await expect(pathInput).toBeFocused();
 
   await page.keyboard.press("Shift+Tab");
-  await expect(dialog.getByRole("button", { name: "Open", exact: true })).toBeFocused();
+  await expect(dialog.getByRole("button", { name: "打开工作区" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(pathInput).toBeFocused();
   const focusStyle = await pathInput.evaluate((element) => {
@@ -171,8 +171,8 @@ test("workspace dialog traps focus, closes with Escape, and restores its trigger
   });
   expect(focusStyle.width).toBe("2px");
 
-  await dialog.getByRole("button", { name: "Open", exact: true }).click();
-  await expect(dialog.getByRole("alert")).toHaveText("Enter an absolute path.");
+  await dialog.getByRole("button", { name: "打开工作区" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("请输入要打开的绝对路径。");
   await expect(pathInput).toHaveAttribute("aria-invalid", "true");
   await page.screenshot({
     path: testInfo.outputPath("mobile-workspace-dialog.png"),
@@ -182,7 +182,7 @@ test("workspace dialog traps focus, closes with Escape, and restores its trigger
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(trigger).toBeFocused();
-  await workspaceDrawer.getByRole("button", { name: "Close workspaces" }).click();
+  await workspaceDrawer.getByRole("button", { name: "关闭工作区列表" }).click();
 });
 
 test("server-confirmed dark theme and deep Settings tab survive reload", async ({
@@ -190,14 +190,14 @@ test("server-confirmed dark theme and deep Settings tab survive reload", async (
 }, testInfo) => {
   const api = await installMockProductApi(page);
   await page.goto("/settings/general");
-  await page.getByRole("button", { name: "Dark", exact: true }).click();
+  await page.getByRole("button", { name: "深色", exact: true }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await expect
     .poll(() => browserValue(page, SERVER_CONFIRMED_THEME_CACHE_KEY))
     .toBe("dark");
 
   await page.goto("/settings/about");
-  const activeTab = page.getByRole("button", { name: "About / Runtime" });
+  const activeTab = page.getByRole("button", { name: "关于" });
   await expect(activeTab).toHaveAttribute("aria-current", "page");
   const tabVisible = await activeTab.evaluate((element) => {
     const tab = element.getBoundingClientRect();
@@ -205,7 +205,7 @@ test("server-confirmed dark theme and deep Settings tab survive reload", async (
     return tab.left >= nav.left && tab.right <= nav.right;
   });
   expect(tabVisible).toBe(true);
-  await expect(page.getByRole("heading", { name: "Resume health" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "会话恢复" })).toBeVisible();
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   expect(api.migrationRequestBodies).toHaveLength(0);

@@ -2398,3 +2398,47 @@ textarea:focus {
   width: 100%;
   min-height: 30px;
 }
+
+.error-code {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+}
+
+.activity-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.activity-timeline li {
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+
+.activity-timeline li[data-tone="accent"] {
+  border-left-color: var(--accent);
+}
+
+.activity-timeline li[data-tone="ok"] {
+  border-left-color: var(--success, #17a34a);
+}
+
+.activity-timeline li[data-tone="error"] {
+  border-left-color: var(--danger, #b53333);
+}
+
+.activity-timeline li strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.activity-timeline li div {
+  font-size: 11px;
+  color: var(--muted);
+}

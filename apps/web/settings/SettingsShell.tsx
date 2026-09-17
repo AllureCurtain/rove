@@ -4,7 +4,8 @@ import { CheckIcon, Cross2Icon, Pencil2Icon, TrashIcon } from "@radix-ui/react-i
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { listProviderModels, testProvider } from "../api/run-controller";
-import { BenchmarkPanel } from "../components/benchmark-panel";
+import { useCopy } from "../copy/CopyProvider";
+import { useUiSkin } from "../shell/ui-skin";
 import type {
   ProviderModelsResponse,
   ProviderTestResponse,
@@ -127,6 +128,7 @@ export function SettingsShell(props: SettingsShellProps) {
     onThemeChange,
     error,
   } = props;
+  const { t } = useCopy();
   const activeSectionRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -136,30 +138,42 @@ export function SettingsShell(props: SettingsShellProps) {
     });
   }, [section]);
 
+  const sectionLabels: Record<SettingsSectionId, string> = {
+    general: t("settings.sectionGeneral"),
+    providers: t("settings.sectionProviders"),
+    tools: t("settings.sectionTools"),
+    workspace: t("settings.sectionWorkspace"),
+    memory: t("settings.sectionMemory"),
+    sessions: t("settings.sectionSessions"),
+    keyboard: t("settings.sectionKeyboard"),
+    advanced: t("settings.sectionAdvanced"),
+    about: t("settings.sectionAbout"),
+  };
+
   return (
     <div className="settings-shell">
-      <nav className="settings-nav" aria-label="Settings sections">
-        <h2>Settings</h2>
-        {SETTINGS_SECTIONS.map((item) => (
+      <nav className="settings-nav" aria-label={t("settings.title")}>
+        <h2>{t("settings.title")}</h2>
+        {SETTINGS_SECTIONS.filter((item) => item.id !== "advanced").map((item) => (
           <button
-            ref={item.id === section ? activeSectionRef : undefined}
+            ref={item.id === (section === "advanced" ? "general" : section) ? activeSectionRef : undefined}
             key={item.id}
             type="button"
-            data-active={item.id === section}
-            aria-current={item.id === section ? "page" : undefined}
+            data-active={item.id === (section === "advanced" ? "general" : section)}
+            aria-current={item.id === (section === "advanced" ? "general" : section) ? "page" : undefined}
             onClick={() => onSectionChange(item.id)}
           >
-            {item.label}
+            {sectionLabels[item.id]}
           </button>
         ))}
       </nav>
       <div className="settings-content">
         {error ? (
           <div className="shell-alert" role="alert">
-            {error}
+            {t("chrome.settingsError")}
           </div>
         ) : null}
-        {section === "general" ? (
+        {(section === "general" || section === "advanced") ? (
           <GeneralSettings theme={theme} onThemeChange={onThemeChange} />
         ) : null}
         {section === "providers" ? (
@@ -207,9 +221,9 @@ export function SettingsShell(props: SettingsShellProps) {
             />
           ) : (
             <section className="settings-section" aria-labelledby="memory-heading">
-              <h2 id="memory-heading">Memory</h2>
+              <h2 id="memory-heading">{t("settings.sectionMemory")}</h2>
               <p className="placeholder-note">
-                Select a workspace to inspect its durable memory.
+                {t("memory.needWorkspace")}
               </p>
             </section>
           )
@@ -225,7 +239,6 @@ export function SettingsShell(props: SettingsShellProps) {
           />
         ) : null}
         {section === "keyboard" ? <KeyboardSettings /> : null}
-        {section === "advanced" ? <AdvancedSettings /> : null}
         {section === "about" ? (
           <RuntimeSettings
             client={settingsClient}
@@ -245,20 +258,22 @@ function GeneralSettings({
   theme: "light" | "dark";
   onThemeChange: (theme: "light" | "dark") => void;
 }) {
+  const { t, locale, setLocale } = useCopy();
+  const { skin, setSkin } = useUiSkin();
   return (
     <section className="settings-panel" aria-labelledby="general-settings-title">
-      <h1 id="general-settings-title">General</h1>
-      <p className="lede">Appearance and product defaults.</p>
+      <h1 id="general-settings-title">{t("settings.sectionGeneral")}</h1>
+      <p className="lede">{t("settings.generalLede")}</p>
       <div className="settings-card">
-        <h2>Theme</h2>
-        <div className="settings-segmented" role="group" aria-label="Theme">
+        <h2>{t("settings.general.theme")}</h2>
+        <div className="settings-segmented" role="group" aria-label={t("settings.general.theme")}>
           <button
             type="button"
             aria-pressed={theme === "light"}
             data-active={theme === "light"}
             onClick={() => onThemeChange("light")}
           >
-            Light
+            {t("settings.general.themeLight")}
           </button>
           <button
             type="button"
@@ -266,7 +281,51 @@ function GeneralSettings({
             data-active={theme === "dark"}
             onClick={() => onThemeChange("dark")}
           >
-            Dark
+            {t("settings.general.themeDark")}
+          </button>
+        </div>
+      </div>
+      <div className="settings-card">
+        <h2>{t("uiSkin.label")}</h2>
+        <p className="settings-inline-note">{t("uiSkin.desc")}</p>
+        <div className="settings-segmented" role="group" aria-label={t("uiSkin.label")}>
+          <button
+            type="button"
+            aria-pressed={skin === "cool"}
+            data-active={skin === "cool"}
+            onClick={() => setSkin("cool")}
+          >
+            {t("uiSkin.cool")}
+          </button>
+          <button
+            type="button"
+            aria-pressed={skin === "warm"}
+            data-active={skin === "warm"}
+            onClick={() => setSkin("warm")}
+          >
+            {t("uiSkin.warm")}
+          </button>
+        </div>
+      </div>
+      <div className="settings-card">
+        <h2>{t("settings.general.language")}</h2>
+        <p className="settings-inline-note">{t("settings.general.languageDesc")}</p>
+        <div className="settings-segmented" role="group" aria-label={t("settings.general.language")}>
+          <button
+            type="button"
+            aria-pressed={locale === "zh-CN"}
+            data-active={locale === "zh-CN"}
+            onClick={() => setLocale("zh-CN")}
+          >
+            {t("locale.zhCN")}
+          </button>
+          <button
+            type="button"
+            aria-pressed={locale === "en-US"}
+            data-active={locale === "en-US"}
+            onClick={() => setLocale("en-US")}
+          >
+            {t("locale.enUS")}
           </button>
         </div>
       </div>
@@ -291,6 +350,7 @@ function ToolsSettings({
     policy: ProductApprovalPreference,
   ) => Promise<void>;
 }) {
+  const { t } = useCopy();
   const [maxSteps, setMaxSteps] = useState(String(selection.maxSteps));
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -328,12 +388,12 @@ function ToolsSettings({
 
   return (
     <section className="settings-panel" aria-labelledby="tools-settings-title">
-      <h1 id="tools-settings-title">Tools &amp; Approvals</h1>
-      <p className="lede">Default tool authorization and execution limits.</p>
+      <h1 id="tools-settings-title">{t("settings.sectionTools")}</h1>
+      <p className="lede">{t("tools.lede")}</p>
 
       <div className="settings-card">
-        <h2>Default approval policy</h2>
-        <div className="settings-segmented" role="group" aria-label="Default approval policy">
+        <h2>{t("tools.approvalTitle")}</h2>
+        <div className="settings-segmented" role="group" aria-label={t("tools.approvalTitle")}>
           {(["ask", "auto", "never"] as const).map((policy) => (
             <button
               key={policy}
@@ -343,31 +403,35 @@ function ToolsSettings({
               disabled={approvalBusy}
               onClick={() => void handleApprovalChange(policy)}
             >
-              {policy === "ask" ? "Ask" : policy === "auto" ? "Auto" : "Never"}
+              {policy === "ask"
+                ? t("tools.ask")
+                : policy === "auto"
+                  ? t("tools.auto")
+                  : t("tools.never")}
             </button>
           ))}
         </div>
         <div className="settings-policy-grid">
           <div>
-            <strong>Ask</strong>
-            <span>Pause when a tool requires approval.</span>
+            <strong>{t("tools.ask")}</strong>
+            <span>{t("tools.askDesc")}</span>
           </div>
           <div>
-            <strong>Auto</strong>
-            <span>Allow runtime-approved tool execution.</span>
+            <strong>{t("tools.auto")}</strong>
+            <span>{t("tools.autoDesc")}</span>
           </div>
           <div>
-            <strong>Never</strong>
-            <span>Reject tool calls that require approval.</span>
+            <strong>{t("tools.never")}</strong>
+            <span>{t("tools.neverDesc")}</span>
           </div>
         </div>
       </div>
 
       <form className="settings-card" onSubmit={handleMaxSteps}>
-        <h2>New-session execution limit</h2>
+        <h2>{t("tools.maxStepsTitle")}</h2>
         <div className="field settings-number-field">
           <label htmlFor="settings-max-steps">
-            Default maximum steps for new sessions
+            {t("tools.maxStepsLabel")}
           </label>
           <input
             id="settings-max-steps"
@@ -382,52 +446,18 @@ function ToolsSettings({
         </div>
         <div className="field-actions">
           <button type="submit">
-            <CheckIcon /> Save default
+            <CheckIcon /> {t("tools.saveDefault")}
           </button>
         </div>
       </form>
 
       {error ? (
         <div className="chat-error" role="alert">
-          {error}
+          {t("chrome.settingsError")}
         </div>
       ) : null}
 
       <MCPSettings client={client} workspaceId={workspaceId} />
-    </section>
-  );
-}
-
-function AdvancedSettings() {
-  const [showBenchmark, setShowBenchmark] = useState(false);
-
-  return (
-    <section className="settings-panel" aria-labelledby="advanced-settings-title">
-      <h1 id="advanced-settings-title">Advanced / Developer</h1>
-      <p className="lede">Developer surfaces and migration escape hatches.</p>
-      <div className="settings-card">
-        <h2>Developer tools</h2>
-        <div className="advanced-links">
-          <button
-            type="button"
-            className="advanced-link-card"
-            onClick={() => setShowBenchmark((value) => !value)}
-            aria-expanded={showBenchmark}
-          >
-            Benchmark runner
-            <span>Deterministic evaluation suites against the API.</span>
-          </button>
-          <a className="advanced-link-card" href="/dev/workbench">
-            Legacy workbench
-            <span>Open the temporary migration and diagnostics surface.</span>
-          </a>
-        </div>
-      </div>
-      {showBenchmark ? (
-        <div className="advanced-benchmark" aria-label="Benchmark runner">
-          <BenchmarkPanel />
-        </div>
-      ) : null}
     </section>
   );
 }
@@ -463,6 +493,7 @@ function BrowserProvidersSettings({
   onDeleteProfile,
   onSelectionChange,
 }: ProviderSettingsProps) {
+  const { t } = useCopy();
   const [label, setLabel] = useState("Local OpenAI");
   const [providerType, setProviderType] = useState<ProviderType>("openai");
   const [apiBase, setApiBase] = useState(providerDefaultApiBase("openai"));
@@ -618,16 +649,16 @@ function BrowserProvidersSettings({
 
   return (
     <section className="settings-panel" aria-labelledby="providers-settings-title">
-      <h1 id="providers-settings-title">Providers &amp; Models</h1>
+      <h1 id="providers-settings-title">{t("settings.providers.title")}</h1>
       <p className="lede">
-        Durable provider profiles store environment variable names, never raw keys.
+        {t("settings.providers.desc")}
       </p>
 
       <div className="settings-card">
-        <h2>Active selection</h2>
+        <h2>{t("settings.providers.activeSelection")}</h2>
         <div className="field-grid">
           <div className="field">
-            <label htmlFor="provider-mode">Mode</label>
+            <label htmlFor="provider-mode">{t("settings.providers.mode")}</label>
             <select
               id="provider-mode"
               value={selection.mode}
@@ -643,12 +674,12 @@ function BrowserProvidersSettings({
                 })
               }
             >
-              <option value="default">Runtime default</option>
-              <option value="profile">Saved profile</option>
+              <option value="default">{t("settings.providers.modeRuntimeDefault")}</option>
+              <option value="profile">{t("settings.providers.modeSavedProfile")}</option>
             </select>
           </div>
           <div className="field">
-            <label htmlFor="provider-profile">Profile</label>
+            <label htmlFor="provider-profile">{t("settings.providers.profile")}</label>
             <select
               id="provider-profile"
               value={selection.profileId ?? ""}
@@ -663,7 +694,7 @@ function BrowserProvidersSettings({
                 });
               }}
             >
-              <option value="">Select profile…</option>
+              <option value="">{t("settings.providers.selectProfile")}</option>
               {profiles.map((profile) => (
                 <option key={profile.id} value={profile.id}>
                   {profile.label}
@@ -672,7 +703,7 @@ function BrowserProvidersSettings({
             </select>
           </div>
           <div className="field">
-            <label htmlFor="provider-model">Model</label>
+            <label htmlFor="provider-model">{t("settings.providers.model")}</label>
             <input
               id="provider-model"
               value={selection.model}
@@ -686,27 +717,27 @@ function BrowserProvidersSettings({
         </div>
         <p className="settings-inline-note">
           {selection.mode === "profile" && activeProfile
-            ? `${activeProfile.label} · ${activeProfile.apiBase}${activeProfile.apiKeyEnv ? ` · env ${activeProfile.apiKeyEnv}` : ""}`
-            : "Using the API process default provider configuration."}
+            ? `${activeProfile.label} · ${activeProfile.apiBase}`
+            : t("settings.providers.usingRuntimeDefault")}
         </p>
       </div>
 
       <form className="settings-card" onSubmit={handleSave}>
         <div className="settings-card__heading">
-          <h2>{editingProfileId ? "Edit profile" : "Add profile"}</h2>
+          <h2>{editingProfileId ? t("settings.providers.editProfile") : t("settings.providers.create")}</h2>
           {editingProfileId ? (
             <button type="button" className="secondary" onClick={resetDraft} disabled={saveBusy}>
-              <Cross2Icon /> Cancel edit
+              <Cross2Icon /> {t("chrome.cancelEdit")}
             </button>
           ) : null}
         </div>
         <div className="field-grid">
           <div className="field">
-            <label htmlFor="profile-label">Label</label>
+            <label htmlFor="profile-label">{t("settings.providers.labelField")}</label>
             <input id="profile-label" value={label} onChange={(event) => setLabel(event.target.value)} />
           </div>
           <div className="field">
-            <label htmlFor="profile-type">Type</label>
+            <label htmlFor="profile-type">{t("settings.providers.typeField")}</label>
             <select
               id="profile-type"
               value={providerType}
@@ -716,25 +747,15 @@ function BrowserProvidersSettings({
               <option value="openai-responses">OpenAI Responses</option>
               <option value="anthropic">Anthropic</option>
               <option value="ollama">Ollama</option>
-              <option value="fake">Fake</option>
+              <option value="fake">{t("settings.providers.localDemo")}</option>
             </select>
           </div>
           <div className="field">
-            <label htmlFor="profile-base">API base</label>
+            <label htmlFor="profile-base">{t("settings.providers.apiBase")}</label>
             <input id="profile-base" value={apiBase} onChange={(event) => setApiBase(event.target.value)} />
           </div>
           <div className="field">
-            <label htmlFor="profile-key-env">API key env name</label>
-            <input
-              id="profile-key-env"
-              value={apiKeyEnv}
-              onChange={(event) => setApiKeyEnv(event.target.value)}
-              disabled={!providerRequiresKey(providerType)}
-              placeholder={providerRequiresKey(providerType) ? "OPENAI_API_KEY" : "not required"}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="profile-default-model">Default model</label>
+            <label htmlFor="profile-default-model">{t("settings.providers.defaultModel")}</label>
             <input
               id="profile-default-model"
               value={defaultModel}
@@ -742,36 +763,54 @@ function BrowserProvidersSettings({
             />
           </div>
         </div>
+        <details>
+          <summary>{t("chrome.advanced")}</summary>
+          <div className="field">
+            <label htmlFor="profile-key-env">{t("settings.providers.apiKeyEnv")}</label>
+            <input
+              id="profile-key-env"
+              value={apiKeyEnv}
+              onChange={(event) => setApiKeyEnv(event.target.value)}
+              disabled={!providerRequiresKey(providerType)}
+              placeholder={providerRequiresKey(providerType) ? "OPENAI_API_KEY" : t("common.none")}
+            />
+            <p className="settings-inline-note">{t("settings.providers.apiKeyEnvHint")}</p>
+          </div>
+        </details>
+        {providerType === "fake" ? <p className="settings-inline-note">{t("settings.providers.localDemoDesc")}</p> : null}
         <div className="field-actions">
           <button type="submit" disabled={saveBusy || profileDeleteBusy}>
-            <CheckIcon /> {saveBusy ? "Saving…" : editingProfileId ? "Update profile" : "Save profile"}
+            <CheckIcon /> {saveBusy ? t("common.saving") : t("settings.providers.save")}
           </button>
           <button type="button" className="secondary" disabled={testBusy} onClick={() => void handleTest()}>
-            {testBusy ? "Testing…" : "Test"}
+            {testBusy ? t("common.loading") : t("settings.providers.test")}
           </button>
           <button type="button" className="secondary" disabled={modelsBusy} onClick={() => void handleListModels()}>
-            {modelsBusy ? "Loading…" : "List models"}
+            {modelsBusy ? t("common.loading") : t("settings.providers.listModels")}
           </button>
         </div>
-        {error ? <div className="chat-error" role="alert">{error}</div> : null}
+        {error ? <div className="chat-error" role="alert">{t("chrome.settingsError")}</div> : null}
         {testResult ? (
-          <div className="placeholder-note">
-            Test: {testResult.status} · key_present={String(testResult.key_present)} · models={testResult.models_count}
-            {testResult.wire_protocol ? ` · wire ${testResult.wire_protocol}` : ""}
+          <div className="placeholder-note testline" data-status={testResult.status}>
+            {testResult.status === "ok" && (testResult.key_present || !providerRequiresKey(providerType))
+              ? t("settings.providers.connected", { count: testResult.models_count })
+              : testResult.status === "ok" && !testResult.key_present
+                ? t("settings.providers.keyMissing")
+                : t("settings.providers.unreachable")}
           </div>
         ) : null}
         {modelsResult ? (
           <div className="placeholder-note">
-            Models ({modelsResult.models_count}): {modelsResult.models.slice(0, 12).join(", ") || "(none)"}
+            {t("chrome.models", { count: modelsResult.models_count })}: {modelsResult.models.slice(0, 12).join(", ") || t("common.none")}
             {modelsResult.models.length > 12 ? "…" : ""}
           </div>
         ) : null}
       </form>
 
       <div className="settings-card">
-        <h2>Saved profiles</h2>
+        <h2>{t("settings.providers.savedProfiles")}</h2>
         {profiles.length === 0 ? (
-          <p className="settings-inline-note">No saved profiles yet.</p>
+          <p className="settings-inline-note">{t("common.noSavedProfiles")}</p>
         ) : (
           <div className="profile-list">
             {profiles.map((profile) => (
@@ -781,13 +820,13 @@ function BrowserProvidersSettings({
                   <span>{providerDisplayName(profile.providerType)} · {profile.apiBase}</span>
                   {confirmingDeleteId === profile.id ? (
                     <div className="settings-inline-confirm" role="alert">
-                      <span>Remove this durable provider profile?</span>
+                      <span>{t("chrome.removeProvider")}</span>
                       <div className="field-actions">
                         <button type="button" className="secondary" disabled={profileDeleteBusy} onClick={() => setConfirmingDeleteId(null)}>
-                          <Cross2Icon /> Cancel
+                          <Cross2Icon /> {t("common.cancel")}
                         </button>
                         <button type="button" className="danger" disabled={profileDeleteBusy} onClick={() => void handleDelete(profile.id)}>
-                          <TrashIcon /> {deletingProfileId === profile.id ? "Removing…" : "Confirm remove"}
+                          <TrashIcon /> {deletingProfileId === profile.id ? t("common.loading") : t("settings.providers.delete")}
                         </button>
                       </div>
                     </div>
@@ -805,13 +844,13 @@ function BrowserProvidersSettings({
                       model: profile.defaultModel || selection.model,
                     })}
                   >
-                    Use
+                    {t("settings.providers.use")}
                   </button>
                   <button type="button" className="secondary" disabled={profileDeleteBusy} onClick={() => startEdit(profile)}>
-                    <Pencil2Icon /> Edit
+                    <Pencil2Icon /> {t("settings.providers.edit")}
                   </button>
                   <button type="button" className="danger" disabled={profileDeleteBusy || confirmingDeleteId === profile.id} onClick={() => setConfirmingDeleteId(profile.id)}>
-                    <TrashIcon /> Remove
+                    <TrashIcon /> {t("settings.providers.delete")}
                   </button>
                 </div>
               </div>
@@ -823,16 +862,16 @@ function BrowserProvidersSettings({
   );
 }
 
-function providerCredentialLabel(profile: ProviderProfileRecord): string {
+function providerCredentialLabel(profile: ProviderProfileRecord, t: ReturnType<typeof useCopy>["t"]): string {
   switch (profile.credentialSource?.source) {
     case "keyring":
-      return "OS keyring";
+      return t("desktopProviders.credentialKeyring");
     case "env":
-      return "Environment reference";
+      return t("desktopProviders.credentialEnv");
     case "file":
-      return "File reference";
+      return t("desktopProviders.credentialFile");
     default:
-      return "No credential";
+      return t("desktopProviders.credentialNone");
   }
 }
 
@@ -843,6 +882,7 @@ function DesktopProvidersSettings({
   onRefreshProviderProfiles,
   onSelectionChange,
 }: ProviderSettingsProps) {
+  const { t } = useCopy();
   const client = useMemo(() => createProductApiClient(), []);
   const [label, setLabel] = useState(SILICONFLOW_LABEL);
   const [providerType, setProviderType] =
@@ -942,7 +982,7 @@ function DesktopProvidersSettings({
       setEditingProfileId(null);
       setProbeResult({ profileId: receipt.profileId, probe: receipt.probe });
       setStatus(
-        `Verified ${receipt.label}, published revision ${receipt.catalogRevision}, and selected ${receipt.model}.`,
+        t("desktopProviders.verified", { label: receipt.label, model: receipt.model }),
       );
     } catch (saveError) {
       setError(describeProviderProbeFailure(saveError));
@@ -960,7 +1000,7 @@ function DesktopProvidersSettings({
         model: profile.defaultModel,
       });
       setProbeResult({ profileId: profile.id, probe });
-      setStatus(`${profile.label} credential and model inventory are available.`);
+      setStatus(t("desktopProviders.connected", { label: profile.label }));
     } catch (probeError) {
       setError(describeProviderProbeFailure(probeError));
     } finally {
@@ -977,7 +1017,7 @@ function DesktopProvidersSettings({
         profileId: profile.id,
         models: response.models.map((model) => model.id),
       });
-      setStatus(`Loaded ${response.models.length} models for ${profile.label}.`);
+      setStatus(t("desktopProviders.modelsLoaded", { count: response.models.length, label: profile.label }));
     } catch (modelsError) {
       setError(describeProviderProbeFailure(modelsError));
     } finally {
@@ -996,7 +1036,7 @@ function DesktopProvidersSettings({
       });
       await onRefreshProviderProfiles();
       await persistProductSelection(receipt.profileId, receipt.model);
-      setStatus(`Selected ${profile.label} · ${receipt.model}.`);
+      setStatus(t("desktopProviders.selected", { label: profile.label, model: receipt.model }));
     } catch (useError) {
       setError(describeProviderProbeFailure(useError));
     } finally {
@@ -1013,7 +1053,7 @@ function DesktopProvidersSettings({
       if (editingProfileId === profileId) {
         applySiliconFlowPreset();
       }
-      setStatus("Provider profile removed from the shared Catalog.");
+      setStatus(t("desktopProviders.removed"));
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : String(deleteError));
     } finally {
@@ -1023,17 +1063,16 @@ function DesktopProvidersSettings({
 
   return (
     <section className="settings-panel" aria-labelledby="providers-settings-title">
-      <h1 id="providers-settings-title">Providers &amp; Models</h1>
+      <h1 id="providers-settings-title">{t("settings.providers.title")}</h1>
       <p className="lede">
-        Rove Desktop stores remote credentials in the Windows credential vault and
-        publishes only a keyring reference to the shared Provider Catalog.
+        {t("desktopProviders.description")}
       </p>
 
       <div className="settings-card">
-        <h2>Active selection</h2>
+        <h2>{t("settings.providers.activeSelection")}</h2>
         <div className="field-grid">
           <div className="field">
-            <label htmlFor="provider-mode">Mode</label>
+            <label htmlFor="provider-mode">{t("settings.providers.mode")}</label>
             <select
               id="provider-mode"
               value={selection.mode}
@@ -1053,12 +1092,12 @@ function DesktopProvidersSettings({
                 }
               }}
             >
-              <option value="default">Runtime default</option>
-              <option value="profile">Saved profile</option>
+              <option value="default">{t("settings.providers.modeRuntimeDefault")}</option>
+              <option value="profile">{t("settings.providers.modeSavedProfile")}</option>
             </select>
           </div>
           <div className="field">
-            <label htmlFor="provider-profile">Profile</label>
+            <label htmlFor="provider-profile">{t("settings.providers.profile")}</label>
             <select
               id="provider-profile"
               value={selection.profileId ?? ""}
@@ -1070,7 +1109,7 @@ function DesktopProvidersSettings({
                 }
               }}
             >
-              <option value="">Select profile…</option>
+              <option value="">{t("settings.providers.selectProfile")}</option>
               {profiles.map((profile) => (
                 <option key={profile.id} value={profile.id}>
                   {profile.label}
@@ -1079,7 +1118,7 @@ function DesktopProvidersSettings({
             </select>
           </div>
           <div className="field">
-            <label htmlFor="provider-model">Model</label>
+            <label htmlFor="provider-model">{t("settings.providers.model")}</label>
             <input
               id="provider-model"
               value={selection.model}
@@ -1092,18 +1131,17 @@ function DesktopProvidersSettings({
         </div>
         <p className="settings-inline-note">
           {selection.mode === "profile" && activeProfile
-            ? `${activeProfile.label} · ${activeProfile.apiBase} · ${providerCredentialLabel(activeProfile)}`
-            : "Using the shared Runtime default Provider selection."}
+            ? `${activeProfile.label} · ${activeProfile.apiBase} · ${providerCredentialLabel(activeProfile, t)}`
+            : t("desktopProviders.defaultSelection")}
         </p>
       </div>
 
       <form className="settings-card" onSubmit={(event) => void handleSecureSave(event)}>
         <div className="settings-card__heading">
           <div>
-            <h2>{editingProfileId ? "Reconfigure secure profile" : "Secure onboarding"}</h2>
+            <h2>{editingProfileId ? t("settings.providers.editSecure") : t("settings.providers.secureOnboarding")}</h2>
             <p className="settings-inline-note">
-              Saving opens a native masked prompt, probes the real model inventory, and
-              publishes the profile only after the probe succeeds.
+              {t("desktopProviders.onboardingHint")}
             </p>
           </div>
           <button
@@ -1112,12 +1150,12 @@ function DesktopProvidersSettings({
             disabled={busy}
             onClick={applySiliconFlowPreset}
           >
-            SiliconFlow preset
+            {t("desktopProviders.preset")}
           </button>
         </div>
         <div className="field-grid">
           <div className="field">
-            <label htmlFor="profile-label">Label</label>
+            <label htmlFor="profile-label">{t("settings.providers.labelField")}</label>
             <input
               id="profile-label"
               value={label}
@@ -1126,7 +1164,7 @@ function DesktopProvidersSettings({
             />
           </div>
           <div className="field">
-            <label htmlFor="profile-type">Type</label>
+            <label htmlFor="profile-type">{t("settings.providers.typeField")}</label>
             <select
               id="profile-type"
               value={providerType}
@@ -1138,13 +1176,13 @@ function DesktopProvidersSettings({
                 clearFeedback();
               }}
             >
-              <option value="openai">OpenAI-compatible</option>
-              <option value="openai-responses">OpenAI Responses</option>
-              <option value="anthropic">Anthropic</option>
+              <option value="openai">{t("desktopProviders.compatible")}</option>
+              <option value="openai-responses">{t("settings.providers.typeOpenaiResponses")}</option>
+              <option value="anthropic">{t("settings.providers.typeAnthropic")}</option>
             </select>
           </div>
           <div className="field">
-            <label htmlFor="profile-base">API base</label>
+            <label htmlFor="profile-base">{t("settings.providers.apiBase")}</label>
             <input
               id="profile-base"
               value={apiBase}
@@ -1153,7 +1191,7 @@ function DesktopProvidersSettings({
             />
           </div>
           <div className="field">
-            <label htmlFor="profile-default-model">Model</label>
+            <label htmlFor="profile-default-model">{t("settings.providers.modelField")}</label>
             <input
               id="profile-default-model"
               value={defaultModel}
@@ -1163,12 +1201,11 @@ function DesktopProvidersSettings({
           </div>
         </div>
         <div className="placeholder-note">
-          The API key is requested by Windows after you continue. It is not an HTML
-          field and never enters React state, localStorage, or an HTTP request body.
+          {t("desktopProviders.credentialHint")}
         </div>
         <div className="field-actions">
           <button type="submit" disabled={busy}>
-            <CheckIcon /> {busyAction === "save" ? "Verifying…" : "Save & verify"}
+            <CheckIcon /> {busyAction === "save" ? t("desktopProviders.verifying") : t("desktopProviders.saveVerify")}
           </button>
           {editingProfileId ? (
             <button
@@ -1177,34 +1214,36 @@ function DesktopProvidersSettings({
               disabled={busy}
               onClick={applySiliconFlowPreset}
             >
-              <Cross2Icon /> Cancel
+              <Cross2Icon /> {t("common.cancel")}
             </button>
           ) : null}
         </div>
       </form>
 
-      {error ? <div className="chat-error" role="alert">{error}</div> : null}
+      {error ? <div className="chat-error" role="alert">{t("chrome.settingsError")}</div> : null}
       {status ? <div className="placeholder-note" role="status">{status}</div> : null}
       {probeResult ? (
         <div className="placeholder-note">
-          Probe for {probeResult.profileId}: {probeResult.probe.inventoryCount} models ·
-          streaming {probeResult.probe.streamingSupported ? "yes" : "no"} · native tools {" "}
-          {probeResult.probe.nativeToolCallsSupported ? "yes" : "no"} · usage {" "}
-          {probeResult.probe.usageSupported ? "yes" : "no"}
+          {t("desktopProviders.probeSummary", {
+            count: probeResult.probe.inventoryCount,
+            streaming: t(probeResult.probe.streamingSupported ? "desktopProviders.supported" : "desktopProviders.unsupported"),
+            tools: t(probeResult.probe.nativeToolCallsSupported ? "desktopProviders.supported" : "desktopProviders.unsupported"),
+            usage: t(probeResult.probe.usageSupported ? "desktopProviders.supported" : "desktopProviders.unsupported"),
+          })}
         </div>
       ) : null}
       {modelResult ? (
         <div className="placeholder-note">
-          Models for {modelResult.profileId}: {modelResult.models.slice(0, 12).join(", ") || "(none)"}
+          {t("desktopProviders.models", { models: modelResult.models.slice(0, 12).join(", ") || t("common.none") })}
           {modelResult.models.length > 12 ? "…" : ""}
         </div>
       ) : null}
 
       <div className="settings-card">
-        <h2>Shared Catalog profiles</h2>
+        <h2>{t("settings.providers.catalogProfiles")}</h2>
         {profiles.length === 0 ? (
           <p className="settings-inline-note">
-            No Provider profiles are configured. Use secure onboarding above.
+            {t("desktopProviders.empty")}
           </p>
         ) : (
           <div className="profile-list">
@@ -1215,15 +1254,15 @@ function DesktopProvidersSettings({
                   <div>
                     <strong>
                       {profile.label}
-                      {selection.profileId === profile.id ? " (active)" : ""}
+                      {selection.profileId === profile.id ? t("desktopProviders.active") : ""}
                     </strong>
                     <span>
                       {providerDisplayName(profile.providerType)} · {profile.apiBase} · {" "}
-                      {profile.defaultModel ?? "No default model"} · {providerCredentialLabel(profile)}
+                      {profile.defaultModel ?? t("desktopProviders.noDefaultModel")} · {providerCredentialLabel(profile, t)}
                     </span>
                     {confirmingDeleteId === profile.id ? (
                       <div className="settings-inline-confirm" role="alert">
-                        <span>Remove this profile from the shared Catalog?</span>
+                        <span>{t("settings.providers.removeCatalogConfirm")}</span>
                         <div className="field-actions">
                           <button
                             type="button"
@@ -1231,7 +1270,7 @@ function DesktopProvidersSettings({
                             disabled={busy}
                             onClick={() => setConfirmingDeleteId(null)}
                           >
-                            <Cross2Icon /> Cancel
+                            <Cross2Icon /> {t("common.cancel")}
                           </button>
                           <button
                             type="button"
@@ -1239,7 +1278,7 @@ function DesktopProvidersSettings({
                             disabled={busy}
                             onClick={() => void handleDelete(profile.id)}
                           >
-                            <TrashIcon /> {deleting ? "Removing…" : "Confirm remove"}
+                            <TrashIcon /> {deleting ? t("common.loading") : t("settings.providers.delete")}
                           </button>
                         </div>
                       </div>
@@ -1252,7 +1291,7 @@ function DesktopProvidersSettings({
                       disabled={busy}
                       onClick={() => void handleProbe(profile)}
                     >
-                      {busyAction === `probe:${profile.id}` ? "Testing…" : "Test"}
+                      {busyAction === `probe:${profile.id}` ? t("common.loading") : t("settings.providers.test")}
                     </button>
                     <button
                       type="button"
@@ -1260,7 +1299,7 @@ function DesktopProvidersSettings({
                       disabled={busy}
                       onClick={() => void handleListModels(profile)}
                     >
-                      {busyAction === `models:${profile.id}` ? "Loading…" : "List models"}
+                      {busyAction === `models:${profile.id}` ? t("common.loading") : t("settings.providers.listModels")}
                     </button>
                     <button
                       type="button"
@@ -1268,7 +1307,7 @@ function DesktopProvidersSettings({
                       disabled={busy}
                       onClick={() => void handleUse(profile)}
                     >
-                      {busyAction === `use:${profile.id}` ? "Selecting…" : "Use"}
+                      {busyAction === `use:${profile.id}` ? t("desktopProviders.selecting") : t("settings.providers.use")}
                     </button>
                     {isNativeCredentialProvider(profile.providerType) ? (
                       <button
@@ -1277,7 +1316,7 @@ function DesktopProvidersSettings({
                         disabled={busy}
                         onClick={() => startReconfigure(profile)}
                       >
-                        <Pencil2Icon /> Reconfigure
+                        <Pencil2Icon /> {t("desktopProviders.reconfigure")}
                       </button>
                     ) : null}
                     <button
@@ -1286,7 +1325,7 @@ function DesktopProvidersSettings({
                       disabled={busy || confirmingDeleteId === profile.id}
                       onClick={() => setConfirmingDeleteId(profile.id)}
                     >
-                      <TrashIcon /> Remove
+                      <TrashIcon /> {t("desktopProviders.remove")}
                     </button>
                   </div>
                 </div>

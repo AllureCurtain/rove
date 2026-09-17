@@ -71,18 +71,20 @@ describe("production Product UI boundary", () => {
       join(WEB_ROOT, "state", "use-session-continuity.ts"),
       "utf8",
     );
-    expect(composer).toMatch(/>\s*Send\s*</u);
+    const transcript = readFileSync(join(WEB_ROOT, "chat", "Transcript.tsx"), "utf8");
+    expect(composer).toContain('t("chat.send")');
+    expect(composer).toContain("CopyProvider");
+    expect(transcript).not.toMatch(/eventSeq|product_session|prompt hash|cache key/i);
     expect(continuity).toContain("productClient.sendMessage");
     expect(continuity).toContain("productClient.promoteMessage");
     expect(continuity).toContain("productClient.revokeMessage");
 
     const shell = readFileSync(join(WEB_ROOT, "shell", "ProductApp.tsx"), "utf8");
     const tree = readFileSync(join(WEB_ROOT, "sidebar", "WorkspaceTree.tsx"), "utf8");
-    const transcript = readFileSync(join(WEB_ROOT, "chat", "Transcript.tsx"), "utf8");
     expect(shell).toContain("server.forkSession(activeSession.id)");
     expect(tree).toContain("forkPointRunId");
-    expect(tree).toContain("Sessions and branches");
-    expect(transcript).toContain("Read-only inherited history");
+    expect(tree).toContain('t("workspace.sessionsAndBranches")');
+    expect(transcript).toContain('t("workspace.forked")');
   });
 });
 

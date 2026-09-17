@@ -8,6 +8,7 @@ import {
 } from "@radix-ui/react-icons";
 import { useEffect, useMemo, useState } from "react";
 
+import { useCopy } from "../copy/CopyProvider";
 import {
   PRODUCT_TRUST_CAPABILITIES,
   type ProductTrustCapability,
@@ -32,6 +33,7 @@ export function ProjectTrustSettings({
   client: SettingsPlatformClient;
   workspaceId: string | null;
 }) {
+  const { t } = useCopy();
   const [status, setStatus] = useState<ProductTrustStatus | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<ProductTrustCapability>>(
     () => new Set(PRODUCT_TRUST_CAPABILITIES),
@@ -129,7 +131,7 @@ export function ProjectTrustSettings({
     <div className="settings-card" aria-busy={busy}>
       <div className="settings-card__heading">
         <div>
-          <h2>Project trust</h2>
+          <h2>{t("trust.title")}</h2>
           <p className="placeholder-note">
             {workspaceId
               ? `${stateLabel} · ${status?.identity_digest.slice(0, 18) ?? "loading"}`
@@ -153,7 +155,7 @@ export function ProjectTrustSettings({
       {workspaceId ? (
         <>
           <fieldset className="trust-capabilities" disabled={busy}>
-            <legend>Capabilities</legend>
+            <legend>{t("trust.capabilities")}</legend>
             {PRODUCT_TRUST_CAPABILITIES.map((capability) => (
               <label key={capability}>
                 <input

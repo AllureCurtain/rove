@@ -7,6 +7,7 @@ import {
   StopIcon,
 } from "@radix-ui/react-icons";
 
+import { useCopy } from "../copy/CopyProvider";
 import { QuickModelControl } from "../product-v2/QuickModelControl";
 import type {
   ProviderProfileRecord,
@@ -21,7 +22,6 @@ import type {
 export function Composer({
   disabled,
   busy,
-  resumeLabel,
   disabledReason,
   error,
   profiles,
@@ -40,7 +40,6 @@ export function Composer({
 }: {
   disabled: boolean;
   busy: boolean;
-  resumeLabel: string;
   disabledReason?: string;
   error: string | null;
   profiles: ProviderProfileRecord[];
@@ -57,6 +56,7 @@ export function Composer({
   reviewError?: string | null;
   onCreateReview?: (target: ProductReviewTargetSpec) => Promise<boolean>;
 }) {
+  const { t } = useCopy();
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -84,32 +84,31 @@ export function Composer({
   }
 
   return (
-    <form className="chat-composer" onSubmit={handleSubmit} aria-label="Message composer">
+    <form className="chat-composer" onSubmit={handleSubmit} aria-label={t("chat.placeholder")}>
       {error ? (
         <div className="chat-error" id="composer-error" role="alert">
           {error}
         </div>
       ) : null}
       <div className="chat-composer__meta">
-        <span>{resumeLabel}</span>
-        {busy ? <span>Streaming…</span> : null}
+        {busy ? <span>{t("chat.responding")}</span> : null}
         {disabledReason ? <span>{disabledReason}</span> : null}
       </div>
       <div className="chat-composer__row">
         <textarea
           ref={textareaRef}
-          aria-label="Message"
+          aria-label={t("chat.placeholder")}
           aria-keyshortcuts="/"
           value={message}
           onChange={(event) => setMessage(event.target.value)}
-          placeholder="Message the agent..."
+          placeholder={t("chat.placeholder")}
           disabled={disabled || submitting}
           aria-invalid={error ? "true" : undefined}
           aria-describedby={error ? "composer-error" : undefined}
         />
-        <button type="submit" disabled={!canSubmit} aria-label="Send message">
+        <button type="submit" disabled={!canSubmit} aria-label={t("chat.send")}>
           <PaperPlaneIcon />
-          Send
+          {t("chat.send")}
         </button>
         {busy ? <StopRunButton onCancel={onCancel} /> : null}
       </div>
@@ -124,7 +123,7 @@ export function Composer({
             onModelConfigChange={onModelConfigChange}
           />
         ) : (
-          <span>Loading session model settings...</span>
+          <span>{t("chat.disabledSettings")}</span>
         )}
         <div className="chat-composer__review">
           <button
@@ -132,14 +131,13 @@ export function Composer({
             className="ghost"
             disabled={!reviewAvailable || reviewBusy}
             onClick={() => setReviewOpen((current) => !current)}
-            title={reviewAvailable ? "Start a hard read-only Review" : "Review requires a Git repository"}
           >
             <MagnifyingGlassIcon aria-hidden="true" />
-            Review
+            {t("chat.review")}
           </button>
           {reviewOpen ? (
             <div className="chat-composer__review-form" data-review-launcher>
-              <label htmlFor="review-target-kind">Target</label>
+              <label htmlFor="review-target-kind">{t("chat.reviewTarget")}</label>
               <select
                 id="review-target-kind"
                 value={reviewKind}
@@ -150,16 +148,20 @@ export function Composer({
                 }}
                 disabled={reviewBusy}
               >
-                <option value="uncommitted">Uncommitted changes</option>
-                <option value="base">Base revision</option>
-                <option value="commit">Commit</option>
+                <option value="uncommitted">{t("chat.reviewUncommitted")}</option>
+                <option value="base">{t("chat.reviewBase")}</option>
+                <option value="commit">{t("chat.reviewCommit")}</option>
               </select>
               {reviewKind !== "uncommitted" ? (
                 <input
                   value={reviewRevision}
                   onChange={(event) => setReviewRevision(event.target.value)}
-                  placeholder={reviewKind === "base" ? "Base ref, e.g. main" : "Commit SHA"}
-                  aria-label="Review revision"
+                  placeholder={
+                    reviewKind === "base"
+                      ? t("chat.reviewBasePlaceholder")
+                      : t("chat.reviewCommitPlaceholder")
+                  }
+                  aria-label={t("chat.reviewRevision")}
                   disabled={reviewBusy}
                 />
               ) : null}
@@ -185,7 +187,7 @@ export function Composer({
                   });
                 }}
               >
-                {reviewBusy ? "Starting…" : "Start Review"}
+                {reviewBusy ? t("chat.reviewStarting") : t("chat.reviewStart")}
               </button>
               {reviewError ? <span className="chat-error" role="alert">{reviewError}</span> : null}
             </div>
@@ -197,10 +199,11 @@ export function Composer({
 }
 
 function StopRunButton({ onCancel }: { onCancel: () => void }) {
+  const { t } = useCopy();
   return (
-    <button type="button" className="danger" onClick={onCancel} aria-label="Stop run">
+    <button type="button" className="danger" onClick={onCancel} aria-label={t("chat.stop")}>
       <StopIcon />
-      Stop
+      {t("chat.stop")}
     </button>
   );
 }

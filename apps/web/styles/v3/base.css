@@ -1,0 +1,201 @@
+/* Warm skin component overrides — only where tokens alone are not enough. */
+
+.product-app-frame[data-skin="warm"] {
+  font-family: var(--cp-font-body);
+  background: var(--cp-bg);
+  color: var(--cp-fg);
+}
+
+.product-app-frame[data-skin="warm"] ::selection {
+  background: var(--cp-selection);
+}
+
+.product-app-frame[data-skin="warm"] :focus-visible {
+  outline: 2px solid var(--cp-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--cp-radius-sm);
+}
+
+/* Brand mark uses display face */
+.product-app-frame[data-skin="warm"] .product-topbar__brand strong {
+  font-family: var(--cp-font-display);
+  letter-spacing: -0.015em;
+  color: var(--cp-fg);
+}
+
+.product-app-frame[data-skin="warm"] .product-topbar {
+  background: var(--cp-surface);
+  border-bottom-color: var(--cp-border);
+}
+
+/* Sidebar header contrast */
+.product-app-frame[data-skin="warm"] .product-sidebar__header h2 {
+  color: var(--cp-muted);
+  font-weight: 600;
+}
+
+.product-app-frame[data-skin="warm"] .workspace-search {
+  background: var(--cp-surface-raised);
+  border-color: var(--cp-border-strong);
+  color: var(--cp-muted);
+}
+
+.product-app-frame[data-skin="warm"] .workspace-search input {
+  color: var(--cp-fg);
+}
+
+.product-app-frame[data-skin="warm"] .workspace-search input::placeholder {
+  color: var(--cp-meta);
+}
+
+/* Active session / workspace: keep dark ink on soft accent, never washed-out light */
+.product-app-frame[data-skin="warm"] .workspace-group__button[data-active="true"],
+.product-app-frame[data-skin="warm"] .session-item[data-active="true"] {
+  color: var(--cp-fg);
+  background: var(--cp-accent-soft);
+  box-shadow: inset 2px 0 0 var(--cp-accent);
+}
+
+.product-app-frame[data-skin="warm"] .session-item[data-active="true"] .session-item__title,
+.product-app-frame[data-skin="warm"] .workspace-group__button[data-active="true"] .workspace-group__title {
+  color: var(--cp-fg);
+  font-weight: 600;
+}
+
+/* New session / primary sidebar actions */
+.product-app-frame[data-skin="warm"] .product-sidebar .newchat,
+.product-app-frame[data-skin="warm"] .product-sidebar button.secondary {
+  color: var(--cp-accent);
+  background: var(--cp-accent-soft);
+  border-color: transparent;
+}
+
+.product-app-frame[data-skin="warm"] .product-sidebar button.secondary:hover {
+  background: color-mix(in srgb, var(--cp-accent) 18%, transparent);
+  color: var(--cp-accent-hover);
+}
+
+/* Footer cards */
+.product-app-frame[data-skin="warm"] .product-sidebar__footer .workspace-boundary,
+.product-app-frame[data-skin="warm"] .product-sidebar__footer button {
+  background: var(--cp-surface-raised);
+  border: 1px solid var(--cp-border);
+  color: var(--cp-fg-2);
+  border-radius: var(--cp-radius-md);
+}
+
+.product-app-frame[data-skin="warm"] .product-sidebar__footer strong {
+  color: var(--cp-fg);
+}
+
+.product-app-frame[data-skin="warm"] .product-sidebar__footer small {
+  color: var(--cp-muted);
+}
+
+/* Main empty / composer */
+.product-app-frame[data-skin="warm"] .chat-pane,
+.product-app-frame[data-skin="warm"] .product-main {
+  background: var(--cp-bg);
+}
+
+.product-app-frame[data-skin="warm"] .chat-composer {
+  background: var(--cp-surface);
+  border-color: var(--cp-border);
+  border-radius: var(--cp-radius-lg);
+  box-shadow: var(--cp-shadow-sm);
+}
+
+.product-app-frame[data-skin="warm"] .chat-composer textarea {
+  color: var(--cp-fg);
+  background: transparent;
+}
+
+.product-app-frame[data-skin="warm"] .chat-composer textarea::placeholder {
+  color: var(--cp-meta);
+}
+
+.product-app-frame[data-skin="warm"] .chat-composer__row button[type="submit"],
+.product-app-frame[data-skin="warm"] .send {
+  background: var(--cp-accent);
+  color: var(--cp-accent-on);
+  border-radius: var(--cp-radius-md);
+  font-weight: 600;
+}
+
+.product-app-frame[data-skin="warm"] .chat-composer__row button[type="submit"]:hover:not(:disabled) {
+  background: var(--cp-accent-hover);
+}
+
+.product-app-frame[data-skin="warm"] .chat-composer__row button[type="submit"]:disabled {
+  opacity: 0.45;
+}
+
+/* Inspector */
+.product-app-frame[data-skin="warm"] .product-inspector {
+  background: var(--cp-surface);
+  border-left-color: var(--cp-border);
+}
+
+.product-app-frame[data-skin="warm"] .inspector-header h2 {
+  color: var(--cp-fg);
+}
+
+.product-app-frame[data-skin="warm"] .tab-button--active {
+  color: var(--cp-accent);
+  border-bottom-color: var(--cp-accent);
+}
+
+.product-app-frame[data-skin="warm"] .activity-timeline li {
+  border-left-color: var(--cp-border-strong);
+}
+
+.product-app-frame[data-skin="warm"] .activity-timeline li[data-tone="accent"] {
+  border-left-color: var(--cp-accent);
+}
+
+.product-app-frame[data-skin="warm"] .activity-timeline li[data-tone="ok"] {
+  border-left-color: var(--cp-success);
+}
+
+.product-app-frame[data-skin="warm"] .activity-timeline li[data-tone="error"] {
+  border-left-color: var(--cp-danger);
+}
+
+/* Buttons / cards */
+.product-app-frame[data-skin="warm"] .settings-card,
+.product-app-frame[data-skin="warm"] .empty-state__card,
+.product-app-frame[data-skin="warm"] .modal-card,
+.product-app-frame[data-skin="warm"] .chat-bubble {
+  border-radius: var(--cp-radius-lg);
+  border-color: var(--cp-border);
+  background: var(--cp-surface);
+}
+
+.product-app-frame[data-skin="warm"] button.secondary {
+  background: var(--cp-surface-raised);
+  border-color: var(--cp-border-strong);
+  color: var(--cp-fg-2);
+  border-radius: var(--cp-radius-md);
+}
+
+.product-app-frame[data-skin="warm"] button.secondary:hover:not(:disabled) {
+  background: var(--cp-surface-warm);
+  color: var(--cp-fg);
+}
+
+/* Path / meta text readability */
+.product-app-frame[data-skin="warm"] .chat-pane__header p,
+.product-app-frame[data-skin="warm"] .workspace-group__path,
+.product-app-frame[data-skin="warm"] .session-item__lineage {
+  color: var(--cp-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .product-app-frame[data-skin="warm"] *,
+  .product-app-frame[data-skin="warm"] *::before,
+  .product-app-frame[data-skin="warm"] *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

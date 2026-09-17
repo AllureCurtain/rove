@@ -8,6 +8,8 @@ import {
 } from "@radix-ui/react-icons";
 import type { Ref } from "react";
 
+import { useCopy } from "../copy/CopyProvider";
+
 export function TopBar({
   connectionLabel,
   connectionTone,
@@ -29,6 +31,7 @@ export function TopBar({
   workspaceButtonRef?: Ref<HTMLButtonElement>;
   onToggleWorkspace?: () => void;
 }) {
+  const { t } = useCopy();
   return (
     <header className="product-topbar">
       <div className="product-topbar__brand">
@@ -38,8 +41,8 @@ export function TopBar({
             type="button"
             className="ghost icon-button mobile-only"
             onClick={onToggleWorkspace}
-            aria-label="Open workspaces"
-            title="Open workspaces"
+            aria-label={t("nav.expandWorkspace")}
+            title={t("nav.workspace")}
           >
             <HamburgerMenuIcon />
           </button>
@@ -55,20 +58,20 @@ export function TopBar({
           type="button"
           className="ghost icon-button"
           onClick={onToggleTheme}
-          aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          aria-label={theme === "dark" ? t("theme.toLight") : t("theme.toDark")}
         >
           {theme === "dark" ? <SunIcon /> : <MoonIcon />}
         </button>
         {showSettingsBack ? (
           <button type="button" className="secondary" onClick={onBackToChat}>
-            Back to chat
+            {t("nav.backToChat")}
           </button>
         ) : (
           <button
             type="button"
             className="ghost icon-button"
             onClick={onOpenSettings}
-            aria-label="Open settings"
+            aria-label={t("nav.settings")}
           >
             <GearIcon />
           </button>

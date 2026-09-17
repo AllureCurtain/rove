@@ -8,24 +8,15 @@ import {
 } from "@radix-ui/react-icons";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { useCopy } from "../copy/CopyProvider";
 import { createProductApiClient } from "../product/product-client";
 import type {
   ProductArtifactContentEnvelope,
-  ProductArtifactSourceKind,
   ProductArtifactView,
 } from "../product/product-api-types";
 
-// Reads as a label rather than a wire value, and distinguishes a durable Tool
-// Artifact produced by a tool call from a file the run registered itself.
-const SOURCE_KIND_LABELS: Record<ProductArtifactSourceKind, string> = {
-  report: "report",
-  task_state: "task state",
-  trace: "trace",
-  registered: "registered",
-  tool_artifact: "tool artifact",
-};
-
 export function ArtifactPanel({ sessionId }: { sessionId: string }) {
+  const { t } = useCopy();
   const client = useMemo(() => createProductApiClient(), []);
   const [artifacts, setArtifacts] = useState<ProductArtifactView[]>([]);
   const [partial, setPartial] = useState<string[]>([]);
@@ -100,31 +91,31 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
   }
 
   return (
-    <section className="inspector-section" aria-label="Run artifacts">
+    <section className="inspector-section" aria-label={t("inspector.artifacts")}>
       <div className="inspector-section__heading">
-        <h3>Artifacts</h3>
+        <h3>{t("inspector.artifacts")}</h3>
         <button
           type="button"
           className="ghost icon-button"
           onClick={() => void load()}
           disabled={loading}
-          aria-label="Refresh artifacts"
-          title="Refresh artifacts"
+          aria-label={t("inspector.artifactsRefresh")}
+          title={t("inspector.artifactsRefresh")}
         >
           <ReloadIcon />
         </button>
       </div>
-      {error ? <p className="inspector-empty-line" role="alert">{error}</p> : null}
+      {error ? <p className="inspector-empty-line" role="alert">{t("chrome.loadError")}</p> : null}
       {loading && artifacts.length === 0 ? (
-        <p className="inspector-empty-line">Loading artifacts…</p>
+        <p className="inspector-empty-line">{t("inspector.artifactsLoading")}</p>
       ) : null}
       {partial.length > 0 ? (
         <p className="inspector-empty-line">
-          Partial manifest: {partial[0]}{partial.length > 1 ? ` (+${partial.length - 1} more)` : ""}
+          {t("chrome.partial")}
         </p>
       ) : null}
       {!loading && artifacts.length === 0 ? (
-        <p className="inspector-empty-line">No artifacts recorded.</p>
+        <p className="inspector-empty-line">{t("inspector.artifactsNone")}</p>
       ) : (
         <ul className="evidence-file-list">
           {artifacts.map((artifact) => (
@@ -137,7 +128,7 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
                 {artifact.preview_kind === "raster_image" ? <ImageIcon /> : <FileIcon />}
                 <span>{artifact.safe_name}</span>
                 <small>
-                  {SOURCE_KIND_LABELS[artifact.source_kind]} · {artifact.availability}
+                  {t(`artifactLabels.${artifact.source_kind}`)} · {t(`artifactLabels.${artifact.availability}`)}
                   {artifact.size !== undefined ? ` · ${formatBytes(artifact.size)}` : ""}
                 </small>
               </button>
@@ -146,8 +137,8 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
                   type="button"
                   className="ghost icon-button"
                   onClick={() => void downloadArtifact(artifact)}
-                  aria-label={`Download ${artifact.safe_name}`}
-                  title={`Download ${artifact.safe_name}`}
+                  aria-label={t("chrome.download", { name: artifact.safe_name })}
+                  title={t("chrome.download", { name: artifact.safe_name })}
                 >
                   <DownloadIcon />
                 </button>
@@ -161,15 +152,15 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
           <div className="evidence-preview__heading">
             <div>
               <strong>{selected.safe_name}</strong>
-              <span>{selected.mime} · run {shortId(selected.source_run_id)}</span>
+              <span>{selected.mime}</span>
             </div>
             {selected.availability === "available" || selected.availability === "too_large" ? (
               <button
                 type="button"
                 className="ghost icon-button"
                 onClick={() => void downloadArtifact(selected)}
-                aria-label={`Download ${selected.safe_name}`}
-                title={`Download ${selected.safe_name}`}
+                aria-label={t("chrome.download", { name: selected.safe_name })}
+                title={t("chrome.download", { name: selected.safe_name })}
               >
                 <DownloadIcon />
               </button>
@@ -179,13 +170,13 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
             <p className="inspector-empty-line">SHA-256 <code>{selected.sha256}</code></p>
           ) : null}
           {selected.validation_error ? (
-            <p className="inspector-empty-line" role="alert">{selected.validation_error}</p>
+            <p className="inspector-empty-line" role="alert">{t("chrome.invalidContent")}</p>
           ) : null}
           {selected.availability === "cleaned" ? (
-            <p className="inspector-empty-line">Artifact data has been cleaned.</p>
+            <p className="inspector-empty-line">{t("chrome.cleaned")}</p>
           ) : null}
           {selected.availability === "invalid" ? (
-            <p className="inspector-empty-line">Artifact metadata or content is invalid.</p>
+            <p className="inspector-empty-line">{t("chrome.invalidContent")}</p>
           ) : null}
           {content?.text !== undefined ? (
             <pre className="evidence-preview__text">{content.text}</pre>
@@ -202,7 +193,7 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
             </figure>
           ) : null}
           {content && content.text === undefined && !content.image && !selected.validation_error ? (
-            <p className="inspector-empty-line">Preview unavailable for this artifact type.</p>
+            <p className="inspector-empty-line">{t("chrome.previewUnavailable")}</p>
           ) : null}
         </div>
       ) : null}
@@ -220,10 +211,6 @@ async function downloadBlob(blob: Blob, filename: string): Promise<void> {
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
-}
-
-function shortId(value: string): string {
-  return value.length > 12 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value;
 }
 
 function formatBytes(value: number): string {

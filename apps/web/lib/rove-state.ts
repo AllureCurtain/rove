@@ -774,6 +774,24 @@ function syncTranscriptInputs(
   ];
 }
 
+const CANCELLED_STATUS_TEXT = "Run cancelled";
+const INTERRUPTED_STATUS_TEXT = "Run interrupted";
+
+/**
+ * Canceled and interrupted jobs are terminal without an error string, so
+ * summaries must distinguish them from completed runs. The status texts are
+ * produced by the same module (statusText below) after a job state sync.
+ */
+export function isTerminalRunCanceled(
+  state: Pick<WorkbenchState, "statusText" | "busy" | "error">,
+): boolean {
+  return (
+    !state.busy &&
+    state.error === null &&
+    (state.statusText === CANCELLED_STATUS_TEXT ||
+      state.statusText === INTERRUPTED_STATUS_TEXT)
+  );
+}
 function statusText(status: JobStateResponse["status"]): string {
   switch (status) {
     case "init":
