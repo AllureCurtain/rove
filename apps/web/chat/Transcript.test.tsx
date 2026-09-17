@@ -1,9 +1,14 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
+import { CopyProvider } from "../copy/CopyProvider";
 import type { TranscriptRunGroup } from "../lib/rove-state";
 import type { ProductMessage, ProductMessageStatus } from "../product/product-api-types";
 import { Transcript } from "./Transcript";
+
+function renderTranscript(element: React.ReactElement) {
+  return renderToStaticMarkup(<CopyProvider>{element}</CopyProvider>);
+}
 
 describe("Transcript", () => {
   it("renders canonical items in order and keeps handled input read-only", () => {
@@ -60,7 +65,7 @@ describe("Transcript", () => {
       },
     ];
 
-    const html = renderToStaticMarkup(
+    const html = renderTranscript(
       <Transcript
         timeline={timeline}
         approvalBusy={null}
@@ -74,8 +79,8 @@ describe("Transcript", () => {
     );
 
     expect(html.indexOf("Before tool")).toBeLessThan(html.indexOf("read_file"));
-    expect(html.indexOf("read_file")).toBeLessThan(html.indexOf("Input submitted"));
-    expect(html.indexOf("Input submitted")).toBeLessThan(html.indexOf("After input"));
+    expect(html.indexOf("read_file")).toBeLessThan(html.indexOf("输入已提交"));
+    expect(html.indexOf("输入已提交")).toBeLessThan(html.indexOf("After input"));
     expect(html).toContain('data-run-ordinal="1"');
     expect(html).not.toContain("Type your answer");
     expect(html).not.toContain('name="answer"');
@@ -107,7 +112,7 @@ describe("Transcript", () => {
       },
     ];
 
-    const html = renderToStaticMarkup(
+    const html = renderTranscript(
       <Transcript
         timeline={timeline}
         approvalBusy={null}
@@ -120,7 +125,7 @@ describe("Transcript", () => {
       />,
     );
 
-    expect(html).toContain("Read-only inherited history");
+    expect(html).toContain("派生会话");
     expect(html).toContain('data-inherited="true"');
   });
 
@@ -145,7 +150,7 @@ describe("Transcript", () => {
       created_at: "2026-08-14T00:00:00Z",
     }));
 
-    const html = renderToStaticMarkup(
+    const html = renderTranscript(
       <Transcript
         timeline={[]}
         messages={messages}

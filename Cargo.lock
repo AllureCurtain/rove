@@ -4283,6 +4283,7 @@ dependencies = [
  "clap",
  "futures",
  "reqwest",
+ "rfd",
  "rove-app-bootstrap",
  "rove-bench",
  "rove-core",

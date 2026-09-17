@@ -1,0 +1,198 @@
+/* Warm ivory skin — Anthropic-inspired. Bridges every --v2-* token so unscoped rules recolor. */
+
+.product-app-frame[data-skin="warm"] {
+  color-scheme: light;
+
+  --cp-bg: #f3f1ea;
+  --cp-surface: #faf8f3;
+  --cp-surface-warm: #ebe7dc;
+  --cp-surface-raised: #fffdf8;
+  --cp-fg: #1c1917;
+  --cp-fg-2: #3f3a35;
+  --cp-muted: #5c564e;
+  --cp-meta: #7a7368;
+  --cp-border: #e6e0d4;
+  --cp-border-soft: #efe9dd;
+  --cp-border-strong: #d4cbb8;
+
+  --cp-accent: #b85c3e;
+  --cp-accent-on: #fffaf5;
+  --cp-accent-hover: #9e4c32;
+  --cp-accent-soft: rgba(184, 92, 62, 0.14);
+
+  --cp-success: #2f7a45;
+  --cp-success-soft: rgba(47, 122, 69, 0.12);
+  --cp-warning: #9a6700;
+  --cp-warning-soft: rgba(154, 103, 0, 0.12);
+  --cp-danger: #b42318;
+  --cp-danger-soft: rgba(180, 35, 24, 0.1);
+
+  --cp-selection: rgba(184, 92, 62, 0.18);
+  --cp-overlay: rgba(28, 25, 23, 0.45);
+  --cp-focus-ring: var(--cp-accent);
+
+  --cp-font-display: Georgia, "Times New Roman", "Songti SC", "Noto Serif SC", serif;
+  --cp-font-body: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --cp-font-mono: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
+
+  --cp-radius-sm: 6px;
+  --cp-radius-md: 8px;
+  --cp-radius-lg: 12px;
+
+  --cp-shadow-xs: 0 1px 2px rgba(60, 40, 20, 0.05);
+  --cp-shadow-sm: 0 1px 2px rgba(60, 40, 20, 0.05), 0 2px 8px rgba(60, 40, 20, 0.06);
+  --cp-shadow-md: 0 4px 14px rgba(60, 40, 20, 0.08);
+
+  /* Legacy aliases */
+  --bg: var(--cp-bg);
+  --bg-elevated: var(--cp-surface);
+  --surface: var(--cp-surface);
+  --surface-strong: var(--cp-surface-raised);
+  --surface-soft: var(--cp-surface-warm);
+  --surface-muted: var(--cp-surface-warm);
+  --text: var(--cp-fg);
+  --text-secondary: var(--cp-fg-2);
+  --muted: var(--cp-muted);
+  --border: var(--cp-border);
+  --border-strong: var(--cp-border-strong);
+  --accent: var(--cp-accent);
+  --accent-hover: var(--cp-accent-hover);
+  --accent-soft: var(--cp-accent-soft);
+  --accent-contrast: var(--cp-accent-on);
+  --accent-strong: var(--cp-accent-hover);
+  --success: var(--cp-success);
+  --success-soft: var(--cp-success-soft);
+  --warning: var(--cp-warning);
+  --warning-soft: var(--cp-warning-soft);
+  --error: var(--cp-danger);
+  --error-soft: var(--cp-danger-soft);
+  --focus-ring: var(--cp-focus-ring);
+  --selection: var(--cp-selection);
+  --overlay: var(--cp-overlay);
+  --shadow-sm: var(--cp-shadow-xs);
+  --shadow-md: var(--cp-shadow-sm);
+  --radius-sm: var(--cp-radius-sm);
+  --radius-md: var(--cp-radius-md);
+  --radius-lg: var(--cp-radius-lg);
+
+  /* Full v2 bridge including rail (sidebar/search/footer) */
+  --v2-canvas: var(--cp-bg);
+  --v2-bg: var(--cp-bg);
+  --v2-surface: var(--cp-surface);
+  --v2-surface-raised: var(--cp-surface-raised);
+  --v2-surface-sunken: var(--cp-surface-warm);
+  --v2-surface-hover: #e4dfd2;
+  --v2-ink: var(--cp-fg);
+  --v2-ink-2: var(--cp-fg-2);
+  --v2-ink-3: var(--cp-muted);
+  --v2-border: var(--cp-border);
+  --v2-border-strong: var(--cp-border-strong);
+  --v2-signal: var(--cp-accent);
+  --v2-signal-strong: var(--cp-accent-hover);
+  --v2-signal-soft: var(--cp-accent-soft);
+  --v2-on-signal: var(--cp-accent-on);
+  --v2-success: var(--cp-success);
+  --v2-success-soft: var(--cp-success-soft);
+  --v2-warning: var(--cp-warning);
+  --v2-warning-soft: var(--cp-warning-soft);
+  --v2-danger: var(--cp-danger);
+  --v2-danger-soft: var(--cp-danger-soft);
+  --v2-focus: var(--cp-accent);
+  --v2-shadow-sm: var(--cp-shadow-xs);
+  --v2-shadow-md: var(--cp-shadow-md);
+  --v2-radius-sm: var(--cp-radius-sm);
+  --v2-radius-md: var(--cp-radius-md);
+
+  /* Rail becomes warm ivory, not dark navy */
+  --v2-rail: #f7f4ec;
+  --v2-rail-raised: #fffdf8;
+  --v2-rail-hover: #ebe6d8;
+  --v2-rail-ink: #1c1917;
+  --v2-rail-muted: #6b645a;
+  --v2-rail-border: rgba(28, 25, 23, 0.1);
+  --v2-rail-signal: var(--cp-accent);
+
+  --overlay: rgba(28, 25, 23, 0.35);
+  --scrollbar: var(--cp-border-strong);
+  --scrollbar-hover: rgba(92, 86, 78, 0.45);
+}
+
+html[data-theme="dark"] .product-app-frame[data-skin="warm"] {
+  color-scheme: dark;
+
+  --cp-bg: #1c1917;
+  --cp-surface: #272220;
+  --cp-surface-warm: #322c28;
+  --cp-surface-raised: #2f2a26;
+  --cp-fg: #f7f3ec;
+  --cp-fg-2: #e4ddd2;
+  --cp-muted: #b0a89c;
+  --cp-meta: #8a8176;
+  --cp-border: #3d3630;
+  --cp-border-soft: #2f2a26;
+  --cp-border-strong: #524940;
+
+  --cp-accent: #e08a68;
+  --cp-accent-on: #1c1917;
+  --cp-accent-hover: #eb9d7d;
+  --cp-accent-soft: rgba(224, 138, 104, 0.18);
+
+  --cp-success: #6dca8c;
+  --cp-success-soft: rgba(109, 202, 140, 0.16);
+  --cp-warning: #e8b34a;
+  --cp-warning-soft: rgba(232, 179, 74, 0.16);
+  --cp-danger: #ef8b7e;
+  --cp-danger-soft: rgba(239, 139, 126, 0.16);
+
+  --cp-selection: rgba(224, 138, 104, 0.28);
+  --cp-overlay: rgba(0, 0, 0, 0.55);
+
+  --bg: var(--cp-bg);
+  --surface: var(--cp-surface);
+  --surface-strong: var(--cp-surface-raised);
+  --surface-soft: var(--cp-surface-warm);
+  --surface-muted: var(--cp-surface-warm);
+  --text: var(--cp-fg);
+  --text-secondary: var(--cp-fg-2);
+  --muted: var(--cp-muted);
+  --border: var(--cp-border);
+  --border-strong: var(--cp-border-strong);
+  --accent: var(--cp-accent);
+  --accent-hover: var(--cp-accent-hover);
+  --accent-soft: var(--cp-accent-soft);
+  --accent-contrast: var(--cp-accent-on);
+  --success: var(--cp-success);
+  --warning: var(--cp-warning);
+  --error: var(--cp-danger);
+
+  --v2-canvas: var(--cp-bg);
+  --v2-bg: var(--cp-bg);
+  --v2-surface: var(--cp-surface);
+  --v2-surface-raised: var(--cp-surface-raised);
+  --v2-surface-sunken: var(--cp-surface-warm);
+  --v2-surface-hover: #3d3630;
+  --v2-ink: var(--cp-fg);
+  --v2-ink-2: var(--cp-fg-2);
+  --v2-ink-3: var(--cp-muted);
+  --v2-border: var(--cp-border);
+  --v2-border-strong: var(--cp-border-strong);
+  --v2-signal: var(--cp-accent);
+  --v2-signal-strong: var(--cp-accent-hover);
+  --v2-signal-soft: var(--cp-accent-soft);
+  --v2-on-signal: var(--cp-accent-on);
+  --v2-success: var(--cp-success);
+  --v2-warning: var(--cp-warning);
+  --v2-danger: var(--cp-danger);
+  --v2-focus: var(--cp-accent);
+
+  --v2-rail: #221e1b;
+  --v2-rail-raised: #2c2724;
+  --v2-rail-hover: #3a332e;
+  --v2-rail-ink: #f7f3ec;
+  --v2-rail-muted: #a89f93;
+  --v2-rail-border: rgba(247, 243, 236, 0.1);
+  --v2-rail-signal: var(--cp-accent);
+
+  --v2-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --v2-shadow-md: 0 4px 14px rgba(0, 0, 0, 0.4);
+}

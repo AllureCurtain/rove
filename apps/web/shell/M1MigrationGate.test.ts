@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { createTranslator } from "../copy";
 import type { M1BrowserMigrationRunResult } from "../product/m1-browser-migration";
 import {
   mappedLegacyProductHref,
@@ -50,24 +51,26 @@ describe("M1MigrationGate recovery copy", () => {
     };
 
     const content = migrationAttentionContent(result);
+    const t = createTranslator("en-US");
 
-    expect(content.title).toBe("Import needs verification");
-    expect(content.detail).toContain("exact saved request");
+    expect(t(content.titleKey)).toBe("Import needs verification");
+    expect(t(content.detailKey)).toContain("exact saved request");
     expect(JSON.stringify(content)).not.toContain("D:/secret/workspace");
     expect(JSON.stringify(content)).not.toContain("migration-1");
   });
 
   it("keeps blocked storage and lock failures distinct", () => {
+    const t = createTranslator("en-US");
     const blocked = (code: "storage_write_failed" | "lock_unavailable") =>
       migrationAttentionContent({
         status: "blocked",
         failure: { code, message: "unsafe internal detail" },
       });
 
-    expect(blocked("storage_write_failed").title).toBe(
+    expect(t(blocked("storage_write_failed").titleKey)).toBe(
       "Browser storage is unavailable",
     );
-    expect(blocked("lock_unavailable").title).toBe(
+    expect(t(blocked("lock_unavailable").titleKey)).toBe(
       "Exclusive browser access is unavailable",
     );
   });

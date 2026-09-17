@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
+import { CopyProvider } from "../copy/CopyProvider";
 import { ProductApiError } from "../product/product-client";
 import {
   MCPSettings,
@@ -18,14 +19,16 @@ describe("MCPSettings", () => {
       fetch: vi.fn() as unknown as typeof globalThis.fetch,
     });
     const html = renderToStaticMarkup(
-      <MCPSettings client={client} workspaceId="workspace-1" />,
+      <CopyProvider>
+        <MCPSettings client={client} workspaceId="workspace-1" />
+      </CopyProvider>,
     );
 
     expect(html).toContain('for="mcp-server-name"');
     expect(html).toContain('for="mcp-command"');
     expect(html).toContain('for="mcp-env-names"');
     expect(html).toContain("Legacy SSE");
-    expect(html).toContain("Loading MCP servers");
+    expect(html).toContain("正在加载 MCP 服务");
     expect(html).not.toContain('name="env"');
     expect(html).not.toContain("Environment value");
   });

@@ -22,6 +22,7 @@ chrono.workspace = true
 clap.workspace = true
 futures.workspace = true
 reqwest.workspace = true
+rfd = "0.15"
 rove-app-bootstrap.workspace = true
 rove-bench.workspace = true
 rove-core.workspace = true

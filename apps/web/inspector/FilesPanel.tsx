@@ -8,6 +8,7 @@ import {
 } from "@radix-ui/react-icons";
 import { useEffect, useMemo, useState } from "react";
 
+import { useCopy } from "../copy/CopyProvider";
 import { createProductApiClient } from "../product/product-client";
 import type {
   ProductFileContentEnvelope,
@@ -23,6 +24,7 @@ export function FilesPanel({
   focusPath?: string | null;
   focusLine?: number | null;
 }) {
+  const { t } = useCopy();
   const client = useMemo(() => createProductApiClient(), []);
   const [prefix, setPrefix] = useState("");
   const [entries, setEntries] = useState<ProductFileEntry[]>([]);
@@ -158,9 +160,9 @@ export function FilesPanel({
   }
 
   return (
-    <section className="inspector-section" aria-label="Workspace files">
+    <section className="inspector-section" aria-label={t("inspector.files")}>
       <div className="inspector-section__heading">
-        <h3>Files</h3>
+        <h3>{t("inspector.files")}</h3>
         {prefix ? (
           <button
             type="button"
@@ -170,8 +172,8 @@ export function FilesPanel({
               parts.pop();
               setPrefix(parts.join("/"));
             }}
-            aria-label="Open parent directory"
-            title="Open parent directory"
+            aria-label={t("inspector.filesParent")}
+            title={t("inspector.filesParent")}
           >
             <ChevronUpIcon />
           </button>
@@ -179,9 +181,9 @@ export function FilesPanel({
       </div>
       <p className="inspector-empty-line"><code>{prefix || "/"}</code></p>
       {loading && entries.length === 0 ? (
-        <p className="inspector-empty-line">Loading files…</p>
+        <p className="inspector-empty-line">{t("inspector.filesLoading")}</p>
       ) : null}
-      {error ? <p className="inspector-empty-line" role="alert">{error}</p> : null}
+      {error ? <p className="inspector-empty-line" role="alert">{t("chrome.loadError")}</p> : null}
       <ul className="evidence-file-list">
         {entries.map((entry) => (
           <li key={entry.path}>
@@ -192,15 +194,15 @@ export function FilesPanel({
             >
               <FileIcon aria-hidden="true" />
               <span>{entry.path}</span>
-              <small>{entry.kind === "directory" ? "directory" : formatBytes(entry.size)}</small>
+              <small>{entry.kind === "directory" ? t("chrome.directory") : formatBytes(entry.size)}</small>
             </button>
             {entry.kind === "file" ? (
               <button
                 type="button"
                 className="ghost icon-button"
                 onClick={() => void downloadFile(entry.path)}
-                aria-label={`Download ${entry.path}`}
-                title={`Download ${entry.path}`}
+                aria-label={t("chrome.download", { name: entry.path })}
+                title={t("chrome.download", { name: entry.path })}
               >
                 <DownloadIcon />
               </button>
@@ -210,12 +212,12 @@ export function FilesPanel({
       </ul>
       {nextCursor ? (
         <button type="button" className="ghost" onClick={() => void loadMore()} disabled={loading}>
-          {loading ? "Loading…" : "Load more"}
+          {loading ? t("common.loading") : t("chrome.loadMore")}
         </button>
       ) : null}
       {scanLimited ? (
         <p className="inspector-empty-line" role="status">
-          Directory scan stopped at the server safety limit.
+          {t("chrome.scanLimited")}
         </p>
       ) : null}
       {content ? (
@@ -223,20 +225,20 @@ export function FilesPanel({
           <div className="evidence-preview__heading">
             <div>
               <strong>{content.path}</strong>
-              <span>{content.mime} · {formatBytes(content.size)}{content.truncated ? " · truncated" : ""}</span>
+              <span>{content.mime} · {formatBytes(content.size)}{content.truncated ? ` · ${t("chrome.truncated")}` : ""}</span>
             </div>
             <button
               type="button"
               className="ghost icon-button"
               onClick={() => void downloadFile(content.path)}
-              aria-label={`Download ${content.path}`}
-              title={`Download ${content.path}`}
+              aria-label={t("chrome.download", { name: content.path })}
+              title={t("chrome.download", { name: content.path })}
             >
               <DownloadIcon />
             </button>
           </div>
           {content.validation_error ? (
-            <p className="inspector-empty-line" role="alert">{content.validation_error}</p>
+            <p className="inspector-empty-line" role="alert">{t("chrome.invalidContent")}</p>
           ) : null}
           {content.text !== undefined ? (
             <pre className="evidence-preview__text" data-focus-line={focusLine ?? undefined}>
@@ -263,7 +265,7 @@ export function FilesPanel({
             </figure>
           ) : null}
           {content.text === undefined && !content.image && !content.validation_error ? (
-            <p className="inspector-empty-line">Preview unavailable for this file type.</p>
+            <p className="inspector-empty-line">{t("chrome.previewUnavailable")}</p>
           ) : null}
         </div>
       ) : null}

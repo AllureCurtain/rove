@@ -6,41 +6,55 @@ import {
   installMockProductApi,
 } from "./product-api-mock";
 
-test("all nine settings sections expose a usable surface", async ({ page }) => {
+test("all eight settings sections expose a usable surface", async ({ page }) => {
   await installMockProductApi(page);
   await page.goto("/settings/general");
 
-  await expect(page.getByRole("button", { name: "Light", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "浅色", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "中文", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "冷色精修", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "暖米色", exact: true }).click();
+  await expect(page.locator(".product-app-frame")).toHaveAttribute("data-skin", "warm");
+  await page.getByRole("button", { name: "冷色精修", exact: true }).click();
+  await expect(page.locator(".product-app-frame")).toHaveAttribute("data-skin", "cool");
 
-  await page.getByRole("button", { name: "Providers & Models", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Save profile" })).toBeVisible();
+  await page.getByRole("button", { name: "模型服务", exact: true }).click();
+  await expect(page.getByRole("button", { name: "保存更改" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Tools & Approvals", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Save default" })).toBeVisible();
+  await page.getByRole("button", { name: "工具与审批", exact: true }).click();
+  await expect(page.getByRole("button", { name: "保存默认值" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Workspace / Paths", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Known workspaces" })).toBeVisible();
+  await page.getByRole("button", { name: "工作区路径", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "已知工作区" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Memory", exact: true }).click();
+  await page.getByRole("button", { name: "记忆", exact: true }).click();
   await expect(
-    page.getByText("Select a workspace to inspect its durable memory."),
+    page.getByText("请先选择工作区以查看其持久记忆。"),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: "Sessions", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "No sessions" })).toBeVisible();
+  await page.getByRole("button", { name: "会话", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "暂无会话" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Keyboard shortcuts", exact: true }).click();
-  await expect(page.getByText("Focus message composer")).toBeVisible();
+  await page.getByRole("button", { name: "键盘快捷键", exact: true }).click();
+  await expect(page.getByText("聚焦输入框")).toBeVisible();
 
-  await page.getByRole("button", { name: "Advanced / Developer", exact: true }).click();
-  await expect(page.getByRole("button", { name: /Benchmark runner/u })).toBeVisible();
+  await expect(page.locator(".settings-nav").getByRole("button", { name: "高级", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Benchmark runner/u })).toHaveCount(0);
 
-  await page.getByRole("button", { name: "About / Runtime", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Resume health" })).toBeVisible();
+  await page.getByRole("button", { name: "关于", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "会话恢复" })).toBeVisible();
   await expect(page.getByText("0.1.0", { exact: true })).toBeVisible();
 
   await expect(page.getByText(/intentionally a placeholder/iu)).toHaveCount(0);
   await expect(page.getByText(/Scaffolded for M1/iu)).toHaveCount(0);
+});
+
+test("old advanced links open usable General settings without an empty section", async ({ page }) => {
+  await installMockProductApi(page);
+  await page.goto("/settings/advanced");
+  await expect(page.getByRole("button", { name: "中文", exact: true })).toBeVisible();
+  await expect(page.locator(".settings-nav").getByRole("button", { name: "通用", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.locator(".settings-nav").getByRole("button", { name: "高级", exact: true })).toHaveCount(0);
 });
 
 test("provider profiles support durable create and update", async ({ page }) => {
@@ -48,11 +62,13 @@ test("provider profiles support durable create and update", async ({ page }) => 
   const initialCatalogRevision = api.providerCatalogRevision;
   await page.goto("/settings/providers");
 
-  await page.getByLabel("Label").fill("Relay A");
-  await page.getByLabel("API base").fill("https://relay-a.test/v1");
-  await page.getByLabel("API key env name").fill("RELAY_A_KEY");
-  await page.getByLabel("Default model").fill("relay/model-a");
-  await page.getByRole("button", { name: "Save profile" }).click();
+  await page.getByLabel("名称").fill("Relay A");
+  await page.getByLabel("API 地址").fill("https://relay-a.test/v1");
+  await expect(page.getByLabel("密钥环境变量名")).not.toBeVisible();
+  await page.locator("summary").filter({ hasText: "高级选项" }).click();
+  await page.getByLabel("密钥环境变量名").fill("RELAY_A_KEY");
+  await page.getByLabel("默认模型").fill("relay/model-a");
+  await page.getByRole("button", { name: "保存更改" }).click();
 
   const originalRow = page.locator(".profile-row").filter({ hasText: "Relay A" });
   await expect(originalRow).toBeVisible();
@@ -62,13 +78,13 @@ test("provider profiles support durable create and update", async ({ page }) => 
     method: "POST",
     expectedRevision: initialCatalogRevision,
   });
-  await originalRow.getByRole("button", { name: "Edit" }).click();
-  await expect(page.getByRole("heading", { name: "Edit profile" })).toBeVisible();
+  await originalRow.getByRole("button", { name: "编辑" }).click();
+  await expect(page.getByRole("heading", { name: "编辑服务" })).toBeVisible();
 
-  await page.getByLabel("Label").fill("Relay Updated");
-  await page.getByLabel("API base").fill("https://relay-updated.test/v1");
-  await page.getByLabel("Default model").fill("relay/model-b");
-  await page.getByRole("button", { name: "Update profile" }).click();
+  await page.getByLabel("名称").fill("Relay Updated");
+  await page.getByLabel("API 地址").fill("https://relay-updated.test/v1");
+  await page.getByLabel("默认模型").fill("relay/model-b");
+  await page.getByRole("button", { name: "保存更改" }).click();
 
   await expect(
     page.locator(".profile-row").filter({ hasText: "Relay Updated" }),
@@ -88,7 +104,7 @@ test("provider profiles support durable create and update", async ({ page }) => 
 test("stale preference revisions recover to the server-confirmed snapshot", async ({ page }) => {
   const api = await installMockProductApi(page);
   await page.goto("/settings/general");
-  const darkThemeButton = page.getByRole("button", { name: "Dark", exact: true });
+  const darkThemeButton = page.getByRole("button", { name: "深色", exact: true });
   await expect(darkThemeButton).toBeVisible();
 
   api.preferences = {
@@ -100,7 +116,7 @@ test("stale preference revisions recover to the server-confirmed snapshot", asyn
 
   await expect.poll(() => api.preferenceUpdateRequests).toBe(1);
   await expect(page.locator(".shell-alert")).toContainText(
-    "preferences revision does not match",
+    "设置操作未完成",
   );
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   expect(api.preferences.revision).toBe(1);
@@ -110,15 +126,15 @@ test("quick model control persists the session-scoped next-run model", async ({ 
   const { api, workspace, session } = await installQuickModelFixture(page);
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  const trigger = page.getByRole("button", { name: "Change session model settings" });
+  const trigger = page.getByRole("button", { name: "更改会话模型设置" });
   await trigger.click();
-  const dialog = page.getByRole("dialog", { name: "Session model settings" });
-  await expect(dialog).toContainText("Changes apply from the next run");
-  await dialog.getByLabel("Session model").fill("relay/model-v2");
-  await dialog.getByLabel("Session max steps").fill("19");
-  await dialog.getByRole("button", { name: "Save session model" }).click();
+  const dialog = page.getByRole("dialog", { name: "会话模型" });
+  await expect(dialog).toContainText("更改将在本会话的下一轮生效。");
+  await dialog.getByLabel("会话模型", { exact: true }).fill("relay/model-v2");
+  await dialog.getByLabel("会话最大步数").fill("19");
+  await dialog.getByRole("button", { name: "保存会话模型" }).click();
 
-  await expect(page.getByText("Session model updated.")).toBeVisible();
+  await expect(page.getByText("会话模型已更新。")).toBeVisible();
   await expect(trigger).toBeFocused();
   await expect
     .poll(() => api.sessionModelConfigs[session.id]?.model)
@@ -137,19 +153,17 @@ test("quick model control rolls back after a real session-config failure", async
   });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  await page.getByRole("button", { name: "Change session model settings" }).click();
-  const dialog = page.getByRole("dialog", { name: "Session model settings" });
-  const modelInput = dialog.getByLabel("Session model");
+  await page.getByRole("button", { name: "更改会话模型设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "会话模型" });
+  const modelInput = dialog.getByLabel("会话模型", { exact: true });
   await modelInput.fill("relay/model-not-saved");
-  await dialog.getByRole("button", { name: "Save session model" }).click();
+  await dialog.getByRole("button", { name: "保存会话模型" }).click();
 
-  await expect(dialog.getByRole("alert")).toContainText(
-    "session model settings were not changed",
-  );
+  await expect(dialog.getByRole("alert")).toContainText("会话模型设置未更改");
   await expect.poll(() => modelInput.inputValue()).toBe("relay/model-a");
   expect(api.sessionModelConfigs[session.id]?.model).toBe("relay/model-a");
   await expect(page.locator(".shell-alert")).toContainText(
-    "session model settings unavailable",
+    "设置操作未完成",
   );
 });
 
@@ -159,23 +173,21 @@ test("quick model control recovers a session-config CAS conflict to server truth
   const { api, workspace, session } = await installQuickModelFixture(page);
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  const trigger = page.getByRole("button", { name: "Change session model settings" });
+  const trigger = page.getByRole("button", { name: "更改会话模型设置" });
   await expect(trigger).toBeVisible();
   await trigger.click();
-  const dialog = page.getByRole("dialog", { name: "Session model settings" });
-  const modelInput = dialog.getByLabel("Session model");
+  const dialog = page.getByRole("dialog", { name: "会话模型" });
+  const modelInput = dialog.getByLabel("会话模型", { exact: true });
   Object.assign(api.sessionModelConfigs[session.id]!, {
     model: "relay/server-confirmed",
     revision: 2,
   });
   await modelInput.fill("relay/stale-write");
-  await dialog.getByRole("button", { name: "Save session model" }).click();
+  await dialog.getByRole("button", { name: "保存会话模型" }).click();
 
-  await expect(dialog.getByRole("alert")).toContainText(
-    "session model settings were not changed",
-  );
+  await expect(dialog.getByRole("alert")).toContainText("会话模型设置未更改");
   await expect.poll(() => modelInput.inputValue()).toBe("relay/server-confirmed");
-  await expect(page.locator(".shell-alert")).toContainText("revision does not match");
+  await expect(page.locator(".shell-alert")).toContainText("设置操作未完成");
   expect(api.sessionModelConfigs[session.id]?.model).toBe(
     "relay/server-confirmed",
   );
@@ -192,32 +204,32 @@ test("approval defaults and execution limits affect later job requests", async (
   });
 
   await page.goto("/settings/tools");
-  await page.getByRole("button", { name: "Never", exact: true }).click();
+  await page.getByRole("button", { name: "从不", exact: true }).click();
   await expect
     .poll(() => api.preferences.default_approval_policy)
     .toBe("never");
   expect(api.preferences.revision).toBe(1);
   expect(api.preferences.provider_selection).toBeUndefined();
 
-  await page.getByRole("button", { name: "Back to chat" }).click();
+  await page.getByRole("button", { name: "返回会话" }).click();
   await expect(page).toHaveURL(`/w/${workspace.id}/s/${session.id}`);
-  await page.getByRole("textbox", { name: "Message" }).fill("Default policy turn");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("textbox", { name: /输入消息/ }).fill("Default policy turn");
+  await page.getByRole("button", { name: "发送" }).click();
   await expect.poll(() => api.jobs).toHaveLength(1);
-  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+  await expect(page.getByRole("textbox", { name: /输入消息/ })).toBeEnabled();
   expect(api.jobs[0]).not.toHaveProperty("approval");
 
-  await page.getByRole("button", { name: "Open settings" }).click();
-  await page.getByRole("button", { name: "Tools & Approvals", exact: true }).click();
-  await page.getByLabel("Default maximum steps for new sessions").fill("17");
-  await page.getByRole("button", { name: "Save default" }).click();
+  await page.getByLabel("设置", { exact: true }).click();
+  await page.getByRole("button", { name: "工具与审批", exact: true }).click();
+  await page.getByLabel("新会话默认最大步数").fill("17");
+  await page.getByRole("button", { name: "保存默认值" }).click();
   await expect
     .poll(() => selectedMaxSteps(api.preferences))
     .toBe(17);
 
-  await page.getByRole("button", { name: "Back to chat" }).click();
-  await page.getByRole("textbox", { name: "Message" }).fill("Explicit limit turn");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "返回会话" }).click();
+  await page.getByRole("textbox", { name: /输入消息/ }).fill("Explicit limit turn");
+  await page.getByRole("button", { name: "发送" }).click();
   await expect.poll(() => api.jobs).toHaveLength(2);
   expect(api.jobs[1]).not.toHaveProperty("approval");
   expect(api.jobs[1]).not.toHaveProperty("max_steps");
@@ -266,31 +278,31 @@ test("MCP settings preserve failed drafts, recover probes, and isolate workspace
   });
 
   await page.goto("/settings/tools");
-  const mcpSettings = page.getByLabel("MCP servers");
+  const mcpSettings = page.getByLabel("MCP 服务");
   const mcpForm = mcpSettings.locator("form");
-  await mcpForm.getByLabel("Server name").fill("mock_server");
-  await mcpForm.getByLabel("Command").fill("python");
+  await mcpForm.getByLabel("服务名称").fill("mock_server");
+  await mcpForm.getByLabel("命令").fill("python");
   await mcpForm
-    .getByLabel("Arguments (one per line)")
+    .getByLabel("参数（每行一个）")
     .fill("tests/fixtures/mcp_mock_server.py\n--verbose");
-  await mcpForm.getByLabel("Environment names (one per line)").fill("MCP_TOKEN");
-  await mcpForm.getByLabel("Connection timeout (ms)").fill("2400");
-  await expect(mcpForm.getByLabel("Required at startup")).toBeChecked();
-  await mcpForm.getByRole("button", { name: "Add server" }).click();
+  await mcpForm.getByLabel("环境变量名（每行一个）").fill("MCP_TOKEN");
+  await mcpForm.getByLabel("连接超时（毫秒）").fill("2400");
+  await expect(mcpForm.getByLabel("启动时必需")).toBeChecked();
+  await mcpForm.getByRole("button", { name: "添加服务" }).click();
 
   await expect(mcpForm.getByRole("alert")).toContainText(
     "MCP config is locked",
   );
-  await expect(mcpForm.getByLabel("Server name")).toHaveValue("mock_server");
-  await expect(mcpForm.getByLabel("Command")).toHaveValue("python");
-  await expect(mcpForm.getByLabel("Arguments (one per line)")).toHaveValue(
+  await expect(mcpForm.getByLabel("服务名称")).toHaveValue("mock_server");
+  await expect(mcpForm.getByLabel("命令")).toHaveValue("python");
+  await expect(mcpForm.getByLabel("参数（每行一个）")).toHaveValue(
     "tests/fixtures/mcp_mock_server.py\n--verbose",
   );
   await expect(
-    mcpForm.getByLabel("Environment names (one per line)"),
+    mcpForm.getByLabel("环境变量名（每行一个）"),
   ).toHaveValue("MCP_TOKEN");
 
-  await mcpForm.getByRole("button", { name: "Add server" }).click();
+  await mcpForm.getByRole("button", { name: "添加服务" }).click();
   let serverRow = mcpSettings
     .locator(".profile-row")
     .filter({ hasText: "mock_server" });
@@ -309,11 +321,11 @@ test("MCP settings preserve failed drafts, recover probes, and isolate workspace
     required: true,
   });
 
-  await serverRow.getByRole("button", { name: "Edit" }).click();
-  await mcpForm.getByLabel("Enabled").uncheck();
-  await mcpForm.getByLabel("Required at startup").uncheck();
-  await mcpForm.getByLabel("Connection timeout (ms)").fill("4500");
-  await mcpForm.getByRole("button", { name: "Save changes" }).click();
+  await serverRow.getByRole("button", { name: "编辑" }).click();
+  await mcpForm.getByLabel("已启用").uncheck();
+  await mcpForm.getByLabel("启动时必需").uncheck();
+  await mcpForm.getByLabel("连接超时（毫秒）").fill("4500");
+  await mcpForm.getByRole("button", { name: "保存更改" }).click();
   serverRow = mcpSettings
     .locator(".profile-row")
     .filter({ hasText: "mock_server" });
@@ -328,49 +340,49 @@ test("MCP settings preserve failed drafts, recover probes, and isolate workspace
   });
   expect(JSON.parse(api.mcpRequestBodies.at(-1)!)).not.toHaveProperty("env");
 
-  await serverRow.getByRole("button", { name: "Test" }).click();
+  await serverRow.getByRole("button", { name: "测试连接" }).click();
   await expect(serverRow.getByRole("alert")).toContainText(
     "compatible MCP tool catalog",
   );
-  await serverRow.getByRole("button", { name: "Test" }).click();
+  await serverRow.getByRole("button", { name: "测试连接" }).click();
   await expect(serverRow).toContainText("2 tools");
   await expect(
     serverRow.getByText("mcp__mock_server__echo_remote", { exact: true }),
   ).toBeVisible();
   await expect(serverRow.getByRole("alert")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Workspace / Paths", exact: true }).click();
+  await page.getByRole("button", { name: "工作区路径", exact: true }).click();
   await page
     .locator(".profile-row")
     .filter({ hasText: workspaceB.canonical_root })
-    .getByRole("button", { name: "Open" })
+    .getByRole("button", { name: "打开工作区" })
     .click();
   await expect.poll(() => api.preferences.active_workspace_id).toBe(workspaceB.id);
-  await page.getByRole("button", { name: "Open settings" }).click();
-  await page.getByRole("button", { name: "Tools & Approvals", exact: true }).click();
-  await expect(page.getByText("No MCP servers in this workspace.")).toBeVisible();
+  await page.getByLabel("设置", { exact: true }).click();
+  await page.getByRole("button", { name: "工具与审批", exact: true }).click();
+  await expect(page.getByText("该工作区暂无 MCP 服务。")).toBeVisible();
   expect(api.mcpServers[workspaceA.id]).toHaveLength(1);
   expect(api.mcpServers[workspaceB.id] ?? []).toHaveLength(0);
 
-  await page.getByRole("button", { name: "Workspace / Paths", exact: true }).click();
+  await page.getByRole("button", { name: "工作区路径", exact: true }).click();
   await page
     .locator(".profile-row")
     .filter({ hasText: workspaceA.canonical_root })
-    .getByRole("button", { name: "Open" })
+    .getByRole("button", { name: "打开工作区" })
     .click();
   await expect.poll(() => api.preferences.active_workspace_id).toBe(workspaceA.id);
-  await page.getByRole("button", { name: "Open settings" }).click();
-  await page.getByRole("button", { name: "Tools & Approvals", exact: true }).click();
+  await page.getByLabel("设置", { exact: true }).click();
+  await page.getByRole("button", { name: "工具与审批", exact: true }).click();
   serverRow = page
-    .getByLabel("MCP servers")
+    .getByLabel("MCP 服务")
     .locator(".profile-row")
     .filter({ hasText: "mock_server" });
-  await serverRow.getByRole("button", { name: "Remove" }).click();
+  await serverRow.getByRole("button", { name: "移除" }).click();
   await expect(serverRow).toContainText(
-    "Remove mock_server from this workspace?",
+    "从该工作区移除 mock_server？",
   );
-  await serverRow.getByRole("button", { name: "Confirm remove" }).click();
-  await expect(page.getByText("No MCP servers in this workspace.")).toBeVisible();
+  await serverRow.getByRole("button", { name: "移除" }).first().click();
+  await expect(page.getByText("该工作区暂无 MCP 服务。")).toBeVisible();
   expect(api.mcpServers[workspaceA.id]).toEqual([]);
 });
 
@@ -387,9 +399,9 @@ test("workspace and session settings mutate the durable catalog", async ({ page 
 
   await page.goto("/settings/sessions");
   let sessionRow = page.locator(".profile-row").filter({ hasText: "Session B" });
-  await sessionRow.getByRole("button", { name: "Rename" }).click();
-  await page.getByLabel("Session name").fill("Renamed session");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await sessionRow.getByRole("button", { name: "编辑" }).click();
+  await page.getByLabel("会话名称").fill("Renamed session");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
   await expect.poll(() => api.sessions.find((item) => item.id === sessionB.id)?.title).toBe(
     "Renamed session",
   );
@@ -397,23 +409,24 @@ test("workspace and session settings mutate the durable catalog", async ({ page 
   sessionRow = page.locator(".profile-row").filter({ hasText: "Renamed session" });
   const [download] = await Promise.all([
     page.waitForEvent("download"),
-    sessionRow.getByRole("button", { name: "Evidence export" }).click(),
+    sessionRow.getByRole("button", { name: "导出对话（脱敏）" }).click(),
   ]);
   expect(download.suggestedFilename()).toBe(
     "rove-session-session-b-evidence.json",
   );
 
-  await sessionRow.getByRole("button", { name: "Delete" }).click();
-  await sessionRow.getByRole("button", { name: "Confirm delete" }).click();
+  await sessionRow.getByRole("button", { name: "删除" }).first().click();
+  await sessionRow.getByRole("button", { name: "删除" }).first().click();
   await expect.poll(() => api.sessions.some((item) => item.id === sessionB.id)).toBe(false);
 
-  await page.getByRole("button", { name: "Workspace / Paths", exact: true }).click();
+  await page.getByRole("button", { name: "工作区路径", exact: true }).click();
   const workspaceRow = page.locator(".profile-row").filter({ hasText: workspace.display_name });
-  await workspaceRow.getByRole("button", { name: "Pin", exact: true }).click();
+  await workspaceRow.getByRole("button", { name: "固定", exact: true }).click();
   await expect.poll(() => api.workspaces[0]?.pinned).toBe(true);
 
-  await workspaceRow.getByRole("button", { name: "Remove", exact: true }).click();
-  await workspaceRow.getByRole("button", { name: "Confirm remove" }).click();
+  await workspaceRow.getByRole("button", { name: "移除", exact: true }).first().click();
+  await expect(workspaceRow).toContainText("从目录中移除该工作区");
+  await workspaceRow.getByRole("button", { name: "移除", exact: true }).first().click();
   await expect.poll(() => api.workspaces).toHaveLength(0);
   await expect(page).toHaveURL("/");
 });
@@ -449,67 +462,66 @@ test("memory management, runtime health, and critical shortcuts are live", async
   });
 
   await page.goto("/settings/memory");
-  await page.getByLabel("Search").fill("does-not-match");
-  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await page.getByLabel("搜索").fill("does-not-match");
+  await page.getByRole("button", { name: "搜索", exact: true }).click();
   await expect(
-    page.getByText("No durable memory topics match these filters."),
+    page.getByText("没有符合筛选条件的持久记忆主题。"),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Clear", exact: true }).click();
+  await page.getByRole("button", { name: "清除", exact: true }).click();
 
-  await page.getByRole("button", { name: "Open", exact: true }).click();
-  await expect(page.getByLabel("Memory topic content")).toContainText(
+  await page.getByRole("button", { name: "打开", exact: true }).click();
+  await expect(page.getByLabel("记忆主题内容")).toContainText(
     "Run pnpm test before handoff.",
   );
-  await expect(page.getByLabel("Memory topic metadata")).toContainText(
-    "durable",
-  );
-  await page.getByRole("button", { name: "Edit topic" }).click();
-  let editor = page.getByRole("region", { name: "Edit durable topic" });
-  await editor.getByLabel("Title").fill("Updated Project Conventions");
+  await expect(page.getByLabel("主题信息")).toContainText("持久记忆");
+  await expect(page.getByRole("button", { name: "编辑主题", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "编辑主题" }).click();
+  let editor = page.getByRole("region", { name: "编辑持久主题" });
+  await editor.getByLabel("标题").fill("Updated Project Conventions");
   await editor
-    .getByLabel("Content")
+    .getByLabel("内容")
     .fill("Run pnpm test and browser acceptance before handoff.");
-  await editor.getByRole("button", { name: "Save changes" }).click();
+  await editor.getByRole("button", { name: "保存更改" }).click();
   await expect(editor.getByRole("alert")).toContainText(
-    "memory topic changed concurrently",
+    "主题未保存，可能已被更改",
   );
-  await expect(editor.getByLabel("Title")).toHaveValue(
+  await expect(editor.getByLabel("标题")).toHaveValue(
     "Updated Project Conventions",
   );
-  await expect(editor.getByLabel("Content")).toHaveValue(
+  await expect(editor.getByLabel("内容")).toHaveValue(
     "Run pnpm test and browser acceptance before handoff.",
   );
-  await editor.getByRole("button", { name: "Save changes" }).click();
+  await editor.getByRole("button", { name: "保存更改" }).click();
   await expect(
     page
-      .getByLabel("Durable memory topics")
+      .getByLabel("持久记忆主题")
       .getByText("Updated Project Conventions", { exact: true }),
   ).toBeVisible();
   expect(api.memoryTopics["project-conventions"]?.topic.source).toBe(
     "product_settings",
   );
 
-  await page.getByRole("button", { name: "New topic" }).click();
-  editor = page.getByRole("region", { name: "New durable topic" });
-  await editor.getByLabel("Slug").fill("session-scoped-reference");
-  await editor.getByLabel("Title").fill("Session Scoped Reference");
-  await editor.getByLabel("Type").selectOption("reference");
-  await editor.getByLabel("Durable scope").selectOption("session");
-  await editor.getByLabel("Confidence").fill("0.85");
-  await editor.getByLabel("Description").fill("A durable session-scoped fact");
-  await editor.getByLabel("Content").fill("This remains in durable memory.");
-  await editor.getByRole("button", { name: "Create topic" }).click();
+  await page.getByRole("button", { name: "新建持久主题" }).click();
+  editor = page.getByRole("region", { name: "新建持久主题" });
+  await editor.getByLabel("标识").fill("session-scoped-reference");
+  await editor.getByLabel("标题").fill("Session Scoped Reference");
+  await editor.getByLabel("类型").selectOption("reference");
+  await editor.getByLabel("作用域").selectOption("session");
+  await editor.getByLabel("置信度").fill("0.85");
+  await editor.getByLabel("说明").fill("A durable session-scoped fact");
+  await editor.getByLabel("内容").fill("This remains in durable memory.");
+  await editor.getByRole("button", { name: "创建主题" }).click();
   await expect(
     page.locator(".profile-row").filter({ hasText: "Session Scoped Reference" }),
-  ).toContainText("Durable · reference · session scope");
+  ).toContainText("参考 · 会话");
   expect(api.memoryTopics["session-scoped-reference"]?.topic).toMatchObject({
     layer: "durable",
     scope: "session",
     source: "product_settings",
   });
 
-  await page.getByRole("button", { name: "Delete topic" }).click();
-  await page.getByRole("button", { name: "Confirm delete" }).click();
+  await page.getByRole("button", { name: "删除主题" }).click();
+  await page.getByRole("button", { name: "确认删除" }).click();
   await expect(
     page.getByText("Session Scoped Reference", { exact: true }),
   ).toHaveCount(0);
@@ -518,18 +530,18 @@ test("memory management, runtime health, and critical shortcuts are live", async
   expect(api.memoryWorkspaceRequests).not.toHaveLength(0);
   expect(new Set(api.memoryWorkspaceRequests)).toEqual(new Set([workspace.id]));
 
-  await page.getByRole("button", { name: "About / Runtime", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Resume health" })).toBeVisible();
+  await page.getByRole("button", { name: "关于", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "会话恢复" })).toBeVisible();
   await expect(page.getByText("1", { exact: true }).first()).toBeVisible();
 
-  await page.getByRole("button", { name: "Back to chat" }).click();
-  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+  await page.getByRole("button", { name: "返回会话" }).click();
+  await expect(page.getByRole("textbox", { name: /输入消息/ })).toBeEnabled();
   await page.keyboard.press("/");
-  await expect(page.getByRole("textbox", { name: "Message" })).toBeFocused();
+  await expect(page.getByRole("textbox", { name: /输入消息/ })).toBeFocused();
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 
   await page.keyboard.press("Control+.");
-  await expect(page.getByLabel("Run inspector")).toHaveAttribute(
+  await expect(page.locator(".product-inspector").first()).toHaveAttribute(
     "data-collapsed",
     "true",
   );
@@ -550,7 +562,7 @@ test("memory settings is explicit and does not query without a workspace", async
   await page.goto("/settings/memory");
 
   await expect(
-    page.getByText("Select a workspace to inspect its durable memory."),
+    page.getByText("请先选择工作区以查看其持久记忆。"),
   ).toBeVisible();
   expect(api.memoryWorkspaceRequests).toEqual([]);
 });
@@ -576,7 +588,7 @@ test.describe("mobile settings", () => {
     });
 
     await page.goto("/settings/workspace");
-    await expect(page.getByRole("heading", { name: "Workspace / Paths" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "工作区路径" })).toBeVisible();
     await expect(page.getByText(workspace.canonical_root)).toBeVisible();
 
     const layout = await page.evaluate(() => {
@@ -596,7 +608,7 @@ test.describe("mobile settings", () => {
     expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
     expect(layout.separated).toBe(true);
 
-    await page.getByRole("button", { name: "Sessions", exact: true }).click();
+    await page.getByRole("button", { name: "会话", exact: true }).click();
     await expect(page.getByText(session.title)).toBeVisible();
     await expect
       .poll(() =>

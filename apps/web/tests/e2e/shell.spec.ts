@@ -10,16 +10,16 @@ test("empty -> open workspace -> run -> complete on live shell mock", async ({
   const api = await installMockProductApi(page);
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Open a workspace to start" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "打开工作区以开始" })).toBeVisible();
 
   await openWorkspace(page);
-  await page.getByRole("textbox", { name: "Message" }).fill("Summarize the runtime state");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("textbox", { name: /输入消息/ }).fill("Summarize the runtime state");
+  await page.getByRole("button", { name: "发送" }).click();
 
   const conversation = page.getByLabel("Conversation");
   await expect(conversation.getByText("Summarize the runtime state")).toBeVisible();
   await expect(conversation.getByText("Runtime summary complete")).toBeVisible();
-  await expect(page.getByLabel("Run inspector").getByText("Run completed", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("详情").getByText("已完成", { exact: true })).toBeVisible();
   expect(api.jobs).toHaveLength(1);
   expect(api.jobs[0]).toMatchObject({
     product_session_id: "session-1",
@@ -33,13 +33,13 @@ test("inline approval works in product shell", async ({ page }) => {
 
   await page.goto("/");
   await openWorkspace(page);
-  await page.getByRole("textbox", { name: "Message" }).fill("Write a note");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("textbox", { name: /输入消息/ }).fill("Write a note");
+  await page.getByRole("button", { name: "发送" }).click();
 
-  const approval = page.getByLabel("Pending approval");
+  const approval = page.getByLabel("审批");
   await expect(approval).toBeVisible();
   await expect(approval).toBeFocused();
-  await expect(approval.getByRole("button", { name: "Approve" })).not.toBeFocused();
+  await expect(approval.getByRole("button", { name: "批准" })).not.toBeFocused();
   await expect(
     approval.getByText("destructive tool requires explicit approval"),
   ).toBeVisible();
@@ -49,7 +49,7 @@ test("inline approval works in product shell", async ({ page }) => {
       (response) =>
         response.url().includes("/approvals/") && response.status() === 200,
     ),
-    page.getByRole("button", { name: "Approve" }).click(),
+    page.getByRole("button", { name: "批准" }).click(),
   ]);
 
   await expect(page.getByLabel("Conversation").getByText("Approved write completed")).toBeVisible();
@@ -60,9 +60,9 @@ test("theme toggle flips data-theme on the document", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-  await page.getByRole("button", { name: "Switch to dark theme" }).click();
+  await page.getByRole("button", { name: "切换到深色主题" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await page.getByRole("button", { name: "Switch to light theme" }).click();
+  await page.getByRole("button", { name: "切换到浅色主题" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 });
 
@@ -71,34 +71,24 @@ test("inspector shows empty then completed states during a run", async ({ page }
   await page.goto("/");
   await openWorkspace(page);
 
-  const inspector = page.getByLabel("Run inspector");
-  await expect(inspector.getByText("No active run")).toBeVisible();
-  await expect(inspector.getByText(/Plan, tools, and approvals/)).toBeVisible();
+  const inspector = page.getByLabel("详情");
+  await expect(inspector.getByText("暂无进行中的运行")).toBeVisible();
+  await expect(inspector.getByText(/发送一条消息/)).toBeVisible();
 
-  await page.getByRole("textbox", { name: "Message" }).fill("Summarize the runtime state");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("textbox", { name: /输入消息/ }).fill("Summarize the runtime state");
+  await page.getByRole("button", { name: "发送" }).click();
   await expect(page.getByLabel("Conversation").getByText("Runtime summary complete")).toBeVisible();
-  await expect(inspector.getByText("Run completed", { exact: true })).toBeVisible();
+  await expect(inspector.getByText("已完成", { exact: true })).toBeVisible();
 });
 
-test("benchmark lives under Settings Advanced, not primary nav", async ({ page }) => {
+test("benchmark runner is not exposed in product Settings", async ({ page }) => {
   await installMockProductApi(page);
-  await page.route(/\/api\/bench\/.*/u, async (route) => {
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({ suites: [], runs: [] }),
-    });
-  });
-
   await page.goto("/");
-  await expect(page.getByRole("button", { name: "Benchmarks" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Open settings" }).click();
-  await page.getByRole("button", { name: "Advanced / Developer" }).click();
-  await expect(page).toHaveURL(/\/settings\/advanced$/u);
-  await expect(page.getByRole("heading", { name: "Advanced / Developer" })).toBeVisible();
-  await page.getByRole("button", { name: /Benchmark runner/ }).click();
-  await expect(page.getByLabel("Benchmark runner")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Benchmark Runner" })).toBeVisible();
+  await page.getByLabel("设置", { exact: true }).click();
+  await expect(page.locator(".settings-nav").getByRole("button", { name: "高级", exact: true })).toHaveCount(0);
+  await expect(page).toHaveURL(/\/settings\/providers$/u);
+  await expect(page.getByRole("button", { name: /Benchmark runner/ })).toHaveCount(0);
+  await expect(page.getByLabel("Benchmark runner")).toHaveCount(0);
 });
 
 test("settings providers can test and list models without raw keys", async ({
@@ -153,25 +143,26 @@ test("settings providers can test and list models without raw keys", async ({
   });
 
   await page.goto("/");
-  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByLabel("设置", { exact: true }).click();
   await expect(page).toHaveURL(/\/settings\/providers$/u);
-  await expect(page.getByRole("heading", { name: "Providers & Models" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "模型服务" })).toBeVisible();
 
-  await page.getByLabel("API base").fill("https://gateway.test/v1");
-  await page.getByLabel("API key env name").fill("GATEWAY_API_KEY");
-  await page.getByLabel("Default model").fill("relay/model-a");
-  await page.getByRole("button", { name: "List models" }).click();
-  await expect(page.getByText(/Models \(2\):/)).toBeVisible();
-  await page.getByRole("button", { name: "Test" }).click();
-  await expect(page.getByText(/Test: pass/)).toBeVisible();
+  await page.getByLabel("API 地址").fill("https://gateway.test/v1");
+  await page.locator("summary").filter({ hasText: "高级选项" }).click();
+  await page.getByLabel("密钥环境变量名").fill("GATEWAY_API_KEY");
+  await page.getByLabel("默认模型").fill("relay/model-a");
+  await page.getByRole("button", { name: "列出模型" }).click();
+  await expect(page.getByText("可用模型（2）", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "测试连接" }).click();
+  await expect(page.getByText(/已连接/)).toBeVisible();
 
   await expect.poll(() => sawModels).toBe(true);
   await expect.poll(() => sawTest).toBe(true);
 });
 
 async function openWorkspace(page: Page) {
-  await page.getByLabel("Absolute path").fill(WORKSPACE_ROOT);
-  await page.getByRole("button", { name: "Open workspace", exact: true }).click();
+  await page.getByLabel("绝对路径").fill(WORKSPACE_ROOT);
+  await page.getByRole("button", { name: "打开工作区", exact: true }).click();
   await expect(page).toHaveURL(/\/w\/workspace-1\/s\/session-1$/u);
-  await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: /输入消息/ })).toBeVisible();
 }

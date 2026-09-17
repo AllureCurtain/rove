@@ -22,6 +22,7 @@ pub(crate) mod store;
 pub(crate) mod transcript;
 pub(crate) mod trust;
 pub(crate) mod usage;
+pub(crate) mod workspace_picker;
 
 pub use artifacts::{
     ProductArtifactAvailability, ProductArtifactContentEnvelope, ProductArtifactPreviewKind,

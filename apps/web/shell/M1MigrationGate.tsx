@@ -7,6 +7,7 @@ import {
 } from "@radix-ui/react-icons";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
+import { useCopy } from "../copy/CopyProvider";
 import {
   readM1BrowserMigrationState,
   runM1BrowserMigration,
@@ -41,12 +42,6 @@ type MigrationGateState =
     }
   | { status: "attention"; result: MigrationAttentionResult };
 
-interface MigrationAttentionContent {
-  title: string;
-  detail: string;
-  action: string;
-}
-
 const MIGRATION_ISSUE_LABELS: Record<M1MigrationIssueCode, string> = {
   invalid_workspace: "Workspace could not be imported",
   missing_workspace: "Session workspace was missing",
@@ -62,6 +57,7 @@ const MIGRATION_NOTICE_HANDOFF_KEY =
   "rove.product.migration.web-m1.notice.v1";
 
 export function M1MigrationGate({ children }: { children: ReactNode }) {
+  const { t } = useCopy();
   const [state, setState] = useState<MigrationGateState>({ status: "checking" });
   const generationRef = useRef(0);
   const inFlightRef = useRef<Promise<M1BrowserMigrationRunResult> | null>(null);
@@ -155,13 +151,13 @@ export function M1MigrationGate({ children }: { children: ReactNode }) {
           <p className="eyebrow">Continuity check</p>
           <h1>
             {state.status === "migrating"
-              ? "Importing your workspace history"
-              : "Preparing your workspace history"}
+              ? t("migration.importing")
+              : t("migration.preparing")}
           </h1>
           <p>
             {state.status === "migrating"
-              ? "Moving browser-saved workspaces and sessions into durable server storage."
-              : "Checking saved browser data before reading the server catalog."}
+              ? t("migration.importingBody")
+              : t("migration.preparingBody")}
           </p>
         </section>
       ) : (
@@ -171,6 +167,12 @@ export function M1MigrationGate({ children }: { children: ReactNode }) {
   );
 }
 
+export type MigrationAttentionContent = {
+  titleKey: string;
+  detailKey: string;
+  actionKey: string;
+};
+
 function MigrationAttention({
   result,
   onRetry,
@@ -178,6 +180,7 @@ function MigrationAttention({
   result: MigrationAttentionResult;
   onRetry: () => void;
 }) {
+  const { t } = useCopy();
   const content = migrationAttentionContent(result);
 
   return (
@@ -185,15 +188,14 @@ function MigrationAttention({
       <p className="eyebrow">Continuity check</p>
       <div className="migration-gate__heading">
         <ExclamationTriangleIcon aria-hidden="true" />
-        <h1>{content.title}</h1>
+        <h1>{t(content.titleKey)}</h1>
       </div>
-      <p>{content.detail}</p>
+      <p>{t(content.detailKey)}</p>
       <p className="migration-gate__assurance">
-        Rove has not deleted your browser-saved workspaces, sessions, or provider
-        references, and will not replace them with an empty server catalog.
+        {t("migration.assurance")}
       </p>
       <button type="button" onClick={onRetry} autoFocus>
-        {content.action}
+        {t(content.actionKey)}
       </button>
     </section>
   );
@@ -204,6 +206,7 @@ function MigrationCompleteNotice({
 }: {
   result: Extract<M1BrowserMigrationRunResult, { status: "complete" }>;
 }) {
+  const { t } = useCopy();
   const [visible, setVisible] = useState(true);
   const acknowledgement = result.state.acknowledgement;
   const hasIssues = acknowledgement.issues.length > 0;
@@ -224,16 +227,18 @@ function MigrationCompleteNotice({
         <CheckCircledIcon aria-hidden="true" />
       )}
       <span>
-        Browser data imported{importedCount > 0 ? ` (${importedCount} records)` : ""}.
+        {importedCount > 0
+          ? t("migration.imported", { count: importedCount })
+          : t("migration.importedNoCount")}
         {hasIssues
           ? ` ${migrationIssueSummary(acknowledgement.issues.map((issue) => issue.code))}`
-          : " Server storage is now authoritative."}
+          : ` ${t("migration.storageAuthoritative")}`}
       </span>
       <button
         type="button"
         className="ghost icon-button"
         onClick={() => setVisible(false)}
-        aria-label="Dismiss import summary"
+        aria-label={t("migration.dismiss")}
       >
         <Cross2Icon />
       </button>
@@ -246,67 +251,59 @@ export function migrationAttentionContent(
 ): MigrationAttentionContent {
   if (result.status === "pending") {
     return {
-      title: "Import needs verification",
-      detail:
-        "The server may already have accepted this import. Checking again will replay the exact saved request without duplicating browser data.",
-      action: "Verify import",
+      titleKey: "migration.verifyTitle",
+      detailKey: "migration.verifyBody",
+      actionKey: "migration.verifyAction",
     };
   }
   if (result.status === "rejected") {
     return {
-      title: "Saved data was not accepted",
-      detail:
-        "The server rejected this browser snapshot. Its pending receipt was cleared, so a later retry will validate a fresh snapshot.",
-      action: "Retry import",
+      titleKey: "migration.rejectedTitle",
+      detailKey: "migration.rejectedBody",
+      actionKey: "migration.rejectedAction",
     };
   }
   if (result.status === "superseded") {
     return {
-      title: "Import receipt changed",
-      detail:
-        "Another tab or a local storage change replaced the receipt while the server was applying this import.",
-      action: "Check again",
+      titleKey: "migration.receiptTitle",
+      detailKey: "migration.receiptBody",
+      actionKey: "migration.checkAgain",
     };
   }
 
   switch (result.failure.code) {
     case "invalid_legacy_state":
       return {
-        title: "Saved browser data needs repair",
-        detail:
-          "The saved workspace catalog could not be validated. Correct or clear the invalid browser entry before checking again.",
-        action: "Check again",
+        titleKey: "migration.legacyRepairTitle",
+        detailKey: "migration.legacyRepairBody",
+        actionKey: "migration.checkAgain",
       };
     case "invalid_migration_state":
       return {
-        title: "Import receipt needs repair",
-        detail:
-          "The saved import receipt is incomplete or invalid. Restore a valid receipt before checking again.",
-        action: "Check again",
+        titleKey: "migration.receiptRepairTitle",
+        detailKey: "migration.receiptRepairBody",
+        actionKey: "migration.checkAgain",
       };
     case "storage_write_failed":
       return {
-        title: "Browser storage is unavailable",
-        detail:
-          "Rove could not safely persist or verify the import receipt. Allow this site to use browser storage, then check again.",
-        action: "Check again",
+        titleKey: "migration.storageUnavailableTitle",
+        detailKey: "migration.storageUnavailableBody",
+        actionKey: "migration.checkAgain",
       };
     case "lock_unavailable":
     case "lock_failed":
       return {
-        title: "Exclusive browser access is unavailable",
-        detail:
-          "Rove needs a same-origin browser lock to prevent duplicate imports. Close other Rove tabs or use a browser that supports Web Locks, then check again.",
-        action: "Check again",
+        titleKey: "migration.lockUnavailableTitle",
+        detailKey: "migration.lockUnavailableBody",
+        actionKey: "migration.checkAgain",
       };
     case "request_failed":
     case "request_rejected":
     case "invalid_acknowledgement":
       return {
-        title: "Import could not be verified",
-        detail:
-          "Rove could not establish a trusted server acknowledgement for the saved browser data.",
-        action: "Check again",
+        titleKey: "migration.unverifiedTitle",
+        detailKey: "migration.unverifiedBody",
+        actionKey: "migration.checkAgain",
       };
   }
 }

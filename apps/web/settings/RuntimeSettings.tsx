@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useCopy } from "../copy/CopyProvider";
 import type { ProductRuntimeInfo } from "./settings-platform-api-types";
 import type { SettingsPlatformClient } from "./settings-platform-client";
 
@@ -30,6 +31,7 @@ export function RuntimeSettings({
   connectionLabel,
   theme,
 }: RuntimeSettingsProps) {
+  const { t } = useCopy();
   const [state, setState] = useState<RuntimeViewState>({
     status: "loading",
     info: null,
@@ -91,38 +93,38 @@ export function RuntimeSettings({
       aria-labelledby="runtime-settings-title"
       aria-busy={busy}
     >
-      <h1 id="runtime-settings-title">About / Runtime</h1>
+      <h1 id="runtime-settings-title">{t("settings.sectionAbout")}</h1>
       <p className="lede">
-        Live API, product persistence, and exact-resume health.
+        {t("about.lede")}
       </p>
 
       <div className="settings-card">
-        <h2>Connection</h2>
+        <h2>{t("settings.runtime.connection")}</h2>
         <div className="inspector-kv">
           <div>
-            <span>API proxy</span>
+            <span>{t("about.apiProxy")}</span>
             <strong>/api → rove-api</strong>
           </div>
           <div>
-            <span>status</span>
+            <span>{t("settings.runtime.status")}</span>
             <strong>{connectionLabel}</strong>
           </div>
           <div>
-            <span>host</span>
+            <span>{t("about.host")}</span>
             <strong>web</strong>
           </div>
           <div>
-            <span>theme</span>
-            <strong>{theme}</strong>
+            <span>{t("settings.runtime.theme")}</span>
+            <strong>{theme === "dark" ? t("settings.general.themeDark") : t("settings.general.themeLight")}</strong>
           </div>
           {state.info ? (
             <>
               <div>
-                <span>API version</span>
+                <span>{t("about.apiVersion")}</span>
                 <strong>{state.info.api_version}</strong>
               </div>
               <div>
-                <span>runtime connection</span>
+                <span>{t("about.runtimeConnection")}</span>
                 <strong>{state.info.connection}</strong>
               </div>
             </>
@@ -137,8 +139,8 @@ export function RuntimeSettings({
               disabled={busy}
             >
               {state.status === "refreshing"
-                ? "Refreshing…"
-                : "Refresh runtime"}
+                ? t("about.refreshing")
+                : t("about.refresh")}
             </button>
           </div>
         ) : null}
@@ -146,19 +148,19 @@ export function RuntimeSettings({
 
       {state.status === "loading" ? (
         <div className="placeholder-note" role="status" aria-live="polite">
-          Loading runtime health…
+          {t("about.loading")}
         </div>
       ) : null}
 
       {state.status === "error" ? (
         <div className="settings-card">
-          <h2>Runtime information unavailable</h2>
+          <h2>{t("about.unavailableTitle")}</h2>
           <div className="shell-alert" role="alert">
             {state.error}
           </div>
           <div className="field-actions">
             <button type="button" onClick={loadRuntimeInfo}>
-              Retry
+              {t("common.retry")}
             </button>
           </div>
         </div>
@@ -178,37 +180,37 @@ function RuntimeHealthCards({
   info: ProductRuntimeInfo;
   refreshing: boolean;
 }) {
+  const { t } = useCopy();
   return (
     <>
       <div className="settings-card">
-        <h2>ProductStore</h2>
+        <h2>{t("settings.runtime.dataStorage")}</h2>
         <div className="inspector-kv">
           <div>
-            <span>status</span>
+            <span>{t("settings.runtime.status")}</span>
             <strong>{statusLabel(info.product_store)}</strong>
           </div>
         </div>
         {info.product_store === "unavailable" ? (
           <div className="placeholder-note" role="status">
-            ProductStore is unavailable. Durable workspace, session, and resume
-            health cannot be read.
+            {t("about.storeUnavailable")}
           </div>
         ) : null}
       </div>
 
       <div className="settings-card">
-        <h2>Execution environment</h2>
+        <h2>{t("settings.runtime.runtime")}</h2>
         <div className="inspector-kv">
           <div>
-            <span>adapter</span>
+            <span>{t("about.adapter")}</span>
             <strong>{statusLabel(info.execution_environment.adapter)}</strong>
           </div>
           <div>
-            <span>workspace kind</span>
+            <span>{t("about.workspaceKind")}</span>
             <strong>{statusLabel(info.execution_environment.workspace_kind)}</strong>
           </div>
           <div>
-            <span>workspace identity</span>
+            <span>{t("about.workspaceIdentity")}</span>
             <strong className="settings-digest">
               {info.execution_environment.workspace_digest}
             </strong>
@@ -216,8 +218,10 @@ function RuntimeHealthCards({
           {Object.entries(info.execution_environment.capabilities).map(
             ([capability, enabled]) => (
               <div key={capability}>
-                <span>{statusLabel(capability)}</span>
-                <strong>{enabled ? "available" : "unavailable"}</strong>
+                <span>{capabilityLabel(capability, t)}</span>
+                <strong>
+                  {enabled ? t("about.available") : t("about.unavailable")}
+                </strong>
               </div>
             ),
           )}
@@ -225,32 +229,38 @@ function RuntimeHealthCards({
       </div>
 
       <div className="settings-card">
-        <h2>Agent runtime</h2>
+        <h2>{t("about.selector")}</h2>
         <div className="inspector-kv">
           <div>
-            <span>selector</span>
+            <span>{t("about.selector")}</span>
             <strong>{info.agent.selector}</strong>
           </div>
           <div>
-            <span>workspace source</span>
+            <span>{t("about.workspaceSource")}</span>
             <strong>
-              {info.agent.workspace_source_authorized ? "authorized" : "restricted"}
+              {info.agent.workspace_source_authorized
+                ? t("about.authorized")
+                : t("about.restricted")}
             </strong>
           </div>
           <div>
-            <span>workspace instructions</span>
+            <span>{t("about.workspaceInstructions")}</span>
             <strong>
-              {info.agent.workspace_instructions_enabled ? "enabled" : "disabled"}
+              {info.agent.workspace_instructions_enabled
+                ? t("about.enabled")
+                : t("about.disabled")}
             </strong>
           </div>
           <div>
-            <span>remediation procedures</span>
+            <span>{t("about.remediationProcedures")}</span>
             <strong>
-              {info.agent.allow_remediation_procedures ? "allowed" : "diagnostic only"}
+              {info.agent.allow_remediation_procedures
+                ? t("about.allowed")
+                : t("about.diagnosticOnly")}
             </strong>
           </div>
           <div>
-            <span>procedure limit</span>
+            <span>{t("about.procedureLimit")}</span>
             <strong>{info.agent.max_procedure_selections}</strong>
           </div>
         </div>
@@ -258,36 +268,60 @@ function RuntimeHealthCards({
 
       {info.resume_health ? (
         <div className="settings-card" aria-live="polite">
-          <h2>Resume health</h2>
+          <h2>{t("settings.runtime.sessionRecovery")}</h2>
           <div className="inspector-kv">
             <div>
-              <span>status</span>
+              <span>{t("settings.runtime.status")}</span>
               <strong>{statusLabel(info.resume_health.status)}</strong>
             </div>
             <div>
-              <span>workspaces</span>
+              <span>{t("about.resumeWorkspaces")}</span>
               <strong>{info.resume_health.workspace_count}</strong>
             </div>
             <div>
-              <span>sessions</span>
+              <span>{t("about.resumeSessions")}</span>
               <strong>{info.resume_health.session_count}</strong>
             </div>
             <div>
-              <span>bound sessions</span>
+              <span>{t("about.resumeBound")}</span>
               <strong>{info.resume_health.bound_session_count}</strong>
             </div>
             <div>
-              <span>running sessions</span>
+              <span>{t("about.resumeRunning")}</span>
               <strong>{info.resume_health.running_session_count}</strong>
             </div>
             <div>
-              <span>sessions needing attention</span>
+              <span>{t("about.resumeAttention")}</span>
               <strong>{info.resume_health.needs_attention_session_count}</strong>
             </div>
           </div>
-          {refreshing ? <span role="status">Refreshing runtime health…</span> : null}
+          {refreshing ? <span role="status">{t("about.refreshing")}</span> : null}
         </div>
       ) : null}
     </>
   );
+}
+
+function capabilityLabel(
+  capability: string,
+  t: (path: string) => string,
+): string {
+  switch (capability) {
+    case "filesystem_read":
+      return t("about.filesystemRead");
+    case "filesystem_write":
+      return t("about.filesystemWrite");
+    case "process_run":
+      return t("about.processRun");
+    case "process_stdio":
+      return t("about.processStdio");
+    case "process_background":
+      return t("about.processBackground");
+    case "process_pty":
+      return t("about.processPty");
+    case "observations":
+      return t("about.observations");
+    default:
+      return statusLabel(capability);
+  }
 }

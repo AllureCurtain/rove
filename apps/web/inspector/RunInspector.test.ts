@@ -2,7 +2,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 
-import { createWorkbenchState } from "../lib/rove-state";
+import { CopyProvider } from "../copy/CopyProvider";
+import { createWorkbenchState, isTerminalRunCanceled } from "../lib/rove-state";
 import { RunInspector, resolveInspectorPhase } from "./RunInspector";
 
 describe("resolveInspectorPhase", () => {
@@ -40,7 +41,7 @@ describe("resolveInspectorPhase", () => {
     expect(resolveInspectorPhase(state)).toBe("ready");
   });
 
-  it("renders exact lifecycle identities and opaque evidence refs without fake actions", () => {
+  it("keeps internal identifiers out of the product chrome", () => {
     const state = {
       ...createWorkbenchState(),
       activeJobId: "job-01JEXACTIDENTITY000000000001",
@@ -49,49 +50,82 @@ describe("resolveInspectorPhase", () => {
       resumedFromRunId: "run-01JPREVIOUS000000000000001",
       eventCount: 1,
       statusText: "Run completed",
-      stepRecords: [
+      runUsage: {
+        prompt_tokens: 100,
+        completion_tokens: 50,
+        total_tokens: 150,
+      },
+      tools: [
         {
-          record_id: "record-1",
-          plan_id: "plan-1",
-          plan_revision_id: "revision-1",
-          step_id: "step-1",
-          attempt: 1,
-          status: "succeeded" as const,
-          started_at: "2026-07-28T00:00:00Z",
-          finished_at: "2026-07-28T00:00:01Z",
-          summary: "Evidence retained",
-          completion_basis: "model_conclusion" as const,
-          evidence_refs: ["trace:42"],
-          artifact_refs: ["artifact:opaque-7"],
-          model_turns_used: 1,
-          tool_calls_used: 1,
-          token_usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          id: "call-1",
+          name: "read_file",
+          status: "done" as const,
+          details: "read src/app.ts",
         },
       ],
     };
 
     const html = renderToStaticMarkup(
-      createElement(RunInspector, {
-        productSessionId: "product-session-01JEXACT000000000001",
-        collapsed: false,
-        onToggle: vi.fn(),
-        runState: state,
-        restoreState: {
-          status: "complete",
-          sessionId: "product-session-01JEXACT000000000001",
-        },
-      }),
+      createElement(
+        CopyProvider,
+        null,
+        createElement(RunInspector, {
+          productSessionId: "product-session-01JEXACT000000000001",
+          collapsed: false,
+          onToggle: vi.fn(),
+          runState: state,
+          restoreState: {
+            status: "complete",
+            sessionId: "product-session-01JEXACT000000000001",
+          },
+        }),
+      ),
     );
 
-    expect(html).toContain("product-session-01JEXACT000000000001");
-    expect(html).toContain("job-01JEXACTIDENTITY000000000001");
-    expect(html).toContain("run-01JEXACTIDENTITY000000000001");
-    expect(html).toContain("artifact:opaque-7");
-    expect(html).toContain("trace:42");
-    expect(html).toContain("Cost uses the server pricing snapshot frozen per run");
-    expect(html).toContain("Evidence export");
-    expect(html).toContain("Offline HTML");
-    expect(html).not.toContain("Download artifact");
-    expect(html).not.toContain("Open artifact");
+    expect(html).not.toContain("product-session-01JEXACT");
+    expect(html).not.toContain("job-01JEXACTIDENTITY");
+    expect(html).not.toContain("run-01JEXACTIDENTITY");
+    expect(html).not.toContain("prompt hash");
+    expect(html).not.toContain("cache key");
+    expect(html).not.toContain("canonical");
+    expect(html).not.toContain("risk");
+    expect(html).toContain("read_file");
+    expect(html).toContain("本次运行");
+  });
+  it("labels canceled terminal runs without implying completion", () => {
+    expect(
+      isTerminalRunCanceled({
+        statusText: "Run interrupted",
+        busy: false,
+        error: null,
+      }),
+    ).toBe(true);
+    const state = {
+      ...createWorkbenchState(),
+      activeJobId: "job-1",
+      activeRunId: "run-1",
+      eventCount: 4,
+      statusText: "Run cancelled",
+    };
+    expect(resolveInspectorPhase(state)).toBe("ready");
+    const html = renderToStaticMarkup(
+      createElement(
+        CopyProvider,
+        null,
+        createElement(RunInspector, {
+          productSessionId: "product-session-01JCANCEL000000000001",
+          collapsed: false,
+          onToggle: vi.fn(),
+          runState: state,
+          restoreState: {
+            status: "complete",
+            sessionId: "product-session-01JCANCEL000000000001",
+          },
+        }),
+      ),
+    );
+    expect(html).toContain("已取消");
+    expect(html).not.toContain("已完成");
+    expect(html).not.toContain("运行完成");
   });
 });

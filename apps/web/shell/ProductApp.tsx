@@ -1,8 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { Composer } from "../chat/Composer";
+import { CopyProvider, useCopy } from "../copy/CopyProvider";
 import { Transcript } from "../chat/Transcript";
 import { RunInspector } from "../inspector/RunInspector";
 import { useSessionUsage } from "../state/use-session-usage";
@@ -28,8 +34,18 @@ import { useProductReviews } from "../state/use-product-reviews";
 import type { WorkspaceKind } from "../state/product-types";
 import { M1MigrationGate } from "./M1MigrationGate";
 import { TopBar } from "./TopBar";
+import { UiSkinProvider, useUiSkin, type UiSkin } from "./ui-skin";
 
 export type ProductUiVersion = "v1" | "v2";
+export type { UiSkin };
+
+/** Strip Windows long-path prefixes so roots read as ordinary paths. */
+function formatDisplayPath(path: string): string {
+  if (path.startsWith("\\\\?\\")) {
+    return path.slice(4);
+  }
+  return path;
+}
 
 export function ProductApp({
   uiVersion = "v2",
@@ -37,7 +53,22 @@ export function ProductApp({
   uiVersion?: ProductUiVersion;
 }) {
   return (
-    <div className="product-app-frame" data-ui-version={uiVersion}>
+    <CopyProvider>
+      <UiSkinProvider>
+        <ProductFrame uiVersion={uiVersion} />
+      </UiSkinProvider>
+    </CopyProvider>
+  );
+}
+
+function ProductFrame({ uiVersion }: { uiVersion: ProductUiVersion }) {
+  const { skin } = useUiSkin();
+  return (
+    <div
+      className="product-app-frame"
+      data-ui-version={uiVersion}
+      data-skin={skin}
+    >
       <M1MigrationGate>
         <ServerProductApp uiVersion={uiVersion} />
       </M1MigrationGate>
@@ -46,6 +77,7 @@ export function ProductApp({
 }
 
 function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
+  const { t } = useCopy();
   const server = useServerProductState();
   const settingsClient = useMemo(() => createSettingsPlatformClient(), []);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -122,10 +154,10 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
 
   const connectionLabel =
     server.connection === "ok"
-      ? "API connected"
+      ? t("connection.ok")
       : server.connection === "error"
-        ? "API unreachable"
-        : "Checking API...";
+        ? t("connection.error")
+        : t("connection.checking");
   const connectionTone =
     server.connection === "ok"
       ? "ok"
@@ -162,19 +194,16 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
     Boolean(activeSession.activeRunId) &&
     !server.catalogMutationBusy;
   const composerDisabledReason = awaitingInitialRestore
-    ? "Restoring canonical history before a new turn."
+    ? t("chat.disabledRestoring")
     : continuity.restoreState.status === "loading"
-      ? "Restoring canonical history before a new turn."
+      ? t("chat.disabledRestoring")
     : continuity.restoreState.status === "error"
-      ? "Retry transcript restore before sending."
+      ? t("chat.disabledRestoreError")
       : server.sessionModelConfigLoading || server.sessionModelConfig === null
-        ? "Loading session model settings."
+        ? t("chat.disabledSettings")
       : routing.routeError
-              ? "Resolve the product route before sending."
+              ? t("chat.disabledRoute")
               : undefined;
-  const resumeLabel = activeSession?.hasDurableTurn
-    ? "continuity: exact product session"
-    : "first turn: server-bound session";
 
   function closeWorkspaceDrawer() {
     setWorkspaceOpen(false);
@@ -426,7 +455,7 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
           >
             {server.catalogError ? (
               <div className="shell-alert" role="alert">
-                {server.catalogError}
+                {t("chrome.settingsError")}
               </div>
             ) : null}
             {routing.routeError ? (
@@ -454,7 +483,7 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
                   <div>
                     <h1>{activeSession.title}</h1>
                     <p>
-                      {activeWorkspace.displayName} / {activeWorkspace.rootPath}
+                      {activeWorkspace.displayName} / {formatDisplayPath(activeWorkspace.rootPath)}
                     </p>
                   </div>
                   <button
@@ -462,11 +491,6 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
                     className="secondary"
                     onClick={() => void handleForkSession()}
                     disabled={!forkAvailable}
-                    title={
-                      forkAvailable
-                        ? "Create an independent branch from this completed turn"
-                        : "Fork is available after this session reaches a completed turn"
-                    }
                   >
                     Fork
                   </button>
@@ -475,9 +499,15 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
                     type="button"
                     className="secondary"
                     onClick={() => setInspectorCollapsed((value) => !value)}
-                    aria-label={inspectorCollapsed ? "Open run evidence" : "Close run evidence"}
+                    aria-label={
+                      inspectorCollapsed
+                        ? t("nav.expandInspector")
+                        : t("nav.collapseInspector")
+                    }
                   >
-                    {inspectorCollapsed ? "Evidence" : "Close evidence"}
+                    {inspectorCollapsed
+                      ? t("inspector.tabRun")
+                      : t("common.close")}
                   </button>
                 </div>
                 <Transcript
@@ -502,7 +532,6 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
                 <Composer
                   disabled={composerDisabled}
                   busy={busy}
-                  resumeLabel={resumeLabel}
                   disabledReason={composerDisabledReason}
                   error={continuity.runState.error}
                   profiles={server.profiles}
@@ -575,7 +604,7 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
             <button
               type="button"
               className="product-mobile-scrim"
-              aria-label="Close open panel"
+              aria-label={t("common.close")}
               tabIndex={-1}
               onClick={workspaceOpen ? closeWorkspaceDrawer : closeInspector}
             />
@@ -593,21 +622,22 @@ function BootStateView({
   state: Exclude<ProductBootState, { status: "ready" }>;
   onRetry: () => void;
 }) {
+  const { t } = useCopy();
   return (
     <main className="boot-state" role={state.status === "error" ? "alert" : "status"}>
       <h1>
         {state.status === "loading"
-          ? "Loading product state"
-          : "Product state unavailable"}
+          ? t("boot.loading")
+          : t("errors.bootTitle")}
       </h1>
       <p>
         {state.status === "loading"
-          ? "Reading server workspaces, sessions, and preferences."
+          ? t("boot.checking")
           : state.error}
       </p>
       {state.status === "error" ? (
         <button type="button" onClick={onRetry}>
-          Retry
+          {t("common.retry")}
         </button>
       ) : null}
     </main>
@@ -615,21 +645,30 @@ function BootStateView({
 }
 
 function RouteLoadingView() {
+  const { t } = useCopy();
   return (
     <section className="route-state" role="status">
-      <h1>Opening product route</h1>
-      <p>Matching the server catalog to this workspace and session.</p>
+      <h1>{t("boot.loading")}</h1>
+      <p>{t("boot.checking")}</p>
     </section>
   );
 }
 
-function RouteErrorView({ error, onReturn }: { error: string; onReturn: () => void }) {
+function RouteErrorView({
+  error,
+  onReturn,
+}: {
+  error: string;
+  onReturn: () => void;
+}) {
+  const { t } = useCopy();
   return (
     <section className="route-state" role="alert">
-      <h1>Route unavailable</h1>
+      <h1>{t("errors.routeTitle")}</h1>
       <p>{error}</p>
+      <p className="error-code">{t("errors.code", { code: "route-unavailable" })}</p>
       <button type="button" onClick={onReturn}>
-        Return to product home
+        {t("nav.backToChat")}
       </button>
     </section>
   );
@@ -642,12 +681,13 @@ function WorkspaceSessionEmpty({
   workspaceName: string;
   onNewSession: () => void;
 }) {
+  const { t } = useCopy();
   return (
     <section className="route-state">
       <h1>{workspaceName}</h1>
-      <p>This workspace has no active sessions.</p>
+      <p>{t("chat.startNewSession")}</p>
       <button type="button" onClick={onNewSession}>
-        New session
+        {t("nav.newSession")}
       </button>
     </section>
   );

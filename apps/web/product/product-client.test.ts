@@ -231,6 +231,36 @@ afterEach(() => {
 });
 
 describe("product API client", () => {
+  it.each([
+    null, [], "selected", 42, false, {},
+    { status: null }, { status: "unknown", reason: "untrusted" },
+    { status: "selected" }, { status: "selected", path: "   " },
+    { status: "selected", path: 42 },
+  ].map((payload) => [payload]))("maps malformed picker payload %j to unavailable", async (payload) => {
+    const client = createProductApiClient({ fetch: vi.fn(async () => jsonResponse(payload)) });
+    await expect(client.pickWorkspaceFolder()).resolves.toEqual({
+      status: "unavailable", reason: "native_folder_picker_unavailable",
+    });
+  });
+
+  it.each([
+    { status: "selected", path: "D:\\project" },
+    { status: "canceled" },
+    { status: "unavailable", reason: "unsupported_platform" },
+  ])("preserves the validated picker response %j", async (payload) => {
+    const fetchMock = vi.fn(async () => jsonResponse(payload));
+    const client = createProductApiClient({ fetch: fetchMock });
+    await expect(client.pickWorkspaceFolder()).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith("/api/product/workspace-picker", { method: "POST" });
+  });
+
+  it("preserves typed JSON and HTTP picker errors", async () => {
+    const malformed = createProductApiClient({ fetch: vi.fn(async () => new Response("not JSON")) });
+    await expect(malformed.pickWorkspaceFolder()).rejects.toBeInstanceOf(ProductApiSchemaError);
+    const failed = createProductApiClient({ fetch: vi.fn(async () => jsonResponse({ code: "unavailable", error: "Unavailable" }, 503)) });
+    await expect(failed.pickWorkspaceFolder()).rejects.toMatchObject({ status: 503, code: "unavailable" });
+  });
+
   it("uses the authenticated Desktop loopback transport", async () => {
     vi.stubGlobal("window", {
       __ROVE_API_URL__: "http://127.0.0.1:49152",

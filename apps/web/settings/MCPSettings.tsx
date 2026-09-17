@@ -1,5 +1,7 @@
 "use client";
 
+import { useCopy } from "../copy/CopyProvider";
+
 import {
   CheckIcon,
   Cross2Icon,
@@ -168,6 +170,7 @@ export function MCPSettings({
   client: SettingsPlatformClient;
   workspaceId: string | null;
 }) {
+  const { t } = useCopy();
   const [servers, setServers] = useState<ProductMcpServerConfig[]>([]);
   const [loading, setLoading] = useState(workspaceId !== null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -368,8 +371,8 @@ export function MCPSettings({
 
   if (!workspaceId) {
     return (
-      <div className="settings-card" aria-label="MCP servers">
-        <h2>MCP servers</h2>
+      <div className="settings-card" aria-label={t("mcp.title")}>
+        <h2>{t("mcp.title")}</h2>
         <p className="settings-inline-note">
           Select a workspace to manage its MCP servers.
         </p>
@@ -378,10 +381,10 @@ export function MCPSettings({
   }
 
   return (
-    <div className="mcp-settings" aria-label="MCP servers">
+    <div className="mcp-settings" aria-label={t("mcp.title")}>
       <form className="settings-card" onSubmit={(event) => void handleSave(event)} aria-busy={saving}>
         <div className="settings-card__heading">
-          <h2>{editingName ? `Edit ${editingName}` : "Add MCP server"}</h2>
+          <h2>{editingName ? t("mcp.editServerTitle", { name: editingName }) : t("mcp.addServerTitle")}</h2>
           {editingName ? (
             <button type="button" className="secondary" onClick={resetDraft} disabled={saving}>
               <Cross2Icon /> Cancel edit
@@ -391,7 +394,7 @@ export function MCPSettings({
 
         <div className="field-grid">
           <div className="field">
-            <label htmlFor="mcp-server-name">Server name</label>
+            <label htmlFor="mcp-server-name">{t("mcp.serverName")}</label>
             <input
               id="mcp-server-name"
               value={draft.name}
@@ -404,7 +407,7 @@ export function MCPSettings({
             />
           </div>
           <div className="field settings-number-field">
-            <label htmlFor="mcp-timeout">Connection timeout (ms)</label>
+            <label htmlFor="mcp-timeout">{t("mcp.timeout")}</label>
             <input
               id="mcp-timeout"
               type="number"
@@ -451,7 +454,7 @@ export function MCPSettings({
                 }))
               }
             />
-            <span>Enabled</span>
+            <span>{t("mcp.enabled")}</span>
           </label>
           <label className="settings-checkbox" htmlFor="mcp-required">
             <input
@@ -466,14 +469,14 @@ export function MCPSettings({
                 }))
               }
             />
-            <span>Required at startup</span>
+            <span>{t("mcp.required")}</span>
           </label>
         </div>
 
         {draft.transport === "stdio" ? (
           <>
             <div className="field">
-              <label htmlFor="mcp-command">Command</label>
+              <label htmlFor="mcp-command">{t("mcp.command")}</label>
               <input
                 id="mcp-command"
                 value={draft.command}
@@ -489,7 +492,7 @@ export function MCPSettings({
             </div>
             <div className="field-grid">
               <div className="field">
-                <label htmlFor="mcp-args">Arguments (one per line)</label>
+                <label htmlFor="mcp-args">{t("mcp.args")}</label>
                 <textarea
                   id="mcp-args"
                   rows={3}
@@ -504,7 +507,7 @@ export function MCPSettings({
                 />
               </div>
               <div className="field">
-                <label htmlFor="mcp-env-names">Environment names (one per line)</label>
+                <label htmlFor="mcp-env-names">{t("mcp.envNames")}</label>
                 <textarea
                   id="mcp-env-names"
                   rows={3}
@@ -544,7 +547,7 @@ export function MCPSettings({
         <div className="field-actions">
           <button type="submit" disabled={saving}>
             {editingName ? <CheckIcon /> : <PlusIcon />}
-            {saving ? "Saving..." : editingName ? "Save changes" : "Add server"}
+            {saving ? t("common.saving") : editingName ? t("memory.saveTopic") : t("mcp.addServer")}
           </button>
         </div>
         {formError ? <div className="chat-error" role="alert">{formError}</div> : null}
@@ -552,7 +555,7 @@ export function MCPSettings({
 
       <div className="settings-card" aria-busy={loading}>
         <div className="settings-card__heading">
-          <h2>Workspace servers</h2>
+          <h2>{t("mcp.workspaceServers")}</h2>
           <button
             type="button"
             className="icon-button secondary"
@@ -570,10 +573,10 @@ export function MCPSettings({
           </div>
         ) : null}
         {loading && servers.length === 0 ? (
-          <p className="settings-inline-note">Loading MCP servers...</p>
+          <p className="settings-inline-note">{t("mcp.loading")}</p>
         ) : null}
         {!loading && servers.length === 0 ? (
-          <p className="settings-inline-note">No MCP servers in this workspace.</p>
+          <p className="settings-inline-note">{t("mcp.none")}</p>
         ) : null}
         {servers.length > 0 ? (
           <div className="profile-list">
@@ -628,7 +631,7 @@ export function MCPSettings({
                     ) : null}
                     {confirming ? (
                       <div className="settings-inline-confirm" role="alert">
-                        <span>Remove {server.name} from this workspace?</span>
+                        <span>{t("mcp.removeConfirm", { name: server.name })}</span>
                         <div className="field-actions">
                           <button
                             type="button"
@@ -644,7 +647,7 @@ export function MCPSettings({
                             disabled={deleting}
                             onClick={() => void handleDelete(server.name)}
                           >
-                            <TrashIcon /> {deleting ? "Removing..." : "Confirm remove"}
+                            <TrashIcon /> {deleting ? t("common.loading") : t("mcp.remove")}
                           </button>
                         </div>
                       </div>
@@ -657,7 +660,7 @@ export function MCPSettings({
                       disabled={probe?.busy || deleting}
                       onClick={() => void handleProbe(server.name)}
                     >
-                      <MagnifyingGlassIcon /> {probe?.busy ? "Testing..." : "Test"}
+                      <MagnifyingGlassIcon /> {probe?.busy ? t("memory.testing") : t("memory.testServer")}
                     </button>
                     <button
                       type="button"
@@ -665,7 +668,7 @@ export function MCPSettings({
                       disabled={saving || deleting}
                       onClick={() => startEdit(server)}
                     >
-                      <Pencil2Icon /> Edit
+                      <Pencil2Icon /> {t("settings.providers.edit")}
                     </button>
                     <button
                       type="button"
@@ -673,7 +676,7 @@ export function MCPSettings({
                       disabled={deleting || confirming}
                       onClick={() => setConfirmingDelete(server.name)}
                     >
-                      <TrashIcon /> Remove
+                      <TrashIcon /> {t("mcp.remove")}
                     </button>
                   </div>
                 </div>

@@ -1,8 +1,8 @@
 # 产品界面内容收敛与双语化计划
 
-> Status: **Proposed / Not Implemented**
+> Status: **Implemented in feature branch `feature/ui-content-convergence`（待用户审阅合入）**
 >
-> Date: 2026-09-13（初稿）· 补充决策见 §0.2
+> Date: 2026-09-13（初稿）· 补充决策见 §0.2 · 实现验证见文末
 >
 > Base: `main` at `b652ec7`（docs: add architecture-walkthrough series）
 >
@@ -183,19 +183,19 @@
 
 合计约 **4–6 人日**（含 i18n）。
 
-工作流：在独立 worktree 进行；**改动先留工作区，用户本地确认效果前不 commit**；启动 dev server / 运行测试前征得同意；每阶段完成汇报一次。
+工作流：在独立 worktree 进行；**改动先留工作区，用户本地确认效果前不 commit**；本地 dev server、单测、类型检查、构建及 Playwright 验证可直接执行，无需逐次征得同意（2026-09-17 用户授权）；真实外部服务和发布仍须单独授权；每阶段完成汇报一次。
 
-### Phase 2 — 视觉两版对比（本文档之后、独立计划）
+### Phase 2 — 视觉两版对比（已实现可切换皮肤，待审美定稿）
 
-- 输入：Phase 1 定稿后的 DOM/文案 + HTML 原型中的暖米色/冷色精修两方案 + [UI V3 重塑文档](../design/2026-08-24-frontend-ui-v3-restyle-implementation.md) 与 tokens 附录。
-- 产出：两版可运行对比（或截图），定稿后再做生产换肤与清理。
-- 本文档不展开 Phase 2 任务。
+- **已落地，默认暖米色，审美验收待确认**：默认皮肤为 **暖米色**（`data-skin=warm`）；Settings → 通用 →「界面风格」仍可切到 **冷色精修**（`data-skin=cool`）对比。选择写入 `rove.ui-skin`。
+- 冷色精修：微调 `product-v2.css` 浅色 token（更干净的冰青灰 + 海港蓝信号色）。
+- 暖米色：`apps/web/styles/v3/`（tokens + base），terracotta 强调 + 暖米背景层级；不改 DOM/布局选择器。
+- **待用户审美确认**：两边都可运行对比；定稿后可删另一方案或把默认 skin 改为胜出方。
 
-### Phase 3 — 收尾与扩展（可选后续）
+### Phase 3 — 收尾与扩展（部分完成）
 
-- `/dev` chunk 构建期剔除。
-- 更多语言词条、按需的语言协商。
-- 流式打字机节奏等表现层增强（参考 `2026-08-09-frontend-elegance-reference.md`，非本计划范围）。
+- `/dev` 路由：已用 `app/dev/layout.tsx` 在生产构建 `notFound()`（JS chunk 仍在包内，见 §9）。
+- 更多语言 / 打字机节奏 / 构建期彻底剔除 `/dev` chunk：**未做**，保留为后续。
 
 ## 9. 开放问题
 
@@ -203,3 +203,34 @@
 
 1. **生产包内残留 `/dev` chunk**：门禁后无入口但代码仍在包内（§4 P4 已知限制），可接受；构建期剔除见 Phase 3。
 2. **默认 locale 构建期覆盖**：若 Desktop 发行需要英文默认，用 `ROVE_DEFAULT_LOCALE` 在构建时覆盖即可，无需改代码结构。
+
+## 10. 实现验证记录（worktree，待合入）
+
+分支：`feature/ui-content-convergence`（基于 `main@bd030a8`）
+
+### 已落地
+
+- `apps/web/copy/`：`zh-CN` / `en-US` 字典、`CopyProvider`、`t()` 插值、`rove.locale` 持久化、默认 **zh-CN**。
+- Settings → 通用：语言切换 + **界面风格**（冷色精修 / 暖米色）。
+- RunInspector：移除内部 ID / prompt hash / canonical 事件 / 风险标注；改为运行摘要 + 活动时间线。
+- 对话流 / 外壳 / 侧栏 / Providers / Tools / Workspace / Memory / Keyboard / MCP / 快速模型控件 / M1 迁移主路径入典。
+- Fake → 本地演示；连接测试不再暴露 `key_present` / wire；Benchmark runner 移出产品 Settings 与 workbench。
+- `/dev` 路由：`app/dev/layout.tsx` 生产构建 `notFound()` 门禁。
+- 双视觉皮肤：`styles/v3/` 暖米色 + `product-v2.css` 冷色精修 token 微调。
+
+### 2026-09-16 历史验证记录（非当前工作区全绿证明）
+
+```powershell
+cd apps/web
+pnpm typecheck   # 通过
+pnpm test        # 39 files / 263 tests 通过
+pnpm test:e2e -- --workers=2   # 56 passed, 5 skipped（real-api opt-in）, 0 failed
+pnpm build       # 通过
+```
+
+### 已知残留（非阻塞）
+
+- `/dev/workbench` 开发台文案不入产品字典。
+- `/dev` 路由 JS chunk 仍在生产包内（运行时不可达）。
+- `real-api.spec.ts` 为 opt-in，本轮未跑真实 API。
+- 视觉定稿（冷色 vs 暖米色）待用户二选一。

@@ -3,6 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ProductReview } from "../product/product-api-types";
 import { ReviewPanel } from "./ReviewPanel";
+const copyState = vi.hoisted(() => ({ locale: "zh-CN" as "zh-CN" | "en-US" }));
+vi.mock("../copy/CopyProvider", async () => {
+  const { createTranslator } = await import("../copy");
+  return { useCopy: () => ({ t: createTranslator(copyState.locale) }) };
+});
+import type { Locale } from "../copy";
 
 const target = {
   schema_version: 1,
@@ -53,7 +59,8 @@ function review(status: ProductReview["status"]): ProductReview {
   };
 }
 
-function renderReview(selected: ProductReview, findings = [] as Array<{ finding: typeof finding; sort_key: string }>) {
+function renderReview(selected: ProductReview, findings = [] as Array<{ finding: typeof finding; sort_key: string }>, locale: Locale = "zh-CN", error: string | null = null) {
+  copyState.locale = locale;
   return renderToStaticMarkup(
     <ReviewPanel
       reviews={[selected]}
@@ -63,7 +70,7 @@ function renderReview(selected: ProductReview, findings = [] as Array<{ finding:
       findingsCursor={null}
       findingsLoading={false}
       loading={false}
-      error={null}
+      error={error}
       onSelect={vi.fn()}
       onRefresh={vi.fn()}
       onCancel={vi.fn()}
@@ -74,28 +81,39 @@ function renderReview(selected: ProductReview, findings = [] as Array<{ finding:
 }
 
 describe("ReviewPanel", () => {
+  it("localizes chrome without translating findings or exposing diagnostics", () => {
+    const html = renderReview(review("findings"), [{ finding, sort_key: "001" }], "en-US", "secret-token raw payload");
+    expect(html).toContain("Read-only Review");
+    expect(html).toContain("Open in Files");
+    expect(html).toContain(finding.title);
+    expect(html).toContain(finding.explanation);
+    expect(html).toContain("Refresh and retry");
+    expect(html).not.toContain("secret-token");
+    expect(html).not.toContain("raw payload");
+    expect(html).not.toContain("Apply fix");
+  });
   it("renders sanitized findings with path and line navigation", () => {
     const html = renderReview(review("findings"), [{ finding, sort_key: "001" }]);
 
     expect(html).toContain("Incorrect branch");
     expect(html).toContain("src/lib.rs:12");
-    expect(html).toContain("Open in Files");
+    expect(html).toContain("在文件中打开");
     expect(html).not.toContain("snapshot_bytes");
   });
 
   it.each([
-    ["pass", "No actionable findings"],
-    ["partial", "bounded or unchecked"],
-    ["stale", "target changed"],
-    ["needs_attention", "needs attention"],
-    ["unavailable", "unavailable"],
-    ["cancelled", "cancelled"],
-    ["error", "runtime failed"],
+    ["pass", "未报告需要处理的问题"],
+    ["partial", "部分内容未完成检查"],
+    ["stale", "目标已更改"],
+    ["needs_attention", "需要关注"],
+    ["unavailable", "审查目标或服务不可用"],
+    ["cancelled", "审查已取消"],
+    ["error", "审查失败"],
   ] as const)("renders the %s terminal state", (status, text) => {
     expect(renderReview(review(status))).toContain(text);
   });
 
   it("keeps cancellation available for a running Review", () => {
-    expect(renderReview(review("running"))).toContain('aria-label="Cancel Review"');
+    expect(renderReview(review("running"))).toContain('aria-label="取消审查"');
   });
 });

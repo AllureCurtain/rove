@@ -145,7 +145,7 @@ export function providerDisplayName(type: ProviderType | "default"): string {
     case "ollama":
       return "Ollama";
     case "fake":
-      return "Fake";
+      return "Local demo";
     default:
       return "Runtime default";
   }

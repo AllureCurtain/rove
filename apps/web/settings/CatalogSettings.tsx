@@ -18,6 +18,7 @@ import {
 } from "react";
 
 import { createProductApiClient } from "../product/product-client";
+import { useCopy } from "../copy/CopyProvider";
 import { downloadEvidenceFile } from "../product/evidence-export";
 import type { SessionRecord, WorkspaceRecord } from "../state/product-types";
 import {
@@ -148,6 +149,7 @@ export function WorkspaceSettings({
   onRemoveWorkspace,
   projectTrust,
 }: WorkspaceSettingsProps) {
+  const { t } = useCopy();
   const sortedWorkspaces = useMemo(() => sortCatalogWorkspaces(workspaces), [workspaces]);
   const actions = useGuardedItemActions();
   const [confirmingRemovalId, setConfirmingRemovalId] = useState<string | null>(null);
@@ -161,28 +163,25 @@ export function WorkspaceSettings({
 
   return (
     <div className="settings-panel">
-      <h1>Workspace / Paths</h1>
+      <h1>{t("settings.sectionWorkspace")}</h1>
       <p className="lede">
-        Manage the durable workspace catalog and the local roots available to rove.
+        {t("workspace.pathRulesBody")}
       </p>
 
       <div className="settings-card">
-        <h2>Path rules</h2>
+        <h2>{t("workspace.pathRules")}</h2>
         <div className="placeholder-note">
-          Add workspaces from the workspace sidebar using an absolute local path. Folder roots
-          expose that directory; Repo roots identify a repository checkout. Removing an entry
-          removes its sessions from the product catalog, but never deletes files from disk.
+          {t("workspace.pathRulesBody")}
         </div>
       </div>
 
       {projectTrust}
 
       <div className="settings-card" aria-busy={sortedWorkspaces.some((item) => actions.isBusy(item.id))}>
-        <h2>Known workspaces</h2>
+        <h2>{t("workspace.known")}</h2>
         {sortedWorkspaces.length === 0 ? (
           <p style={{ margin: 0, color: "var(--muted)" }}>
-            No workspaces are registered yet. Add an absolute Folder or Repo path from the main
-            workspace sidebar.
+            {t("workspace.none")}
           </p>
         ) : (
           <div className="profile-list">
@@ -202,7 +201,7 @@ export function WorkspaceSettings({
                     <strong>{workspace.displayName}{active ? " (active)" : ""}</strong>
                     <span style={{ display: "block", marginTop: 3 }}>
                       {workspaceKindLabel(workspace.kind)}
-                      {workspace.pinned ? " · Pinned" : ""}
+                      {workspace.pinned ? ` · ${t("workspace.pinned")}` : ""}
                       {` · Opened ${formatTimestamp(workspace.lastOpenedAt)}`}
                     </span>
                     <span style={{ display: "block", marginTop: 3 }} title={workspace.rootPath}>
@@ -215,8 +214,7 @@ export function WorkspaceSettings({
                     ) : null}
                     {confirming ? (
                       <div className="placeholder-note" role="alert" style={{ marginTop: 8 }}>
-                        Remove this workspace and its sessions from the catalog? Local files are
-                        not deleted.
+                        {t("workspace.removeConfirm")}
                         <div className="field-actions" style={{ marginTop: 10 }}>
                           <button
                             type="button"
@@ -224,7 +222,7 @@ export function WorkspaceSettings({
                             disabled={busy}
                             onClick={() => setConfirmingRemovalId(null)}
                           >
-                            <Cross2Icon /> Cancel
+                            <Cross2Icon /> {t("common.cancel")}
                           </button>
                           <button
                             type="button"
@@ -232,7 +230,7 @@ export function WorkspaceSettings({
                             disabled={busy}
                             onClick={() => void handleRemove(workspace.id)}
                           >
-                            <TrashIcon /> {busy ? "Removing…" : "Confirm remove"}
+                            <TrashIcon /> {busy ? t("common.loading") : t("workspace.remove")}
                           </button>
                         </div>
                       </div>
@@ -246,7 +244,7 @@ export function WorkspaceSettings({
                         disabled={busy}
                         onClick={() => void actions.run(workspace.id, () => onSelectWorkspace(workspace.id))}
                       >
-                        Open
+                        {t("empty.open")}
                       </button>
                     ) : null}
                     <button
@@ -256,7 +254,7 @@ export function WorkspaceSettings({
                       onClick={() => void actions.run(workspace.id, () => onTogglePin(workspace.id))}
                     >
                       {workspace.pinned ? <DrawingPinFilledIcon /> : <DrawingPinIcon />}
-                      {workspace.pinned ? "Unpin" : "Pin"}
+                      {workspace.pinned ? t("workspace.unpin") : t("workspace.pin")}
                     </button>
                     <button
                       type="button"
@@ -267,7 +265,7 @@ export function WorkspaceSettings({
                         setConfirmingRemovalId(workspace.id);
                       }}
                     >
-                      <TrashIcon /> Remove
+                      <TrashIcon /> {t("workspace.remove")}
                     </button>
                   </div>
                 </div>
@@ -295,6 +293,7 @@ function SessionRow({
   onRenameSession: SessionsSettingsProps["onRenameSession"];
   onDeleteSession: SessionsSettingsProps["onDeleteSession"];
 }) {
+  const { t } = useCopy();
   const actions = useGuardedItemActions();
   const busy = actions.isBusy(session.id);
   const error = actions.errorFor(session.id);
@@ -354,7 +353,7 @@ function SessionRow({
         {editing ? (
           <form onSubmit={(event) => void handleRename(event)} style={{ marginTop: 10 }}>
             <div className="field">
-              <label htmlFor={`session-title-${session.id}`}>Session name</label>
+              <label htmlFor={`session-title-${session.id}`}>{t("workspace.sessionName")}</label>
               <input
                 id={`session-title-${session.id}`}
                 value={title}
@@ -366,7 +365,7 @@ function SessionRow({
             </div>
             <div className="field-actions" style={{ marginTop: 8 }}>
               <button type="submit" disabled={busy || title.trim().length === 0}>
-                <CheckIcon /> {busy ? "Saving…" : "Save"}
+                <CheckIcon /> {busy ? t("common.saving") : t("common.save")}
               </button>
               <button
                 type="button"
@@ -377,7 +376,7 @@ function SessionRow({
                   setEditing(false);
                 }}
               >
-                <Cross2Icon /> Cancel
+                <Cross2Icon /> {t("common.cancel")}
               </button>
             </div>
           </form>
@@ -401,7 +400,7 @@ function SessionRow({
                 disabled={busy}
                 onClick={() => void handleDelete()}
               >
-                <TrashIcon /> {busy ? "Deleting…" : "Confirm delete"}
+                <TrashIcon /> {busy ? t("common.loading") : t("settings.providers.delete")}
               </button>
             </div>
           </div>
@@ -420,7 +419,7 @@ function SessionRow({
             disabled={busy || !canSelect}
             onClick={() => void actions.run(session.id, () => onSelectSession(session.workspaceId, session.id))}
           >
-            Open
+            {t("common.back")}
           </button>
         ) : null}
         <button
@@ -433,7 +432,7 @@ function SessionRow({
             setEditing(true);
           }}
         >
-          <Pencil2Icon /> Rename
+          <Pencil2Icon /> {t("settings.providers.edit")}
         </button>
         <button
           type="button"
@@ -441,7 +440,7 @@ function SessionRow({
           disabled={busy}
           onClick={() => void handleExport()}
         >
-          <DownloadIcon /> Evidence export
+          <DownloadIcon /> {t("settings.export.title")}
         </button>
         <button
           type="button"
@@ -452,7 +451,7 @@ function SessionRow({
             setConfirmingDelete(true);
           }}
         >
-          <TrashIcon /> Delete
+          <TrashIcon /> {t("settings.providers.delete")}
         </button>
       </div>
     </div>
@@ -467,6 +466,7 @@ export function SessionsSettings({
   onRenameSession,
   onDeleteSession,
 }: SessionsSettingsProps) {
+  const { t } = useCopy();
   const groups = useMemo(
     () => groupCatalogSessions(workspaces, sessions),
     [sessions, workspaces],
@@ -474,15 +474,15 @@ export function SessionsSettings({
 
   return (
     <div className="settings-panel">
-      <h1>Sessions</h1>
+      <h1>{t("settings.sectionSessions")}</h1>
       <p className="lede">
-        Rename, open, export redacted session evidence, or remove durable conversation entries grouped by workspace.
+        {t("settings.lede")}
       </p>
       {groups.length === 0 ? (
         <div className="settings-card">
-          <h2>No sessions</h2>
+          <h2>{t("workspace.noSessions")}</h2>
           <p style={{ margin: 0, color: "var(--muted)" }}>
-            Sessions appear here after a workspace is opened.
+            {t("workspace.noSessionsBody")}
           </p>
         </div>
       ) : (

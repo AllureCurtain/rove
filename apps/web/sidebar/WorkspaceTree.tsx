@@ -22,6 +22,7 @@ import {
   desktopWorkspacePickerAvailable,
   selectDesktopWorkspace,
 } from "../platform/desktop-commands";
+import { useCopy } from "../copy/CopyProvider";
 import type { SessionRecord, WorkspaceKind, WorkspaceRecord } from "../state/product-types";
 
 export function WorkspaceTree({
@@ -55,6 +56,7 @@ export function WorkspaceTree({
   onCloseMobile?: () => void;
   onOpenSettings?: () => void;
 }) {
+  const { t } = useCopy();
   const [openDialog, setOpenDialog] = useState(false);
   const [query, setQuery] = useState("");
   const addWorkspaceButtonRef = useRef<HTMLButtonElement>(null);
@@ -114,13 +116,13 @@ export function WorkspaceTree({
       }
     >
       <div className="product-sidebar__header">
-        <h2>Workspaces</h2>
+        <h2>{t("workspace.label")}</h2>
         <button
           ref={addWorkspaceButtonRef}
           type="button"
           className="secondary icon-button"
           onClick={() => setOpenDialog(true)}
-          aria-label="Add workspace"
+          aria-label={t("workspace.add")}
           disabled={mutationBusy}
         >
           <PlusIcon />
@@ -130,7 +132,7 @@ export function WorkspaceTree({
             ref={closeMobileButtonRef}
             type="button"
             className="ghost icon-button mobile-only"
-            aria-label="Close workspaces"
+            aria-label={t("workspace.close")}
             onClick={onCloseMobile}
           >
             <Cross2Icon />
@@ -141,15 +143,15 @@ export function WorkspaceTree({
         <MagnifyingGlassIcon aria-hidden="true" />
         <input
           type="search"
-          aria-label="Search workspaces and sessions"
+          aria-label={t("workspace.search")}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search sessions"
+          placeholder={t("workspace.searchPlaceholder")}
         />
       </label>
       <div className="product-sidebar__scroll">
         {workspaces.length === 0 ? (
-          <p className="sidebar-empty">No workspaces yet. Open a local folder or repo path.</p>
+          <p className="sidebar-empty">{t("workspace.none")}</p>
         ) : (
           workspaces.map((workspace) => {
             const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -196,28 +198,34 @@ export function WorkspaceTree({
                         <span
                           className="session-badge"
                           data-status="running"
-                          title={`${runningCount} session${runningCount === 1 ? "" : "s"} running`}
+                          title={t("workspace.runningCount", { count: runningCount })}
                         >
-                          {runningCount === 1 ? "Running" : `${runningCount} running`}
+                          {runningCount === 1
+                            ? t("workspace.running")
+                            : t("workspace.runningCount", { count: runningCount })}
                         </span>
                       ) : null}
                       {runningCount === 0 && attentionCount > 0 ? (
                         <span className="session-badge" data-status="needs_attention">
-                          Needs attention
+                          {t("workspace.needsAttention")}
                         </span>
                       ) : null}
                       {runningCount === 0 && attentionCount === 0 && errorCount > 0 ? (
                         <span className="session-badge" data-status="error">
-                          Error
+                          {t("inspector.statusFailed")}
                         </span>
                       ) : null}
                     </span>
-                    <span className="workspace-group__path">{workspace.rootPath}</span>
+                    <span className="workspace-group__path">{formatDisplayPath(workspace.rootPath)}</span>
                   </button>
                   <button
                     type="button"
                     className="ghost icon-button"
-                    aria-label={workspace.pinned ? "Unpin workspace" : "Pin workspace"}
+                    aria-label={
+                      workspace.pinned
+                        ? t("workspace.unpinWorkspace")
+                        : t("workspace.pinWorkspace")
+                    }
                     onClick={() => onTogglePin(workspace.id)}
                     disabled={mutationBusy}
                   >
@@ -226,7 +234,7 @@ export function WorkspaceTree({
                   <button
                     type="button"
                     className="ghost icon-button"
-                    aria-label="Remove workspace from list"
+                    aria-label={t("workspace.removeWorkspace")}
                     onClick={() => onRemoveWorkspace(workspace.id)}
                     disabled={mutationBusy}
                   >
@@ -249,13 +257,13 @@ export function WorkspaceTree({
                         onClick={() => onNewSession(workspace.id)}
                         disabled={mutationBusy}
                       >
-                        New session
+                        {t("nav.newSession")}
                       </button>
                     </div>
                   </>
                 ) : runningCount > 0 ? (
                   <p className="workspace-group__parallel" role="status">
-                    {runningCount} parallel session{runningCount === 1 ? "" : "s"} still running
+                    {t("workspace.runningCount", { count: runningCount })}
                   </p>
                 ) : null}
               </div>
@@ -266,11 +274,11 @@ export function WorkspaceTree({
       <footer className="product-sidebar__footer">
         <div className="workspace-boundary">
           <LockClosedIcon />
-          <span><strong>Bounded roots</strong><small>API-authoritative workspaces</small></span>
+          <span><strong>{t("workspace.label")}</strong><small>{t("workspace.known")}</small></span>
         </div>
         {onOpenSettings ? (
           <button type="button" className="ghost" onClick={onOpenSettings}>
-            <GearIcon /> Product settings
+            <GearIcon /> {t("nav.settings")}
           </button>
         ) : null}
       </footer>
@@ -300,6 +308,7 @@ function SessionBranchList({
   mutationBusy: boolean;
   onSelectSession: (workspaceId: string, sessionId: string) => void;
 }) {
+  const { t } = useCopy();
   const visibleSessionIds = new Set(sessions.map((session) => session.id));
   const childrenByParent = new Map<string, SessionRecord[]>();
   for (const session of sessions) {
@@ -316,7 +325,7 @@ function SessionBranchList({
   );
 
   return (
-    <ul className="session-list" aria-label="Sessions and branches">
+    <ul className="session-list" aria-label={t("workspace.sessionsAndBranches")}>
       {roots.map((session) => (
         <SessionBranch
           key={session.id}
@@ -352,6 +361,7 @@ function SessionBranch({
   mutationBusy: boolean;
   onSelectSession: (workspaceId: string, sessionId: string) => void;
 }) {
+  const { t } = useCopy();
   const children = childrenByParent.get(session.id) ?? [];
   return (
     <li
@@ -365,20 +375,20 @@ function SessionBranch({
         data-active={session.id === activeSessionId}
         data-status={session.status}
         onClick={() => onSelectSession(workspaceId, session.id)}
-        aria-label={sessionAriaLabel(session, parentAvailable)}
+        aria-label={sessionAriaLabel(session, parentAvailable, t)}
         disabled={mutationBusy}
       >
         <span className="session-item__title">
           <span>{session.title}</span>
           {session.parentSessionId ? (
             <small className="session-item__lineage">
-              {forkPointLabel(session, parentAvailable)}
+              {forkPointLabel(session, parentAvailable, t)}
             </small>
           ) : null}
         </span>
         {session.status !== "idle" ? (
           <span className="session-badge" data-status={session.status}>
-            {sessionStatusLabel(session.status)}
+            {sessionStatusLabel(session.status, t)}
           </span>
         ) : null}
         <span
@@ -430,41 +440,58 @@ function trapFocus(event: KeyboardEvent<HTMLElement>) {
   }
 }
 
-function sessionStatusLabel(status: SessionRecord["status"]): string {
+function sessionStatusLabel(
+  status: SessionRecord["status"],
+  t: (path: string) => string,
+): string {
   switch (status) {
     case "running":
-      return "Running";
+      return t("workspace.running");
     case "needs_attention":
-      return "Attention";
+      return t("workspace.needsAttention");
     case "error":
-      return "Error";
+      return t("inspector.statusFailed");
     default:
-      return "Idle";
+      return t("inspector.statusQueued");
   }
 }
 
-function sessionAriaLabel(session: SessionRecord, parentAvailable: boolean): string {
+function sessionAriaLabel(
+  session: SessionRecord,
+  parentAvailable: boolean,
+  t: (path: string) => string,
+): string {
   const lineage = session.parentSessionId
     ? parentAvailable
-      ? "Forked session, "
-      : "Forked session with removed parent, "
+      ? `${t("workspace.forked")}, `
+      : `${t("workspace.forkedRemovedParent")}, `
     : "";
   if (session.status === "idle") {
     return `${lineage}${session.title}`;
   }
-  return `${lineage}${session.title}, ${sessionStatusLabel(session.status)}`;
+  return `${lineage}${session.title}, ${sessionStatusLabel(session.status, t)}`;
 }
 
-function forkPointLabel(session: SessionRecord, parentAvailable: boolean): string {
+function forkPointLabel(
+  session: SessionRecord,
+  parentAvailable: boolean,
+  t: (path: string) => string,
+): string {
   const source = session.forkPointRunId
     ? shortId(session.forkPointRunId)
-    : "boundary unavailable";
-  const sequence = session.forkPointSeq ? `event ${session.forkPointSeq}` : "event unavailable";
-  return `${parentAvailable ? "Fork" : "Parent removed"} · ${source} · ${sequence}`;
+    : t("inspector.notAvailable");
+  const sequence = session.forkPointSeq
+    ? `event ${session.forkPointSeq}`
+    : t("inspector.notAvailable");
+  return `${parentAvailable ? t("workspace.forkPrefix") : t("workspace.parentRemoved")} · ${source} · ${sequence}`;
 }
 
 function shortId(value: string): string {
   return value.length <= 10 ? value : value.slice(0, 10);
+}
+
+function formatDisplayPath(path: string): string {
+  return path.startsWith("\\\\?\\") ? path.slice(4) : path;
 }
 
 function OpenWorkspaceDialog({
@@ -474,6 +501,7 @@ function OpenWorkspaceDialog({
   onOpen: (path: string, kind: WorkspaceKind) => void;
   onCancel: () => void;
 }) {
+  const { t } = useCopy();
   const [path, setPath] = useState("");
   const [kind, setKind] = useState<WorkspaceKind>("folder");
   const [error, setError] = useState<string | null>(null);
@@ -488,7 +516,7 @@ function OpenWorkspaceDialog({
     event.preventDefault();
     const trimmed = path.trim();
     if (!trimmed) {
-      setError("Enter an absolute path.");
+      setError(t("empty.pathRequired"));
       return;
     }
     setError(null);
@@ -504,7 +532,7 @@ function OpenWorkspaceDialog({
         setPath(selected);
       }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Failed to open folder picker.");
+      setError(caught instanceof Error ? caught.message : t("workspace.openPickerFailed"));
     } finally {
       setPickerBusy(false);
     }
@@ -550,12 +578,12 @@ function OpenWorkspaceDialog({
         aria-modal="true"
         aria-labelledby="open-workspace-title"
       >
-        <h2 id="open-workspace-title">Open workspace</h2>
+        <h2 id="open-workspace-title">{t("empty.open")}</h2>
         <p className="modal-card__lede">
           Bind the agent to an absolute local folder or repository path. No full-disk scan.
         </p>
         <div className="field">
-          <label htmlFor="workspace-path">Absolute path</label>
+          <label htmlFor="workspace-path">{t("empty.absolutePath")}</label>
           <div className="workspace-path-control">
             <input
               id="workspace-path"
@@ -580,14 +608,14 @@ function OpenWorkspaceDialog({
           </div>
         </div>
         <div className="field">
-          <label htmlFor="workspace-kind">Kind</label>
+          <label htmlFor="workspace-kind">{t("empty.kind")}</label>
           <select
             id="workspace-kind"
             value={kind}
             onChange={(event) => setKind(event.target.value as WorkspaceKind)}
           >
-            <option value="folder">Folder</option>
-            <option value="repo">Repo</option>
+            <option value="folder">{t("empty.folder")}</option>
+            <option value="repo">{t("empty.repo")}</option>
           </select>
         </div>
         {error ? (
@@ -599,7 +627,7 @@ function OpenWorkspaceDialog({
           <button type="button" className="secondary" onClick={onCancel}>
             Cancel
           </button>
-          <button type="submit">Open</button>
+          <button type="submit">{t("empty.open")}</button>
         </div>
       </form>
     </div>

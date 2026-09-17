@@ -2,6 +2,8 @@
 
 import { MagnifyingGlassIcon, ReloadIcon, StopIcon } from "@radix-ui/react-icons";
 import { useEffect, useRef } from "react";
+import { useCopy } from "../copy/CopyProvider";
+import type { createTranslator } from "../copy";
 
 import type {
   ProductReview,
@@ -37,6 +39,7 @@ export function ReviewPanel({
   onLoadFindings: (reviewId: string, cursor?: number) => void;
   onOpenFinding: (path: string, line: number) => void;
 }) {
+  const { t } = useCopy();
   const requestedReviewIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (
@@ -58,35 +61,35 @@ export function ReviewPanel({
   }, [selectedReviewId]);
 
   return (
-    <section className="review-panel" aria-label="Read-only Review" data-review-panel>
+    <section className="review-panel" aria-label={t("review.title")} data-review-panel>
       <div className="inspector-section__heading">
-        <h3>Read-only Review</h3>
+        <h3>{t("review.title")}</h3>
         <button
           type="button"
           className="ghost icon-button"
           onClick={onRefresh}
           disabled={loading}
-          aria-label="Refresh Reviews"
-          title="Refresh Reviews"
+          aria-label={t("review.refresh")}
+          title={t("review.refresh")}
         >
           <ReloadIcon />
         </button>
       </div>
-      {error ? <p className="inspector-empty-line" role="alert">{error}</p> : null}
+      {error ? <p className="inspector-empty-line" role="alert">{t("review.error")}</p> : null}
       {loading && reviews.length === 0 ? (
-        <p className="inspector-empty-line" role="status">Loading Reviews…</p>
+        <p className="inspector-empty-line" role="status">{t("review.loading")}</p>
       ) : null}
       {reviews.length === 0 && !loading ? (
         <div className="inspector-state" data-tone="empty" role="status">
           <MagnifyingGlassIcon aria-hidden="true" />
-          <strong>No Review runs</strong>
-          <p>Start a Review from the composer to inspect a Git target without changing it.</p>
+          <strong>{t("review.empty")}</strong>
+          <p>{t("review.emptyBody")}</p>
         </div>
       ) : null}
       {reviews.length > 0 ? (
         <>
           <label className="review-panel__select-label" htmlFor="review-run-select">
-            Review run
+            {t("review.run")}
           </label>
           <select
             id="review-run-select"
@@ -95,7 +98,7 @@ export function ReviewPanel({
           >
             {reviews.map((review) => (
               <option key={review.id} value={review.id}>
-                {targetLabel(review)} · {statusLabel(review.status)}
+                {targetLabel(review, t)} · {t(`review.status_${review.status}`)}
               </option>
             ))}
           </select>
@@ -133,47 +136,48 @@ function ReviewDetails({
   onLoadFindings: (reviewId: string, cursor?: number) => void;
   onOpenFinding: (path: string, line: number) => void;
 }) {
+  const { t } = useCopy();
   const result = review.result;
   const statusTone = reviewStatusTone(review.status);
   const isActive = review.status === "queued" || review.status === "running";
   return (
     <div className="review-panel__details" data-review-status={review.status}>
       <div className="inspector-section__heading">
-        <span data-tone={statusTone}>{statusLabel(review.status)}</span>
+        <span data-tone={statusTone}>{t(`review.status_${review.status}`)}</span>
         {isActive ? (
           <button
             type="button"
             className="ghost icon-button"
             onClick={() => onCancel(review.id)}
-            aria-label="Cancel Review"
-            title="Cancel Review"
+            aria-label={t("review.cancel")}
+            title={t("review.cancel")}
           >
             <StopIcon />
           </button>
         ) : null}
       </div>
       <dl className="inspector-facts">
-        <div><dt>Target</dt><dd>{targetLabel(review)}</dd></div>
-        <div><dt>Files</dt><dd>{review.target.entries}</dd></div>
-        <div><dt>Findings</dt><dd>{review.findings_count}</dd></div>
+        <div><dt>{t("review.target")}</dt><dd>{targetLabel(review, t)}</dd></div>
+        <div><dt>{t("review.files")}</dt><dd>{review.target.entries}</dd></div>
+        <div><dt>{t("review.findings")}</dt><dd>{review.findings_count}</dd></div>
         {review.unchecked_count > 0 ? (
-          <div><dt>Unchecked</dt><dd>{review.unchecked_count}</dd></div>
+          <div><dt>{t("review.unchecked")}</dt><dd>{review.unchecked_count}</dd></div>
         ) : null}
         {review.warnings_count > 0 ? (
-          <div><dt>Warnings</dt><dd>{review.warnings_count}</dd></div>
+          <div><dt>{t("review.warnings")}</dt><dd>{review.warnings_count}</dd></div>
         ) : null}
       </dl>
       {review.status === "pass" ? (
-        <p className="review-panel__state" data-tone="ok">No actionable findings were reported.</p>
+        <p className="review-panel__state" data-tone="ok">{t("review.passBody")}</p>
       ) : null}
       {review.findings_count > 0 ? (
         <div className="review-panel__findings">
-          <strong>Findings</strong>
+          <strong>{t("review.findings")}</strong>
           {findings.length === 0 && findingsLoading ? (
-            <p className="inspector-empty-line">Loading findings…</p>
+            <p className="inspector-empty-line">{t("review.loadingFindings")}</p>
           ) : null}
           {findings.length === 0 && !findingsLoading ? (
-            <p className="inspector-empty-line">Finding details are unavailable.</p>
+            <p className="inspector-empty-line">{t("review.unavailableFindings")}</p>
           ) : null}
           <ul className="review-finding-list">
             {findings.map(({ finding }) => (
@@ -189,7 +193,7 @@ function ReviewDetails({
                   className="ghost"
                   onClick={() => onOpenFinding(finding.path, finding.location.start_line || 1)}
                 >
-                  Open in Files
+                  {t("review.openFiles")}
                 </button>
               </li>
             ))}
@@ -201,47 +205,43 @@ function ReviewDetails({
               disabled={findingsLoading}
               onClick={() => onLoadFindings(review.id, findingsCursor)}
             >
-              {findingsLoading ? "Loading…" : "Load more findings"}
+              {findingsLoading ? t("common.loading") : t("review.more")}
             </button>
           ) : null}
         </div>
       ) : null}
       {review.status === "partial" ? (
         <p className="review-panel__state" data-tone="working">
-          Review completed with bounded or unchecked portions. Inspect warnings before acting.
+          {t("review.partialBody")}
         </p>
       ) : null}
       {review.status === "stale" || review.status === "needs_attention" ? (
         <p className="review-panel__state" data-tone="error">
-          The target changed or needs attention. Start a new Review for the current files.
+          {t("review.staleBody")}
         </p>
       ) : null}
       {review.status === "unavailable" ? (
-        <p className="review-panel__state" data-tone="error">The Review target or runtime is unavailable.</p>
+        <p className="review-panel__state" data-tone="error">{t("review.unavailableBody")}</p>
       ) : null}
       {review.status === "cancelled" ? (
-        <p className="review-panel__state">Review was cancelled before completion.</p>
+        <p className="review-panel__state">{t("review.cancelledBody")}</p>
       ) : null}
       {review.status === "error" ? (
-        <p className="review-panel__state" data-tone="error">Review runtime failed. No chat turn was changed.</p>
+        <p className="review-panel__state" data-tone="error">{t("review.errorBody")}</p>
       ) : null}
       {result?.warnings.length ? (
-        <p className="inspector-empty-line">{result.warnings[0]}</p>
+        <p className="inspector-empty-line">{t("review.warningBody")}</p>
       ) : null}
     </div>
   );
 }
 
-function targetLabel(review: ProductReview): string {
+function targetLabel(review: ProductReview, t: ReturnType<typeof createTranslator>): string {
   const { spec } = review.target;
   if (spec.kind === "uncommitted") {
-    return "Uncommitted changes";
+    return t("chat.reviewUncommitted");
   }
-  return `${spec.kind === "base" ? "Base" : "Commit"}: ${spec.revision ?? "unknown"}`;
-}
-
-function statusLabel(status: ProductReview["status"]): string {
-  return status.replaceAll("_", " ");
+  return `${t(spec.kind === "base" ? "chat.reviewBase" : "chat.reviewCommit")}: ${spec.revision ?? t("review.unknown")}`;
 }
 
 function reviewStatusTone(status: ProductReview["status"]): "ok" | "working" | "error" | undefined {

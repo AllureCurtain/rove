@@ -6,7 +6,8 @@ export const SETTINGS_SECTIONS = [
   { id: "memory", label: "Memory" },
   { id: "sessions", label: "Sessions" },
   { id: "keyboard", label: "Keyboard shortcuts" },
-  { id: "advanced", label: "Advanced / Developer" },
+  // Route compatibility only: hidden from navigation; renders General settings.
+  { id: "advanced", label: "Advanced" },
   { id: "about", label: "About / Runtime" },
 ] as const;
 

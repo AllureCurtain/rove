@@ -3,10 +3,12 @@
 import { ReloadIcon } from "@radix-ui/react-icons";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { useCopy } from "../copy/CopyProvider";
 import { createProductApiClient } from "../product/product-client";
 import type { ProductDiffEntry } from "../product/product-api-types";
 
 export function DiffPanel({ sessionId }: { sessionId: string }) {
+  const { t } = useCopy();
   const client = useMemo(() => createProductApiClient(), []);
   const [entries, setEntries] = useState<ProductDiffEntry[]>([]);
   const [partial, setPartial] = useState<string[]>([]);
@@ -32,28 +34,28 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   }, [load]);
 
   return (
-    <section className="inspector-section" aria-label="Session diff">
+    <section className="inspector-section" aria-label={t("inspector.diff")}>
       <div className="inspector-section__heading">
-        <h3>Diff</h3>
+        <h3>{t("inspector.diff")}</h3>
         <button
           type="button"
           className="ghost icon-button"
           onClick={() => void load()}
           disabled={loading}
-          aria-label="Refresh diff"
-          title="Refresh diff"
+          aria-label={t("chrome.refreshDiff")}
+          title={t("chrome.refreshDiff")}
         >
           <ReloadIcon />
         </button>
       </div>
-      {error ? <p className="inspector-empty-line" role="alert">{error}</p> : null}
+      {error ? <p className="inspector-empty-line" role="alert">{t("chrome.loadError")}</p> : null}
       {partial.length > 0 ? (
         <p className="inspector-empty-line">
-          Partial: {partial[0]}{partial.length > 1 ? ` (+${partial.length - 1} more)` : ""}
+          {t("chrome.partial")}
         </p>
       ) : null}
       {entries.length === 0 && !error ? (
-        <p className="inspector-empty-line">{loading ? "Loading diff…" : "No tool or Git changes recorded."}</p>
+        <p className="inspector-empty-line">{loading ? t("inspector.diffLoading") : t("inspector.diffNone")}</p>
       ) : (
         <div className="evidence-diff-list">
           {entries.map((entry, index) => (
@@ -65,16 +67,16 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
                 </div>
                 <small data-tone={entry.reconstructable ? "ok" : "muted"}>
                   {entry.binary
-                    ? "binary"
+                    ? t("chrome.binary")
                     : entry.truncated
-                      ? "truncated"
+                      ? t("chrome.truncated")
                       : entry.reconstructable
-                        ? "reconstructable"
-                        : "summary only"}
+                        ? t("chrome.fullPatch")
+                        : t("chrome.summaryOnly")}
                 </small>
               </header>
               {entry.diff ? <pre className="evidence-diff-list__patch">{entry.diff}</pre> : (
-                <p className="inspector-empty-line">No canonical patch was recorded.</p>
+                <p className="inspector-empty-line">{t("chrome.noPatch")}</p>
               )}
             </article>
           ))}

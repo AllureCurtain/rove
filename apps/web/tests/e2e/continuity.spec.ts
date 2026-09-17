@@ -114,7 +114,7 @@ test("a failed deep-route preference write is attempted once", async ({ page }) 
 
   await expect(page.getByRole("heading", { name: "Session B" })).toBeVisible();
   await expect(page.locator(".shell-alert")).toContainText(
-    "Could not persist preferences",
+    "设置操作未完成",
   );
   await expect.poll(() => api.preferenceUpdateRequests).toBe(1);
   await page.waitForTimeout(600);
@@ -130,13 +130,13 @@ test("consecutive preference failures roll back to the confirmed theme", async (
   });
 
   await page.goto("/settings/general");
-  await page.getByRole("button", { name: "Dark", exact: true }).click();
-  await page.getByRole("button", { name: "Light", exact: true }).click();
+  await page.getByRole("button", { name: "深色", exact: true }).click();
+  await page.getByRole("button", { name: "浅色", exact: true }).click();
 
   await expect.poll(() => api.preferenceUpdateRequests).toBe(2);
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await expect(page.locator(".shell-alert")).toContainText(
-    "Could not persist preferences",
+    "设置操作未完成",
   );
   await page.waitForTimeout(400);
   expect(api.preferenceUpdateRequests).toBe(2);
@@ -156,7 +156,7 @@ test("a repeated new-session command creates one durable session", async ({ page
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
   await page
-    .getByRole("button", { name: "New session", exact: true })
+    .getByRole("button", { name: "新会话", exact: true })
     .evaluate((button: HTMLButtonElement) => {
       button.click();
       button.click();
@@ -181,11 +181,11 @@ test("a completed catalog mutation does not override a newer settings route", as
   });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  await page.getByRole("button", { name: "New session", exact: true }).click();
-  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("button", { name: "新会话", exact: true }).click();
+  await page.getByLabel("设置", { exact: true }).click();
 
   await expect(page).toHaveURL(/\/settings\/providers$/u);
-  await expect(page.getByRole("heading", { name: "Providers & Models" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "模型服务" })).toBeVisible();
   await expect.poll(() => api.sessionCreateRequests).toBe(1);
   await page.waitForTimeout(450);
   await expect(page).toHaveURL(/\/settings\/providers$/u);
@@ -206,14 +206,14 @@ test("removing the active workspace does not override a newer settings route", a
   });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  await page.getByRole("button", { name: "Remove workspace from list" }).click();
-  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("button", { name: "从列表移除工作区" }).click();
+  await page.getByLabel("设置", { exact: true }).click();
 
   await expect(page).toHaveURL(/\/settings\/providers$/u);
   await expect.poll(() => api.workspaces).toHaveLength(0);
   await page.waitForTimeout(450);
   await expect(page).toHaveURL(/\/settings\/providers$/u);
-  await expect(page.getByRole("heading", { name: "Providers & Models" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "模型服务" })).toBeVisible();
 });
 
 test("a missing selected profile fails before adding an optimistic turn", async ({ page }) => {
@@ -233,12 +233,12 @@ test("a missing selected profile fails before adding an optimistic turn", async 
   };
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  await page.getByRole("textbox", { name: "Message" }).fill("Do not submit this turn");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("textbox", { name: /输入消息/ }).fill("Do not submit this turn");
+  await page.getByRole("button", { name: "发送" }).click();
 
   await expect(
     page
-      .getByLabel("Message composer")
+      .getByLabel(/输入消息/)
       .getByText(/selected provider profile is no longer available/i),
   ).toBeVisible();
   await expect(
@@ -269,12 +269,12 @@ test("an empty transcript for a live session stays fail-closed when reattach fai
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
 
   const restoreError = page.getByRole("alert").filter({
-    hasText: "Conversation restore failed",
+    hasText: "会话记录恢复失败",
   });
   await expect(restoreError).toContainText("Live follow could not reconnect");
   await expect(restoreError).toContainText("Durable transcript restore remains available");
-  await expect(restoreError.getByRole("button", { name: "Retry restore" })).toBeVisible();
-  await expect(page.getByRole("textbox", { name: "Message" })).toBeDisabled();
+  await expect(restoreError.getByRole("button", { name: "重试恢复" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: /输入消息/ })).toBeDisabled();
   expect(api.jobs).toHaveLength(0);
 });
 
@@ -305,8 +305,8 @@ test("reload restores bubbles and the next turn resumes the exact product sessio
   await expect(conversation.getByText("First turn", { exact: true })).toBeVisible();
   await expect(conversation.getByText("First turn done", { exact: true })).toBeVisible();
 
-  await page.getByRole("textbox", { name: "Message" }).fill("Second turn");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("textbox", { name: /输入消息/ }).fill("Second turn");
+  await page.getByRole("button", { name: "发送" }).click();
   await expect(conversation.getByText("Second turn done")).toBeVisible();
 
   expect(api.jobs).toHaveLength(1);
@@ -327,7 +327,7 @@ test("reload restores bubbles and the next turn resumes the exact product sessio
     latest_job_id: "job-restored-1",
     latest_run_id: "run-1",
   });
-  await expect(page.getByLabel("Run inspector").getByText("run-restor")).toBeVisible();
+  await expect(page.getByLabel("详情").getByText("已完成")).toBeVisible();
 });
 
 test("a committed job survives a disconnected response and delayed binding visibility", async ({
@@ -347,10 +347,10 @@ test("a committed job survives a disconnected response and delayed binding visib
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
   const conversation = page.getByLabel("Conversation");
-  await page.getByRole("textbox", { name: "Message" }).fill("Write after disconnect");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("textbox", { name: /输入消息/ }).fill("Write after disconnect");
+  await page.getByRole("button", { name: "发送" }).click();
 
-  await expect(page.getByLabel("Pending approval")).toBeVisible();
+  await expect(page.getByLabel("审批")).toBeVisible();
   await expect(
     conversation.getByText("Write after disconnect", { exact: true }),
   ).toHaveCount(1);
@@ -380,17 +380,17 @@ test("settings sections have durable routes and invalid sections fail explicitly
 
   await page.goto("/settings/memory");
   await expect(page).toHaveURL(/\/settings\/memory$/u);
-  await expect(page.getByRole("heading", { name: "Memory" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "记忆" })).toBeVisible();
 
   await page.goto("/settings");
   await expect(page).toHaveURL(/\/settings\/general$/u);
-  await expect(page.getByRole("heading", { name: "General" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "通用" })).toBeVisible();
 
   await page.goto("/settings/not-real");
   const routeError = page.locator(".route-state").filter({
-    hasText: "Route unavailable",
+    hasText: "无法打开该会话",
   });
-  await expect(routeError.getByRole("heading", { name: "Route unavailable" })).toBeVisible();
+  await expect(routeError.getByRole("heading", { name: "无法打开该会话" })).toBeVisible();
   await expect(routeError).toContainText("not recognized");
 });
 
@@ -402,11 +402,12 @@ test("provider profiles save, restore after browser storage clear, and delete du
   const defaultModel = "gpt-4.1-e2e";
 
   await page.goto("/settings/providers");
-  await page.getByLabel("Label").fill(profileLabel);
-  await page.getByLabel("API base").fill("https://api.example.test/v1");
-  await page.getByLabel("API key env name").fill("ROVE_E2E_OPENAI_KEY");
-  await page.getByLabel("Default model").fill(defaultModel);
-  await page.getByRole("button", { name: "Save profile" }).click();
+  await page.getByLabel("名称").fill(profileLabel);
+  await page.getByLabel("API 地址").fill("https://api.example.test/v1");
+  await page.locator("summary").filter({ hasText: "高级选项" }).click();
+  await page.getByLabel("密钥环境变量名").fill("ROVE_E2E_OPENAI_KEY");
+  await page.getByLabel("默认模型").fill(defaultModel);
+  await page.getByRole("button", { name: "保存更改" }).click();
 
   const savedRow = page.locator(".profile-row").filter({ hasText: profileLabel });
   await expect(savedRow).toBeVisible();
@@ -426,29 +427,29 @@ test("provider profiles save, restore after browser storage clear, and delete du
   await page.evaluate(() => window.localStorage.clear());
   await page.reload();
 
-  await expect(page.getByRole("heading", { name: "Providers & Models" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "模型服务" })).toBeVisible();
   await expect(page.locator(".profile-row").filter({ hasText: profileLabel })).toBeVisible();
-  await expect(page.getByLabel("Mode", { exact: true })).toHaveValue("profile");
-  await expect(page.getByLabel("Profile", { exact: true })).toHaveValue(savedProfile.id);
-  await expect(page.getByLabel("Model", { exact: true })).toHaveValue(defaultModel);
+  await expect(page.getByLabel("模式", { exact: true })).toHaveValue("profile");
+  await expect(page.getByLabel("服务配置", { exact: true })).toHaveValue(savedProfile.id);
+  await expect(page.getByLabel("模型", { exact: true })).toHaveValue(defaultModel);
 
   await page
     .locator(".profile-row")
     .filter({ hasText: profileLabel })
-    .getByRole("button", { name: "Remove" })
+    .getByRole("button", { name: "删除" })
     .click();
   await page
     .locator(".profile-row")
     .filter({ hasText: profileLabel })
-    .getByRole("button", { name: "Confirm remove" })
+    .getByRole("button", { name: "删除" }).first()
     .click();
   await expect(page.locator(".profile-row").filter({ hasText: profileLabel })).toHaveCount(0);
   await expect.poll(() => api.providerProfiles.length).toBe(0);
   await expect.poll(() => selectedProfileId(api.preferences)).toBeUndefined();
 
   await page.reload();
-  await expect(page.getByText("No saved profiles yet.")).toBeVisible();
-  await expect(page.getByLabel("Mode", { exact: true })).toHaveValue("default");
+  await expect(page.getByText("尚未保存服务配置。")).toBeVisible();
+  await expect(page.getByLabel("模式", { exact: true })).toHaveValue("default");
 });
 
 test("partial transcript remains distinct from a completed run and a run error", async ({
@@ -480,12 +481,12 @@ test("partial transcript remains distinct from a completed run and a run error",
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
 
   const conversation = page.getByLabel("Conversation");
-  await expect(conversation.getByText("Partial conversation history")).toBeVisible();
+  await expect(conversation.getByText("部分较早的消息未能恢复").first()).toBeVisible();
   await expect(conversation.getByText("Visible answer")).toBeVisible();
   await expect(conversation.getByText(/Expected event 3, observed 4/)).toBeVisible();
-  await expect(page.getByLabel("Run inspector").getByText("Run completed", { exact: true })).toBeVisible();
-  await expect(page.getByText("Run interrupted")).toHaveCount(0);
-  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+  await expect(page.getByLabel("详情").getByText("已完成", { exact: true })).toBeVisible();
+  await expect(page.getByText("运行中断")).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: /输入消息/ })).toBeEnabled();
 });
 
 test("transcript failure is explicit and retry restores the canonical history", async ({
@@ -509,16 +510,16 @@ test("transcript failure is explicit and retry restores the canonical history", 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
 
   const restoreError = page.getByRole("alert").filter({
-    hasText: "Conversation restore failed",
+    hasText: "会话记录恢复失败",
   });
   await expect(restoreError).toContainText("transcript store unavailable");
-  await expect(restoreError).toContainText("No empty history has been substituted");
-  await expect(page.getByRole("textbox", { name: "Message" })).toBeDisabled();
+  await expect(restoreError).toContainText("空历史不会被伪造");
+  await expect(page.getByRole("textbox", { name: /输入消息/ })).toBeDisabled();
 
-  await restoreError.getByRole("button", { name: "Retry restore" }).click();
+  await restoreError.getByRole("button", { name: "重试恢复" }).click();
   await expect(page.getByLabel("Conversation").getByText("Recovered answer")).toBeVisible();
   await expect(restoreError).toHaveCount(0);
-  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+  await expect(page.getByRole("textbox", { name: /输入消息/ })).toBeEnabled();
 });
 
 test("a delayed session restore cannot overwrite a faster session switch", async ({
@@ -552,7 +553,7 @@ test("a delayed session restore cannot overwrite a faster session switch", async
   });
 
   await page.goto(`/w/${workspace.id}/s/${sessionA.id}`);
-  await expect(page.getByText("Restoring conversation")).toBeVisible();
+  await expect(page.getByText("正在恢复此会话…")).toBeVisible();
   await page.getByRole("button", { name: "Session B", exact: true }).click();
 
   await expect(page).toHaveURL(`/w/${workspace.id}/s/${sessionB.id}`);
@@ -577,14 +578,14 @@ test("a background attention badge survives a new session without an EventSource
   });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  await page.getByRole("textbox", { name: "Message" }).fill("Write a note");
-  await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByLabel("Pending approval")).toBeVisible();
+  await page.getByRole("textbox", { name: /输入消息/ }).fill("Write a note");
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.getByLabel("审批")).toBeVisible();
   await expect.poll(() => api.eventConnections.length).toBeGreaterThan(0);
 
-  await page.getByRole("button", { name: "New session" }).click();
+  await page.getByRole("button", { name: "新会话" }).click();
   await expect(page).toHaveURL(`/w/${workspace.id}/s/session-2`);
-  await expect(page.getByText("Send a message to start a run in this session.")).toBeVisible();
+  await expect(page.getByText("发送一条消息，开始本会话中的本轮任务。")).toBeVisible();
   await expect(page.locator('.session-badge[data-status="needs_attention"]').first()).toBeVisible();
 
   const connectionsAfterSwitch = api.eventConnections.length;

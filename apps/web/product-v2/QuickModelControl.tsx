@@ -9,6 +9,7 @@ import {
 } from "@radix-ui/react-icons";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
+import { useCopy } from "../copy/CopyProvider";
 import type {
   ProviderProfileRecord,
   SessionModelConfig,
@@ -83,6 +84,7 @@ export function QuickModelControl({
   loadProviderModels: (profileId: string) => Promise<ProductProviderModelsResponse>;
   onModelConfigChange: (config: SessionModelConfigInput) => Promise<boolean>;
 }) {
+  const { t } = useCopy();
   const [open, setOpen] = useState(false);
   const [profileId, setProfileId] = useState(modelConfig.profileId ?? "");
   const [model, setModel] = useState(modelConfig.model);
@@ -218,7 +220,7 @@ export function QuickModelControl({
         aria-expanded={open}
         aria-controls={popoverId}
         aria-haspopup="dialog"
-        aria-label="Change session model settings"
+        aria-label={t("modelControl.change")}
         onClick={() => {
           setOpen((value) => !value);
           setResult("idle");
@@ -226,8 +228,8 @@ export function QuickModelControl({
       >
         <MixerHorizontalIcon />
         <span>
-          <strong>{modelConfig.model || "Runtime default"}</strong>
-          <small>{activeProfile?.label ?? "Runtime provider"}</small>
+          <strong>{modelConfig.model || t("modelControl.runtimeDefault")}</strong>
+          <small>{activeProfile?.label ?? t("modelControl.runtimeProvider")}</small>
         </span>
         <ChevronDownIcon />
       </button>
@@ -236,14 +238,14 @@ export function QuickModelControl({
           id={popoverId}
           className="quick-model__popover"
           role="dialog"
-          aria-label="Session model settings"
+          aria-label={t("modelControl.model")}
         >
           <header>
-            <strong>Session model</strong>
+            <strong>{t("modelControl.model")}</strong>
             <button
               type="button"
               className="ghost icon-button"
-              aria-label="Close model control"
+              aria-label={t("modelControl.close")}
               onClick={() => {
                 setOpen(false);
                 window.requestAnimationFrame(() => triggerRef.current?.focus());
@@ -252,11 +254,11 @@ export function QuickModelControl({
               <Cross2Icon />
             </button>
           </header>
-          <p>Changes apply from the next run in this session.</p>
+          <p>{t("modelControl.applyNote")}</p>
           <label>
-            <span>Provider profile</span>
+            <span>{t("modelControl.provider")}</span>
             <select
-              aria-label="Session provider profile"
+              aria-label={t("modelControl.provider")}
               value={profileId}
               disabled={saving}
               onChange={(event) => {
@@ -272,16 +274,16 @@ export function QuickModelControl({
                 setResult("idle");
               }}
             >
-              <option value="">Runtime default</option>
+              <option value="">{t("modelControl.runtimeDefault")}</option>
               {profiles.map((profile) => (
                 <option key={profile.id} value={profile.id}>{profile.label}</option>
               ))}
             </select>
           </label>
           <label>
-            <span>Model</span>
+            <span>{t("chat.model")}</span>
             <input
-              aria-label="Session model"
+              aria-label={t("modelControl.model")}
               value={model}
               list={modelListId}
               disabled={saving}
@@ -306,20 +308,20 @@ export function QuickModelControl({
                   data-tone={inventory?.status === "error" ? "error" : undefined}
                 >
                   {inventory?.status === "loading"
-                    ? "Loading provider models..."
+                    ? t("modelControl.loadingModels")
                     : inventory?.status === "error"
                       ? inventory.message
                       : inventory?.status === "ready" && inventory.response.models.length === 0
-                        ? "Provider returned no models."
+                        ? t("modelControl.noModels")
                         : inventory?.status === "ready"
-                          ? `${inventory.response.models.length} provider models`
-                          : "Provider models not loaded"}
+                          ? `${inventory.response.models.length}`
+                          : t("modelControl.modelsNotLoaded")}
                 </small>
                 <button
                   type="button"
                   className="ghost icon-button"
-                  aria-label="Reload provider models"
-                  title="Reload provider models"
+                  aria-label={t("modelControl.reloadModels")}
+                  title={t("modelControl.reloadModels")}
                   disabled={inventory?.status === "loading"}
                   onClick={() => setInventoryReload((value) => value + 1)}
                 >
@@ -329,9 +331,9 @@ export function QuickModelControl({
             ) : null}
           </label>
           <label>
-            <span>Inference level</span>
+            <span>{t("modelControl.reasoning")}</span>
             <select
-              aria-label="Session reasoning"
+              aria-label={t("modelControl.reasoning")}
               value={reasoning}
               disabled={saving || !reasoningAvailable}
               onChange={(event) => {
@@ -345,18 +347,15 @@ export function QuickModelControl({
                   value={option}
                   disabled={option !== "default" && !reasoningAvailable}
                 >
-                  {option === "default" ? "Provider default" : option}
+                  {option === "default" ? t("modelControl.providerDefault") : option}
                 </option>
               ))}
             </select>
-            <small>
-              {reasoningCapability.reason}
-            </small>
           </label>
           <label>
-            <span>Max steps</span>
+            <span>{t("modelControl.maxSteps")}</span>
             <input
-              aria-label="Session max steps"
+              aria-label={t("modelControl.maxSteps")}
               type="number"
               min={1}
               max={256}
@@ -371,7 +370,7 @@ export function QuickModelControl({
           </label>
           {result === "error" ? (
             <span className="quick-model__result" data-tone="error" role="alert">
-              The session model settings were not changed. Review the product error and retry.
+              {t("modelControl.saveFailed")}
             </span>
           ) : null}
           <div className="field-actions">
@@ -380,13 +379,13 @@ export function QuickModelControl({
               disabled={saving || !model.trim() || !maxSteps.trim()}
               onClick={() => void save()}
             >
-              <CheckIcon /> {saving ? "Saving..." : "Save session model"}
+              <CheckIcon /> {saving ? t("modelControl.saving") : t("modelControl.save")}
             </button>
           </div>
         </div>
       ) : null}
       {result === "saved" ? (
-        <span className="quick-model__result" role="status">Session model updated.</span>
+        <span className="quick-model__result" role="status">{t("modelControl.updated")}</span>
       ) : null}
     </div>
   );

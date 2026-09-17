@@ -20,6 +20,20 @@ This matrix compares the runtime hardening target with the current implementatio
 > `local-full` live-API suite to five passing cases; the external-provider
 > browser gate has not been run.
 >
+> Product UI content convergence note (feature branch, not yet on `main`):
+> `feature/ui-content-convergence` implements the A-line content/i18n plan and
+> dual visual skins in
+> [`docs/plans/2026-09-13-product-ui-content-convergence.md`](../plans/2026-09-13-product-ui-content-convergence.md).
+> Product shell copy is dictionary-backed (`apps/web/copy/`, default `zh-CN`,
+> `en-US` available; Settings → General language switch). RunInspector no longer
+> renders internal IDs / prompt hashes / canonical event lists. Fake provider is
+> labeled Local demo. Benchmark runner is removed from product Settings.
+> Settings → General can switch interface skin; **default is warm ivory**
+> (`rove.ui-skin=warm`), with cool steel still available for comparison. `/dev` routes are gated with `notFound()` outside
+> development. Verification on that branch: `pnpm typecheck`, `pnpm test` (263),
+> `pnpm test:e2e -- --workers=2` (56 passed, 5 real-api skipped), `pnpm build`.
+> Visual direction lock-in (cool vs warm) is pending user review.
+>
 > CDH note (2026-08-06): G1-G7 merged through PR #29 at `f9e88a7`. The merged
 > surface includes controls, Fork/lineage, session model/reasoning configuration,
 > usage/context/cost, files/artifacts/images/diff, evidence export, and the

@@ -18,6 +18,7 @@ import {
   type FormEvent,
 } from "react";
 
+import { useCopy } from "../copy/CopyProvider";
 import {
   createInitialMemorySettingsState,
   memorySettingsReducer,
@@ -131,36 +132,8 @@ function updateRequestFromDraft(
   return request;
 }
 
-function errorMessage(error: unknown, fallback: string): string {
-  if (error instanceof Error && error.message.trim().length > 0) {
-    return error.message;
-  }
-  return fallback;
-}
-
-function topicMetadata(topic: ProductMemoryTopic): string {
-  const confidence = `${Math.round(topic.confidence * 100)}% confidence`;
-  return `Durable · ${topic.memory_type} · ${topic.scope} scope · ${confidence}`;
-}
-
-function sourceLabel(source: ProductMemorySource): string {
-  switch (source) {
-    case "product_settings":
-      return "Settings";
-    case "llm_tool":
-      return "Agent tool";
-    case "other":
-      return "Other";
-    case "unknown":
-      return "Unknown";
-  }
-}
-
-function metadataValue(value: string | undefined): string {
-  return value?.trim() || "Not recorded";
-}
-
 export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
+  const { t } = useCopy();
   const [state, dispatch] = useReducer(
     memorySettingsReducer,
     undefined,
@@ -251,7 +224,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
       }
       dispatch({ type: "list_loaded", topics: response.topics });
       return true;
-    } catch (error) {
+    } catch {
       if (
         !mountedRef.current ||
         controller.signal.aborted ||
@@ -261,7 +234,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
       }
       dispatch({
         type: "list_load_failed",
-        error: errorMessage(error, "Memory topics could not be loaded."),
+        error: "memory.listFailed",
       });
       return false;
     } finally {
@@ -302,7 +275,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
         }
         dispatch({ type: "detail_loaded", slug, detail });
       })
-      .catch((error: unknown) => {
+      .catch(() => {
         if (
           !mountedRef.current ||
           controller.signal.aborted ||
@@ -313,7 +286,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
         dispatch({
           type: "detail_load_failed",
           slug,
-          error: errorMessage(error, "The memory topic could not be loaded."),
+          error: "memory.detailFailed",
         });
       })
       .finally(() => {
@@ -365,7 +338,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
       }
       dispatch({ type: "delete_succeeded", slug });
       await refreshTopics();
-    } catch (error) {
+    } catch {
       if (
         !mountedRef.current ||
         controller.signal.aborted ||
@@ -376,7 +349,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
       dispatch({
         type: "delete_failed",
         slug,
-        error: errorMessage(error, "The memory topic could not be deleted."),
+        error: "memory.deleteFailed",
       });
     } finally {
       if (deleteAbortRef.current === controller) {
@@ -424,7 +397,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
       return;
     }
     if (state.detail.truncated) {
-      setSaveError("Reload the complete topic before editing it.");
+      setSaveError("memory.contentTruncated");
       return;
     }
     setDraft(memoryTopicDraftFromDetail(state.detail));
@@ -491,7 +464,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
       setEditorMode(null);
       setSaveError(null);
       await refreshTopics();
-    } catch (error) {
+    } catch {
       if (
         !mountedRef.current ||
         controller.signal.aborted ||
@@ -500,12 +473,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
         return;
       }
       setSaveError(
-        errorMessage(
-          error,
-          editorMode === "create"
-            ? "The memory topic could not be created."
-            : "The memory topic could not be updated.",
-        ),
+        "memory.saveFailed",
       );
     } finally {
       if (saveAbortRef.current === controller) {
@@ -532,14 +500,14 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
 
   return (
     <div className="settings-panel">
-      <h1>Memory</h1>
+      <h1>{t("memory.title")}</h1>
       <p className="lede">
-        Durable topics retained by the local runtime across sessions.
+        {t("settings.lede")}
       </p>
 
       <form className="settings-card" onSubmit={applyFilters}>
         <div style={cardHeadingStyle}>
-          <h2>Find topics</h2>
+          <h2>{t("memory.find")}</h2>
           {hasActiveFilters ? (
             <button
               type="button"
@@ -548,23 +516,23 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
               onClick={clearFilters}
             >
               <Cross2Icon aria-hidden="true" />
-              Clear
+              {t("memory.clear")}
             </button>
           ) : null}
         </div>
         <div className="field-grid">
           <div className="field">
-            <label htmlFor="memory-search">Search</label>
+            <label htmlFor="memory-search">{t("memory.search")}</label>
             <input
               id="memory-search"
               value={searchDraft}
               disabled={mutationBusy}
               onChange={(event) => setSearchDraft(event.target.value)}
-              placeholder="Title, slug, or description"
+              placeholder={t("memory.searchPlaceholder")}
             />
           </div>
           <div className="field">
-            <label htmlFor="memory-type-filter">Type</label>
+            <label htmlFor="memory-type-filter">{t("memory.type")}</label>
             <select
               id="memory-type-filter"
               value={memoryTypeFilter}
@@ -575,16 +543,16 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                 )
               }
             >
-              <option value="">All types</option>
+              <option value="">{t("memory.allTypes")}</option>
               {PRODUCT_MEMORY_TYPES.map((memoryType) => (
                 <option key={memoryType} value={memoryType}>
-                  {memoryType}
+                  {t(`memory.type_${memoryType}`)}
                 </option>
               ))}
             </select>
           </div>
           <div className="field">
-            <label htmlFor="memory-scope-filter">Durable scope</label>
+            <label htmlFor="memory-scope-filter">{t("memory.scopeLabel")}</label>
             <select
               id="memory-scope-filter"
               value={scopeFilter}
@@ -593,16 +561,16 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                 setScopeFilter(event.target.value as ProductMemoryScope | "")
               }
             >
-              <option value="">All scopes</option>
+              <option value="">{t("memory.allScopes")}</option>
               {PRODUCT_MEMORY_SCOPES.map((scope) => (
                 <option key={scope} value={scope}>
-                  {scope}
+                  {t(`memory.scope_${scope}`)}
                 </option>
               ))}
             </select>
           </div>
           <div className="field">
-            <label htmlFor="memory-source-filter">Source</label>
+            <label htmlFor="memory-source-filter">{t("memory.source")}</label>
             <select
               id="memory-source-filter"
               value={sourceFilter}
@@ -611,10 +579,10 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                 setSourceFilter(event.target.value as ProductMemorySource | "")
               }
             >
-              <option value="">All sources</option>
+              <option value="">{t("memory.allSources")}</option>
               {PRODUCT_MEMORY_SOURCES.map((source) => (
                 <option key={source} value={source}>
-                  {sourceLabel(source)}
+                  {t(`memory.source_${source}`)}
                 </option>
               ))}
             </select>
@@ -623,7 +591,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
         <div className="field-actions">
           <button type="submit" disabled={listBusy || mutationBusy}>
             <MagnifyingGlassIcon aria-hidden="true" />
-            Search
+            {t("memory.search")}
           </button>
         </div>
       </form>
@@ -636,7 +604,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
         >
           <div style={cardHeadingStyle}>
             <h2 id="memory-editor-heading">
-              {editorMode === "create" ? "New durable topic" : "Edit durable topic"}
+              {editorMode === "create" ? t("memory.newTopic") : t("memory.editTopicTitle")}
             </h2>
             <button
               type="button"
@@ -645,13 +613,13 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
               onClick={cancelEditor}
             >
               <Cross2Icon aria-hidden="true" />
-              Cancel
+              {t("common.cancel")}
             </button>
           </div>
           <form onSubmit={(event) => void saveTopic(event)}>
             <div className="field-grid">
               <div className="field">
-                <label htmlFor="memory-editor-slug">Slug</label>
+                <label htmlFor="memory-editor-slug">{t("memory.slug")}</label>
                 <input
                   id="memory-editor-slug"
                   value={draft.slug}
@@ -667,7 +635,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                 />
               </div>
               <div className="field">
-                <label htmlFor="memory-editor-title">Title</label>
+                <label htmlFor="memory-editor-title">{t("memory.topicTitle")}</label>
                 <input
                   id="memory-editor-title"
                   value={draft.title}
@@ -682,7 +650,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                 />
               </div>
               <div className="field">
-                <label htmlFor="memory-editor-type">Type</label>
+                <label htmlFor="memory-editor-type">{t("memory.type")}</label>
                 <select
                   id="memory-editor-type"
                   value={draft.memoryType}
@@ -696,13 +664,13 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                 >
                   {PRODUCT_MEMORY_TYPES.map((memoryType) => (
                     <option key={memoryType} value={memoryType}>
-                      {memoryType}
+                      {t(`memory.type_${memoryType}`)}
                     </option>
                   ))}
                 </select>
               </div>
               <div className="field">
-                <label htmlFor="memory-editor-scope">Durable scope</label>
+                <label htmlFor="memory-editor-scope">{t("memory.scopeLabel")}</label>
                 <select
                   id="memory-editor-scope"
                   value={draft.scope}
@@ -716,13 +684,13 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                 >
                   {PRODUCT_MEMORY_SCOPES.map((scope) => (
                     <option key={scope} value={scope}>
-                      {scope}
+                      {t(`memory.scope_${scope}`)}
                     </option>
                   ))}
                 </select>
               </div>
               <div className="field">
-                <label htmlFor="memory-editor-confidence">Confidence</label>
+                <label htmlFor="memory-editor-confidence">{t("memory.confidence")}</label>
                 <input
                   id="memory-editor-confidence"
                   type="number"
@@ -741,7 +709,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                 />
               </div>
               <div className="field">
-                <label htmlFor="memory-editor-description">Description</label>
+                <label htmlFor="memory-editor-description">{t("memory.description")}</label>
                 <input
                   id="memory-editor-description"
                   value={draft.description}
@@ -756,7 +724,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
               </div>
             </div>
             <div className="field" style={{ marginTop: 12 }}>
-              <label htmlFor="memory-editor-content">Content</label>
+              <label htmlFor="memory-editor-content">{t("memory.content")}</label>
               <textarea
                 id="memory-editor-content"
                 rows={10}
@@ -772,7 +740,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
             </div>
             {saveError ? (
               <div className="chat-error" role="alert" style={{ marginTop: 12 }}>
-                {saveError}
+                {t(saveError)}
               </div>
             ) : null}
             <div className="field-actions" style={{ marginTop: 12 }}>
@@ -783,10 +751,10 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                   <Pencil2Icon aria-hidden="true" />
                 )}
                 {saving
-                  ? "Saving…"
+                  ? t("common.saving")
                   : editorMode === "create"
-                    ? "Create topic"
-                    : "Save changes"}
+                    ? t("memory.createTopic")
+                    : t("memory.saveTopic")}
               </button>
             </div>
           </form>
@@ -800,10 +768,10 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
       >
         <div style={cardHeadingStyle}>
           <div>
-            <h2 id="memory-topics-heading">Durable topics</h2>
+            <h2 id="memory-topics-heading">{t("memory.durableTopics")}</h2>
             {state.topics.length > 0 ? (
               <p style={{ ...mutedTextStyle, marginTop: 4, fontSize: "0.85rem" }}>
-                {state.topics.length} {state.topics.length === 1 ? "topic" : "topics"}
+                {t("memory.count", { count: state.topics.length })}
               </p>
             ) : null}
           </div>
@@ -814,7 +782,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
               onClick={startCreate}
             >
               <PlusIcon aria-hidden="true" />
-              New topic
+              {t("memory.newTopic")}
             </button>
             <button
               type="button"
@@ -823,7 +791,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
               onClick={() => void refreshTopics()}
             >
               <ReloadIcon aria-hidden="true" />
-              {listBusy && state.topics.length > 0 ? "Refreshing…" : "Refresh"}
+              {listBusy && state.topics.length > 0 ? t("memory.refreshing") : t("memory.refresh")}
             </button>
           </div>
         </div>
@@ -831,29 +799,29 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
         {state.listError ? (
           <div className="chat-error" role="alert">
             {state.topics.length > 0
-              ? `${state.listError} Showing the last loaded topics.`
-              : state.listError}
+              ? `${t(state.listError)} ${t("memory.lastLoaded")}`
+              : t(state.listError)}
           </div>
         ) : null}
 
         {listBusy && state.topics.length === 0 ? (
           <div className="placeholder-note" role="status" aria-live="polite">
-            Loading durable memory topics…
+            {t("memory.loading")}
           </div>
         ) : null}
 
         {!listBusy && state.listStatus !== "error" && state.topics.length === 0 ? (
           <div className="placeholder-note">
             {hasActiveFilters
-              ? "No durable memory topics match these filters."
-              : "No durable memory topics are available."}
+              ? t("memory.noMatch")
+              : t("memory.empty")}
           </div>
         ) : null}
 
         {state.topics.length > 0 ? (
           <ul
             className="profile-list"
-            aria-label="Durable memory topics"
+            aria-label={t("memory.listLabel")}
             style={{ listStyle: "none", margin: 0, padding: 0 }}
           >
             {state.topics.map((topic) => {
@@ -876,9 +844,9 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                       {memoryTopicDisplayTitle(topic)}
                     </strong>
                     <span style={{ display: "block", overflowWrap: "anywhere" }}>
-                      {topicMetadata(topic)}
-                      {` · ${sourceLabel(topic.source)}`}
-                      {topic.metadata_truncated ? " · metadata truncated" : ""}
+                      {t("memory.summary", { type: t(`memory.type_${topic.memory_type}`), scope: t(`memory.scope_${topic.scope}`), confidence: Math.round(topic.confidence * 100) })}
+                      {` · ${t(`memory.source_${topic.source}`)}`}
+                      {topic.metadata_truncated ? ` · ${t("memory.metadataTruncated")}` : ""}
                     </span>
                   </div>
                   <button
@@ -888,7 +856,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                     disabled={mutationBusy}
                     onClick={() => dispatch({ type: "topic_selected", slug: topic.slug })}
                   >
-                    {selected ? "Selected" : "Open"}
+                    {selected ? t("memory.selected") : t("memory.open")}
                   </button>
                 </li>
               );
@@ -922,7 +890,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                 onClick={() => dispatch({ type: "detail_retry_requested" })}
               >
                 <ReloadIcon aria-hidden="true" />
-                Refresh topic
+                {t("memory.refreshTopic")}
               </button>
               <button
                 type="button"
@@ -937,7 +905,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                 onClick={startEdit}
               >
                 <Pencil2Icon aria-hidden="true" />
-                Edit topic
+                {t("memory.editTopic")}
               </button>
               <button
                 type="button"
@@ -951,78 +919,78 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                 }
               >
                 <TrashIcon aria-hidden="true" />
-                Delete topic
+                {t("memory.deleteTopic")}
               </button>
             </div>
           </div>
 
           {state.detailStatus === "loading" ? (
             <div className="placeholder-note" role="status" aria-live="polite">
-              Loading topic content…
+              {t("memory.loadingContent")}
             </div>
           ) : null}
 
           {state.detailError ? (
             <div className="chat-error" role="alert">
-              {state.detailError}
+              {t(state.detailError)}
             </div>
           ) : null}
 
           {state.detailStatus === "ready" && state.detail ? (
             <>
-              <div className="inspector-kv" aria-label="Memory topic metadata">
+              <div className="inspector-kv" aria-label={t("memory.metadata")}>
                 <div>
-                  <span>layer</span>
-                  <strong>{state.detail.topic.layer}</strong>
+                  <span>{t("memory.layer")}</span>
+                  <strong>{t("memory.durable")}</strong>
                 </div>
                 <div>
-                  <span>type</span>
-                  <strong>{state.detail.topic.memory_type}</strong>
+                  <span>{t("memory.type")}</span>
+                  <strong>{t(`memory.type_${state.detail.topic.memory_type}`)}</strong>
                 </div>
                 <div>
-                  <span>scope</span>
-                  <strong>{state.detail.topic.scope}</strong>
+                  <span>{t("memory.scope")}</span>
+                  <strong>{t(`memory.scope_${state.detail.topic.scope}`)}</strong>
                 </div>
                 <div>
-                  <span>source</span>
-                  <strong>{sourceLabel(state.detail.topic.source)}</strong>
+                  <span>{t("memory.source")}</span>
+                  <strong>{t(`memory.source_${state.detail.topic.source}`)}</strong>
                 </div>
                 <div>
-                  <span>confidence</span>
+                  <span>{t("memory.confidence")}</span>
                   <strong>{Math.round(state.detail.topic.confidence * 100)}%</strong>
                 </div>
                 <div>
-                  <span>created</span>
+                  <span>{t("memory.created")}</span>
                   <strong style={{ overflowWrap: "anywhere" }}>
-                    {metadataValue(state.detail.topic.created_at)}
+                    {state.detail.topic.created_at?.trim() || t("memory.notRecorded")}
                   </strong>
                 </div>
                 <div>
-                  <span>updated</span>
+                  <span>{t("memory.updated")}</span>
                   <strong style={{ overflowWrap: "anywhere" }}>
-                    {metadataValue(state.detail.topic.updated_at)}
+                    {state.detail.topic.updated_at?.trim() || t("memory.notRecorded")}
                   </strong>
                 </div>
               </div>
 
               <div>
-                <h3 style={{ margin: "0 0 6px", fontSize: "0.9rem" }}>Description</h3>
+                <h3 style={{ margin: "0 0 6px", fontSize: "0.9rem" }}>{t("memory.description")}</h3>
                 <p style={mutedTextStyle}>
-                  {state.detail.topic.description.trim() || "No description recorded."}
+                  {state.detail.topic.description.trim() || t("memory.noDescription")}
                 </p>
               </div>
 
               {state.detail.topic.metadata_truncated ? (
                 <div className="placeholder-note" role="note">
-                  Topic metadata was truncated by the API response limit.
+                  {t("memory.metadataTruncated")}
                 </div>
               ) : null}
 
               <div>
-                <h3 style={{ margin: "0 0 6px", fontSize: "0.9rem" }}>Content</h3>
+                <h3 style={{ margin: "0 0 6px", fontSize: "0.9rem" }}>{t("memory.content")}</h3>
                 {state.detail.content.length > 0 ? (
                   <pre
-                    aria-label="Memory topic content"
+                    aria-label={t("memory.contentLabel")}
                     style={{
                       margin: 0,
                       maxHeight: 420,
@@ -1040,14 +1008,13 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                     {state.detail.content}
                   </pre>
                 ) : (
-                  <p style={mutedTextStyle}>No stored body content.</p>
+                  <p style={mutedTextStyle}>{t("memory.emptyBody")}</p>
                 )}
               </div>
 
               {state.detail.truncated ? (
                 <div className="placeholder-note" role="note">
-                  Topic content was truncated by the API response limit. Editing is
-                  disabled until a complete response is available.
+                  {t("memory.contentTruncated")}
                 </div>
               ) : null}
             </>
@@ -1060,14 +1027,14 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
               aria-labelledby="memory-delete-confirmation-heading"
             >
               <strong id="memory-delete-confirmation-heading">
-                Delete “{memoryTopicDisplayTitle(selectedTopic)}”?
+                {t("memory.deleteConfirm", { title: memoryTopicDisplayTitle(selectedTopic) })}
               </strong>
               <p style={{ ...mutedTextStyle, marginTop: 6 }}>
-                This permanently removes the durable topic. This action cannot be undone.
+                {t("memory.deleteWarning")}
               </p>
               {state.deleteError ? (
                 <div className="chat-error" role="alert" style={{ marginTop: 10 }}>
-                  {state.deleteError}
+                  {t(state.deleteError)}
                 </div>
               ) : null}
               <div className="field-actions" style={{ marginTop: 10 }}>
@@ -1077,7 +1044,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                   disabled={mutationBusy}
                   onClick={() => dispatch({ type: "delete_confirmation_cancelled" })}
                 >
-                  Cancel
+                  {t("common.cancel")}
                 </button>
                 <button
                   type="button"
@@ -1086,7 +1053,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                   onClick={() => void confirmDelete()}
                 >
                   <TrashIcon aria-hidden="true" />
-                  {deleteBusy ? "Deleting…" : "Confirm delete"}
+                  {deleteBusy ? t("memory.deleting") : t("memory.confirmDelete")}
                 </button>
               </div>
             </div>
