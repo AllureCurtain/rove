@@ -231,3 +231,22 @@ baseline 交叉验证说明：scratch 基线 worktree（HEAD 7e54ab6）原样复
 - P4 决策侧（决策者/决策时间/结果归因）与产品域历史查询端点仍是独立合同扩展。
 - ProjectTrust 设计上不覆盖通用文件读这一缺口本身。
 - PI-Desktop 六条实机旅程、安装版 Windows 旅程、真实输入法、macOS/Linux、外部 Provider 与真实第三方 MCP 门禁均未运行。
+
+## 18. P5a 外链已接入受控宿主
+
+第 17 节记录的 P5a 缺口已闭合。子代理调查确认：web 应用本身就是 Tauri 前端（`apps/desktop/tauri.conf.json` 的 `devUrl`/`frontendDist`），`open_external` 早已注册在 `apps/desktop/src/lib.rs:91`，Rust 侧用 `url::Url::parse` 强制 `http`/`https` 且必须有 host，`file:`/`javascript:`/`data:`/`mailto:` 一律拒绝；此前没有任何 Web 代码调用它，打包应用里点外链只会走 WebView 内导航。
+
+改动全部在 web 侧，**无 Rust 变更、无新依赖、无命令注册表需要更新**：
+
+- 新增 `desktopExternalLinkOpenerAvailable()` 与 `openDesktopExternalLink()`，沿用 `platform/desktop-commands.ts` 已有的 `desktopTransport()` 门与 `invoke` 注入模式。
+- 返回值改为 `{status: "opened" | "blocked" | "failed" | "unsupported"}` 判别联合。Rust 返回 `Result<(), String>` 且只有两条不同错误文案，因此按文案映射 blocked 与 failed；这是为字符串匹配，脆弱性如实记录，若未来要稳定区分需把 Rust 侧改成类型化枚举——那属于跨面合同变更，不在本轮范围。
+- `RichText.tsx` 的 `SafeLink` 仅在 `desktopExternalLinkOpenerAvailable()` 为真时 `preventDefault()` 并转交宿主；普通浏览器下保持原有 `target="_blank"` + `rel="noreferrer noopener"` 行为，不做任何宣称。
+- 打开失败时经 copy 体系显示本地化原因，不静默吞掉。
+
+安全边界未削弱：`safeRichTextUrl` 仍是唯一 scheme 闸门（只放行 `/`、`#`、`http(s)`、`mailto:`），`open_external` 又独立复校一次，因此 `javascript:`/`data:`/`file:` 即使绕过渲染层也到不了宿主。顺带修掉 `SafeLink` 把 react-markdown 的 MDAST `node` 透传成 DOM 属性的问题（原先会输出 `node="[object Object]"`）。
+
+验证（本 worktree，真实退出码）：`pnpm typecheck` 0；`pnpm exec vitest run` 45 文件/350 用例通过（新增 5 条，含浏览器回退属性与危险 scheme 两条渲染断言）；`pnpm build` 0；`pnpm test:e2e` 77 通过、5 跳过、0 失败。
+
+仍未做：UI 层未做真实系统浏览器点击验收（安装版 Windows 旅程未跑）；`opened` 不等于页面加载成功，这点已在代码注释与文案中写明。
+
+（第 17 节"P5a 未接入"一条已由第 18 节闭合，此处不再作为开放项。）

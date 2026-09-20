@@ -275,13 +275,13 @@ live API、产品验收和安装版测试遵循[集成测试说明](../runtime/i
 | — | `954e33a` | `ArtifactPanel.tsx` 存在编译阻断（重复 `if (!stale()) {` 且缺 `requestRef` 声明），`tsc` 与 Web 构建均失败；已修复 | `pnpm typecheck` 0 |
 | P2 | `1ca5c58` | 关闭评审遗留的三个源码风险：终态工具被过期审批快照改写回 `running`、media-query 监听器闭包捕获首帧 panel、移动端审批焦点回退缺失 | vitest 340 用例；新回归测试在移除守卫后实测失败 |
 | P3 | `f684dcb` | 工作区文件读取接入项目信任边界：revoked 根在 listing/content/download/preview 四面返回 409 `project_trust_required`；unknown/restricted 保持可读；未配置信任权威时维持既有行为 | `cargo test -p rove-integration-tests --test api` 120 通过；移除守卫后负向用例实测失败 |
-| P4 | `ce7395e` | 新增"本会话最近授权请求"分区：读取产品 transcript 的 `tool_call_approval_needed` 事件，去重、倒序、上限 50；决策/决策者/决策时间标注为未知并说明未持久化 | vitest 345 用例；`pnpm test:e2e` 77 通过、5 跳过 |
-
+| P4 | `ce7395e` | 新增“本会话最近授权请求”分区：读取产品 transcript 的 `tool_call_approval_needed` 事件，去重、倒序、上限 50；决策/决策者/决策时间标注为未知并说明未持久化 | vitest 345 用例；`pnpm test:e2e` 77 通过、5 跳过 |
+| P5a | `35e3be8` | 外链接入受控 Desktop 宿主：`SafeLink` 仅在 Desktop 传输存在时转交 `open_external`（http/https + host 复校），普通浏览器保持 `target=_blank` + `noreferrer noopener`；失败经 copy 体系提示 | vitest 350 用例（新增 5 条）；`pnpm build` 与 `pnpm test:e2e` 77 通过、5 跳过 |
 合同同步：`docs/runtime/subsystems.md` 记录文件读取的信任边界与授权历史仅请求侧的事实。未改 Runtime 事件流、未加 schema 迁移、未新增依赖、未改锁文件。
 
 仍未关闭，不因上述推进而改写：
 
-- P5a：Web 外链仍为 `target=_blank` + `noreferrer noopener`；Desktop 宿主演入未做。
+- P5a：外链已接入 Desktop 宿主，但 UI 层未做真实系统浏览器点击验收（安装版 Windows 旅程未跑）；`opened` 不等于页面加载成功。
 - P5b：无可执行本地 HTML 预览宿主（无独立 origin、可撤销令牌与生命周期），按计划需先出威胁模型。
 - P4 决策侧（决策者、决策时间、结果归因）与产品域历史查询端点属独立合同扩展。
 - ProjectTrust 能力集在设计上不含通用文件读；若要纳入需 schema 默认值、迁移与旧客户端兼容审查。
