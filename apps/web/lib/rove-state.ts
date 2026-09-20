@@ -687,6 +687,11 @@ function applyJobState(
   };
 }
 
+/** A tool outcome that no later projection may overwrite. */
+function isTerminalToolStatus(status: ToolCallView["status"]): boolean {
+  return status === "done" || status === "error";
+}
+
 function syncPendingApprovals(
   tools: ToolCallView[],
   pendingApprovals: PendingApproval[],
@@ -701,6 +706,13 @@ function syncPendingApprovals(
     const pending = pendingById.get(tool.id);
     if (pending) {
       return toolFromPendingApproval(pending, state, tool);
+    }
+    if (tool.pendingApproval && isTerminalToolStatus(tool.status)) {
+      // A tool that already reached a terminal outcome keeps that outcome.
+      // A stale pendingApproval left behind by the reducer must never be
+      // rewritten back into an in-flight status by a later state snapshot.
+      const { pendingApproval: _settledApproval, ...settled } = tool;
+      return settled;
     }
     if (tool.pendingApproval && terminalDetail) {
       return {
