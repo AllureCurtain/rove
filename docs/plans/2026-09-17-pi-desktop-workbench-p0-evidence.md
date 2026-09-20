@@ -273,3 +273,49 @@ P3 是唯一改动 Rust 的阶段（`apps/api/src/product/{files,trust}.rs` + `t
 判定依据（不是推测）：`git diff --stat 7e54ab6..HEAD -- models/` 与 `-- runtime/` 均为空，即这两个 crate 与基线逐字节相同，因此在 HEAD 上运行它们等于在 `main` 上运行；这三个用例全部是本机回环套接字/不可达端点驱动的时序敏感测试（失败断言位于 `models/src/provider/transport.rs:730`，等待一个分片 SSE 流产出 `TextDelta{text:"hi"}`）。本轮未在独立基线 worktree 复跑，但源码同一性已足以排除本次改动的影响。
 
 不宣称：这 3 个用例在本机通过；也未在 macOS/Linux 运行任何 Rust 门禁。
+
+## 20. P5b 威胁模型（未实现，未授权实现）
+
+按计划 P5b"先写威胁模型"的要求，新增
+`docs/design/2026-09-17-pi-desktop-workbench-p5b-threat-model.md`。结论：
+
+- 唯一不可让步的约束是 **origin 隔离**：预览页脚本若运行在产品 origin 上，即可读取 `window.__ROVE_TOKEN__` 并以用户身份调用产品 API（攻击面 A1/A2）。这排除了用 `iframe`/`srcdoc` 内嵌当预览的做法。
+- 落点选定 **`apps/api` 内新增受控路由**，理由是 `files.rs` 的 `join_safe`、`is_secret_filename`、字节上限与 `serve_file` 可原样复用，A3/A4/A6/A10 的缓解因此是复用而非重写；独立进程反而多一条进程间通道与一套独立路径校验。
+- 已记录 13 项攻击面及各自缓解，其中 A5（SSRF/数据外传）以"不代取远程内容 + CSP `connect-src 'none'`"排除，A9（自动运行 package scripts）以"只服务已有静态文件、不触发构建"排除。
+- 明确不做：通用远程代理、自动构建、以 iframe 冒充可执行预览。
+- 列出 6 条实施门槛（origin 与预览令牌且有测试证明产品令牌在预览 origin 不可用、复用 `join_safe` 的负向用例、令牌生命周期与撤销、资源上限、未信任工作区拒绝、`docs/runtime/` 与 OpenAPI 同步）。
+
+**P5b 仍未实现，本模型不授权实现。** 门槛 1 依赖浏览器同源策略按预期执行，需真实浏览器用例证明，不能只靠代码审读。
+
+## 21. P6 综合验收：脚本在本机无法产出判定
+
+按计划 P6 运行了 `scripts/product-acceptance.ps1 -SkipBrowser`。**判定为 FAIL，但这个 FAIL 不是代码失败，而是脚本在本机无法读取退出码。**
+
+现象：12 个检查项全部报 `error` 且 `exit_code` 为空。逐项查看 `.rove/acceptance-logs/*.out.log` 与 `*.err.log`，实际结果全部是通过的：
+
+- `fmt` 无输出（即无 diff）；
+- `clippy` `Finished dev profile`，无 warning；
+- `test-mcp` `9 passed`；`test-api` `120 passed`；`test-e2e` `113 passed`；`test-tool-safety` `16 passed`；`test-product-store` `130 passed`；
+- `web-typecheck` 无错误输出；`web-test` `46 files / 354 tests passed`；`web-build` 正常产出路由清单。
+
+根因（已隔离复现）：脚本用 `Start-Process -PassThru` 取 `$process.ExitCode`，而本机是 Windows PowerShell **5.1.26100.9444 (Desktop)**。最小复现：以 `Start-Process` 启动 `cmd.exe /c exit 0`，`WaitForExit()` 与 `Refresh()` 之后 `ExitCode` 仍为空、`HasExited=True`。这是 PS 5.1 的已知行为，因此脚本里"退出码不可判定即记为 error、绝不默认通过"的分支被普遍触发。
+
+处理：按仓库规则**没有手改 `PRODUCT_ACCEPTANCE_REPORT.json`**，也没有把脚本的 FAIL 当作真实失败或真实通过。脚本本身的修复超出本轮范围（它是跨阶段共享工具，且 CI 环境可能不受此问题影响），此处仅记录现象与根因。
+
+因此 P6 的门禁证据以**本会话直接运行各检查项取得的真实退出码**为准，见第 19 节与下表：
+
+| 检查 | 真实结果 |
+|---|---|
+| `cargo fmt --all --check` | 退出码 0 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 干净，无 warning |
+| `cargo test -p rove-integration-tests --test api` | 120 通过 |
+| `cargo test -p rove-integration-tests --test mcp` | 9 通过 |
+| `cargo test -p rove-integration-tests --test e2e` | 113 通过 |
+| `cargo test -p rove-integration-tests --test tool_safety` | 16 通过 |
+| `cargo test -p rove-api --lib product:: -- --test-threads=1` | 130 通过 |
+| `pnpm typecheck` | 退出码 0 |
+| `pnpm test` | 46 文件 / 354 用例通过 |
+| `pnpm build` | 成功 |
+| `pnpm test:e2e` | 80 通过、5 跳过、0 失败 |
+
+P6 仍未完成的部分：`-IncludeGated` 的 `mcp-filesystem-smoke`（真实第三方 MCP）未跑；安装版 Windows Desktop 完整旅程未跑；`web-e2e` 虽在单独运行时通过，但未纳入本轮脚本报告。`cargo test --workspace` 的第 19 节三处既有偶发失败依旧存在。
