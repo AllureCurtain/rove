@@ -250,3 +250,26 @@ baseline 交叉验证说明：scratch 基线 worktree（HEAD 7e54ab6）原样复
 仍未做：UI 层未做真实系统浏览器点击验收（安装版 Windows 旅程未跑）；`opened` 不等于页面加载成功，这点已在代码注释与文案中写明。
 
 （第 17 节"P5a 未接入"一条已由第 18 节闭合，此处不再作为开放项。）
+
+## 19. Rust 全量门禁与三处既有失败
+
+P3 是唯一改动 Rust 的阶段（`apps/api/src/product/{files,trust}.rs` + `tests/api.rs`），因此按计划 §5 跑了全量 Rust 门禁。
+
+通过项（真实退出码）：
+
+- `cargo fmt --all --check` 退出码 0；
+- `cargo clippy --workspace --all-targets -- -D warnings` 干净，无 warning；
+- `cargo test -p rove-integration-tests --test api` 120 通过（本次新增 1 条）；
+- `cargo test -p rove-integration-tests --test tool_safety` 16 通过；
+- `cargo test -p rove-integration-tests --test e2e` 113 通过；
+- `cargo test -p rove-integration-tests --test mcp` 9 通过。
+
+`cargo test --workspace --no-fail-fast` 报告 3 个失败，全部落在本次未触碰的 crate，且失败集合在两次运行间会变化（`rove-models` lib 一次 2 失败、一次 1 失败），属既有偶发：
+
+- `provider::transport::tests::transport_injects_auth_and_drives_fragmented_sse`
+- `provider::transport::tests::transport_redacts_and_bounds_error_body_before_protocol_classification`
+- `tools::mcp::client_tests::an_unreachable_endpoint_is_reported_as_retryable_not_indeterminate`
+
+判定依据（不是推测）：`git diff --stat 7e54ab6..HEAD -- models/` 与 `-- runtime/` 均为空，即这两个 crate 与基线逐字节相同，因此在 HEAD 上运行它们等于在 `main` 上运行；这三个用例全部是本机回环套接字/不可达端点驱动的时序敏感测试（失败断言位于 `models/src/provider/transport.rs:730`，等待一个分片 SSE 流产出 `TextDelta{text:"hi"}`）。本轮未在独立基线 worktree 复跑，但源码同一性已足以排除本次改动的影响。
+
+不宣称：这 3 个用例在本机通过；也未在 macOS/Linux 运行任何 Rust 门禁。
