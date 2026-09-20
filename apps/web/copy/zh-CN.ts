@@ -682,6 +682,11 @@ const zhCN = {
     changed: "已更改",
     granted: "已授权",
   },
+  richText: {
+    linkOpenUnsupported: "当前宿主不支持打开外部链接。",
+    linkOpenBlocked: "已阻止该链接：只允许 http 与 https 链接。",
+    linkOpenFailed: "系统未能打开该链接。",
+  },
 };
 
 export type CopyDictionary = typeof zhCN;

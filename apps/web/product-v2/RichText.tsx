@@ -1,11 +1,16 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import type { ComponentPropsWithoutRef } from "react";
+import { useState, type ComponentPropsWithoutRef } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { DiffView } from "./DiffView";
+import {
+  desktopExternalLinkOpenerAvailable,
+  openDesktopExternalLink,
+} from "../platform/desktop-commands";
+import { useCopy } from "../copy/CopyProvider";
 
 const RichCodeBlock = dynamic(() => import("./RichCodeBlock"), {
   loading: () => <div className="rich-render-loading" role="status">Loading code renderer…</div>,
@@ -59,20 +64,61 @@ function MarkdownCode({ className, children }: ComponentPropsWithoutRef<"code">)
 }
 
 function SafeLink({ href, children, ...props }: ComponentPropsWithoutRef<"a">) {
+  const { t } = useCopy();
+  const [status, setStatus] = useState<string | null>(null);
+  // react-markdown passes the parsed MDAST node alongside the anchor props;
+  // spreading it onto the DOM element would emit an unknown `node` attribute.
+  const { node: _node, ...anchorProps } = props as typeof props & {
+    node?: unknown;
+  };
   const safeHref = href ? safeRichTextUrl(href) : "";
   if (!safeHref) {
     return <span className="rich-text__blocked-link">{children}</span>;
   }
   const external = /^https?:/iu.test(safeHref);
   return (
-    <a
-      {...props}
-      href={safeHref}
-      target={external ? "_blank" : undefined}
-      rel={external ? "noreferrer noopener" : undefined}
-    >
-      {children}
-    </a>
+    <>
+      <a
+        {...anchorProps}
+        href={safeHref}
+        target={external ? "_blank" : undefined}
+        rel={external ? "noreferrer noopener" : undefined}
+        onClick={
+          external
+            ? (event) => {
+                // In the packaged app an in-WebView navigation is the wrong
+                // outcome: hand the URL to the controlled Desktop host so it
+                // reaches the system browser. In a plain browser the default
+                // anchor behavior is already correct, so leave it alone.
+                if (!desktopExternalLinkOpenerAvailable()) {
+                  return;
+                }
+                event.preventDefault();
+                void openDesktopExternalLink(safeHref).then((outcome) => {
+                  setStatus(
+                    outcome.status === "opened"
+                      ? null
+                      : t(
+                          outcome.status === "unsupported"
+                            ? "richText.linkOpenUnsupported"
+                            : outcome.status === "blocked"
+                              ? "richText.linkOpenBlocked"
+                              : "richText.linkOpenFailed",
+                        ),
+                  );
+                });
+              }
+            : undefined
+        }
+      >
+        {children}
+      </a>
+      {status ? (
+        <span className="rich-text__link-status" role="status">
+          {status}
+        </span>
+      ) : null}
+    </>
   );
 }
 

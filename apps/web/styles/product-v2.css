@@ -3274,3 +3274,9 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 .product-app-frame[data-ui-version="v2"] .authorization-history__table code {
   font-size: 10px;
 }
+.product-app-frame[data-ui-version="v2"] .rich-text__link-status {
+  display: block;
+  margin-top: 4px;
+  color: var(--v2-muted);
+  font-size: 11px;
+}

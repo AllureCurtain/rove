@@ -706,6 +706,11 @@ const enUS: CopyDictionary = {
     changed: "Changed",
     granted: "Granted",
   },
+  richText: {
+    linkOpenUnsupported: "The current host cannot open external links.",
+    linkOpenBlocked: "Blocked that link: only http and https links are allowed.",
+    linkOpenFailed: "The system could not open that link.",
+  },
 };
 
 export default enUS;

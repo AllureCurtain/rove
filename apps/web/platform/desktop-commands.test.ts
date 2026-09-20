@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  desktopExternalLinkOpenerAvailable,
   desktopProviderCredentialPromptAvailable,
   desktopWorkspacePickerAvailable,
+  openDesktopExternalLink,
   probeDesktopProvider,
   promptDesktopProviderCredential,
   selectDesktopWorkspace,
@@ -176,5 +178,58 @@ describe("Desktop commands", () => {
       probeDesktopProvider({ profileId: "profile" }, invoke),
     ).rejects.toThrow(/requires the Rove Desktop host/i);
     expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe("openDesktopExternalLink", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reports unsupported instead of guessing outside Desktop", async () => {
+    const invoke = vi.fn();
+
+    expect(desktopExternalLinkOpenerAvailable()).toBe(false);
+    await expect(
+      openDesktopExternalLink("https://example.test/docs", invoke),
+    ).resolves.toEqual({ status: "unsupported" });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("hands the url to the controlled host command", async () => {
+    installDesktopTransport();
+    const invoke = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      openDesktopExternalLink("https://example.test/docs", invoke),
+    ).resolves.toEqual({ status: "opened" });
+    expect(invoke).toHaveBeenCalledWith("open_external", {
+      url: "https://example.test/docs",
+    });
+  });
+
+  it("separates a host rejection from an OS launch failure", async () => {
+    installDesktopTransport();
+
+    await expect(
+      openDesktopExternalLink(
+        "file:///etc/passwd",
+        vi.fn().mockRejectedValue(
+          new Error("only absolute http:// and https:// URLs are allowed"),
+        ),
+      ),
+    ).resolves.toEqual({
+      status: "blocked",
+      detail: "only absolute http:// and https:// URLs are allowed",
+    });
+    await expect(
+      openDesktopExternalLink(
+        "https://example.test/docs",
+        vi.fn().mockRejectedValue(new Error("failed to open URL: no browser")),
+      ),
+    ).resolves.toEqual({
+      status: "failed",
+      detail: "failed to open URL: no browser",
+    });
   });
 });

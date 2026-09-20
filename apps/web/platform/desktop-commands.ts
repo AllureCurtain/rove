@@ -61,6 +61,16 @@ export interface DesktopProviderSelectionReceipt {
   catalogRevision: string;
 }
 
+/**
+ * Outcome of asking the Desktop host to open an external link.
+ * `opened` means the host call succeeded; it is not proof that a page loaded.
+ */
+export type DesktopExternalLinkOutcome =
+  | { status: "opened" }
+  | { status: "blocked"; detail: string }
+  | { status: "failed"; detail: string }
+  | { status: "unsupported" };
+
 function record(value: unknown, message: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error(message);
@@ -165,6 +175,44 @@ export async function selectDesktopWorkspace(
     throw new Error("Desktop returned an invalid workspace path.");
   }
   return selected;
+}
+
+export function desktopExternalLinkOpenerAvailable(): boolean {
+  return desktopTransport() !== null;
+}
+
+/**
+ * Open an external http(s) link through the controlled Desktop host.
+ *
+ * The host command is the only path that reaches a system browser from the
+ * packaged app; an in-WebView navigation would otherwise be blocked or would
+ * depend on the OS default handler. The host independently re-validates the
+ * URL against an http/https allowlist with a required host, so a caller that
+ * somehow passed a bad scheme is still rejected before `open` runs.
+ *
+ * Returns a typed outcome instead of a boolean so the UI can say "the system
+ * browser refused this link" apart from "no browser". The Desktop command
+ * returns `Result<(), String>`, so the two reasons are mapped from its two
+ * distinct error messages; the outcome is intentionally not treated as proof
+ * that a page loaded.
+ */
+export async function openDesktopExternalLink(
+  url: string,
+  invokeImpl: DesktopInvoke = invoke,
+): Promise<DesktopExternalLinkOutcome> {
+  if (!desktopExternalLinkOpenerAvailable()) {
+    return { status: "unsupported" };
+  }
+  try {
+    await invokeImpl<unknown>("open_external", { url });
+    return { status: "opened" };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      status: detail.includes("only absolute http") ? "blocked" : "failed",
+      detail,
+    };
+  }
 }
 
 export function desktopProviderCredentialPromptAvailable(): boolean {
