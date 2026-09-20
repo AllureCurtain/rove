@@ -161,6 +161,59 @@ pub(crate) async fn resolve_product_workspace_trust(
     })
 }
 
+/// Map the product workspace kind onto the runtime workspace kind used by the
+/// canonical Project Trust authority.
+pub(crate) fn product_workspace_kind(kind: &super::ProductWorkspaceKind) -> WorkspaceKind {
+    match kind {
+        super::ProductWorkspaceKind::Folder => WorkspaceKind::Folder,
+        super::ProductWorkspaceKind::Repo => WorkspaceKind::Repo,
+    }
+}
+
+/// Decide whether a bounded workspace read is allowed.
+///
+/// Reads follow the same project-trust boundary as run creation: a revoked
+/// root is denied everywhere (`lib.rs` denies revoked roots before starting a
+/// job, and `decide_project_trust` quarantines the workspace's running jobs on
+/// revoke). Without this check the file-browsing handlers were the one surface
+/// where a revoked workspace stayed readable to any caller that passed the
+/// global bearer/CORS gate.
+///
+/// Unlike run creation this does **not** fail closed when no Project Trust
+/// authority is configured. A product workspace root is registered explicitly
+/// by the user through the product surface, and the read path is already
+/// bounded by the workspace root, the secret-name filter and the byte caps, so
+/// refusing every read would remove a working boundary without adding one.
+/// Where an authority *is* configured, its decision wins.
+///
+/// Only the activation state is consulted. Capability digests do not affect
+/// `state` (see `resolve_project_trust_record`), so an empty map keeps this
+/// call off the per-session provider selector that run creation needs.
+pub(crate) async fn ensure_workspace_read_allowed(
+    state: &ApiState,
+    root: &std::path::Path,
+    kind: WorkspaceKind,
+) -> Result<(), ApiError> {
+    let Ok(authority) = state.project_trust() else {
+        return Ok(());
+    };
+    let trust = authority
+        .resolve(root, kind, &BTreeMap::new())
+        .map_err(|error| {
+            ApiError::from(ProductStoreError::new(
+                ProductErrorCode::ProjectTrustUnavailable,
+                format!("project trust authority failed: {error}"),
+            ))
+        })?;
+    if trust.state == ProjectActivationState::Revoked {
+        return Err(ApiError::conflict_with_code(
+            ProductErrorCode::ProjectTrustRequired.as_str(),
+            "project trust was revoked for this workspace",
+        ));
+    }
+    Ok(())
+}
+
 async fn trust_status(
     authority: &Arc<ProjectTrustRepository>,
     store: &Arc<dyn ProductStore>,

@@ -15,6 +15,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 use utoipa::{IntoParams, ToSchema};
 
+use super::trust::{ensure_workspace_read_allowed, product_workspace_kind};
 use crate::docs;
 use crate::{ApiError, ApiErrorResponse, ApiState};
 
@@ -131,7 +132,8 @@ pub(crate) enum FileDisposition {
         (status = 400, description = "Invalid path or query", body = ApiErrorResponse),
         (status = 404, description = "Workspace not found", body = ApiErrorResponse),
         (status = 500, description = "Product store or filesystem operation failed", body = ApiErrorResponse),
-        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse),
+        (status = 409, description = "Project trust was revoked for this workspace", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn list_workspace_files(
@@ -142,6 +144,8 @@ pub(crate) async fn list_workspace_files(
     let store = state.product_store()?;
     let workspace = store.get_workspace(&workspace_id).await?;
     let root = workspace_root(&workspace.kind, &workspace.canonical_root)?;
+    // Bounded reads honour the project-trust boundary: a revoked root is denied.
+    ensure_workspace_read_allowed(&state, &root, product_workspace_kind(&workspace.kind)).await?;
     let prefix = query.prefix.unwrap_or_default();
     let list_dir = join_safe(&root, &prefix)?;
 
@@ -206,7 +210,8 @@ pub(crate) async fn list_workspace_files(
         (status = 400, description = "Invalid path or range", body = ApiErrorResponse),
         (status = 404, description = "Workspace or file not found", body = ApiErrorResponse),
         (status = 500, description = "Product store or filesystem operation failed", body = ApiErrorResponse),
-        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse),
+        (status = 409, description = "Project trust was revoked for this workspace", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn get_workspace_file_content(
@@ -246,7 +251,8 @@ pub(crate) async fn get_workspace_file_content(
         (status = 400, description = "Invalid path, range, or oversized request", body = ApiErrorResponse),
         (status = 404, description = "Workspace or file not found", body = ApiErrorResponse),
         (status = 500, description = "Filesystem operation failed", body = ApiErrorResponse),
-        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse),
+        (status = 409, description = "Project trust was revoked for this workspace", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn download_workspace_file(
@@ -283,7 +289,8 @@ pub(crate) async fn download_workspace_file(
         (status = 400, description = "Invalid or unsafe preview", body = ApiErrorResponse),
         (status = 404, description = "Workspace or file not found", body = ApiErrorResponse),
         (status = 500, description = "Filesystem operation failed", body = ApiErrorResponse),
-        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse),
+        (status = 409, description = "Project trust was revoked for this workspace", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn preview_workspace_file(
@@ -306,6 +313,9 @@ async fn resolve_workspace_file(
 ) -> Result<PathBuf, ApiError> {
     let workspace = state.product_store()?.get_workspace(workspace_id).await?;
     let root = workspace_root(&workspace.kind, &workspace.canonical_root)?;
+    // Content, download and preview all resolve through this helper, so one
+    // check covers all three; listing has its own copy of the same rule.
+    ensure_workspace_read_allowed(state, &root, product_workspace_kind(&workspace.kind)).await?;
     let full = join_safe(&root, relative)?;
     require_regular_file(&full).await?;
     Ok(full)
