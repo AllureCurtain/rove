@@ -1,4 +1,7 @@
-"use client";
+﻿"use client";
+
+import { HamburgerMenuIcon } from "@radix-ui/react-icons";
+import type { CSSProperties } from "react";
 
 import {
   useEffect,
@@ -40,6 +43,8 @@ import type { WorkspaceKind } from "../state/product-types";
 import { M1MigrationGate } from "./M1MigrationGate";
 import { TopBar } from "./TopBar";
 import { UiSkinProvider, useUiSkin, type UiSkin } from "./ui-skin";
+import { SidebarResizeHandle } from "./SidebarResizeHandle";
+import { useSidebarWidth } from "./use-sidebar-width";
 
 export type ProductUiVersion = "v1" | "v2";
 export type { UiSkin };
@@ -100,6 +105,13 @@ function ServerProductApp({ uiVersion, draftStore }: {
     server.catalog.active.sessionId,
     inspectorButtonRef,
   );
+  // Left navigation width and collapse are UI-only layout state (design 搂3.1).
+  // The width persists as a UI preference; the collapse does not, so a reload
+  // always returns to the expanded rail.
+  const sidebar = useSidebarWidth();
+  const [navCollapsed, setNavCollapsed] = useState(false);
+  // Focus target for the narrow-screen "select session, close rail" flow.
+  const sessionTitleRef = useRef<HTMLHeadingElement>(null);
   const panelRef = useRef(panel);
   const inspectorCollapsed = panel.collapsed;
   const [mobileLayout, setMobileLayout] = useState(false);
@@ -398,6 +410,36 @@ function ServerProductApp({ uiVersion, draftStore }: {
             ? undefined
             : () => setWorkspaceOpen((value) => !value)
         }
+        // When the rail is collapsed its entries move to the header so they
+        // stay reachable (design 搂3.1).
+        collapsedActions={
+          navCollapsed && !routing.viewSettings ? (
+            <>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  if (server.catalog.active.workspaceId) {
+                    void handleNewSession(server.catalog.active.workspaceId);
+                  } else {
+                    setNavCollapsed(false);
+                  }
+                }}
+              >
+                {t("nav.newSession")}
+              </button>
+              <button
+                type="button"
+                className="ghost icon-button"
+                onClick={() => setNavCollapsed(false)}
+                aria-label={t("nav.expandWorkspace")}
+                title={t("nav.expandWorkspace")}
+              >
+                <HamburgerMenuIcon />
+              </button>
+            </>
+          ) : null
+        }
       />
 
       {routing.viewSettings ? (
@@ -441,6 +483,10 @@ function ServerProductApp({ uiVersion, draftStore }: {
           className="product-body"
           data-workspace-open={workspaceOpen}
           data-inspector-open={mobileLayout && !inspectorCollapsed}
+          data-nav-collapsed={navCollapsed}
+          style={{
+            "--sidebar-nav-width": `${sidebar.width}px`,
+          } as CSSProperties}
         >
           <WorkspaceTree
             workspaces={workspaces}
@@ -453,6 +499,13 @@ function ServerProductApp({ uiVersion, draftStore }: {
             onSelectSession={(workspaceId, sessionId) => {
               routing.navigateSession(workspaceId, sessionId);
               setWorkspaceOpen(false);
+              // Narrow screen: the rail closes on selection, so move focus to
+              // the session title in the conversation header (design 搂3.1).
+              if (mobileLayout) {
+                window.requestAnimationFrame(() =>
+                  sessionTitleRef.current?.focus(),
+                );
+              }
             }}
             onNewSession={(workspaceId) => void handleNewSession(workspaceId)}
             onTogglePin={(workspaceId) =>
@@ -467,7 +520,17 @@ function ServerProductApp({ uiVersion, draftStore }: {
               setWorkspaceOpen(false);
               routing.openSettings("general");
             }}
+            railCollapsed={navCollapsed}
+            onToggleCollapsed={() => setNavCollapsed((value) => !value)}
           />
+          {/* Hidden on narrow layouts by CSS; the drawer has no width to drag. */}
+          {!mobileLayout && !navCollapsed ? (
+            <SidebarResizeHandle
+              width={sidebar.width}
+              settleWidth={sidebar.settleWidth}
+              onHandleKeyDown={sidebar.onHandleKeyDown}
+            />
+          ) : null}
 
           <main
             className="product-main"
@@ -501,7 +564,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
               <div className="chat-pane">
                 <div className="chat-pane__header">
                   <div>
-                    <h1>{activeSession.title}</h1>
+                    <h1 ref={sessionTitleRef} tabIndex={-1}>{activeSession.title}</h1>
                     <p>
                       {activeWorkspace.displayName} / {formatDisplayPath(activeWorkspace.rootPath)}
                     </p>

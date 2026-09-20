@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import {
   FormEvent,
@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   ChevronDownIcon,
+  ChevronLeftIcon,
   ChevronRightIcon,
   DotsHorizontalIcon,
   Cross2Icon,
@@ -42,6 +43,8 @@ export function WorkspaceTree({
   mobileOpen = false,
   onCloseMobile,
   onOpenSettings,
+  railCollapsed,
+  onToggleCollapsed,
 }: {
   workspaces: WorkspaceRecord[];
   sessionsByWorkspace: Record<string, SessionRecord[]>;
@@ -57,6 +60,9 @@ export function WorkspaceTree({
   mobileOpen?: boolean;
   onCloseMobile?: () => void;
   onOpenSettings?: () => void;
+  /** Collapsed rail: the subtree stays mounted but inert and aria-hidden. */
+  railCollapsed?: boolean;
+  onToggleCollapsed?: () => void;
 }) {
   const { t } = useCopy();
   const [openDialog, setOpenDialog] = useState(false);
@@ -75,12 +81,50 @@ export function WorkspaceTree({
       ? [] : [{ workspace, allSessions, sessions }];
   });
 
+  // Workspaces whose session list is currently mounted. A collapse keeps the
+  // subtree mounted for the length of the animation so it can shrink instead
+  // of vanishing, then unmounts (design §3.3: 200ms animation, 220ms delay).
+  const [mountedGroups, setMountedGroups] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(
+      workspaces
+        .filter((workspace) => workspace.id === activeWorkspaceId)
+        .map((workspace) => [workspace.id, true]),
+    ),
+  );
+
   // Reveal a newly activated project, but never undo a user's collapse on polling.
   useEffect(() => {
     if (activeWorkspaceId) {
       setCollapsed((current) => ({ ...current, [activeWorkspaceId]: false }));
     }
   }, [activeWorkspaceId]);
+
+  // Delay the subtree unmount so the collapse can animate (design §3.3).
+  useEffect(() => {
+    const timers: number[] = [];
+    for (const workspace of workspaces) {
+      const expanded = Boolean(normalizedQuery) ||
+        !(collapsed[workspace.id] ?? workspace.id !== activeWorkspaceId);
+      const isMounted = mountedGroups[workspace.id] ?? false;
+      if (expanded === isMounted) {
+        continue;
+      }
+      if (expanded) {
+        setMountedGroups((current) => ({ ...current, [workspace.id]: true }));
+      } else {
+        timers.push(
+          window.setTimeout(() => {
+            setMountedGroups((current) => ({ ...current, [workspace.id]: false }));
+          }, 220),
+        );
+      }
+    }
+    return () => {
+      for (const timer of timers) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [workspaces, collapsed, activeWorkspaceId, normalizedQuery, mountedGroups]);
   const addWorkspaceButtonRef = useRef<HTMLButtonElement>(null);
   const closeMobileButtonRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
@@ -122,6 +166,9 @@ export function WorkspaceTree({
       aria-label={t("workspace.label")}
       aria-busy={mutationBusy}
       data-open={mobileOpen}
+      data-collapsed={railCollapsed}
+      aria-hidden={railCollapsed ? true : undefined}
+      inert={railCollapsed ? true : undefined}
       aria-modal={mobileOpen ? true : undefined}
       role={mobileOpen ? "dialog" : undefined}
       onKeyDown={
@@ -169,6 +216,17 @@ export function WorkspaceTree({
         >
           <PlusIcon />
         </button>
+        {onToggleCollapsed ? (
+          <button
+            type="button"
+            className="ghost icon-button sidebar-collapse"
+            onClick={onToggleCollapsed}
+            aria-label={t("nav.collapseWorkspace")}
+            title={t("nav.collapseWorkspace")}
+          >
+            <ChevronLeftIcon />
+          </button>
+        ) : null}
         {onCloseMobile && mobileOpen ? (
           <button
             ref={closeMobileButtonRef}
@@ -202,6 +260,8 @@ export function WorkspaceTree({
           visibleWorkspaces.map(({ workspace, allSessions, sessions }) => {
             const active = workspace.id === activeWorkspaceId;
             const expanded = normalizedQuery ? true : !(collapsed[workspace.id] ?? !active);
+            // The group subtree stays mounted through the collapse animation.
+            const isGroupMounted = mountedGroups[workspace.id] ?? false;
             const runningCount = allSessions.filter((session) => session.status === "running").length;
             const attentionCount = allSessions.filter(
               (session) => session.status === "needs_attention",
@@ -277,18 +337,29 @@ export function WorkspaceTree({
                     onRemoveWorkspace={onRemoveWorkspace}
                   />
                 </div>
-                <div id={`workspace-sessions-${workspace.id}`} hidden={!expanded}>
-                  {expanded ? <>
-                    <SessionBranchList
-                      sessions={sessions}
-                      allSessions={allSessions}
-                      workspaceId={workspace.id}
-                      activeSessionId={activeSessionId}
-                      mutationBusy={mutationBusy}
-                      onSelectSession={onSelectSession}
-                    />
-                    {sessions.length === 0 ? <p className="sidebar-empty">{t("workspace.noSessionsBody")}</p> : null}
-                  </> : null}
+                {/* Collapse animates 0fr -> 1fr and unmounts the subtree only
+                    after the animation, so a re-open never re-renders mid
+                    flight (design §3.3). */}
+                <div
+                  id={`workspace-sessions-${workspace.id}`}
+                  className="workspace-sessions"
+                  data-expanded={expanded}
+                  aria-hidden={expanded ? undefined : true}
+                  hidden={!isGroupMounted}
+                >
+                  {isGroupMounted ? (
+                    <>
+                      <SessionBranchList
+                        sessions={sessions}
+                        allSessions={allSessions}
+                        workspaceId={workspace.id}
+                        activeSessionId={activeSessionId}
+                        mutationBusy={mutationBusy}
+                        onSelectSession={onSelectSession}
+                      />
+                      {sessions.length === 0 ? <p className="sidebar-empty">{t("workspace.noSessionsBody")}</p> : null}
+                    </>
+                  ) : null}
                 </div>
               </div>
             );
@@ -490,11 +561,20 @@ function SessionBranch({
             {sessionStatusLabel(session.status, t)}
           </span>
         ) : null}
+        {/* Leading status icon (design §3.1/§3.3): running spins, awaiting
+            approval warns, otherwise a plain session mark. The badge above
+            stays as the accessible text. */}
         <span
           className="session-item__status"
           data-status={session.status}
           aria-hidden="true"
-        />
+        >
+          {session.status === "running" ? (
+            <span className="session-item__spinner" />
+          ) : session.status === "needs_attention" ? (
+            <span className="session-item__warning" />
+          ) : null}
+        </span>
       </button>
       {children.length > 0 ? (
         <ul className="session-list session-list--branch">

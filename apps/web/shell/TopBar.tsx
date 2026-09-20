@@ -6,7 +6,7 @@ import {
   MoonIcon,
   SunIcon,
 } from "@radix-ui/react-icons";
-import type { Ref } from "react";
+import type { ReactNode, Ref } from "react";
 
 import { useCopy } from "../copy/CopyProvider";
 
@@ -20,6 +20,7 @@ export function TopBar({
   onBackToChat,
   workspaceButtonRef,
   onToggleWorkspace,
+  collapsedActions,
 }: {
   connectionLabel: string;
   connectionTone: "ok" | "working" | "error" | "idle";
@@ -30,6 +31,8 @@ export function TopBar({
   onBackToChat?: () => void;
   workspaceButtonRef?: Ref<HTMLButtonElement>;
   onToggleWorkspace?: () => void;
+  /** Shown when the left rail is collapsed, so its entries move up here. */
+  collapsedActions?: ReactNode;
 }) {
   const { t } = useCopy();
   return (
@@ -50,6 +53,9 @@ export function TopBar({
         <span className="product-topbar__mark" aria-hidden="true">R</span>
         <strong>rove</strong>
         <span>local agent</span>
+        {collapsedActions ? (
+          <div className="product-topbar__collapsed">{collapsedActions}</div>
+        ) : null}
       </div>
       <div className="product-topbar__meta">
         <span className="status-dot" data-tone={connectionTone === "idle" ? undefined : connectionTone} />

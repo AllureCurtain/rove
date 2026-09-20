@@ -204,6 +204,7 @@ const enUS: CopyDictionary = {
     approvalUnavailable: "This request is no longer pending in the current run. This does not confirm approval by this window or tool success.",
     panelWidth: "Panel width (Left/Right arrows, Home/End)",
     approvalScope: "Only the requested tool call. No permanent permission is granted.",
+    sidebarWidth: "Navigation width (Left/Right arrows, Home/End)",
     authorizationTitle: "This session's authorization requests",
     authorizationLoading: "Loading this session's authorization requests…",
     authorizationError: "Could not load this session's authorization requests.",

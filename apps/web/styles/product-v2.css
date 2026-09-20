@@ -1,4 +1,4 @@
-/* Product UI V2 presentation only. Runtime and product state remain owned by ProductApp. */
+﻿/* Product UI V2 presentation only. Runtime and product state remain owned by ProductApp. */
 .product-app-frame[data-ui-version="v2"] {
   color-scheme: light;
 
@@ -37,6 +37,18 @@
   --v2-radius-xs: 3px;
   --v2-radius-sm: 5px;
   --v2-radius-md: 8px;
+
+  /* Motion tokens (design §3.3). New components reference these instead of
+     writing literal durations. They are plain length/custom-property values,
+     so the existing global prefers-reduced-motion wildcard below already
+     neutralizes any transition or animation that consumes them. */
+  --motion-duration-fast: 150ms;
+  --motion-duration-normal: 200ms;
+  --motion-duration-slow: 300ms;
+  --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --motion-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --sidebar-nav-width: 240px;
 
   --bg: var(--v2-bg);
   --bg-elevated: var(--v2-surface);
@@ -3279,4 +3291,265 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   margin-top: 4px;
   color: var(--v2-muted);
   font-size: 11px;
+}
+
+/* ─── Left navigation width, collapse and motion (design §3.1 / §3.3) ─── */
+
+.product-app-frame[data-ui-version="v2"] .product-body:not([data-settings="true"]) {
+  grid-template-columns: var(--sidebar-nav-width) minmax(0, 1fr) auto;
+  transition: grid-template-columns var(--motion-duration-normal) var(--motion-ease-out);
+}
+
+/* The handle is a real separator: it must not steal the rail's width budget. */
+.product-app-frame[data-ui-version="v2"] .sidebar-resize-handle {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: stretch;
+  width: 8px;
+  margin-left: -4px;
+  z-index: 3;
+  cursor: col-resize;
+  background: transparent;
+  border: 0;
+  touch-action: none;
+}
+.product-app-frame[data-ui-version="v2"] .sidebar-resize-handle::after {
+  content: "";
+  display: block;
+  width: 1px;
+  height: 100%;
+  margin: 0 auto;
+  background: var(--v2-rail-border);
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.product-app-frame[data-ui-version="v2"] .sidebar-resize-handle:hover::after,
+.product-app-frame[data-ui-version="v2"] .sidebar-resize-handle:focus-visible::after {
+  background: var(--v2-rail-signal);
+}
+
+/* Dragging must not animate the width, and the whole document shows the intent. */
+body.is-resizing-column,
+body.is-resizing-column * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+.product-app-frame[data-ui-version="v2"] .product-body:has(.sidebar-resize-handle:active) {
+  transition: none;
+}
+
+/* Row color transitions: 150ms, but a selected row fills instantly so the
+   choice never lags behind the pointer. */
+.product-app-frame[data-ui-version="v2"] .session-item,
+.product-app-frame[data-ui-version="v2"] .workspace-group__button,
+.product-app-frame[data-ui-version="v2"] .workspace-group__disclosure,
+.product-app-frame[data-ui-version="v2"] .product-sidebar button.ghost,
+.product-app-frame[data-ui-version="v2"] .product-sidebar button.secondary {
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.product-app-frame[data-ui-version="v2"] .session-item[data-active="true"],
+.product-app-frame[data-ui-version="v2"] .workspace-group__button[data-active="true"] {
+  transition: none;
+}
+
+/* Leading session status icon: running spins, awaiting approval warns. */
+.product-app-frame[data-ui-version="v2"] .session-item__status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+}
+.product-app-frame[data-ui-version="v2"] .session-item__spinner {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--v2-rail-signal);
+  border-top-color: transparent;
+  animation: v2-session-spin 1s linear infinite;
+  contain: layout paint style;
+  will-change: transform;
+}
+.product-app-frame[data-ui-version="v2"] .session-item__warning {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--v2-warning);
+}
+@keyframes v2-session-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Project group: 0fr -> 1fr with opacity, then the subtree unmounts. */
+.product-app-frame[data-ui-version="v2"] .workspace-sessions {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition: grid-template-rows var(--motion-duration-normal) var(--motion-ease-out),
+    opacity var(--motion-duration-normal) var(--motion-ease-out);
+}
+.product-app-frame[data-ui-version="v2"] .workspace-sessions > * {
+  min-height: 0;
+  overflow: hidden;
+}
+.product-app-frame[data-ui-version="v2"] .workspace-sessions[data-expanded="false"] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+
+/* Menus: 100ms fade + a small zoom on both enter and exit. */
+@keyframes v2-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.product-app-frame[data-ui-version="v2"] .workspace-actions__menu {
+  animation: v2-menu-in var(--motion-duration-fast) var(--motion-ease-out);
+  transform-origin: top right;
+}
+
+/* Left rail collapse: the placeholder width settles instantly, the panel
+   slides out over 240ms and its subtree stays mounted (inert + aria-hidden). */
+.product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] {
+  grid-template-columns: 0 minmax(0, 1fr) auto;
+}
+.product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] .product-sidebar {
+  transform: translateX(-102%);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 240ms var(--motion-ease-out),
+    opacity 240ms var(--motion-ease-out);
+}
+.product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="false"] .product-sidebar {
+  transform: translateX(0);
+  opacity: 1;
+  transition: transform 240ms var(--motion-ease-out),
+    opacity 240ms var(--motion-ease-out);
+}
+.product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] .sidebar-resize-handle {
+  display: none;
+}
+.product-app-frame[data-ui-version="v2"] .product-topbar__collapsed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 12px;
+}
+
+/* Narrow layouts: the rail is a drawer, so it has no width to drag. */
+@media (max-width: 960px) {
+  .product-app-frame[data-ui-version="v2"] .sidebar-resize-handle {
+    display: none;
+  }
+  /* The rail is a fixed drawer here, so the grid keeps a single column and
+     the width preference does not reserve space. */
+  .product-app-frame[data-ui-version="v2"] .product-body:not([data-settings="true"]),
+  .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] {
+    grid-template-columns: minmax(0, 1fr);
+    transition: none;
+  }
+  .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] .product-sidebar {
+    transform: translateX(-102%);
+  }
+  .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="false"] .product-sidebar {
+    transform: none;
+  }
+  .product-app-frame[data-ui-version="v2"] .product-topbar__collapsed {
+    display: none;
+  }
+}
+
+/* ─── Composer pill, status bar, panel and scroll affordances (§3.3) ─── */
+
+/* Pending pill: 0fr -> 1fr over 180ms, so it grows instead of popping in. */
+.product-app-frame[data-ui-version="v2"] .chat-composer__meta {
+  display: grid;
+  grid-template-columns: 0fr;
+  transition: grid-template-columns 180ms var(--motion-ease-out);
+}
+.product-app-frame[data-ui-version="v2"] .chat-composer__meta > * {
+  min-width: 0;
+  overflow: hidden;
+}
+.product-app-frame[data-ui-version="v2"] .chat-composer__meta:has(> *) {
+  grid-template-columns: 1fr;
+}
+
+/* Footer status bar: raising is slower than falling (300ms out / 200ms in). */
+.product-app-frame[data-ui-version="v2"] .chat-error,
+.product-app-frame[data-ui-version="v2"] .shell-alert {
+  transition: opacity var(--motion-duration-slow) var(--motion-ease-out),
+    max-height var(--motion-duration-slow) var(--motion-ease-out),
+    margin var(--motion-duration-slow) var(--motion-ease-out);
+  max-height: 220px;
+  overflow: hidden;
+}
+.product-app-frame[data-ui-version="v2"] .chat-error:empty,
+.product-app-frame[data-ui-version="v2"] .shell-alert:empty {
+  max-height: 0;
+  margin: 0;
+  padding: 0;
+  border-width: 0;
+  opacity: 0;
+  transition: opacity var(--motion-duration-normal) var(--motion-ease-in),
+    max-height var(--motion-duration-normal) var(--motion-ease-in),
+    margin var(--motion-duration-normal) var(--motion-ease-in);
+}
+
+/* Return-to-latest: 200ms scale + opacity entrance. */
+@keyframes v2-rise-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.product-app-frame[data-ui-version="v2"] .return-to-latest {
+  animation: v2-rise-in var(--motion-duration-normal) var(--motion-ease-out);
+}
+
+/* Work panel: 200ms in, 150ms out, and no width transition while dragging. */
+.product-app-frame[data-ui-version="v2"] .product-inspector {
+  transition: opacity var(--motion-duration-normal) var(--motion-ease-out),
+    transform var(--motion-duration-normal) var(--motion-ease-out);
+}
+.product-app-frame[data-ui-version="v2"] .product-inspector[data-open="true"] {
+  animation: v2-panel-in var(--motion-duration-normal) var(--motion-ease-out);
+}
+@keyframes v2-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.product-app-frame[data-ui-version="v2"] .product-inspector[data-collapsed="true"] {
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-in),
+    transform var(--motion-duration-fast) var(--motion-ease-in);
+}
+/* Tab strip: only the tab background animates; content swaps instantly. */
+.product-app-frame[data-ui-version="v2"] .inspector-tabs .tab-button {
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+/* The width slider is a range input: the rail itself must not animate width. */
+.product-app-frame[data-ui-version="v2"] .product-inspector[data-open="true"] {
+  transition-property: opacity, transform;
+}
+.product-app-frame[data-ui-version="v2"] .work-panel-width {
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-standard);
 }

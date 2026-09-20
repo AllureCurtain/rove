@@ -200,6 +200,7 @@ const zhCN = {
     approvalSubmitting: "正在提交决定，等待服务端状态…",
     approvalUnavailable: "此请求已不在当前运行的待审批列表中。这不表示本窗口批准成功或工具执行成功。",
     panelWidth: "面板宽度（左右方向键、Home/End）",
+    sidebarWidth: "导航宽度（左右方向键、Home/End）",
     approvalScope: "仅限所请求的工具调用，不授予永久权限。",
     authorizationTitle: "本会话最近授权请求",
     authorizationLoading: "正在读取本会话授权请求…",
