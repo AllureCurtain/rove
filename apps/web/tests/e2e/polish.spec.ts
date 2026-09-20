@@ -75,7 +75,7 @@ test("mobile chat reflows, traps both production panels, and honors reduced moti
 
   const workspaceTrigger = page.getByRole("button", { name: "展开工作区列表" });
   await workspaceTrigger.click();
-  const workspaceDrawer = page.getByRole("dialog", { name: "Workspaces" });
+  const workspaceDrawer = page.getByRole("dialog", { name: "工作区", exact: true });
   await expect(workspaceDrawer).toHaveAttribute("role", "dialog");
   await expect(workspaceDrawer).toHaveAttribute("aria-modal", "true");
   await expect(workspaceDrawer.getByRole("button", { name: "关闭工作区列表" })).toBeFocused();
@@ -88,7 +88,7 @@ test("mobile chat reflows, traps both production panels, and honors reduced moti
   const lastDrawerAction = workspaceDrawer.getByRole("button", { name: "设置" });
   await lastDrawerAction.focus();
   await page.keyboard.press("Tab");
-  await expect(workspaceDrawer.getByRole("button", { name: "添加工作区" })).toBeFocused();
+  await expect(workspaceDrawer.getByRole("button", { name: "新会话", exact: true })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(workspaceDrawer).toBeHidden();
   await expect(workspaceTrigger).toBeFocused();
@@ -153,7 +153,7 @@ test("workspace dialog traps focus, closes with Escape, and restores its trigger
   await page.goto("/");
 
   await page.getByRole("button", { name: "展开工作区列表" }).click();
-  const workspaceDrawer = page.getByRole("dialog", { name: "Workspaces" });
+  const workspaceDrawer = page.getByRole("dialog", { name: "工作区", exact: true });
   const trigger = page.getByRole("button", { name: "添加工作区" });
   await trigger.click();
   const dialog = page.getByRole("dialog", { name: "打开工作区" });

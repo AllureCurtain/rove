@@ -6,7 +6,7 @@ import {
   FileIcon,
   ImageIcon,
 } from "@radix-ui/react-icons";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useCopy } from "../copy/CopyProvider";
 import { createProductApiClient } from "../product/product-client";
@@ -28,6 +28,15 @@ export function FilesPanel({
   const client = useMemo(() => createProductApiClient(), []);
   const [prefix, setPrefix] = useState("");
   const [entries, setEntries] = useState<ProductFileEntry[]>([]);
+  // Listing and preview are independent: opening a file must not discard a page.
+  const requestRef = useRef(0);
+  const previewRequestRef = useRef(0);
+  const downloadRequestRef = useRef(0);
+  useEffect(() => () => {
+    requestRef.current += 1;
+    previewRequestRef.current += 1;
+    downloadRequestRef.current += 1;
+  }, [workspaceId]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [scanLimited, setScanLimited] = useState(false);
   const [content, setContent] = useState<ProductFileContentEnvelope | null>(null);
@@ -42,7 +51,10 @@ export function FilesPanel({
   }, [previewUrl]);
 
   useEffect(() => {
-    let cancelled = false;
+    const request = ++requestRef.current;
+    previewRequestRef.current += 1;
+    downloadRequestRef.current += 1;
+    const stale = () => requestRef.current !== request;
     async function load() {
       setLoading(true);
       setError(null);
@@ -53,61 +65,61 @@ export function FilesPanel({
           prefix: prefix || undefined,
           limit: 100,
         });
-        if (!cancelled) {
+        if (!stale()) {
           setEntries(response.entries);
           setNextCursor(response.next_cursor ?? null);
           setScanLimited(response.scan_limit_reached);
         }
       } catch (caught) {
-        if (!cancelled) {
+        if (!stale()) {
           setError(caught instanceof Error ? caught.message : "Failed to list files");
         }
       } finally {
-        if (!cancelled) {
+        if (!stale()) {
           setLoading(false);
         }
       }
     }
     void load();
-    return () => {
-      cancelled = true;
-    };
+    return () => { requestRef.current += 1; };
   }, [client, workspaceId, prefix]);
 
   useEffect(() => {
     if (!focusPath) {
       return;
     }
-    const path = focusPath;
-    let cancelled = false;
+    const request = ++previewRequestRef.current;
+    const stale = () => previewRequestRef.current !== request;
     async function loadFocusedFile() {
       setError(null);
       try {
-        const nextContent = await client.getWorkspaceFileContent(workspaceId, path);
+        const nextContent = await client.getWorkspaceFileContent(workspaceId, focusPath!);
         const nextPreviewUrl =
           nextContent.image && nextContent.preview_allowed
             ? URL.createObjectURL(
-                await client.fetchWorkspaceFilePreview(workspaceId, path),
+                await client.fetchWorkspaceFilePreview(workspaceId, focusPath!),
               )
             : null;
-        if (!cancelled) {
+        if (!stale()) {
           setContent(nextContent);
           setPreviewUrl(nextPreviewUrl);
+        } else if (nextPreviewUrl) {
+          URL.revokeObjectURL(nextPreviewUrl);
         }
       } catch (caught) {
-        if (!cancelled) {
+        if (!stale()) {
           setError(caught instanceof Error ? caught.message : "Failed to open finding file");
         }
       }
     }
     void loadFocusedFile();
-    return () => {
-      cancelled = true;
-    };
+    return () => { previewRequestRef.current += 1; };
   }, [client, focusPath, workspaceId]);
 
   async function loadMore() {
     if (!nextCursor || loading) return;
+    const request = ++requestRef.current;
+    const stale = () => requestRef.current !== request;
     setLoading(true);
     setError(null);
     try {
@@ -116,13 +128,19 @@ export function FilesPanel({
         cursor: nextCursor,
         limit: 100,
       });
-      setEntries((current) => [...current, ...response.entries]);
-      setNextCursor(response.next_cursor ?? null);
-      setScanLimited(response.scan_limit_reached);
+      if (!stale()) {
+        setEntries((current) => [...current, ...response.entries]);
+        setNextCursor(response.next_cursor ?? null);
+        setScanLimited(response.scan_limit_reached);
+      }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Failed to load more files");
+      if (!stale()) {
+        setError(caught instanceof Error ? caught.message : "Failed to load more files");
+      }
     } finally {
-      setLoading(false);
+      if (!stale()) {
+        setLoading(false);
+      }
     }
   }
 
@@ -131,6 +149,10 @@ export function FilesPanel({
       setPrefix(entry.path);
       return;
     }
+    const request = ++previewRequestRef.current;
+    const stale = () => previewRequestRef.current !== request;
+    setContent(null);
+    setPreviewUrl(null);
     setError(null);
     try {
       const nextContent = await client.getWorkspaceFileContent(workspaceId, entry.path);
@@ -140,14 +162,22 @@ export function FilesPanel({
               await client.fetchWorkspaceFilePreview(workspaceId, entry.path),
             )
           : null;
-      setContent(nextContent);
-      setPreviewUrl(nextPreviewUrl);
+      if (!stale()) {
+        setContent(nextContent);
+        setPreviewUrl(nextPreviewUrl);
+      } else if (nextPreviewUrl) {
+        URL.revokeObjectURL(nextPreviewUrl);
+      }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Failed to read file");
+      if (!stale()) {
+        setError(caught instanceof Error ? caught.message : "Failed to read file");
+      }
     }
   }
 
   async function downloadFile(path: string) {
+    const request = ++downloadRequestRef.current;
+    const stale = () => downloadRequestRef.current !== request;
     setError(null);
     try {
       await downloadBlob(
@@ -155,7 +185,9 @@ export function FilesPanel({
         filenameForPath(path),
       );
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Failed to download file");
+      if (!stale()) {
+        setError(caught instanceof Error ? caught.message : "Failed to download file");
+      }
     }
   }
 
@@ -242,15 +274,18 @@ export function FilesPanel({
           ) : null}
           {content.text !== undefined ? (
             <pre className="evidence-preview__text" data-focus-line={focusLine ?? undefined}>
-              {content.text.split("\n").map((line, index) => (
-                <span
-                  key={`${content.path}-${index}`}
-                  data-line={index + 1}
-                  data-focused={focusLine === index + 1 ? "true" : undefined}
-                >
-                  {line || " "}{index < content.text!.split("\n").length - 1 ? "\n" : ""}
-                </span>
-              ))}
+              {(() => {
+                const lines = content.text.split("\n");
+                return lines.map((line, index) => (
+                  <span
+                    key={`${content.path}-${index}`}
+                    data-line={index + 1}
+                    data-focused={focusLine === index + 1 ? "true" : undefined}
+                  >
+                    {line || " "}{index < lines.length - 1 ? "\n" : ""}
+                  </span>
+                ));
+              })()}
             </pre>
           ) : null}
           {content.image && content.preview_allowed ? (

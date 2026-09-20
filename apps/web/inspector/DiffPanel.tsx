@@ -1,7 +1,7 @@
 "use client";
 
 import { ReloadIcon } from "@radix-ui/react-icons";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useCopy } from "../copy/CopyProvider";
 import { createProductApiClient } from "../product/product-client";
@@ -14,18 +14,30 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const [partial, setPartial] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Request-generation guard (plan §3): a diff response may only publish while
+  // its request is still the latest one for this panel, so switching sessions
+  // cannot surface another session's evidence.
+  const requestRef = useRef(0);
 
   const load = useCallback(async () => {
+    const request = ++requestRef.current;
+    const stale = () => requestRef.current !== request;
     setLoading(true);
     setError(null);
     try {
       const response = await client.getSessionDiff(sessionId, "all");
-      setEntries(response.entries);
-      setPartial(response.partial_reasons);
+      if (!stale()) {
+        setEntries(response.entries);
+        setPartial(response.partial_reasons);
+      }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Failed to load diff");
+      if (!stale()) {
+        setError(caught instanceof Error ? caught.message : "Failed to load diff");
+      }
     } finally {
-      setLoading(false);
+      if (!stale()) {
+        setLoading(false);
+      }
     }
   }, [client, sessionId]);
 

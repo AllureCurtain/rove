@@ -55,7 +55,7 @@ export interface RunController {
   }>;
   attach(jobId: string, expectedRunId?: string | null): Promise<JobStateResponse>;
   cancel(jobId: string): Promise<void>;
-  approve(jobId: string, callId: string, decision: "approve" | "reject"): Promise<void>;
+  approve(jobId: string, callId: string, decision: "approve" | "reject", expectedRunId?: string): Promise<void>;
   answer(jobId: string, inputId: string, answer: string): Promise<void>;
   close(): void;
 }
@@ -71,6 +71,30 @@ export function createRunController(
   let generation = 0;
   let active = true;
   let resyncGeneration: number | null = null;
+  let binding: { jobId: string; runId: string | null } | null = null;
+  let terminal = false;
+  let latestSeq = 0;
+  const approvalRequests = new Set<string>();
+
+  // Snapshots may race canonical events. Never roll a run back after a newer
+  // event (especially run_completed), or project a reused job's different run.
+  function syncSnapshot(state: JobStateResponse): boolean {
+    if (binding && (state.job_id !== binding.jobId ||
+        (binding.runId && state.run_id !== binding.runId))) {
+      throw new Error("Approval snapshot does not match the observed job/run.");
+    }
+    if (state.event_count < latestSeq || (terminal && !isTerminalStatus(state.status))) {
+      return false;
+    }
+    latestSeq = Math.max(latestSeq, state.event_count);
+    dispatch({ type: "job_state_synced", state });
+    if (isTerminalStatus(state.status) && !terminal) {
+      terminal = true;
+      closeStream();
+      options.onTerminal?.();
+    }
+    return true;
+  }
 
   function closeStream() {
     eventSource?.close();
@@ -92,6 +116,9 @@ export function createRunController(
       throw new RunControllerInactiveError();
     }
     generation += 1;
+    terminal = false;
+    latestSeq = 0;
+    binding = null;
     closeStream();
     return generation;
   }
@@ -122,11 +149,7 @@ export function createRunController(
           if (!isCurrent(expectedGeneration)) {
             return;
           }
-          dispatch({ type: "job_state_synced", state: jobState });
-          if (isTerminalStatus(jobState.status)) {
-            closeStream();
-            options.onTerminal?.();
-          }
+          syncSnapshot(jobState);
         })
         .catch((error) => {
           if (isCurrent(expectedGeneration)) {
@@ -153,6 +176,7 @@ export function createRunController(
       dispatch({ type: "set_error", error: "Malformed stream event" });
       return;
     }
+    latestSeq = Math.max(latestSeq, parseEventSeq(message.lastEventId) ?? 0);
     dispatch({
       type: "stream_event",
       event: payload,
@@ -160,6 +184,7 @@ export function createRunController(
     });
     options.onStreamEvent?.(payload);
     if (payload.type === "run_completed") {
+      terminal = true;
       closeStream();
       options.onTerminal?.();
     }
@@ -191,6 +216,7 @@ export function createRunController(
       const expectedGeneration = beginObservation();
       const job = await createJob(request);
       assertCurrent(expectedGeneration);
+      binding = { jobId: job.job_id, runId: job.run_id };
       dispatch({
         type: "job_created",
         jobId: job.job_id,
@@ -212,12 +238,9 @@ export function createRunController(
         expectedRunId,
         expectedGeneration,
       );
-      dispatch({ type: "job_state_synced", state: jobState });
-      if (isTerminalStatus(jobState.status)) {
-        closeStream();
-        options.onTerminal?.();
-      } else {
-        // The server replays buffered events, so opening the stream only after
+      binding = { jobId, runId: jobState.run_id ?? null };
+      syncSnapshot(jobState);
+      if (!terminal) {
         // exact run verification avoids attaching a reused job id to its prior run.
         attachStream(jobId, expectedGeneration);
       }
@@ -236,15 +259,44 @@ export function createRunController(
       }
     },
 
-    async approve(jobId, callId, decision) {
+    async approve(jobId, callId, decision, expectedRunId) {
       const expectedGeneration = generation;
-      const jobState = await submitApproval(jobId, callId, decision);
       assertCurrent(expectedGeneration);
-      dispatch({ type: "approval_decision", callId, decision });
-      dispatch({ type: "job_state_synced", state: jobState });
-      if (isTerminalStatus(jobState.status)) {
-        closeStream();
-        options.onTerminal?.();
+      if (!binding || binding.jobId !== jobId || !binding.runId ||
+          (expectedRunId && binding.runId !== expectedRunId) || terminal) {
+        throw new Error("Approval request is no longer current. Reload its session.");
+      }
+      const key = JSON.stringify([jobId, binding.runId, callId]);
+      if (approvalRequests.has(key)) return;
+      approvalRequests.add(key);
+      try {
+        const jobState = await approvalDeadline(submitApproval(jobId, callId, decision));
+        assertCurrent(expectedGeneration);
+        // The POST response is a snapshot, not evidence that this window's
+        // decision executed the tool. Do not dispatch an optimistic decision.
+        syncSnapshot(jobState);
+      } catch (error) {
+        assertCurrent(expectedGeneration);
+        let reconciled = false;
+        for (const delay of [0, 100, 300]) {
+          if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+          assertCurrent(expectedGeneration);
+          try {
+            const state = await approvalDeadline(fetchJobState(jobId));
+            assertCurrent(expectedGeneration);
+            reconciled = syncSnapshot(state);
+            if (reconciled || terminal) break;
+          } catch (readError) {
+            if (isRunControllerInactive(readError)) throw readError;
+          }
+        }
+        assertCurrent(expectedGeneration);
+        throw new Error(`Approval outcome not confirmed: ${describeError(error)}. ${
+          reconciled ? "Server state refreshed; the request may have been resolved elsewhere." :
+            "Could not refresh authoritative state. Reload before deciding again."
+        } No automatic resend.`);
+      } finally {
+        approvalRequests.delete(key);
       }
     },
 
@@ -266,6 +318,13 @@ export function createRunController(
       closeStream();
     },
   };
+}
+
+function approvalDeadline<T>(request: Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Approval state request timed out")), 8_000);
+    request.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
 }
 
 const ATTACH_RUN_RETRY_DELAYS_MS = [

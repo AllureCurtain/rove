@@ -39,6 +39,8 @@ export function Transcript({
   onRetryRestore,
   onStartNewSession,
   onApproval,
+  onApprovalDetail,
+  approvalError,
   onInputSubmit,
   onPromoteMessage = () => {},
   onRevokeMessage = () => {},
@@ -53,6 +55,8 @@ export function Transcript({
   onRetryRestore: () => void;
   onStartNewSession: () => void;
   onApproval: (tool: ToolCallView, decision: "approve" | "reject") => void;
+  onApprovalDetail?: (tool: ToolCallView, trigger: HTMLElement) => void;
+  approvalError?: string | null;
   onInputSubmit: (inputId: string, answer: string) => void;
   onPromoteMessage?: (messageId: string) => void;
   onRevokeMessage?: (messageId: string) => void;
@@ -132,6 +136,7 @@ export function Transcript({
 
   return (
     <div className="chat-transcript-frame">
+      {approvalError ? <p className="shell-alert" role="alert">{approvalError}</p> : null}
       <div
         ref={transcriptRef}
         className="chat-transcript"
@@ -183,6 +188,7 @@ export function Transcript({
                 approvalBusy={approvalBusy}
                 inputBusy={inputBusy}
                 onApproval={onApproval}
+                onApprovalDetail={onApprovalDetail}
                 onInputSubmit={onInputSubmit}
               />
             ))}
@@ -277,12 +283,14 @@ function TranscriptItem({
   approvalBusy,
   inputBusy,
   onApproval,
+  onApprovalDetail,
   onInputSubmit,
 }: {
   item: TranscriptTimelineItem;
   approvalBusy: string | null;
   inputBusy: string | null;
   onApproval: (tool: ToolCallView, decision: "approve" | "reject") => void;
+  onApprovalDetail?: (tool: ToolCallView, trigger: HTMLElement) => void;
   onInputSubmit: (inputId: string, answer: string) => void;
 }) {
   const { t } = useCopy();
@@ -317,6 +325,7 @@ function TranscriptItem({
             tool={item.tool}
             busy={approvalBusy === item.tool.id}
             onApproval={onApproval}
+            onDetail={onApprovalDetail}
           />
         ) : (
           <ToolCard tool={item.tool} />
@@ -521,25 +530,21 @@ function ToolFacts({ tool }: { tool: ToolCallView }) {
   );
 }
 
-function ApprovalCard({
+export function ApprovalCard({
   tool,
   busy,
   onApproval,
+  onDetail,
 }: {
   tool: ToolCallView;
   busy: boolean;
   onApproval: (tool: ToolCallView, decision: "approve" | "reject") => void;
+  onDetail?: (tool: ToolCallView, trigger: HTMLElement) => void;
 }) {
   const { t } = useCopy();
-  const approvalCardRef = useRef<HTMLElement>(null);
-
-  useEffect(() => {
-    approvalCardRef.current?.focus();
-  }, []);
 
   return (
     <article
-      ref={approvalCardRef}
       className="approval-card"
       aria-label={t("inspector.approvalsTitle")}
       role="alert"
@@ -550,13 +555,19 @@ function ApprovalCard({
         <span><strong>{t("inspector.statusWaitingApproval")}</strong><small>{tool.name}</small></span>
       </div>
       <p>{tool.reason ?? tool.details}</p>
+      <p>{t("inspector.approvalScope")}</p>
+      {busy ? <p role="status">{t("inspector.approvalSubmitting")}</p> : null}
+      {onDetail ? <button type="button" className="secondary"
+        onClick={(event) => onDetail(tool, event.currentTarget)}>
+        {t("inspector.approvalDetail")}
+      </button> : null}
       {tool.args !== undefined || tool.pendingApproval ? (
         <pre tabIndex={0}>{formatValue(tool.args ?? tool.pendingApproval?.args)}</pre>
       ) : null}
       <div className="field-actions">
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || !tool.pendingApproval}
           onClick={() => onApproval(tool, "approve")}
         >
           <CheckIcon />
@@ -565,7 +576,7 @@ function ApprovalCard({
         <button
           type="button"
           className="danger"
-          disabled={busy}
+          disabled={busy || !tool.pendingApproval}
           onClick={() => onApproval(tool, "reject")}
         >
           <Cross2Icon />
