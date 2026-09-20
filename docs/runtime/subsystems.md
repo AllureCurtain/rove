@@ -829,6 +829,11 @@ It renders eligible promote/revoke actions on the same transcript message and
 retains Stop as the separate cancellation action. It does not expose a
 Steer/Follow-up mode selector or maintain a client-side queue, and it never
 synthesizes a successor run from presentation timing.
+Composer keyboard input uses Ctrl/Cmd+Enter to submit the current trimmed
+draft, while Enter and Shift+Enter insert newlines without submitting; IME
+composition confirmation (native `isComposing` or `keyCode === 229`) never
+submits, and the textarea clears only after the Send Message command reports
+acceptance (see `apps/web/chat/Composer.tsx`).
 
 The current CDH G2 fork surface permits a branch only from an API-verified,
 terminal canonical run boundary. `product_session_forks` and its inherited-run
@@ -853,6 +858,29 @@ and Markdown from one sanitized value; and the workspace-scoped MCP catalog is
 shared by Settings and jobs with secret-name-only persistence, typed probes,
 1 MiB transport bounds, and fail-closed corrupt/locked/unsafe configuration.
 The exact contract/test map is in `acceptance-matrix.md` under CDH G1-G7.
+
+Product file browsing now shares the project-trust boundary. The four
+`/product/workspaces/{id}/files`, `/files/content`, `/files/download`, and
+`/files/preview` handlers resolve the workspace root and return 409
+`project_trust_required` when the durable Project Trust authority marks that
+exact root revoked, matching run creation. An unknown or restricted root stays
+readable: the user registered that exact root through the product surface, and
+the read path is already bounded by the workspace root, the secret-name
+filter, and the byte caps. When no Project Trust authority is configured the
+handlers keep their previous behavior instead of failing closed, so embedders
+without one do not gain a 503 on every read. The implementation is
+`apps/api/src/product/trust.rs::ensure_workspace_read_allowed`; the negative
+test is `tests/api.rs`
+`product_workspace_files_deny_a_revoked_project_trust_root`.
+
+Durable authorization history is still request-only. The Runtime persists the
+request side (`pending_approvals` with `call_id`, `job_id`, `run_id`, `name`,
+`args_json`, `reason`, `status`, `created_at`, `updated_at`) and projects the
+`tool_call_approval_needed` canonical event per product session, but no
+decision event, decision actor, or dedicated decision timestamp exists. The
+Web workbench renders the request side and labels the decision, actor, and
+time as unknown rather than inferring them from a later tool result. A
+per-session decision-history read surface remains future work.
 
 The web verification surface is:
 

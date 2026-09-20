@@ -14,6 +14,7 @@ import type { SessionUsageState } from "../state/use-session-usage";
 import { ArtifactPanel } from "./ArtifactPanel";
 import { DiffPanel } from "./DiffPanel";
 import { ExportPanel } from "./ExportPanel";
+import { SessionAuthorizationPanel } from "./SessionAuthorizationPanel";
 import { FilesPanel } from "./FilesPanel";
 import { ReviewPanel } from "./ReviewPanel";
 import type {
@@ -21,6 +22,8 @@ import type {
   ProductReviewFindingPageItem,
 } from "../product/product-api-types";
 
+import { ApprovalCard } from "../chat/Transcript";
+import { PANEL_MIN_WIDTH, PANEL_MAX_WIDTH, type WorkPanelState } from "./use-work-panel";
 export function RunInspector({
   productSessionId,
   workspaceId,
@@ -45,6 +48,10 @@ export function RunInspector({
   onOpenReviewFinding,
   fileFocusPath,
   fileFocusLine,
+  panel,
+  approvalBusy = null,
+  approvalError = null,
+  onApproval,
 }: {
   productSessionId: string;
   workspaceId?: string;
@@ -69,10 +76,16 @@ export function RunInspector({
   onOpenReviewFinding?: (path: string, line: number) => void;
   fileFocusPath?: string | null;
   fileFocusLine?: number | null;
+  panel?: WorkPanelState;
+  approvalBusy?: string | null;
+  approvalError?: string | null;
+  onApproval?: (tool: ToolCallView, decision: "approve" | "reject") => void;
 }) {
   const { t } = useCopy();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const [tab, setTab] = useState<"run" | "review">("run");
+  const [fallbackTab, setFallbackTab] = useState<"run" | "review" | "approval">("run");
+  const tab = panel?.tab ?? fallbackTab;
+  const setTab = panel?.setTab ?? setFallbackTab;
 
   useEffect(() => {
     if (dialogOpen) {
@@ -91,6 +104,10 @@ export function RunInspector({
 
   const phase = resolveInspectorPhase(runState);
   const waiting = runState.tools.filter((tool) => tool.pendingApproval);
+  const target = panel?.target;
+  const selectedApproval = target?.kind === "approval" &&
+    target.jobId === runState.activeJobId && target.runId === runState.activeRunId
+    ? waiting.find((tool) => tool.id === target.callId) : undefined;
   const mutations = useMemo(
     () =>
       runState.tools.flatMap((tool) =>
@@ -128,6 +145,7 @@ export function RunInspector({
       data-open={dialogOpen}
       aria-modal={dialogOpen ? true : undefined}
       role={dialogOpen ? "dialog" : undefined}
+      style={panel && !dialogOpen ? { width: `min(${panel.width}px, 45vw)` } : undefined}
       onKeyDown={
         dialogOpen
           ? (event: KeyboardEvent<HTMLElement>) => {
@@ -153,6 +171,10 @@ export function RunInspector({
           {dialogOpen ? <Cross2Icon /> : <ChevronRightIcon />}
         </button>
       </div>
+      {panel && !dialogOpen ? <input className="work-panel-width" type="range"
+        aria-label={t("inspector.panelWidth")} min={PANEL_MIN_WIDTH} max={PANEL_MAX_WIDTH}
+        step={20} value={panel.width}
+        onChange={(event) => panel.setWidth(Number(event.target.value))} /> : null}
       <div className="inspector-tabs" role="tablist" aria-label={t("inspector.title")}>
         <button
           type="button"
@@ -173,9 +195,35 @@ export function RunInspector({
           {t("inspector.tabReview")}
           {reviews.length > 0 ? ` (${reviews.length})` : ""}
         </button>
+        {panel ? <button type="button" role="tab" aria-selected={tab === "approval"}
+          className={tab === "approval" ? "tab-button tab-button--active" : "tab-button"}
+          onClick={() => setTab("approval")}>
+          {t("inspector.tabApproval")} ({waiting.length})
+        </button> : null}
       </div>
       <div className="inspector-body">
-        {tab === "review" ? (
+        {tab === "approval" ? (
+          <section className="approval-detail" aria-label={t("inspector.approvalDetail")}>
+            {approvalError ? <p role="alert">{approvalError}</p> : null}
+            {waiting.map((tool) => <button key={tool.id} type="button" className="secondary"
+              onClick={() => panel?.setTarget({ kind: "approval", jobId: runState.activeJobId!,
+                runId: runState.activeRunId!, callId: tool.id })}>
+              {tool.name} · {tool.id}
+            </button>)}
+            {selectedApproval && onApproval ? <>
+              <p className="approval-detail__identity">{runState.activeRunId} / {selectedApproval.id}</p>
+              <ApprovalCard tool={selectedApproval} busy={approvalBusy === selectedApproval.id}
+                onApproval={onApproval} />
+            </> : <p role="status">{t("inspector.approvalUnavailable")}</p>}
+            {/* Plan P4: the durable authorization history for this session. */}
+            {tab === "approval" && workspaceId ? (
+              <SessionAuthorizationPanel
+                sessionId={productSessionId}
+                workspaceId={workspaceId}
+              />
+            ) : null}
+          </section>
+        ) : tab === "review" ? (
           <ReviewPanel
             reviews={reviews}
             selectedReviewId={selectedReviewId}

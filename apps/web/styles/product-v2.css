@@ -318,7 +318,7 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 }
 
 .product-app-frame[data-ui-version="v2"] .product-sidebar__header {
-  min-height: 68px;
+  min-height: 56px;
   padding: 12px 12px 10px 14px;
   border-color: var(--v2-rail-border);
 }
@@ -328,6 +328,67 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   font-size: 11px;
   font-weight: 650;
   text-transform: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-new-session {
+  flex: 1;
+  min-width: 0;
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: 34px;
+  border-color: var(--v2-rail-border);
+  background: var(--v2-rail-raised);
+  color: var(--v2-rail-ink);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-search-scope {
+  margin: -4px 14px 12px;
+  color: var(--v2-rail-muted);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-search:focus-within {
+  outline: 2px solid var(--v2-rail-signal);
+  outline-offset: 2px;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-group__row > .icon-button,
+.product-app-frame[data-ui-version="v2"] .workspace-actions > .icon-button {
+  width: 28px;
+  min-width: 28px;
+  min-height: 32px;
+  padding: 4px;
+  border-color: transparent;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-actions {
+  position: relative;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-actions__menu {
+  position: absolute;
+  z-index: 5;
+  top: 100%;
+  right: 0;
+  display: grid;
+  width: max-content;
+  max-width: 230px;
+  padding: 4px;
+  border: 1px solid var(--v2-rail-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-rail);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 18%);
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-actions__menu button {
+  justify-content: flex-start;
+  min-height: 34px;
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-sidebar__footer {
+  flex-shrink: 0;
 }
 
 .product-app-frame[data-ui-version="v2"] .product-sidebar button.secondary,
@@ -450,7 +511,7 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 .product-app-frame[data-ui-version="v2"] .session-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
-  min-height: 40px;
+  min-height: 34px;
   gap: 7px;
   border-radius: var(--v2-radius-sm);
   color: var(--v2-rail-muted);
@@ -3136,4 +3197,80 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
     opacity: 1;
     transform: none;
   }
+}
+
+/* Shared work panel: bounded selection controls, not permission state. */
+.product-app-frame[data-ui-version="v2"] .work-panel-width {
+  display: block;
+  width: calc(100% - 32px);
+  margin: 8px 16px;
+  accent-color: var(--v2-accent);
+}
+.product-app-frame[data-ui-version="v2"] .inspector-tabs:has([role="tab"]:nth-child(3)) {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.product-app-frame[data-ui-version="v2"] .approval-detail {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.product-app-frame[data-ui-version="v2"] .approval-detail .approval-card {
+  min-width: 0;
+  padding: 12px;
+}
+.product-app-frame[data-ui-version="v2"] .approval-detail pre {
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.product-app-frame[data-ui-version="v2"] .approval-detail__identity {
+  color: var(--v2-muted);
+  font-size: 11px;
+}
+.product-app-frame[data-ui-version="v2"] .authorization-history {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--v2-border);
+}
+.product-app-frame[data-ui-version="v2"] .authorization-history h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.product-app-frame[data-ui-version="v2"] .authorization-history__limit {
+  margin: 0;
+  color: var(--v2-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.product-app-frame[data-ui-version="v2"] .authorization-history__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  table-layout: fixed;
+}
+.product-app-frame[data-ui-version="v2"] .authorization-history__table th {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--v2-border);
+  color: var(--v2-muted);
+  font-weight: 600;
+  text-align: left;
+}
+.product-app-frame[data-ui-version="v2"] .authorization-history__table td {
+  padding: 6px;
+  border-bottom: 1px solid var(--v2-border);
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+.product-app-frame[data-ui-version="v2"] .authorization-history__table td small {
+  display: block;
+  color: var(--v2-muted);
+  font-size: 10px;
+}
+.product-app-frame[data-ui-version="v2"] .authorization-history__table code {
+  font-size: 10px;
 }
