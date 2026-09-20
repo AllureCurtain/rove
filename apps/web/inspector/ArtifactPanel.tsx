@@ -6,7 +6,7 @@ import {
   ImageIcon,
   ReloadIcon,
 } from "@radix-ui/react-icons";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useCopy } from "../copy/CopyProvider";
 import { createProductApiClient } from "../product/product-client";
@@ -25,6 +25,17 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Request-generation guard (plan §3): artifact list and content responses may
+  // only publish while their request is still the latest one for this panel, so
+  // switching sessions cannot surface another session's artifacts.
+  const requestRef = useRef(0);
+  const downloadRequestRef = useRef(0);
+  const previewRequestRef = useRef(0);
+  useEffect(() => () => {
+    requestRef.current += 1;
+    downloadRequestRef.current += 1;
+    previewRequestRef.current += 1;
+  }, [sessionId]);
 
   useEffect(() => {
     return () => {
@@ -33,21 +44,28 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
   }, [previewUrl]);
 
   const load = useCallback(async () => {
+    const request = ++requestRef.current;
+    const stale = () => requestRef.current !== request;
     setLoading(true);
     setError(null);
     try {
       const response = await client.listSessionArtifacts(sessionId, true);
-      setArtifacts(response.artifacts);
-      setPartial(response.partial_reasons);
-      setSelected((current) =>
-        current
-          ? response.artifacts.find((artifact) => artifact.artifact_id === current.artifact_id) ?? null
-          : null,
-      );
+      if (!stale()) {
+        setArtifacts(response.artifacts);
+        setSelected((current) =>
+          current
+            ? response.artifacts.find((artifact) => artifact.artifact_id === current.artifact_id) ?? null
+            : null,
+        );
+      }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Failed to load artifacts");
+      if (!stale()) {
+        setError(caught instanceof Error ? caught.message : "Failed to load artifacts");
+      }
     } finally {
-      setLoading(false);
+      if (!stale()) {
+        setLoading(false);
+      }
     }
   }, [client, sessionId]);
 
@@ -63,6 +81,8 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
     if (artifact.availability !== "available" || artifact.preview_kind === "unavailable") {
       return;
     }
+    const request = ++requestRef.current;
+    const stale = () => requestRef.current !== request;
     try {
       const nextContent = await client.getArtifactContent(sessionId, artifact.artifact_id);
       const nextPreviewUrl =
@@ -71,14 +91,23 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
               await client.fetchArtifactPreview(sessionId, artifact.artifact_id),
             )
           : null;
-      setContent(nextContent);
-      setPreviewUrl(nextPreviewUrl);
+      if (!stale()) {
+        setContent(nextContent);
+        setPreviewUrl(nextPreviewUrl);
+      } else if (nextPreviewUrl) {
+        URL.revokeObjectURL(nextPreviewUrl);
+      }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Failed to open artifact");
+      if (!stale()) {
+        setError(caught instanceof Error ? caught.message : "Failed to open artifact");
+      }
     }
+    return () => { previewRequestRef.current += 1; };
   }
 
   async function downloadArtifact(artifact: ProductArtifactView) {
+    const request = ++downloadRequestRef.current;
+    const stale = () => downloadRequestRef.current !== request;
     setError(null);
     try {
       await downloadBlob(
@@ -86,7 +115,9 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
         artifact.safe_name,
       );
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Failed to download artifact");
+      if (!stale()) {
+        setError(caught instanceof Error ? caught.message : "Failed to download artifact");
+      }
     }
   }
 
