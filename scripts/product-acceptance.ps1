@@ -68,6 +68,24 @@ function Get-RelativePathCompat([string]$Base, [string]$Path) {
     return $pathFull.Replace("\", "/")
 }
 
+# ProcessStartInfo.Arguments is a single string on .NET Framework (Windows
+# PowerShell 5.1 has no ArgumentList), so quote the way the MSVC runtime
+# parses command lines: wrap in quotes only when needed, escape backslashes
+# before a closing or embedded quote.
+function ConvertTo-ArgumentString([string[]]$Arguments) {
+    $quoted = foreach ($argument in $Arguments) {
+        $argument = [string]$argument
+        if ($argument -notmatch '[\s"]') {
+            $argument
+        } else {
+            $escaped = $argument -replace '(\\+)$', '$1$1'
+            $escaped = $escaped -replace '(\\*)"', '$1$1\"'
+            '"' + $escaped + '"'
+        }
+    }
+    return ($quoted -join ' ')
+}
+
 function Get-OutputTail([string]$Path, [int]$Lines = 40) {
     if (-not (Test-Path -LiteralPath $Path)) {
         return @()
@@ -135,10 +153,15 @@ foreach ($check in $Checks) {
     Write-Host "running  $id : $commandLine"
 
     $checkStart = Get-Date
-    # Wait only for the command process. Start-Process -Wait follows the entire
-    # descendant tree on Windows, so a test fixture that intentionally detaches
-    # a bounded helper can delay or hang the acceptance runner after Cargo has
-    # already returned its real exit code.
+    # Start the check through System.Diagnostics.Process instead of
+    # Start-Process: on Windows PowerShell 5.1, Start-Process -PassThru can
+    # hand back a process object whose ExitCode stays null even after
+    # WaitForExit, because the underlying handle is not retained.
+    # UseShellExecute = $false keeps a reliable handle, WaitForExit() waits
+    # only for the direct child (Start-Process -Wait would follow the whole
+    # descendant tree, which a fixture that intentionally detaches a bounded
+    # helper could hang), and the output streams are drained asynchronously so
+    # a chatty child cannot deadlock on a full pipe buffer.
     $resolvedCommand = Get-Command $check.command -ErrorAction Stop
     $processFilePath = $resolvedCommand.Path
     $processArguments = @($check.arguments)
@@ -146,12 +169,24 @@ foreach ($check in $Checks) {
         $processFilePath = (Get-Command "powershell" -ErrorAction Stop).Path
         $processArguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $resolvedCommand.Path) + $processArguments
     }
-    $process = Start-Process -FilePath $processFilePath -ArgumentList $processArguments `
-        -WorkingDirectory $check.cwd -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog `
-        -PassThru -NoNewWindow
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $processFilePath
+    $startInfo.Arguments = ConvertTo-ArgumentString $processArguments
+    $startInfo.WorkingDirectory = $check.cwd
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    [void]$process.Start()
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
     $process.WaitForExit()
-    $process.Refresh()
+    [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($stdoutTask, $stderrTask))
+    [System.IO.File]::WriteAllText($stdoutLog, $stdoutTask.Result)
+    [System.IO.File]::WriteAllText($stderrLog, $stderrTask.Result)
     $exitCode = $process.ExitCode
+    $process.Dispose()
     $duration = [Math]::Round(((Get-Date) - $checkStart).TotalSeconds, 2)
 
     # Status is derived only from a real exit code. There is no default pass, and
