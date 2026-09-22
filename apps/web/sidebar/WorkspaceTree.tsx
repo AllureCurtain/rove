@@ -42,7 +42,10 @@ export function WorkspaceTree({
   onTogglePin,
   onRemoveWorkspace,
   mobileOpen = false,
+  peekOpen = false,
   onCloseMobile,
+  onOverlayPointerEnter,
+  onOverlayPointerLeave,
   onOpenSettings,
   railCollapsed,
   onToggleCollapsed,
@@ -59,7 +62,15 @@ export function WorkspaceTree({
   onTogglePin: (workspaceId: string) => void;
   onRemoveWorkspace: (workspaceId: string) => void;
   mobileOpen?: boolean;
+  /**
+   * Narrow screen: the rail is showing because a pointer summoned it, so it is
+   * visually open but *not* a dialog — no modal semantics, no focus trap, and
+   * the page behind it stays interactive.
+   */
+  peekOpen?: boolean;
   onCloseMobile?: () => void;
+  onOverlayPointerEnter?: () => void;
+  onOverlayPointerLeave?: () => void;
   onOpenSettings?: () => void;
   /** Collapsed rail: the subtree stays mounted but inert and aria-hidden. */
   railCollapsed?: boolean;
@@ -166,12 +177,15 @@ export function WorkspaceTree({
       className="product-sidebar"
       aria-label={t("workspace.label")}
       aria-busy={mutationBusy}
-      data-open={mobileOpen}
+      data-open={mobileOpen || peekOpen}
+      data-peek={peekOpen ? "true" : undefined}
       data-collapsed={railCollapsed}
       aria-hidden={railCollapsed ? true : undefined}
       inert={railCollapsed ? true : undefined}
       aria-modal={mobileOpen ? true : undefined}
       role={mobileOpen ? "dialog" : undefined}
+      onPointerEnter={onOverlayPointerEnter}
+      onPointerLeave={onOverlayPointerLeave}
       onKeyDown={
         mobileOpen
           ? (event) => {

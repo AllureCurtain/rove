@@ -3050,6 +3050,27 @@ html[data-reading-resizing="true"] * {
 /* Drawer layout. The 960px boundary mirrors `DRAWER_MAX_WIDTH` /
    `DRAWER_MEDIA_QUERY` in `lib/viewport-breakpoints.ts`; the rail becomes a
    drawer and the work panel opens as a dialog at or below it. */
+/* Narrow-screen rail peek: a pointer at the left edge summons the rail, and the
+   rail hides again shortly after it leaves (open-vetta's hover-summoned
+   overlay). The strip only exists for a fine pointer, so a touch device never
+   grows an invisible target at the transcript's left edge. */
+.product-app-frame[data-ui-version="v2"] .sidebar-hover-zone {
+  display: none;
+}
+
+@media (max-width: 960px) and (hover: hover) and (pointer: fine) {
+  .product-app-frame[data-ui-version="v2"] .sidebar-hover-zone {
+    display: block;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 14px;
+    z-index: 41;
+    background: transparent;
+  }
+}
+
 @media (max-width: 960px) {
   .product-app-frame[data-ui-version="v2"] .product-body:not([data-settings="true"]) {
     position: relative;

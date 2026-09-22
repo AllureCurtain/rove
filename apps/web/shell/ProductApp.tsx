@@ -28,6 +28,11 @@ import {
 } from "../state/composer-draft-store";
 import { selectTranscriptTimeline } from "../lib/rove-state";
 import { DRAWER_MEDIA_QUERY } from "../lib/viewport-breakpoints";
+import {
+  SIDEBAR_OVERLAY_CLOSE_DELAY_MS,
+  shouldFocusSessionHeadingAfterSelection,
+  shouldShowSidebarHoverZone,
+} from "./sidebar-overlay";
 import { SettingsShell } from "../settings/SettingsShell";
 import { matchKeyboardShortcut } from "../settings/keyboard-settings-model";
 import { createSettingsPlatformClient } from "../settings/settings-platform-client";
@@ -123,6 +128,10 @@ function ServerProductApp({ uiVersion, draftStore }: {
   const inspectorCollapsed = panel.collapsed;
   const [mobileLayout, setMobileLayout] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  // Narrow screen: a pointer at the left edge peeks the rail without turning it
+  // into a modal dialog (open-vetta's hover-summoned overlay).
+  const [workspacePeek, setWorkspacePeek] = useState(false);
+  const peekCloseTimerRef = useRef<number | null>(null);
 
   // ── Shared three-column width budget (design §5.0, ported from PI-Desktop) ──
   const [shellNode, setShellNode] = useState<HTMLDivElement | null>(null);
@@ -249,6 +258,9 @@ function ServerProductApp({ uiVersion, draftStore }: {
       setMobileLayout(narrow.matches);
       panelRef.current.setCollapsed(narrow.matches);
       if (!narrow.matches) {
+        // The peek only exists on a narrow screen.
+        cancelPeekClose();
+        setWorkspacePeek(false);
         setWorkspaceOpen(false);
       }
     };
@@ -357,10 +369,37 @@ function ServerProductApp({ uiVersion, draftStore }: {
               ? t("chat.disabledRoute")
               : undefined;
 
+  function cancelPeekClose() {
+    if (peekCloseTimerRef.current !== null) {
+      window.clearTimeout(peekCloseTimerRef.current);
+      peekCloseTimerRef.current = null;
+    }
+  }
+
+  /** The pointer reached the edge: show the rail without taking focus. */
+  function openWorkspacePeek() {
+    cancelPeekClose();
+    setWorkspacePeek(true);
+  }
+
+  /** The pointer left: hide shortly after, so crossing a gap does not flicker. */
+  function schedulePeekClose() {
+    cancelPeekClose();
+    peekCloseTimerRef.current = window.setTimeout(() => {
+      peekCloseTimerRef.current = null;
+      setWorkspacePeek(false);
+    }, SIDEBAR_OVERLAY_CLOSE_DELAY_MS);
+  }
+
   function closeWorkspaceDrawer() {
+    cancelPeekClose();
+    setWorkspacePeek(false);
     setWorkspaceOpen(false);
     window.requestAnimationFrame(() => workspaceButtonRef.current?.focus());
   }
+
+  // A pending peek timer must not outlive the shell.
+  useEffect(() => cancelPeekClose, []);
 
   function closeInspector() {
     panel.close();
@@ -526,7 +565,13 @@ function ServerProductApp({ uiVersion, draftStore }: {
         onToggleWorkspace={
           routing.viewSettings
             ? undefined
-            : () => setWorkspaceOpen((value) => !value)
+            : () => {
+                // A deliberate open is the modal one: it may trap focus, and it
+                // hands focus back to this button when it closes.
+                cancelPeekClose();
+                setWorkspacePeek(false);
+                setWorkspaceOpen((value) => !value);
+              }
         }
         // When the rail is collapsed its entries move to the header so they
         // stay reachable (design 搂3.1).
@@ -627,10 +672,17 @@ function ServerProductApp({ uiVersion, draftStore }: {
             onSelectWorkspace={routing.navigateWorkspace}
             onSelectSession={(workspaceId, sessionId) => {
               routing.navigateSession(workspaceId, sessionId);
+              // Narrow screen: the rail closes on selection. Only a deliberate
+              // open moves focus to the session title in the conversation header
+              // (design §3.1); a pointer-driven peek must not pull focus.
+              cancelPeekClose();
+              setWorkspacePeek(false);
               setWorkspaceOpen(false);
-              // Narrow screen: the rail closes on selection, so move focus to
-              // the session title in the conversation header (design 搂3.1).
-              if (mobileLayout) {
+              if (
+                shouldFocusSessionHeadingAfterSelection({
+                  deliberate: workspaceOpen,
+                })
+              ) {
                 window.requestAnimationFrame(() =>
                   sessionTitleRef.current?.focus(),
                 );
@@ -644,6 +696,9 @@ function ServerProductApp({ uiVersion, draftStore }: {
               void handleRemoveWorkspace(workspaceId)
             }
             mobileOpen={mobileLayout && workspaceOpen}
+            peekOpen={mobileLayout && workspacePeek}
+            onOverlayPointerEnter={mobileLayout ? cancelPeekClose : undefined}
+            onOverlayPointerLeave={mobileLayout ? schedulePeekClose : undefined}
             onCloseMobile={closeWorkspaceDrawer}
             onOpenSettings={() => {
               setWorkspaceOpen(false);
@@ -662,6 +717,21 @@ function ServerProductApp({ uiVersion, draftStore }: {
               commitWidth={sidebar.commitWidth}
               cancelPreview={sidebar.cancelPreview}
               onHandleKeyDown={sidebar.onHandleKeyDown}
+            />
+          ) : null}
+          {mobileLayout &&
+          shouldShowSidebarHoverZone({
+            narrow: mobileLayout,
+            open: workspaceOpen || workspacePeek,
+          }) ? (
+            /* A fine-pointer affordance (see `sidebar-overlay`): decorative, so
+               it stays out of the accessibility tree, and the header button
+               remains the deliberate, keyboard-reachable way in. */
+            <div
+              className="sidebar-hover-zone"
+              aria-hidden="true"
+              data-testid="sidebar-hover-zone"
+              onPointerEnter={openWorkspacePeek}
             />
           ) : null}
 

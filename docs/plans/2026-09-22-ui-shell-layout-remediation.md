@@ -442,6 +442,26 @@ open-vetta 在 `RootLayoutView` 里把路由内容 `memo` 掉，理由是"侧栏
 - 结果：左栏拖拽 604.6 → **89.0 ms** 脚本时间，`chat` chunk 18.3 → 3.0 ms，而真正必要的
   reflow（LayoutDuration/LayoutCount）不变（37.2/48 → 31.9/48）。
 
+**D. 窄屏左栏改为悬停唤出（移植 open-vetta 的 hover 浮层）。**
+
+参考：`useRootLayoutModel.ts` 的 `openOverlay` / `scheduleOverlayClose`（**120ms** 关延迟、重新进入即
+取消关闭、离开窄屏强制关闭）与 `RootLayoutView` 里 `SidebarOverlay` 的 `onMouseEnter`/`onMouseLeave`。
+此前 rove 窄屏必须先点顶栏按钮才出现侧栏。
+
+- 新增 `shell/sidebar-overlay.ts`：`SIDEBAR_OVERLAY_CLOSE_DELAY_MS = 120`、
+  `shouldShowSidebarHoverZone`、`shouldFocusSessionHeadingAfterSelection`；`ProductApp` 增加 peek 状态
+  与 120ms 定时器（进入左侧热区/侧栏即取消关闭，移出即延时关闭，离开窄屏或卸载时清掉）。
+- CSS：`.sidebar-hover-zone` 14px 贴左边缘，**只在 `@media (max-width: 960px) and (hover: hover) and
+  (pointer: fine)`** 下存在，无任何视觉。
+- 与参考的**两处有意偏离**（写在模块头注释里）：
+  1. 悬停唤出的是**非模态偷看**：没有 `role="dialog"`/`aria-modal`、没有焦点陷阱、没有遮罩、**不移动
+     焦点**。参考只有一个侧栏形态；rove 的窄屏侧栏同时是"点击打开的模态抽屉"（带焦点陷阱），
+     若让模态对话框在指针下方弹出并抢焦点，会直接打断用户正在写的对话。
+  2. 热区只对精细指针存在，触屏设备不会长出一条会吞掉点击的隐形条。
+- 覆盖：`sidebar-overlay.test.ts` 3 条（热区条件、120ms 常量、只有"刻意打开"才回焦）
+  ＋ `sidebar-hover-overlay.spec.ts` 3 条（唤出且不抢焦点/非 dialog/离开再在宽限期内返回保持打开；
+  偷看态选中会话不移动焦点而按钮路径会移动到标题；宽屏没有热区）。
+
 ### 8.2 参考有、但**不适用**于本仓库的一处
 
 PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由是"退出动画的卸载依赖
@@ -456,8 +476,8 @@ PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由
    89.0 ms 脚本时间，`chat` chunk 18.3 → 3.0 ms）。同源问题里还剩一项未做：右栏 `RunInspector`
    自身逐帧预览约 147ms/24 步（预览态在组件内部，属面板自己的重渲染；要再降低需要把预览降到
    CSS 变量+叶子订阅，收益与风险都需另测）。
-2. **窄屏侧栏改为悬停浮层**（open-vetta `SidebarOverlay` + `scheduleOverlayClose`）：我们现在必须
-   点击才出现。
+2. ~~**窄屏侧栏改为悬停浮层**（open-vetta `SidebarOverlay` + `scheduleOverlayClose`）：我们现在必须
+   点击才出现。~~ **已完成**，见 §8.1D。
 3. **命令面板**（open-vetta `CommandMenu`，挂在根布局）、**空闲预取路由**（`useIdleRoutePrefetch`）、
    **路由挂起内容视图**（`RouteContentLoadingView`）。
 4. **会话小地图**（PI `ConversationMinimap`）、**跟随滚动**（PI `use-follow-scroll` 的细节）、
@@ -471,11 +491,11 @@ PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由
 
 | 门 | 结果 | 退出码 |
 |---|---|---|
-| `pnpm exec playwright test`（全量 100 项） | 95 passed / 5 skipped / 0 failed；`.last-run.json`=`passed` | 0 |
-| `pnpm exec vitest run` | 49 文件 / 389 用例通过 | 0 |
+| `pnpm exec playwright test`（全量 103 项） | 98 passed / 5 skipped / 0 failed；`.last-run.json`=`passed` | 0 |
+| `pnpm exec vitest run` | 50 文件 / 392 用例通过 | 0 |
 | `pnpm typecheck` | 无错误 | 0 |
 | `pnpm build` | 编译成功 | 0 |
-| 独立几何探针（含新增阅读栏 7 项） | 147 passed / 0 failed | 0 |
+| 独立几何探针（含阅读栏 7 项） | 147 passed / 0 failed | 0 |
 
-§8.1C 落地后上述四项（playwright / vitest / typecheck / 探针）**全部重跑**，结果同上；性能对照见 §8.1C
-的表格（左栏拖拽脚本时间 604.6 → 89.0 ms，`chat` chunk 18.3 → 3.0 ms，reflow 不变）。
+§8.1C 与 §8.1D 落地后上述四项（playwright / vitest / typecheck / 探针）**各自全部重跑**，结果同上；
+性能对照见 §8.1C 的表格（左栏拖拽脚本时间 604.6 → 89.0 ms，`chat` chunk 18.3 → 3.0 ms，reflow 不变）。
