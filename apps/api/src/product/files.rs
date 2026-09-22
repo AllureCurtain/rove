@@ -601,7 +601,7 @@ async fn read_file_window(path: &Path, start: u64, end: u64) -> Result<Vec<u8>, 
     Ok(bytes)
 }
 
-async fn require_regular_file(path: &Path) -> Result<std::fs::Metadata, ApiError> {
+pub(crate) async fn require_regular_file(path: &Path) -> Result<std::fs::Metadata, ApiError> {
     let metadata = tokio::fs::metadata(path)
         .await
         .map_err(|error| map_file_open_error(error, "file not found"))?;
@@ -619,7 +619,10 @@ fn map_file_open_error(error: std::io::Error, fallback: &str) -> ApiError {
     }
 }
 
-fn workspace_root(kind: &ProductWorkspaceKind, canonical_root: &Path) -> Result<PathBuf, ApiError> {
+pub(crate) fn workspace_root(
+    kind: &ProductWorkspaceKind,
+    canonical_root: &Path,
+) -> Result<PathBuf, ApiError> {
     let _ = kind;
     if !canonical_root.is_absolute() || !canonical_root.exists() {
         return Err(ApiError::not_found("workspace root"));
@@ -629,7 +632,7 @@ fn workspace_root(kind: &ProductWorkspaceKind, canonical_root: &Path) -> Result<
         .map_err(|error| ApiError::internal(format!("workspace canonicalize failed: {error}")))
 }
 
-fn join_safe(root: &Path, relative: &str) -> Result<PathBuf, ApiError> {
+pub(crate) fn join_safe(root: &Path, relative: &str) -> Result<PathBuf, ApiError> {
     if relative.is_empty() {
         return Ok(root.to_path_buf());
     }
@@ -708,9 +711,16 @@ pub(crate) fn guess_mime(path: &Path) -> String {
         "json" => "application/json".to_string(),
         "jsonl" | "ndjson" => "application/x-ndjson".to_string(),
         "xml" => "application/xml".to_string(),
-        "rs" | "toml" | "yaml" | "yml" | "js" | "ts" | "tsx" | "jsx" | "css" | "html" | "htm"
-        | "py" | "sh" | "bash" | "c" | "cc" | "cpp" | "h" | "hpp" | "go" | "java" | "kt" | "rb"
-        | "cs" | "swift" => format!("text/{ext}"),
+        // RFC 9239 / WHATWG-valid script and document types: anything else
+        // would be refused under `X-Content-Type-Options: nosniff` when a
+        // previewed page loads the file as a script, stylesheet, or document.
+        "js" | "mjs" | "cjs" => "text/javascript".to_string(),
+        "css" => "text/css".to_string(),
+        "html" | "htm" => "text/html".to_string(),
+        "rs" | "toml" | "yaml" | "yml" | "ts" | "tsx" | "jsx" | "py" | "sh" | "bash" | "c"
+        | "cc" | "cpp" | "h" | "hpp" | "go" | "java" | "kt" | "rb" | "cs" | "swift" => {
+            format!("text/{ext}")
+        }
         "svg" => "image/svg+xml".to_string(),
         "png" => "image/png".to_string(),
         "jpg" | "jpeg" => "image/jpeg".to_string(),
@@ -723,7 +733,7 @@ pub(crate) fn guess_mime(path: &Path) -> String {
     }
 }
 
-fn sniff_mime(bytes: &[u8]) -> Option<String> {
+pub(crate) fn sniff_mime(bytes: &[u8]) -> Option<String> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("image/png".to_string())
     } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {

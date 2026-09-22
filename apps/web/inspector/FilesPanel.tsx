@@ -3,6 +3,7 @@
 import {
   ChevronUpIcon,
   DownloadIcon,
+  ExternalLinkIcon,
   FileIcon,
   ImageIcon,
 } from "@radix-ui/react-icons";
@@ -13,7 +14,12 @@ import { createProductApiClient } from "../product/product-client";
 import type {
   ProductFileContentEnvelope,
   ProductFileEntry,
+  ProductPreviewSession,
 } from "../product/product-api-types";
+
+function isHtmlPath(path: string): boolean {
+  return /\.(html|htm)$/i.test(path);
+}
 
 export function FilesPanel({
   workspaceId,
@@ -41,6 +47,9 @@ export function FilesPanel({
   const [scanLimited, setScanLimited] = useState(false);
   const [content, setContent] = useState<ProductFileContentEnvelope | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [htmlPreview, setHtmlPreview] = useState<ProductPreviewSession | null>(null);
+  const [htmlPreviewBusy, setHtmlPreviewBusy] = useState(false);
+  const [htmlPreviewError, setHtmlPreviewError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -49,6 +58,65 @@ export function FilesPanel({
       if (previewUrl) URL.revokeObjectURL(previewUrl);
     };
   }, [previewUrl]);
+
+  // Closing the panel (or switching workspace) revokes the isolated preview
+  // token so the loopback origin stops resolving it (plan P5b / A8).
+  useEffect(() => {
+    return () => {
+      const open = htmlPreview;
+      if (open) {
+        void client
+          .closeWorkspacePreview(open.workspace_id, open.preview_id)
+          .catch(() => undefined);
+      }
+    };
+  }, [client, htmlPreview, workspaceId]);
+
+  async function openHtmlPreview(path: string) {
+    setHtmlPreviewBusy(true);
+    setHtmlPreviewError(null);
+    try {
+      const session = await client.createWorkspacePreview(workspaceId, { path });
+      if (session.workspace_id !== workspaceId) {
+        throw new Error("Preview session does not match this workspace.");
+      }
+      const previous = htmlPreview;
+      if (previous) {
+        void client
+          .closeWorkspacePreview(previous.workspace_id, previous.preview_id)
+          .catch(() => undefined);
+      }
+      setHtmlPreview(session);
+      // The preview URL embeds the session token. Open it only in a new
+      // isolated tab and never write it to logs or persistent state (A7).
+      window.open(session.url, "_blank", "noopener,noreferrer");
+    } catch (caught) {
+      setHtmlPreviewError(
+        caught instanceof Error ? caught.message : "Failed to open preview",
+      );
+    } finally {
+      setHtmlPreviewBusy(false);
+    }
+  }
+
+  async function closeHtmlPreview() {
+    const open = htmlPreview;
+    if (!open) {
+      return;
+    }
+    setHtmlPreviewBusy(true);
+    setHtmlPreviewError(null);
+    try {
+      await client.closeWorkspacePreview(open.workspace_id, open.preview_id);
+      setHtmlPreview(null);
+    } catch (caught) {
+      setHtmlPreviewError(
+        caught instanceof Error ? caught.message : "Failed to close preview",
+      );
+    } finally {
+      setHtmlPreviewBusy(false);
+    }
+  }
 
   useEffect(() => {
     const request = ++requestRef.current;
@@ -268,7 +336,46 @@ export function FilesPanel({
             >
               <DownloadIcon />
             </button>
+            {isHtmlPath(content.path) ? (
+              htmlPreview ? (
+                <button
+                  type="button"
+                  className="ghost icon-button"
+                  onClick={() => void closeHtmlPreview()}
+                  disabled={htmlPreviewBusy}
+                  aria-label={t("chrome.previewHtmlClose")}
+                  title={t("chrome.previewHtmlClose")}
+                  data-testid="close-html-preview"
+                >
+                  {t("chrome.previewHtmlClose")}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="ghost icon-button"
+                  onClick={() => void openHtmlPreview(content.path)}
+                  disabled={htmlPreviewBusy}
+                  aria-label={t("chrome.previewHtmlOpen")}
+                  title={t("chrome.previewHtmlOpen")}
+                  data-testid="open-html-preview"
+                >
+                  <ExternalLinkIcon />
+                </button>
+              )
+            ) : null}
           </div>
+          {isHtmlPath(content.path) ? (
+            <p className="inspector-empty-line" role="status">
+              {htmlPreview
+                ? t("chrome.previewHtmlActive")
+                : t("chrome.previewHtmlHint")}
+            </p>
+          ) : null}
+          {htmlPreviewError ? (
+            <p className="inspector-empty-line" role="alert">
+              {htmlPreviewError}
+            </p>
+          ) : null}
           {content.validation_error ? (
             <p className="inspector-empty-line" role="alert">{t("chrome.invalidContent")}</p>
           ) : null}

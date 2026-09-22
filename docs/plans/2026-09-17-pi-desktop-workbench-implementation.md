@@ -1,6 +1,6 @@
 # open-vetta 与 PI-Desktop 体验借鉴的 rove 实现计划
 
-> 状态：**Partially Implemented**。P1a、P1b、P2、P3 与 P4 请求侧已实现并有测试证据；P5a/P5b、P4 决策侧合同扩展与 P6 综合验收未完成。实施进展、每阶段证据与未关闭项见 [P0/P1a 证据报告](2026-09-17-pi-desktop-workbench-p0-evidence.md)。
+> 状态：**Partially Implemented**。P1a、P1b、P2、P3、P4（请求侧+决策侧合同）、P5a 与 P5b 资源服务/面板/gate1 浏览器证据已实现并有测试证据；P6 综合验收与实机 gate 仍未全部关闭。实施进展、每阶段证据与未关闭项见 [P0/P1a 证据报告](2026-09-17-pi-desktop-workbench-p0-evidence.md)。
 > 日期：2026-09-17；2026-09-19 按用户确认修订分栏参考来源。
 > 输入：[设计文档](../design/2026-09-17-pi-desktop-workbench-design.md)。
 > 本文是未来实施文档，不是完成报告。本次仅新增文档，不修改运行时或产品 UI。
@@ -275,16 +275,17 @@ live API、产品验收和安装版测试遵循[集成测试说明](../runtime/i
 | — | `954e33a` | `ArtifactPanel.tsx` 存在编译阻断（重复 `if (!stale()) {` 且缺 `requestRef` 声明），`tsc` 与 Web 构建均失败；已修复 | `pnpm typecheck` 0 |
 | P2 | `1ca5c58` | 关闭评审遗留的三个源码风险：终态工具被过期审批快照改写回 `running`、media-query 监听器闭包捕获首帧 panel、移动端审批焦点回退缺失 | vitest 340 用例；新回归测试在移除守卫后实测失败 |
 | P3 | `f684dcb` | 工作区文件读取接入项目信任边界：revoked 根在 listing/content/download/preview 四面返回 409 `project_trust_required`；unknown/restricted 保持可读；未配置信任权威时维持既有行为 | `cargo test -p rove-integration-tests --test api` 120 通过；移除守卫后负向用例实测失败 |
-| P4 | `ce7395e` | 新增“本会话最近授权请求”分区：读取产品 transcript 的 `tool_call_approval_needed` 事件，去重、倒序、上限 50；决策/决策者/决策时间标注为未知并说明未持久化 | vitest 345 用例；`pnpm test:e2e` 77 通过、5 跳过 |
+| P4 | `ce7395e` + 本批决策侧 | 请求侧分区保留；决策侧合同扩展：StateIndex schema v5 `decided_via`、`GET /product/sessions/{id}/authorizations`、结果归因（terminal tool event）、Web 面板展示决策状态/通道/时间/结果 | vitest 354 用例；`product_session_authorizations_*` 2 例；runtime approval history 4 例 |
 | P5a | `35e3be8` | 外链接入受控 Desktop 宿主：`SafeLink` 仅在 Desktop 传输存在时转交 `open_external`（http/https + host 复校），普通浏览器保持 `target=_blank` + `noreferrer noopener`；失败经 copy 体系提示 | vitest 350 用例（新增 5 条）；`pnpm build` 与 `pnpm test:e2e` 77 通过、5 跳过 |
 | 动效/宽度 | `a59548a` | §3.3 动效令牌体系（150ms 色过渡、1s 运行旋转、200ms 0fr↔1fr + 220ms 延迟卸载、240ms 收起、100ms 菜单、180ms 胶囊、300/200 状态条、200/150 面板）、左栏 200–360px 拖调与键盘调宽 + localStorage 持久化、收起态入口移交页头、窄屏选中会话后焦点移入标题 | vitest 354 用例；`pnpm test:e2e` 80 通过、5 跳过 |
-| P5b | — | 仅交付[威胁模型](../design/2026-09-17-pi-desktop-workbench-p5b-threat-model.md)：origin 隔离为不可让步约束、落点选 `apps/api`、13 项攻击面与 6 条实施门槛；**未实现，模型不授权实现** | 文档交付，无代码 |
+| P5b | （未提交，随本批收口） | 按[威胁模型](../design/2026-09-17-pi-desktop-workbench-p5b-threat-model.md)落地 `apps/api` 隔离 origin 预览服务（`product/preview.rs`）与 FilesPanel 面板入口；复用 `join_safe`/`is_secret_filename`；会话令牌关闭即撤销；gate1 真实浏览器证据 `workbench-preview-origin.spec.ts` | `product_preview_*` 6 例 + Playwright gate1 1 例 |
 合同同步：`docs/runtime/subsystems.md` 记录文件读取的信任边界与授权历史仅请求侧的事实。未改 Runtime 事件流、未加 schema 迁移、未新增依赖、未改锁文件。
 
 仍未关闭，不因上述推进而改写：
 
 - P5a：外链已接入 Desktop 宿主，但 UI 层未做真实系统浏览器点击验收（安装版 Windows 旅程未跑）；`opened` 不等于页面加载成功。
-- P5b：威胁模型已写，实现未做。门槛 1（证明产品令牌在预览 origin 不可用）需真实浏览器用例，未满足前保持未实现。
-- P4 决策侧（决策者、决策时间、结果归因）与产品域历史查询端点属独立合同扩展。
+- P5b 资源服务与面板已实现；门槛 1 的真实浏览器证据见 `apps/web/tests/e2e/workbench-preview-origin.spec.ts`。安装版 Windows 预览旅程与 macOS/Linux 回环多 origin 行为仍未跑。
+- P4 决策侧合同已扩展（schema v5 `decided_via` + `GET /product/sessions/{id}/authorizations`）；“决策者”仍只有决策通道（`job_api`/`job_cancel`/`job_responder_lost`），无自然人身份。
+- P6：`scripts/product-acceptance.ps1` 已 PASS（11/11 可跑项，`mcp-filesystem-smoke` gated 未跑）；安装版 Desktop 完整旅程与 macOS/Linux 仍未跑。
 - ProjectTrust 能力集在设计上不含通用文件读；若要纳入需 schema 默认值、迁移与旧客户端兼容审查。
 - PI-Desktop 与 open-vetta 实机点击、安装版 Windows 旅程、真实输入法、macOS/Linux、外部 Provider、真实第三方 MCP 门禁均未运行。

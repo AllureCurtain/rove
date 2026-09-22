@@ -15,6 +15,7 @@ pub(crate) mod message_adapter;
 pub(crate) mod migration;
 pub(crate) mod ownership;
 pub(crate) mod platform;
+pub(crate) mod preview;
 pub(crate) mod provider_catalog;
 pub(crate) mod provider_onboarding;
 pub(crate) mod review;
@@ -46,6 +47,7 @@ pub use files::{
     ProductFileContentEnvelope, ProductFileEntry, ProductFileKind, ProductFilesResponse,
     ProductImageMetadata,
 };
+pub use preview::{CreateProductPreviewRequest, ProductPreviewSession};
 pub use provider_onboarding::{
     ProductProviderCatalogSelectionReceipt, ProductProviderOnboardingFailure,
     ProductProviderOnboardingFailureCode, ProductProviderOnboardingProbe,

@@ -2132,6 +2132,11 @@ async fn api_exposes_openapi_json_for_all_routes() {
         ),
         ("/product/sessions/{session_id}/diff", "get"),
         ("/product/sessions/{session_id}/authorizations", "get"),
+        ("/product/workspaces/{workspace_id}/previews", "post"),
+        (
+            "/product/workspaces/{workspace_id}/previews/{preview_id}",
+            "delete",
+        ),
         ("/product/sessions/{session_id}/forks", "post"),
         ("/product/sessions/{session_id}/forks", "get"),
         ("/product/sessions/{session_id}/steers", "post"),
@@ -2246,6 +2251,11 @@ async fn api_exposes_openapi_json_for_all_routes() {
         ),
         ("/product/sessions/{session_id}/diff", "get"),
         ("/product/sessions/{session_id}/authorizations", "get"),
+        ("/product/workspaces/{workspace_id}/previews", "post"),
+        (
+            "/product/workspaces/{workspace_id}/previews/{preview_id}",
+            "delete",
+        ),
         ("/product/sessions/{session_id}/forks", "post"),
         ("/product/sessions/{session_id}/forks", "get"),
         ("/product/sessions/{session_id}/steers", "post"),
@@ -11525,6 +11535,518 @@ max_selected = 1
         "---\nschema_version: 1\nid: ops.rollback\nversion: 1.0.0\nstatus: active\ntitle: Roll back\nmode: diagnose\nrisk_level: low\nintents: [rollback]\n---\n\nInspect the deployment before rollback.\n",
     )
     .unwrap();
+}
+
+// ─── P5b: isolated executable HTML preview ─────────────────────────────────
+//
+// The preview surface runs on a dedicated loopback origin with its own
+// per-session token, no product credentials, and the same path/secret/size
+// discipline as the read-only file API. Threat model gates 2–5 are exercised
+// here; gate 1's real-browser half lives in
+// `apps/web/tests/e2e/workbench-preview-origin.spec.ts`.
+
+struct PreviewServer {
+    app: axum::Router,
+    preview_addr: std::net::SocketAddr,
+    _state: ApiState,
+    _server_dir: tempfile::TempDir,
+}
+
+async fn spawn_preview_server(config: AppConfig) -> PreviewServer {
+    let server_dir = tempfile::TempDir::new().unwrap();
+    let state = ApiState::new(Workspace::detect(server_dir.path()).unwrap(), config);
+    rove_api::spawn_preview_listener(&state).await;
+    let preview_addr = state
+        .preview_origin_addr()
+        .await
+        .expect("preview listener should bind on an ephemeral loopback port");
+    let app = router(state.clone());
+    PreviewServer {
+        app,
+        preview_addr,
+        _state: state,
+        _server_dir: server_dir,
+    }
+}
+
+fn preview_site() -> tempfile::TempDir {
+    let site = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        site.path().join("index.html"),
+        "<!doctype html><html><head><link rel=\"stylesheet\" href=\"style.css\"></head>\
+         <body><h1 id=\"marker\">rove-preview-marker</h1><script src=\"app.js\"></script></body></html>",
+    )
+    .unwrap();
+    std::fs::write(
+        site.path().join("style.css"),
+        "h1 { color: rebeccapurple; }",
+    )
+    .unwrap();
+    std::fs::write(site.path().join("app.js"), "console.log('preview');").unwrap();
+    std::fs::write(site.path().join("notes.txt"), "plain text").unwrap();
+    std::fs::write(site.path().join(".env"), "SECRET=hunter2").unwrap();
+    std::fs::write(
+        site.path().join("big.bin"),
+        vec![b'x'; (8 * 1024 * 1024) + 1],
+    )
+    .unwrap();
+    site
+}
+
+async fn create_preview(app: &axum::Router, workspace_id: &str, path: &str) -> serde_json::Value {
+    let response = post_json(
+        app,
+        &format!("/product/workspaces/{workspace_id}/previews"),
+        serde_json::json!({ "path": path }),
+    )
+    .await;
+    let status = response.status();
+    let body: serde_json::Value = decode_json(response).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    body
+}
+
+fn preview_no_redirect_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+}
+
+fn assert_preview_security_headers(response: &reqwest::Response) {
+    let headers = response.headers();
+    let csp = headers
+        .get("content-security-policy")
+        .expect("preview responses must carry CSP")
+        .to_str()
+        .unwrap();
+    assert!(csp.contains("default-src 'none'"), "{csp}");
+    assert!(csp.contains("connect-src 'none'"), "{csp}");
+    assert!(csp.contains("form-action 'none'"), "{csp}");
+    assert_eq!(
+        headers.get("cross-origin-opener-policy").unwrap(),
+        "same-origin"
+    );
+    assert_eq!(
+        headers.get("cross-origin-resource-policy").unwrap(),
+        "same-origin"
+    );
+    assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    assert!(
+        headers.get("set-cookie").is_none(),
+        "the preview origin must never set cookies"
+    );
+}
+
+#[tokio::test]
+async fn product_preview_serves_html_on_an_isolated_loopback_origin() {
+    let site = preview_site();
+    let server = spawn_preview_server(test_config()).await;
+    let workspace = create_product_workspace(&server.app, site.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap().to_string();
+
+    let created = create_preview(&server.app, &workspace_id, "index.html").await;
+    assert_eq!(created["workspace_id"], workspace_id);
+    assert_eq!(created["entry"], "index.html");
+    assert!(created["preview_id"].as_str().unwrap().len() >= 26);
+    assert!(created["expires_at"].as_str().unwrap() > created["created_at"].as_str().unwrap());
+
+    let url = created["url"].as_str().unwrap().to_string();
+    let parsed = reqwest::Url::parse(&url).unwrap();
+    assert_eq!(parsed.host_str(), Some("127.0.0.1"));
+    assert_eq!(
+        parsed.port().unwrap(),
+        server.preview_addr.port(),
+        "the preview URL must point at the isolated preview origin"
+    );
+    let token = parsed.path_segments().unwrap().next().unwrap().to_string();
+    assert_eq!(token.len(), 52, "two ULIDs give a 160-bit token");
+
+    let client = preview_no_redirect_client();
+
+    // The bare session root redirects to the entry, preserving relative
+    // resource resolution for the previewed page.
+    let bare = client
+        .get(format!("http://{}/{token}", server.preview_addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bare.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(
+        bare.headers().get("location").unwrap(),
+        &format!("/{token}/index.html")
+    );
+    assert_preview_security_headers(&bare);
+
+    // The entry page and its relative resources load with isolation headers.
+    let entry = client.get(&url).send().await.unwrap();
+    assert_eq!(entry.status(), StatusCode::OK);
+    assert_preview_security_headers(&entry);
+    assert!(
+        entry
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("text/html")
+    );
+    let body = entry.text().await.unwrap();
+    assert!(body.contains("rove-preview-marker"));
+
+    for (resource, expected_mime) in [
+        ("style.css", "text/css"),
+        ("app.js", "text/javascript"),
+        ("notes.txt", "text/plain"),
+    ] {
+        let response = client
+            .get(format!("http://{}/{token}/{resource}", server.preview_addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{resource}");
+        assert!(
+            response
+                .headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with(expected_mime),
+            "{resource}"
+        );
+    }
+
+    // A4: secret-shaped files are refused even when they exist on disk.
+    let secret = client
+        .get(format!("http://{}/{token}/.env", server.preview_addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(secret.status(), StatusCode::BAD_REQUEST);
+    assert_preview_security_headers(&secret);
+
+    // A10: one resource may not exceed the size cap.
+    let oversized = client
+        .get(format!("http://{}/{token}/big.bin", server.preview_addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    // A7: an unknown token resolves nothing.
+    let unknown = client
+        .get(format!(
+            "http://{}/{}/index.html",
+            server.preview_addr,
+            "A".repeat(52)
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+    assert_preview_security_headers(&unknown);
+}
+
+#[tokio::test]
+async fn product_preview_rejects_raw_traversal_and_revokes_on_close() {
+    let site = preview_site();
+    let server = spawn_preview_server(test_config()).await;
+    let workspace = create_product_workspace(&server.app, site.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap().to_string();
+    let created = create_preview(&server.app, &workspace_id, "index.html").await;
+    let url = created["url"].as_str().unwrap().to_string();
+    let preview_id = created["preview_id"].as_str().unwrap().to_string();
+    let token = reqwest::Url::parse(&url)
+        .unwrap()
+        .path_segments()
+        .unwrap()
+        .next()
+        .unwrap()
+        .to_string();
+
+    // A3/A6: raw `..` traversal that a spec-compliant URL client would
+    // normalize away must still be rejected when sent verbatim.
+    let mut stream = tokio::net::TcpStream::connect(server.preview_addr)
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::write_all(
+        &mut stream,
+        format!(
+            "GET /{token}/../Cargo.toml HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            server.preview_addr
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let mut raw = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut raw)
+        .await
+        .unwrap();
+    let raw = String::from_utf8_lossy(&raw);
+    assert!(
+        raw.starts_with("HTTP/1.1 400"),
+        "traversal must be rejected, got: {}",
+        &raw[..raw.len().min(200)]
+    );
+
+    // A8: closing the session revokes the token immediately.
+    let closed = server
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/product/workspaces/{workspace_id}/previews/{preview_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(closed.status(), StatusCode::NO_CONTENT);
+
+    let client = preview_no_redirect_client();
+    let after_close = client.get(&url).send().await.unwrap();
+    assert_eq!(after_close.status(), StatusCode::NOT_FOUND);
+    assert_preview_security_headers(&after_close);
+
+    let closed_again = server
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/product/workspaces/{workspace_id}/previews/{preview_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(closed_again.status(), StatusCode::NOT_FOUND);
+    let closed_again: serde_json::Value = decode_json(closed_again).await;
+    assert_eq!(closed_again["code"], "product_preview_not_found");
+}
+
+#[tokio::test]
+async fn product_preview_validates_the_entry_and_bounds_session_count() {
+    let site = preview_site();
+    let server = spawn_preview_server(test_config()).await;
+    let workspace = create_product_workspace(&server.app, site.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap().to_string();
+    let previews_uri = format!("/product/workspaces/{workspace_id}/previews");
+
+    // Traversal, secret-shaped, missing, and non-HTML entries are refused.
+    let traversal = post_json(
+        &server.app,
+        &previews_uri,
+        serde_json::json!({ "path": "../outside.html" }),
+    )
+    .await;
+    assert_eq!(traversal.status(), StatusCode::BAD_REQUEST);
+    let traversal: serde_json::Value = decode_json(traversal).await;
+    assert_eq!(traversal["code"], "product_preview_invalid_input");
+
+    let secret_entry = post_json(
+        &server.app,
+        &previews_uri,
+        serde_json::json!({ "path": ".env.html" }),
+    )
+    .await;
+    assert_eq!(secret_entry.status(), StatusCode::BAD_REQUEST);
+
+    let missing = post_json(
+        &server.app,
+        &previews_uri,
+        serde_json::json!({ "path": "missing.html" }),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    let missing: serde_json::Value = decode_json(missing).await;
+    assert_eq!(missing["code"], "product_preview_not_found");
+
+    let not_html = post_json(
+        &server.app,
+        &previews_uri,
+        serde_json::json!({ "path": "notes.txt" }),
+    )
+    .await;
+    assert_eq!(not_html.status(), StatusCode::BAD_REQUEST);
+    let not_html: serde_json::Value = decode_json(not_html).await;
+    assert_eq!(not_html["code"], "product_preview_invalid_input");
+
+    // The session cap is a typed 429, not a silent eviction.
+    for _ in 0..8 {
+        create_preview(&server.app, &workspace_id, "index.html").await;
+    }
+    let ninth = post_json(
+        &server.app,
+        &previews_uri,
+        serde_json::json!({ "path": "index.html" }),
+    )
+    .await;
+    assert_eq!(ninth.status(), StatusCode::TOO_MANY_REQUESTS);
+    let ninth: serde_json::Value = decode_json(ninth).await;
+    assert_eq!(ninth["code"], "product_preview_limit");
+}
+
+#[tokio::test]
+async fn product_preview_credentials_and_origins_stay_separate() {
+    let site = preview_site();
+    let mut config = test_config();
+    config.api.token_auth = Some("secret-token".to_string());
+    config.api.cors_origins = vec!["http://allowed.example".to_string()];
+    let server = spawn_preview_server(config).await;
+
+    // The product surface requires the product bearer token even to create a
+    // preview session.
+    let workspace_body = serde_json::json!({
+        "root": site.path(),
+        "kind": "folder",
+        "display_name": "Preview auth workspace",
+        "pinned": false
+    });
+    let unauthorized = server
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/product/workspaces")
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(workspace_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let authorized = server
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/product/workspaces")
+                .header(CONTENT_TYPE, "application/json")
+                .header(AUTHORIZATION, "Bearer secret-token")
+                .body(Body::from(workspace_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(authorized.status(), StatusCode::CREATED);
+    let workspace: serde_json::Value = decode_json(authorized).await;
+    let workspace_id = workspace["id"].as_str().unwrap().to_string();
+
+    // A browser page on the preview origin is not an allowed CORS origin for
+    // the product API, so credentialed cross-origin calls fail closed.
+    let preview_origin = format!("http://{}", server.preview_addr);
+    let foreign_origin = server
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/product/workspaces/{workspace_id}/previews"))
+                .header(CONTENT_TYPE, "application/json")
+                .header(AUTHORIZATION, "Bearer secret-token")
+                .header("origin", &preview_origin)
+                .body(Body::from(r#"{"path":"index.html"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(foreign_origin.status(), StatusCode::FORBIDDEN);
+
+    let created = server
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/product/workspaces/{workspace_id}/previews"))
+                .header(CONTENT_TYPE, "application/json")
+                .header(AUTHORIZATION, "Bearer secret-token")
+                .body(Body::from(r#"{"path":"index.html"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created: serde_json::Value = decode_json(created).await;
+    let url = created["url"].as_str().unwrap();
+
+    // The preview origin never asks for or honours the product token.
+    let client = preview_no_redirect_client();
+    let without_credentials = client.get(url).send().await.unwrap();
+    assert_eq!(without_credentials.status(), StatusCode::OK);
+    let with_product_token = client
+        .get(url)
+        .header(AUTHORIZATION, "Bearer secret-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(with_product_token.status(), StatusCode::OK);
+    assert_preview_security_headers(&with_product_token);
+}
+
+#[tokio::test]
+async fn product_preview_reports_typed_unavailable_without_a_listener() {
+    let site = preview_site();
+    let server_dir = tempfile::TempDir::new().unwrap();
+    let app = router(ApiState::new(
+        Workspace::detect(server_dir.path()).unwrap(),
+        test_config(),
+    ));
+    let workspace = create_product_workspace(&app, site.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+
+    let response = post_json(
+        &app,
+        &format!("/product/workspaces/{workspace_id}/previews"),
+        serde_json::json!({ "path": "index.html" }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: serde_json::Value = decode_json(response).await;
+    assert_eq!(body["code"], "product_preview_unavailable");
+}
+
+#[tokio::test]
+async fn product_preview_honours_project_trust_revocation() {
+    let site = preview_site();
+    std::fs::create_dir_all(site.path().join(".rove")).unwrap();
+    std::fs::write(site.path().join(".rove/mcp_servers.json"), "[]").unwrap();
+    let mut config = test_config();
+    config.state.state_dir = PathBuf::from("api-state");
+    let server = spawn_preview_server(config).await;
+    let workspace = create_product_workspace(&server.app, site.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+
+    let revoked = request_json(
+        &server.app,
+        "PUT",
+        &format!("/product/workspaces/{workspace_id}/trust"),
+        serde_json::json!({"decision": "revoke", "capabilities": []}),
+    )
+    .await;
+    assert_eq!(revoked.status(), StatusCode::OK);
+
+    let blocked = post_json(
+        &server.app,
+        &format!("/product/workspaces/{workspace_id}/previews"),
+        serde_json::json!({ "path": "index.html" }),
+    )
+    .await;
+    assert_eq!(blocked.status(), StatusCode::CONFLICT);
+    let blocked: serde_json::Value = decode_json(blocked).await;
+    assert_eq!(blocked["code"], "project_trust_required");
 }
 
 // ─── P4: durable authorization request + decision history ───────────────────

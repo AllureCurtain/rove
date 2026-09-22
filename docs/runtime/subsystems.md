@@ -878,8 +878,13 @@ request side (`pending_approvals` with `call_id`, `job_id`, `run_id`, `name`,
 `args_json`, `reason`, `status`, `created_at`, `updated_at`) and projects the
 `tool_call_approval_needed` canonical event per product session, but no
 decision event, decision actor, or dedicated decision timestamp exists. The
-Web workbench renders the request side and labels the decision, actor, and
-time as unknown rather than inferring them from a later tool result. A
+Web workbench renders the durable authorization history from
+`GET /product/sessions/{session_id}/authorizations` (StateIndex schema v5
+`pending_approvals.decided_via` plus terminal tool-event correlation). Fields
+never recorded stay unknown rather than being inferred from a later tool
+result. Local HTML preview runs on an isolated loopback origin
+(`product/preview.rs`) with per-session tokens that never carry product
+credentials. A
 per-session decision-history read surface remains future work.
 
 The web verification surface is:

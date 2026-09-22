@@ -1868,6 +1868,10 @@ pub enum ProductErrorCode {
     ReviewConflict,
     ReviewUnavailable,
     ProductStorageFailure,
+    ProductPreviewInvalidInput,
+    ProductPreviewNotFound,
+    ProductPreviewUnavailable,
+    ProductPreviewLimit,
 }
 
 impl ProductErrorCode {
@@ -1905,6 +1909,10 @@ impl ProductErrorCode {
             Self::ReviewConflict => "review_conflict",
             Self::ReviewUnavailable => "review_unavailable",
             Self::ProductStorageFailure => "product_storage_failure",
+            Self::ProductPreviewInvalidInput => "product_preview_invalid_input",
+            Self::ProductPreviewNotFound => "product_preview_not_found",
+            Self::ProductPreviewUnavailable => "product_preview_unavailable",
+            Self::ProductPreviewLimit => "product_preview_limit",
         }
     }
 }

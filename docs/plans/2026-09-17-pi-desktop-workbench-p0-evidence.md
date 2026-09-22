@@ -226,9 +226,9 @@ baseline 交叉验证说明：scratch 基线 worktree（HEAD 7e54ab6）原样复
 
 仍未关闭（如实记录，不因本轮推进而改写）：
 
-- P5a：Web RichText 对 http(s) 外链仍只做 `target=_blank` + `noreferrer noopener`（浏览器部署下这是正确行为）；Desktop 宿主侧接入待确认命令签名与调用面。
-- P5b：本地可执行 HTML 预览仍无独立 origin、可撤销令牌与资源生命周期宿主，按计划需先写威胁模型，不改后端/宿主则保持阻塞。
-- P4 决策侧（决策者/决策时间/结果归因）与产品域历史查询端点仍是独立合同扩展。
+- P5a：安装版真实系统浏览器点击验收未跑。
+- P5b：本批已落地隔离 origin 预览服务与 FilesPanel 入口，威胁模型门槛 1–6 见该文档 §8；安装版预览旅程与 macOS/Linux 仍未跑。
+- P4 决策侧：本批已扩展 schema v5 `decided_via` 与 `GET /product/sessions/{id}/authorizations`；“决策者”仍是决策通道而非自然人。
 - ProjectTrust 设计上不覆盖通用文件读这一缺口本身。
 - PI-Desktop 六条实机旅程、安装版 Windows 旅程、真实输入法、macOS/Linux、外部 Provider 与真实第三方 MCP 门禁均未运行。
 
@@ -319,3 +319,34 @@ P3 是唯一改动 Rust 的阶段（`apps/api/src/product/{files,trust}.rs` + `t
 | `pnpm test:e2e` | 80 通过、5 跳过、0 失败 |
 
 P6 仍未完成的部分：`-IncludeGated` 的 `mcp-filesystem-smoke`（真实第三方 MCP）未跑；安装版 Windows Desktop 完整旅程未跑；`web-e2e` 虽在单独运行时通过，但未纳入本轮脚本报告。`cargo test --workspace` 的第 19 节三处既有偶发失败依旧存在。
+
+## 22. P4 决策侧合同与 P5b 预览服务收口（2026-09-22）
+
+本批把第 17 节开放的 P4 决策侧与 P5b 实现收口，全部在 `feature/pi-desktop-workbench-p1a` 工作树内完成，**尚未提交**。
+
+### P4 决策侧
+
+- StateIndex schema v4→v5：`pending_approvals.decided_via`（可空；迁移前行保持 NULL，读者必须显示“未知”）。
+- `record_approval_decision(call_id, status, decided_via)` 取代无决策通道的 `mark_pending_approval_status` 调用点：`job_api` / `job_cancel` / `job_responder_lost`。
+- 新端点 `GET /product/sessions/{session_id}/authorizations`（默认 50、上限 200）：请求+决策投影，并按 `call_id` 关联 terminal `tool_call_completed`/`tool_call_failed` 作结果归因；未记录字段保持 `null`，不猜测。
+- Web：`SessionAuthorizationPanel` 改读该端点，展示决策状态/通道/时间/结果；copy 双语更新。
+- 证据：runtime `approval_*`/`tool_outcome_*` 4 例；`product_session_authorizations_*` 2 例；vitest 354 通过；`tsc --noEmit` 干净。
+
+### P5b 预览服务
+
+- `apps/api/src/product/preview.rs`：独立回环 origin（临时端口）、160-bit 会话令牌、TTL 30min、关闭即撤销、复用 `join_safe`/`is_secret_filename`/字节上限、CSP `connect-src 'none'`、无 BearerAuth/无 Set-Cookie。
+- FilesPanel：HTML 文件“在隔离预览中打开/关闭”入口；面板卸载即撤销令牌。
+- 证据：`product_preview_*` 6 例（含 traversal/secret/session-cap/CORS/409 trust/503 无 listener）；真实浏览器 gate1 `apps/web/tests/e2e/workbench-preview-origin.spec.ts` 通过（产品令牌在预览 origin 不可用、opener 读不到、产品 API 非 200）。
+- OpenAPI 已注册 previews/authorizations 路径并通过契约测试。
+
+### 本批验证汇总（2026-09-22）
+
+- `scripts/product-acceptance.ps1`：**PASS（11 passed, 0 failed, 1 not run）**。`mcp-filesystem-smoke` 为 gated 检查未跑。ExitCode 工具修复已验证（本轮报告含真实退出码）。
+- `pnpm test:e2e`：通过（含 `workbench-preview-origin.spec.ts` gate1）。
+- `cargo test --workspace --no-fail-fast`：全部 `0 failed`。
+- `cargo fmt --all --check` / `cargo clippy --workspace --all-targets -- -D warnings`：干净。
+
+### 本批未跑 / 未关
+
+- `mcp-filesystem-smoke`（真实第三方 MCP，`-IncludeGated`）。
+- 安装版 Windows Desktop 完整旅程、macOS/Linux、外部 Provider。
