@@ -284,6 +284,7 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(product::artifacts::download_artifact))
         .routes(routes!(product::artifacts::preview_artifact))
         .routes(routes!(product::diff::get_session_diff))
+        .routes(routes!(product::authorizations::list_product_session_authorizations))
         .routes(routes!(product::export::export_product_session))
         .routes(routes!(product::routes::list_product_provider_profiles))
         .routes(routes!(product::routes::create_product_provider_profile))
@@ -1022,12 +1023,20 @@ async fn submit_approval(
         .ok_or_else(|| ApiError::not_found("pending approval not found"))?;
     let index = state_store_for_record(&record).index;
     index
-        .mark_pending_approval_status_async(call_id, approval_status(req.decision).to_string())
+        .record_approval_decision_async(
+            call_id,
+            approval_status(req.decision).to_string(),
+            "job_api".to_string(),
+        )
         .await
         .map_err(|err| ApiError::internal(format!("failed to persist approval decision: {err}")))?;
     if pending.tx.send(req.decision).is_err() {
         if let Err(err) = index
-            .mark_pending_approval_status_async(call_id, "cancelled".to_string())
+            .record_approval_decision_async(
+                call_id,
+                "cancelled".to_string(),
+                "job_responder_lost".to_string(),
+            )
             .await
         {
             tracing::warn!(job_id = %job_id, call_id = %call_id, "failed to mark stale approval cancelled: {err}");
@@ -4430,7 +4439,11 @@ impl ToolApprovalProvider for ApiApprovalProvider {
             if record.cancel_token.is_cancelled() {
                 drop(pending);
                 if let Err(err) = index
-                    .mark_pending_approval_status_async(call_id, "cancelled".to_string())
+                    .record_approval_decision_async(
+                call_id,
+                "cancelled".to_string(),
+                "job_cancel".to_string(),
+            )
                     .await
                 {
                     tracing::warn!(job_id = %record.job_id, call_id = %call_id, "failed to mark cancelled approval registration: {err}");
@@ -4673,7 +4686,11 @@ async fn reject_pending_approvals(record: &JobRecord, index: &StateIndex) {
     let pending = std::mem::take(&mut *record.pending_approvals.lock().await);
     for (call_id, approval) in pending {
         if let Err(err) = index
-            .mark_pending_approval_status_async(call_id, "cancelled".to_string())
+            .record_approval_decision_async(
+                call_id,
+                "cancelled".to_string(),
+                "job_cancel".to_string(),
+            )
             .await
         {
             tracing::warn!(job_id = %record.job_id, call_id = %call_id, "failed to mark pending approval cancelled: {err}");

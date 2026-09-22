@@ -5,26 +5,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useCopy } from "../copy/CopyProvider";
 import { createProductApiClient } from "../product/product-client";
 import type {
-  ProductTranscriptResponse,
-  ProductTranscriptStatus,
+  ProductAuthorizationRecord,
+  ProductAuthorizationsResponse,
 } from "../product/product-api-types";
 
 /**
- * One durable authorization request record projected from a product session.
+ * One durable authorization request + decision record projected from the
+ * product authorizations endpoint (plan P4, decision side).
  *
- * Only the request side is represented. The durable decision side does not
- * exist yet, so nothing here claims who decided, when, or with what outcome.
+ * Fields the durable store never recorded (`decided_via` on pre-schema-v5
+ * rows, outcomes for decisions that never reached execution) stay unknown
+ * instead of being reconstructed by guessing.
  */
-export interface SessionAuthorizationRecord {
-  callId: string;
-  toolName: string;
-  runId: string;
-  runOrdinal: number;
-  seq: number;
-  reason: string;
-  /** True when the run was inherited by this session rather than started here. */
-  inherited: boolean;
-}
+export type SessionAuthorizationRecord = ProductAuthorizationRecord;
 
 type SessionAuthorizationState =
   | { status: "loading"; sessionId: string }
@@ -33,56 +26,78 @@ type SessionAuthorizationState =
       status: "ready";
       sessionId: string;
       records: SessionAuthorizationRecord[];
-      transcriptStatus: ProductTranscriptStatus;
+      truncated: boolean;
     };
 
-/** Bound the section; the transcript itself is already bounded server-side. */
+/** Bound the section; the endpoint already pages newest-first. */
 const RECORD_LIMIT = 50;
-
-/**
- * Collect the durable request side of every tool authorization in a session.
- *
- * Only `tool_call_approval_needed` canonical events are read. No canonical
- * decision event exists, so the decision, its actor and its time stay unknown
- * rather than being inferred from a later `tool_call_completed` /
- * `tool_call_failed` event: a completed tool does not prove who authorized it
- * (plan P4).
- *
- * Records are keyed by call id so a replayed event cannot report one request
- * twice, and ordered newest-first by canonical sequence.
- */
-export function collectSessionAuthorizationRecords(
-  transcript: ProductTranscriptResponse,
-): SessionAuthorizationRecord[] {
-  const byCall = new Map<string, SessionAuthorizationRecord>();
-  for (const segment of transcript.segments) {
-    const binding = segment.binding;
-    for (const event of segment.events) {
-      const detail = event.event;
-      if (detail.type !== "tool_call_approval_needed") {
-        continue;
-      }
-      if (byCall.has(detail.call_id)) {
-        continue;
-      }
-      byCall.set(detail.call_id, {
-        callId: detail.call_id,
-        toolName: detail.name,
-        runId: binding.runtime_run_id,
-        runOrdinal: binding.ordinal,
-        seq: event.seq,
-        reason: detail.reason,
-        inherited: segment.inherited,
-      });
-    }
-  }
-  return [...byCall.values()]
-    .sort((left, right) => right.seq - left.seq)
-    .slice(0, RECORD_LIMIT);
-}
 
 function shortId(value: string): string {
   return value.length <= 12 ? value : `${value.slice(0, 8)}…${value.slice(-4)}`;
+}
+
+/**
+ * Normalize one bounded authorizations page for rendering.
+ *
+ * The endpoint already deduplicates by durable `call_id` and orders newest
+ * update first. This projection only bounds the page and never invents a
+ * decision, actor, or time that the store did not record.
+ */
+export function collectSessionAuthorizationRecords(
+  response: ProductAuthorizationsResponse,
+): SessionAuthorizationRecord[] {
+  return response.authorizations.slice(0, RECORD_LIMIT);
+}
+
+function decisionLabel(
+  record: SessionAuthorizationRecord,
+  t: (key: string) => string,
+): string {
+  switch (record.status) {
+    case "pending":
+      return t("inspector.authorizationStatusPending");
+    case "approved":
+      return t("inspector.authorizationStatusApproved");
+    case "rejected":
+      return t("inspector.authorizationStatusRejected");
+    case "cancelled":
+      return t("inspector.authorizationStatusCancelled");
+    case "interrupted":
+      return t("inspector.authorizationStatusInterrupted");
+    default:
+      return record.status;
+  }
+}
+
+function actorLabel(
+  record: SessionAuthorizationRecord,
+  t: (key: string) => string,
+): string {
+  if (!record.decided_via) {
+    return t("inspector.authorizationUnknown");
+  }
+  switch (record.decided_via) {
+    case "job_api":
+      return t("inspector.authorizationActorJobApi");
+    case "job_cancel":
+      return t("inspector.authorizationActorJobCancel");
+    case "job_responder_lost":
+      return t("inspector.authorizationActorResponderLost");
+    default:
+      return record.decided_via;
+  }
+}
+
+function outcomeLabel(
+  record: SessionAuthorizationRecord,
+  t: (key: string) => string,
+): string {
+  if (!record.outcome) {
+    return t("inspector.authorizationUnknown");
+  }
+  return record.outcome.event === "tool_call_failed"
+    ? t("inspector.authorizationOutcomeFailed")
+    : t("inspector.authorizationOutcomeCompleted");
 }
 
 export function SessionAuthorizationPanel({
@@ -105,19 +120,23 @@ export function SessionAuthorizationPanel({
     setState({ status: "loading", sessionId });
     void (async () => {
       try {
-        const transcript = await client.getTranscript(sessionId);
+        const response = await client.getSessionAuthorizations(sessionId, {
+          limit: RECORD_LIMIT,
+        });
         // A late response for a session the user already left must not publish.
         if (generationRef.current !== generation) {
           return;
         }
-        if (transcript.workspace_id !== workspaceId) {
-          throw new Error("Transcript workspace does not match the session route.");
+        if (response.session_id !== sessionId) {
+          throw new Error(
+            "Authorizations response does not match the session route.",
+          );
         }
         setState({
           status: "ready",
           sessionId,
-          records: collectSessionAuthorizationRecords(transcript),
-          transcriptStatus: transcript.status,
+          records: collectSessionAuthorizationRecords(response),
+          truncated: response.truncated,
         });
       } catch (caught) {
         if (generationRef.current !== generation) {
@@ -136,26 +155,29 @@ export function SessionAuthorizationPanel({
     return () => {
       generationRef.current += 1;
     };
-  }, [client, sessionId, workspaceId]);
+    // workspaceId is kept in the signature for route identity checks at the
+    // call site; the authorizations endpoint derives its workspace from the
+    // durable session binding instead of trusting a client-supplied id.
+  }, [client, sessionId]);
 
   // A ready result for a session the user already left must never be rendered
   // as this session's history.
-  const records = useMemo(
+  const ready = useMemo(
     () =>
-      state.status === "ready" && state.sessionId === sessionId
-        ? state.records
-        : [],
+      state.status === "ready" && state.sessionId === sessionId ? state : null,
     [state, sessionId],
   );
+  const records = ready?.records ?? [];
 
   return (
     <section
       className="authorization-history"
       aria-label={t("inspector.authorizationTitle")}
+      data-workspace-id={workspaceId}
     >
       <h3>{t("inspector.authorizationTitle")}</h3>
       <p className="authorization-history__limit" role="note">
-        {t("inspector.authorizationHistoryUnavailable")}
+        {t("inspector.authorizationHistoryNote")}
       </p>
 
       {state.status === "loading" ? (
@@ -166,11 +188,11 @@ export function SessionAuthorizationPanel({
         <p role="alert">{t("inspector.authorizationError")}</p>
       ) : null}
 
-      {state.status === "ready" && state.transcriptStatus !== "complete" ? (
+      {ready?.truncated ? (
         <p role="status">{t("inspector.authorizationPartial")}</p>
       ) : null}
 
-      {state.status === "ready" && records.length === 0 ? (
+      {ready && records.length === 0 ? (
         <p role="status">{t("inspector.authorizationNone")}</p>
       ) : null}
 
@@ -184,29 +206,28 @@ export function SessionAuthorizationPanel({
               <th scope="col">{t("inspector.authorizationColumnDecision")}</th>
               <th scope="col">{t("inspector.authorizationColumnActor")}</th>
               <th scope="col">{t("inspector.authorizationColumnTime")}</th>
+              <th scope="col">{t("inspector.authorizationColumnOutcome")}</th>
             </tr>
           </thead>
           <tbody>
             {records.map((record) => (
-              <tr key={record.callId}>
+              <tr key={record.call_id} data-status={record.status}>
                 <td>
-                  <strong>{record.toolName}</strong>
+                  <strong>{record.tool}</strong>
                   <small title={record.reason}>{record.reason}</small>
                 </td>
                 <td>
-                  <code title={record.callId}>{shortId(record.callId)}</code>
+                  <code title={record.call_id}>{shortId(record.call_id)}</code>
                 </td>
                 <td>
-                  <span title={record.runId}>
-                    {t("inspector.authorizationRun", { ordinal: record.runOrdinal })}
+                  <span title={record.run_id}>
+                    {t("inspector.authorizationRunLabel")}
                   </span>
-                  {record.inherited ? (
-                    <small>{t("inspector.authorizationInherited")}</small>
-                  ) : null}
                 </td>
-                <td>{t("inspector.authorizationUnknown")}</td>
-                <td>{t("inspector.authorizationUnknown")}</td>
-                <td>{t("inspector.authorizationUnknown")}</td>
+                <td>{decisionLabel(record, t)}</td>
+                <td>{actorLabel(record, t)}</td>
+                <td>{record.updated_at}</td>
+                <td>{outcomeLabel(record, t)}</td>
               </tr>
             ))}
           </tbody>

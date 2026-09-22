@@ -33,6 +33,9 @@ import {
   parseProductSessionDiffResponse,
   parseProductSessionsResponse,
   parseProductTranscriptResponse,
+  parseProductAuthorizationsResponse,
+  parseCreateProductPreviewRequest,
+  parseProductPreviewSession,
   parseProductWorkspace,
   parseUpdateProductSessionModelConfigRequest,
   parseProductWorkspacesResponse,
@@ -66,6 +69,9 @@ import {
   type ProductSessionRunModelsResponse,
   type ProductSessionUsageResponse,
   type ProductSessionDiffResponse,
+  type ProductAuthorizationsResponse,
+  type CreateProductPreviewRequest,
+  type ProductPreviewSession,
   type ProductArtifactsResponse,
   type ProductArtifactContentEnvelope,
   type ProductFileContentEnvelope,
@@ -171,6 +177,18 @@ export interface ProductApiClient {
   fetchArtifactDownload(sessionId: string, artifactId: string): Promise<Blob>;
   fetchArtifactPreview(sessionId: string, artifactId: string): Promise<Blob>;
   getSessionDiff(sessionId: string, scope?: "run" | "git" | "all"): Promise<ProductSessionDiffResponse>;
+  getSessionAuthorizations(
+    sessionId: string,
+    query?: { limit?: number },
+  ): Promise<ProductAuthorizationsResponse>;
+  createWorkspacePreview(
+    workspaceId: string,
+    request: CreateProductPreviewRequest,
+  ): Promise<ProductPreviewSession>;
+  closeWorkspacePreview(
+    workspaceId: string,
+    previewId: string,
+  ): Promise<void>;
   exportSessionEvidence(
     sessionId: string,
     format: ProductExportFormat,
@@ -709,6 +727,46 @@ export function createProductApiClient(
         ),
         undefined,
         parseProductSessionDiffResponse,
+      );
+    },
+
+    getSessionAuthorizations(sessionId, query) {
+      const params = new URLSearchParams();
+      if (query?.limit !== undefined) {
+        params.set("limit", String(query.limit));
+      }
+      const encoded = params.toString();
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/authorizations${encoded ? `?${encoded}` : ""}`,
+        ),
+        undefined,
+        parseProductAuthorizationsResponse,
+      );
+    },
+
+    createWorkspacePreview(workspaceId, request) {
+      const body = parseCreateProductPreviewRequest(request);
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/workspaces/${encodeURIComponent(workspaceId)}/previews`,
+        ),
+        jsonRequest("POST", JSON.stringify(body)),
+        parseProductPreviewSession,
+      );
+    },
+
+    closeWorkspacePreview(workspaceId, previewId) {
+      return requestNoContent(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/workspaces/${encodeURIComponent(workspaceId)}/previews/${encodeURIComponent(previewId)}`,
+        ),
       );
     },
 

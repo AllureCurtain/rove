@@ -741,6 +741,45 @@ export interface ProductTranscriptResponse {
   segments: ProductTranscriptRunSegment[];
 }
 
+export interface ProductAuthorizationOutcome {
+  event: string;
+  seq: number;
+}
+
+export interface ProductAuthorizationRecord {
+  call_id: string;
+  job_id: string;
+  run_id: string;
+  tool: string;
+  args: unknown;
+  reason: string;
+  status: string;
+  decided_via?: string | null;
+  requested_at: string;
+  updated_at: string;
+  outcome?: ProductAuthorizationOutcome;
+}
+
+export interface ProductAuthorizationsResponse {
+  session_id: ProductSessionId;
+  authorizations: ProductAuthorizationRecord[];
+  truncated: boolean;
+}
+
+export interface CreateProductPreviewRequest {
+  path: string;
+}
+
+export interface ProductPreviewSession {
+  preview_id: string;
+  workspace_id: ProductWorkspaceId;
+  entry: string;
+  /** Absolute loopback URL embedding the session token. Keep out of logs. */
+  url: string;
+  created_at: string;
+  expires_at: string;
+}
+
 export type M1BrowserMigrationSource = "web_m1_local_storage";
 
 export interface M1WorkspaceImport {
@@ -5743,6 +5782,115 @@ export function parseProductArtifactContentEnvelope(
     }),
   );
   return envelope;
+}
+
+export function parseProductAuthorizationsResponse(
+  value: unknown,
+): ProductAuthorizationsResponse {
+  const record = expectRecord(value, "product authorizations response");
+  return {
+    session_id: expectId(
+      record.session_id,
+      "product authorizations response.session_id",
+    ),
+    truncated: expectBoolean(
+      record.truncated ?? false,
+      "product authorizations response.truncated",
+    ),
+    authorizations: expectArray(
+      record.authorizations,
+      "product authorizations response.authorizations",
+      (item, path) => {
+        const entry = expectRecord(item, path);
+        const parsed: ProductAuthorizationRecord = {
+          call_id: expectId(entry.call_id, `${path}.call_id`),
+          job_id: expectId(entry.job_id, `${path}.job_id`),
+          run_id: expectId(entry.run_id, `${path}.run_id`),
+          tool: expectString(entry.tool, `${path}.tool`, {
+            nonEmpty: true,
+            maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          }),
+          args: entry.args ?? null,
+          reason: expectString(entry.reason ?? "", `${path}.reason`, {
+            maxBytes: MAX_PRODUCT_CONTROL_CONTENT_BYTES,
+          }),
+          status: expectString(entry.status, `${path}.status`, {
+            nonEmpty: true,
+            maxBytes: 32,
+          }),
+          requested_at: expectString(entry.requested_at, `${path}.requested_at`, {
+            nonEmpty: true,
+            maxBytes: 64,
+          }),
+          updated_at: expectString(entry.updated_at, `${path}.updated_at`, {
+            nonEmpty: true,
+            maxBytes: 64,
+          }),
+        };
+        assignOptional(
+          parsed,
+          "decided_via",
+          optionalString(entry, "decided_via", path, {
+            maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          }),
+        );
+        if (entry.outcome !== undefined && entry.outcome !== null) {
+          const outcome = expectRecord(entry.outcome, `${path}.outcome`);
+          parsed.outcome = {
+            event: expectString(outcome.event, `${path}.outcome.event`, {
+              nonEmpty: true,
+              maxBytes: 64,
+            }),
+            seq: optionalNumber(outcome, "seq", `${path}.outcome`) ?? 0,
+          };
+        }
+        return parsed;
+      },
+    ),
+  };
+}
+
+export function parseCreateProductPreviewRequest(
+  value: unknown,
+): CreateProductPreviewRequest {
+  const record = expectRecord(value, "create product preview request");
+  return {
+    path: expectString(record.path, "create product preview request.path", {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_PATH_BYTES,
+    }),
+  };
+}
+
+export function parseProductPreviewSession(
+  value: unknown,
+): ProductPreviewSession {
+  const record = expectRecord(value, "product preview session");
+  return {
+    preview_id: expectId(record.preview_id, "product preview session.preview_id"),
+    workspace_id: expectId(
+      record.workspace_id,
+      "product preview session.workspace_id",
+    ),
+    entry: expectString(record.entry, "product preview session.entry", {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_PATH_BYTES,
+    }),
+    url: expectString(record.url, "product preview session.url", {
+      nonEmpty: true,
+      maxBytes: 2_048,
+    }),
+    created_at: expectString(
+      record.created_at,
+      "product preview session.created_at",
+      { nonEmpty: true, maxBytes: 64 },
+    ),
+    expires_at: expectString(
+      record.expires_at,
+      "product preview session.expires_at",
+      { nonEmpty: true, maxBytes: 64 },
+    ),
+  };
 }
 
 export function parseProductSessionDiffResponse(
