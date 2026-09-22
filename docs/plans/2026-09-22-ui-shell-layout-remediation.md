@@ -363,3 +363,82 @@ A/B 判定责任归属：把 origin/main 的把手几何（网格项、`grid-col
 新增回归：`use-sidebar-width.test.ts` 3 条（含"抓取不得把左栏压到下限"的缺陷 A 回归）、
 `layout.spec.ts` 2 条（左栏拖拽后三栏仍成立；左栏键盘 16/32/Home/End），并在既有页签用例里
 补 `tablist`/`tabpanel` 空态断言（缺陷 B 回归）。
+
+## 8. 参照 PI-Desktop / open-vetta 的对齐（第三轮，2026-09-22）
+
+复核之后按"照参考项目的好做法改"逐项比对，读的是：
+
+- PI-Desktop：`apps/desktop/src/components/ConversationWidthHandles.tsx`（D439）、
+  `packages/shared/src/chat-content-width.ts` + 其单测、`apps/desktop/src/styles/chat-shell.css`
+  （阅读栏与手柄样式）、`styles/responsive.css`、`hooks/use-armed-delete.ts`、
+  `features/app/AppShell.tsx`、`styles/tokens.css`。
+- open-vetta：`apps/desktop/src/renderer/root-layout/RootLayoutView.tsx`、`useRootLayoutModel.ts`、
+  `.agents/skills/web-design-guidelines/SKILL.md`、`.agents/skills/frontend-design/SKILL.md`。
+
+### 8.1 本轮落地（两处按参考实现改写）
+
+**A. 会话阅读栏变成双向可调（移植 PI D439）。** 此前 §3e 只做到"中栏统一阅读列"，宽度是固定
+840px、用户不能改。参考实现是**两侧各一个手柄**、共同驱动一个**偏好最大宽度**（实际渲染
+`min(可用, 偏好)`），因此列被压缩时不会改写用户偏好。
+
+- 新增 `chat/reading-width.ts`（纯逻辑，9 条单测）＋ `chat/use-reading-width.ts`（偏好持久化）
+  ＋ `chat/ReadingWidthHandles.tsx`（双柄、指针捕获＋rAF 预览、Escape 取消、双击复位、
+  侧别相关的方向键、`aria-valuetext`），CSS 见 `product-v2.css` 的手柄段。
+- 参考实现的四条语义**逐条照搬**：1px 指针 = **2px** 宽度（两侧镜像）、方向键对"哪一侧"敏感、
+  Home 回默认、End 吃满整列；拖动期间 `html[data-reading-resizing]` 让全窗口切 `col-resize`
+  且关闭过渡。
+- 与参考的三处**有意偏离**：
+
+  | 项 | 参考 | 本仓库 | 理由 |
+  |---|---|---|---|
+  | 上下界 | 560 – 窗格宽，默认 760 | 560 – **840**，默认 **840** | 上界取设计 §3.3 的 840 阅读尺度（窗格再宽也不该把行拉长）；下界取参考的 560，否则在 1024 这一档控制完全动不了 |
+  | 存储 | 应用设置（服务端） | `localStorage: rove.ui-reading-width` | 设计 §2.2：产品偏好契约不承载布局值（与既有 `rove.ui-sidebar-width` 一致） |
+  | 边距 | 硬编码 24px/侧 | 从 `.chat-transcript` 计算样式读取内边距 | 避免把 CSS 常量复制到 JS——本外壳已经因这类分歧修过一次 |
+
+- 顺带把三个分隔条的 `aria-valuetext` 补上（参考有），并把左栏手柄里硬编码的 `200/360` 改为
+  引用 `SIDEBAR_MIN_WIDTH/SIDEBAR_MAX_WIDTH`（消除一处常量重复）。
+
+**B. 危险操作改为二次确认（移植 PI `use-armed-delete`）。** 侧栏"从列表移除工作区"**一次点击**就
+执行，而它会一并从目录里删掉该工作区的会话（`workspace.pathRulesBody` 自己写明）；同一操作的
+确认文案此前只存在于设置页。现在：
+
+- 新增 `shell/use-armed-delete.ts`（与参考同形，`ARMED_DELETE_MS = 3200`，到期自动解除）。
+- 菜单项第一次点击只**进入待确认**并改标签（新增 `workspace.removeWorkspaceArmed`），菜单保持
+  打开；第二次点击才移除；菜单被关闭/Escape/失焦/重新打开都会清除待确认状态。
+- 覆盖：`tests/e2e/sidebar-armed-delete.spec.ts` 2 条（首击不移除＋次击移除；到期自动解除＋
+  关闭后重开不残留），并同步改掉 `continuity.spec.ts` 里原本"一击即移除"的既有用例。
+
+### 8.2 参考有、但**不适用**于本仓库的一处
+
+PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由是"退出动画的卸载依赖
+`animationend`"。核查：本仓库全 `apps/web` **没有 `animationend`/`animationEnd` 监听**
+（`git grep` 为空），所以 `animation: none` 不可能让某个卸载悬空——这不是缺陷，按事实记录而不照抄。
+
+### 8.3 参考的好做法里，本仓库仍是缺口的（已列清单，未实现）
+
+按价值/成本排序，均**未**在本轮改动：
+
+1. **内容子树与外壳布局状态解耦**（open-vetta）：其 `RootLayoutView` 把路由内容 `memo` 掉并注明
+   理由——侧栏折叠状态在 model 里，不隔离的话每次 toggle 会同步重渲染整棵内容树（实测多 ~28ms）。
+   本仓库 `ProductApp` 持有 `shellWidth`（ResizeObserver 驱动）并内联渲染 `Transcript`，同一个
+   问题结构上成立。改动前需要先测出这里的真实渲染成本，否则是在照搬结论。
+2. **窄屏侧栏改为悬停浮层**（open-vetta `SidebarOverlay` + `scheduleOverlayClose`）：我们现在必须
+   点击才出现。
+3. **命令面板**（open-vetta `CommandMenu`，挂在根布局）、**空闲预取路由**（`useIdleRoutePrefetch`）、
+   **路由挂起内容视图**（`RouteContentLoadingView`）。
+4. **会话小地图**（PI `ConversationMinimap`）、**跟随滚动**（PI `use-follow-scroll` 的细节）、
+   `scrollbar-reveal`、`queued-prompts` 的排队语义、`frame-batcher` / `latest-wins`。
+5. **设计审查流程**：open-vetta 自带 `web-design-guidelines`（拉取 vercel-labs 规则做 UI 审查）与
+   `frontend-design`（质量底线：响应式、可见焦点、尊重 reduced motion）。本外壳这三条目前都满足，
+   但把"规则化审查"做成常设步骤属于独立工作。
+6. 两个参考项目的大量产品面（插件市场、Agent 团队、同步、移动端、文档站）不在"外壳修复"范围内。
+
+### 8.4 本轮门禁（真实退出码）
+
+| 门 | 结果 | 退出码 |
+|---|---|---|
+| `pnpm exec playwright test`（全量 100 项） | 95 passed / 5 skipped / 0 failed；`.last-run.json`=`passed` | 0 |
+| `pnpm exec vitest run` | 49 文件 / 389 用例通过 | 0 |
+| `pnpm typecheck` | 无错误 | 0 |
+| `pnpm build` | 编译成功 | 0 |
+| 独立几何探针（含新增阅读栏 7 项） | 147 passed / 0 failed | 0 |

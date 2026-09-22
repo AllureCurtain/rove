@@ -26,6 +26,7 @@ import {
   selectDesktopWorkspace,
 } from "../platform/desktop-commands";
 import { useCopy } from "../copy/CopyProvider";
+import { useArmedDelete } from "../shell/use-armed-delete";
 import type { SessionRecord, WorkspaceKind, WorkspaceRecord } from "../state/product-types";
 
 export function WorkspaceTree({
@@ -398,6 +399,9 @@ function WorkspaceActions({ workspace, disabled, onTogglePin, onRemoveWorkspace 
 }) {
   const { t } = useCopy();
   const [open, setOpen] = useState(false);
+  // A workspace removal also drops its sessions from the catalog, so it needs a
+  // second click (ported from PI-Desktop's `use-armed-delete`).
+  const { armed, setArmed } = useArmedDelete();
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -413,11 +417,13 @@ function WorkspaceActions({ workspace, disabled, onTogglePin, onRemoveWorkspace 
   }, [open]);
   function close() {
     setOpen(false);
+    // A dismissed menu never reopens armed.
+    setArmed(null);
     trigger.current?.focus();
   }
   return (
     <div className="workspace-actions" ref={root}
-      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}
+      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) { setOpen(false); setArmed(null); } }}
       onKeyDown={(event) => {
         if (event.key === "Escape" && open) {
           event.preventDefault();
@@ -429,7 +435,7 @@ function WorkspaceActions({ workspace, disabled, onTogglePin, onRemoveWorkspace 
       <button ref={trigger} type="button" className="ghost icon-button"
         aria-label={t("workspace.projectActions", { name: workspace.displayName })}
         aria-haspopup="menu" aria-expanded={open} aria-controls={`workspace-menu-${workspace.id}`}
-        disabled={disabled} onClick={() => setOpen((value) => !value)}
+        disabled={disabled} onClick={() => { setArmed(null); setOpen((value) => !value); }}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") { event.preventDefault(); setOpen(true); }
         }}
@@ -452,8 +458,22 @@ function WorkspaceActions({ workspace, disabled, onTogglePin, onRemoveWorkspace 
             {t(workspace.pinned ? "workspace.unpinWorkspace" : "workspace.pinWorkspace")}
           </button>
           <button type="button" role="menuitem" className="ghost" disabled={disabled}
-            onClick={() => { close(); onRemoveWorkspace(workspace.id); }}>
-            {t("workspace.removeWorkspace")}
+            data-armed={armed === workspace.id ? "true" : undefined}
+            onClick={() => {
+              // First click arms and relabels; the menu stays open so the second
+              // click lands on the same control. The arm expires by itself.
+              if (armed !== workspace.id) {
+                setArmed(workspace.id);
+                return;
+              }
+              close();
+              onRemoveWorkspace(workspace.id);
+            }}>
+            {t(
+              armed === workspace.id
+                ? "workspace.removeWorkspaceArmed"
+                : "workspace.removeWorkspace",
+            )}
           </button>
         </div>
       ) : null}

@@ -738,6 +738,102 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   margin-inline: auto;
 }
 
+/* Conversation reading band handles (ported from PI-Desktop D439
+   `ConversationWidthHandles`). Each handle straddles its band edge, so the
+   offset is half of the 12px hit area. At rest they are invisible: a short
+   capsule appears on hover, on keyboard focus, or while dragging, because a
+   transcript edge is not a place to keep permanent chrome. */
+.product-app-frame[data-ui-version="v2"] .chat-reading-handles {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  pointer-events: auto;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  background: transparent;
+  border: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle[data-side="left"] {
+  left: max(0px, calc((100% - min(100%, var(--reading-column-max))) / 2 - 6px));
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle[data-side="right"] {
+  right: max(0px, calc((100% - min(100%, var(--reading-column-max))) / 2 - 6px));
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 40px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--v2-ink-3) 34%, transparent);
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  transition:
+    opacity var(--motion-duration-fast) var(--motion-ease-out),
+    height var(--motion-duration-fast) var(--motion-ease-out),
+    background-color var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle:hover::before,
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle:focus-visible::before {
+  opacity: 1;
+  background: color-mix(in srgb, var(--v2-rail-signal) 72%, transparent);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle:focus-visible {
+  outline: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle:focus-visible::before {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--v2-rail-signal) 26%, transparent);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle:active::before,
+html[data-reading-resizing="true"] .product-app-frame[data-ui-version="v2"] .chat-reading-handle::before {
+  opacity: 1;
+  height: 56px;
+  background: color-mix(in srgb, var(--v2-ink-3) 58%, transparent);
+}
+
+/* The band must track the pointer, not animate behind it. */
+html[data-reading-resizing="true"] .product-app-frame[data-ui-version="v2"] .chat-transcript__content,
+html[data-reading-resizing="true"] .product-app-frame[data-ui-version="v2"] .chat-composer {
+  transition: none;
+}
+
+html[data-reading-resizing="true"],
+html[data-reading-resizing="true"] * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+/* The rail is a drawer at this width, so the band is already the whole column. */
+@media (max-width: 960px) {
+  .product-app-frame[data-ui-version="v2"] .chat-reading-handles {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .product-app-frame[data-ui-version="v2"] .chat-reading-handle::before {
+    transition: none;
+  }
+}
+
 .product-app-frame[data-ui-version="v2"] .transcript-run {
   display: block;
   min-width: 0;

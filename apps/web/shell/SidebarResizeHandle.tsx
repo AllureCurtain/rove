@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 
 import { useCopy } from "../copy/CopyProvider";
+import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from "./use-sidebar-width";
 
 /**
  * A pointer- and keyboard-resizable vertical handle for the left navigation.
@@ -72,8 +73,9 @@ export function SidebarResizeHandle({
       aria-orientation="vertical"
       aria-label={t("inspector.sidebarWidth")}
       aria-valuenow={width}
-      aria-valuemin={200}
-      aria-valuemax={360}
+      aria-valuetext={t("inspector.sidebarWidthValue", { width })}
+      aria-valuemin={SIDEBAR_MIN_WIDTH}
+      aria-valuemax={SIDEBAR_MAX_WIDTH}
       tabIndex={0}
       onPointerDown={(event) => {
         // Pointer-only affordance; keyboard resizing is handled below.

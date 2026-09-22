@@ -197,6 +197,8 @@ const enUS: CopyDictionary = {
     reviewRevision: "Review revision",
     reviewBasePlaceholder: "Base ref, e.g. main",
     reviewCommitPlaceholder: "Commit SHA",
+    readingWidth: "Reading width (Left/Right arrows, double-click to reset)",
+    readingWidthValue: "Reading width {{width}} pixels",
   },
   inspector: {
     title: "Details",
@@ -215,8 +217,10 @@ const enUS: CopyDictionary = {
     approvalSubmitting: "Submitting decision; awaiting server state…",
     approvalUnavailable: "This request is no longer pending in the current run. This does not confirm approval by this window or tool success.",
     panelWidth: "Panel width (Left/Right arrows, Home/End)",
+    panelWidthValue: "Panel width {{width}} pixels",
     approvalScope: "Only the requested tool call. No permanent permission is granted.",
     sidebarWidth: "Navigation width (Left/Right arrows, Home/End)",
+    sidebarWidthValue: "Navigation width {{width}} pixels",
     authorizationTitle: "This session's authorization requests",
     authorizationLoading: "Loading this session's authorization requests…",
     authorizationError: "Could not load this session's authorization requests.",
@@ -552,6 +556,7 @@ const enUS: CopyDictionary = {
     pinWorkspace: "Pin workspace",
     unpinWorkspace: "Unpin workspace",
     removeWorkspace: "Remove workspace from list",
+    removeWorkspaceArmed: "Confirm removal and its sessions",
     settings: "Settings",
     pathRules: "Path rules",
     pathRulesBody:

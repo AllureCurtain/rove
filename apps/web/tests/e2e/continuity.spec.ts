@@ -207,7 +207,11 @@ test("removing the active workspace does not override a newer settings route", a
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
   await page.getByRole("button", { name: `${workspace.display_name} 的操作` }).click();
+  // Removing a workspace also drops its sessions, so the first click only arms
+  // the action and relabels it (PI-Desktop's armed delete).
   await page.getByRole("menuitem", { name: "从列表移除工作区" }).click();
+  await expect.poll(() => api.workspaces).toHaveLength(1);
+  await page.getByRole("menuitem", { name: "确认移除工作区及其会话" }).click();
   await page.getByRole("banner").getByRole("button", { name: "设置", exact: true }).click();
 
   await expect(page).toHaveURL(/\/settings\/providers$/u);

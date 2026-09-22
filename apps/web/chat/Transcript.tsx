@@ -20,6 +20,7 @@ import { useCopy } from "../copy/CopyProvider";
 import { DiffView } from "../product-v2/DiffView";
 import { RichText } from "../product-v2/RichText";
 import type { ProductMessage } from "../product/product-api-types";
+import { ReadingWidthHandles } from "./ReadingWidthHandles";
 import {
   describeTranscriptPartialReason,
   type TranscriptRestoreState,
@@ -211,6 +212,8 @@ export function Transcript({
           Return to latest
         </button>
       ) : null}
+      {/* Dual edge handles for the centered reading band (PI-Desktop D439). */}
+      <ReadingWidthHandles />
     </div>
   );
 }

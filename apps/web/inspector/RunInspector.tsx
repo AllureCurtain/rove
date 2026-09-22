@@ -278,6 +278,9 @@ export function RunInspector({
           aria-valuemin={panelResize.minimumWidth}
           aria-valuemax={panelResize.maximumWidth}
           aria-valuenow={Math.round(panelResize.value)}
+          aria-valuetext={t("inspector.panelWidthValue", {
+            width: Math.round(panelResize.value),
+          })}
           tabIndex={0}
           onPointerDown={panelResize.onPointerDown}
           onPointerMove={panelResize.onPointerMove}

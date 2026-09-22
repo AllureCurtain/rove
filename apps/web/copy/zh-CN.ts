@@ -194,6 +194,8 @@ const zhCN = {
     reviewRevision: "审查版本",
     reviewBasePlaceholder: "基准引用，例如 main",
     reviewCommitPlaceholder: "提交 SHA",
+    readingWidth: "阅读宽度（左右方向键调整，双击复位）",
+    readingWidthValue: "阅读宽度 {{width}} 像素",
   },
   inspector: {
     title: "详情",
@@ -212,7 +214,9 @@ const zhCN = {
     approvalSubmitting: "正在提交决定，等待服务端状态…",
     approvalUnavailable: "此请求已不在当前运行的待审批列表中。这不表示本窗口批准成功或工具执行成功。",
     panelWidth: "面板宽度（左右方向键、Home/End）",
+    panelWidthValue: "面板宽度 {{width}} 像素",
     sidebarWidth: "导航宽度（左右方向键、Home/End）",
+    sidebarWidthValue: "导航宽度 {{width}} 像素",
     approvalScope: "仅限所请求的工具调用，不授予永久权限。",
     authorizationTitle: "本会话最近授权请求",
     authorizationLoading: "正在读取本会话授权请求…",
@@ -530,6 +534,7 @@ const zhCN = {
     pinWorkspace: "固定工作区",
     unpinWorkspace: "取消固定工作区",
     removeWorkspace: "从列表移除工作区",
+    removeWorkspaceArmed: "确认移除工作区及其会话",
     settings: "设置",
     pathRules: "路径规则",
     pathRulesBody:
