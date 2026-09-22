@@ -664,3 +664,35 @@ PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由
 7 项 skip = 5 项既有 skip ＋ 2 项生产构建专属的预取用例（跑法见 §8.1E）。本轮另修掉一处我自己引入的
 回归：`next build` 会把受版本控制的 `apps/web/next-env.d.ts` 在 `./.next/dev/...` 与 `./.next/...` 之间
 翻转，已还原（生成物不入库）。
+
+### 8.5 官方验收器与生产构建（本轮补跑）
+
+`scripts/product-acceptance.ps1`（报告写到 `outputs/PRODUCT_ACCEPTANCE_REPORT.json`，`/outputs/` 已忽略）
+
+| 项 | 结果 |
+|---|---|
+| 溯源 | `fix/ui-shell-layout@9d685af`，`dirty=false`，node v24.9.0 / pnpm 10.30.3，`cargo=`（空） |
+| `web-typecheck` | pass，exit 0，6.06s |
+| `web-test` | pass，exit 0，10.31s |
+| `web-build` | pass，exit 0，26.1s |
+| `web-e2e` | **pass，exit 0，90.82s**（日志尾：112 passed / 7 skipped，全量 119 项） |
+| `mcp-filesystem-smoke` | not_run（gated，未设 `ROVE_MCP_FILESYSTEM_SMOKE`，非必需） |
+| Rust 7 项（fmt / clippy / test-api / test-mcp / test-e2e / test-tool-safety / test-product-store） | not_run，原因 `required command 'cargo' was not found on PATH` |
+| **verdict** | **FAIL（4 passed / 0 failed / 8 not run，其中 7 项 required）** |
+
+必须说清：本机**没有 Rust 工具链**（`cargo`/`rustc`/`rustup` 均不在 PATH，`~/.cargo` 不存在、`rustup` 也未安装），
+所以这个 FAIL 是**环境不足**，不是代码失败——要取得 PASS 必须在装有工具链的机器上重跑。它仍然有价值：
+web 四项都是真实退出码，并取代了本轮此前单独记录的 typecheck / vitest / e2e 数字（e2e 是全量 119 项）。
+顺带纠正我先前的两个错误判断：验收器**有**缺失命令保护（不会因缺 `cargo` 而中断），而且它按顺序执行
+**每一条**检查（不是遇错即停）。
+
+生产构建（`next build` ＋ `next start`，`ROVE_E2E_PROD=1`）下另跑一次：
+
+| 运行 | 结果 |
+|---|---|
+| 本轮改动面 4 个 spec（prefetch 2 ＋ scroll 4 ＋ minimap 3 ＋ sweep 2） | **11 passed / 0 failed，8.2s**——含 dev 下被 skip 的两条预取用例 |
+| 全量 119 项 | **未跑完**（截断于 117/119，两个 workbench 用例挂到超时）。已观察到的 7 例失败全部落在本轮未触碰处：`product-ui-v2.spec.ts`（生产构建下 `meta[name=robots]` **出现两个**——`noindex, nofollow` 与 Next 自带的 `noindex`；移动端「Open run evidence」「Open workspaces」触发按钮缺失）与 `workbench.spec.ts`（`/dev/workbench` 的 `Task` 标签缺失）。**未做基线对照**（没有在改动前的提交上跑同一组合），因此不声称它们"既有"；可以确定的只有：它们都在 `/dev/*` 预览页与元数据断言上，而本轮改动面在生产构建下全通过。 |
+
+**这也是本轮"把该跑的都跑完"最有价值的产出**：仓库的门禁只在 dev 跑全量、生产构建只跑 2 条预取用例，
+把全量搬到生产构建就暴露出上面这批 dev 掩盖的问题。建议单开一条工作：给全量 e2e 增加一个生产构建档
+（或让这些断言在 dev/prod 下都成立），并修掉重复的 `robots` 标签。这条建议**没有**在本轮实施。
