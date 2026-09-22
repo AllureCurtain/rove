@@ -669,7 +669,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
                     }
                   >
                     {inspectorCollapsed
-                      ? t("inspector.tabRun")
+                      ? t("inspector.title")
                       : t("common.close")}
                   </button>
                 </div>
@@ -682,7 +682,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
                   approvalError={continuity.approvalError}
                   onApprovalDetail={(tool, trigger) => {
                     const { activeJobId, activeRunId } = continuity.runState;
-                    if (activeJobId && activeRunId) panel.open("approval", {
+                    if (activeJobId && activeRunId) panel.open("pending", {
                       kind: "approval", jobId: activeJobId, runId: activeRunId, callId: tool.id,
                     }, trigger);
                   }}
@@ -768,7 +768,9 @@ function ServerProductApp({ uiVersion, draftStore }: {
                 void reviews.loadFindings(reviewId, cursor);
               }}
               onOpenReviewFinding={(path, line) => {
-                panel.setTarget({ kind: "file", path, line });
+                // A finding opens its file, so the files tab takes the target
+                // (PI-Desktop opens a file tab from a review finding).
+                panel.open("files", { kind: "file", path, line });
               }}
               fileFocusPath={panel.target?.kind === "file" ? panel.target.path : undefined}
               fileFocusLine={panel.target?.kind === "file" ? panel.target.line : undefined}

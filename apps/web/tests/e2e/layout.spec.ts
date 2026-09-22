@@ -202,6 +202,86 @@ test("the rail yields before the conversation floor at 1024x768", async ({
   ).toBeLessThan(WORK_PANEL_DEFAULT_WIDTH);
 });
 
+/**
+ * P2: the work panel is a dynamic, closable tab strip (ported from PI-Desktop
+ * `WorkPanel`), not a fixed set of tabs. The strip must open a launcher page,
+ * replace it with the chosen tab, close tabs by button/middle-click/Delete,
+ * keep focus and selection coherent, and offer a way back when empty.
+ */
+test("work panel tab strip opens, closes and reopens tabs", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const workspace = createMockWorkspace();
+  const session = createMockSession();
+  await installMockProductApi(page, {
+    workspaces: [workspace],
+    sessions: [session],
+    activeWorkspaceId: workspace.id,
+    activeSessionId: session.id,
+  });
+  await page.goto(`/w/${workspace.id}/s/${session.id}`);
+
+  const strip = page.getByRole("tablist", { name: "详情页签" });
+  const statusTab = strip.getByRole("tab", { name: "运行", exact: true });
+  const filesTab = strip.getByRole("tab", { name: "文件", exact: true });
+  const launcherTab = strip.getByRole("tab", { name: "打开页签", exact: true });
+  const openTabButton = page.getByRole("button", { name: "打开一个页签", exact: true });
+
+  // A fresh session starts with exactly the run status tab.
+  await expect(statusTab).toHaveAttribute("aria-selected", "true");
+  await expect(strip.getByRole("tab")).toHaveCount(1);
+  await expect(page.getByRole("tabpanel")).toHaveAttribute(
+    "aria-labelledby",
+    "inspector-tab-status",
+  );
+
+  // `+` opens a launcher page; choosing a kind replaces that page.
+  const panel = page.getByRole("tabpanel");
+  await openTabButton.click();
+  await expect(launcherTab).toBeVisible();
+  await expect(strip.getByRole("tab")).toHaveCount(2);
+  await panel.getByRole("button", { name: "文件", exact: true }).click();
+  await expect(filesTab).toHaveAttribute("aria-selected", "true");
+  await expect(launcherTab).toHaveCount(0);
+  await expect(strip.getByRole("tab")).toHaveCount(2);
+
+  // Roving tabindex: only the selected tab is tabbable, arrows move selection.
+  await expect(filesTab).toHaveAttribute("tabindex", "0");
+  await expect(statusTab).toHaveAttribute("tabindex", "-1");
+  await statusTab.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(filesTab).toBeFocused();
+  await expect(filesTab).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("ArrowLeft");
+  await expect(statusTab).toBeFocused();
+  await expect(statusTab).toHaveAttribute("aria-selected", "true");
+
+  // Delete closes the focused tab and focuses the neighbour.
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Delete");
+  await expect(filesTab).toHaveCount(0);
+  await expect(statusTab).toHaveAttribute("aria-selected", "true");
+  await expect(statusTab).toBeFocused();
+
+  // Middle-click closes a tab too.
+  await openTabButton.click();
+  await panel.getByRole("button", { name: "变更", exact: true }).click();
+  const changesTab = strip.getByRole("tab", { name: "变更", exact: true });
+  await expect(changesTab).toHaveAttribute("aria-selected", "true");
+  await changesTab.click({ button: "middle" });
+  await expect(changesTab).toHaveCount(0);
+
+  // The explicit close button works, and an empty strip keeps a way back.
+  await openTabButton.click();
+  await panel.getByRole("button", { name: "文件", exact: true }).click();
+  await strip.getByRole("button", { name: "关闭 文件", exact: true }).click();
+  await expect(filesTab).toHaveCount(0);
+  await strip.getByRole("button", { name: "关闭 运行", exact: true }).click();
+  await expect(strip.getByRole("tab")).toHaveCount(0);
+  await expect(page.getByText("没有打开的页签，用 + 打开一个。", { exact: true })).toBeVisible();
+  await openTabButton.click();
+  await expect(launcherTab).toBeVisible();
+});
+
 async function box(
   page: Page,
   selector: string,

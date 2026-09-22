@@ -180,7 +180,11 @@ test("opening a file does not discard pending pagination or leave loading stuck"
       text: "selected file content", truncated: false, preview_allowed: false } });
   });
   await inline.getByRole("button", { name: "审批详情", exact: true }).click();
-  await page.getByRole("tab", { name: "活动", exact: true }).click();
+  // The panel is a dynamic tab strip, so the browser tab is opened from the
+  // launcher instead of always being present.
+  const panel = page.getByRole("tabpanel");
+  await page.getByRole("button", { name: "打开一个页签", exact: true }).click();
+  await panel.getByRole("button", { name: "文件", exact: true }).click();
   const files = page.getByRole("region", { name: "文件", exact: true });
   await expect(files.getByRole("button", { name: "first.txt 12 B", exact: true })).toBeVisible();
   await files.getByRole("button", { name: "加载更多", exact: true }).click();

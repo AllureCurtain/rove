@@ -10,13 +10,22 @@ import {
   workPanelMinimumFor,
 } from "./work-panel-layout";
 
-export type WorkPanelTab = "run" | "review" | "approval";
+import {
+  activateWorkPanelTab,
+  closeWorkPanelTab,
+  defaultWorkPanelTabs,
+  openWorkPanelTab,
+  replaceWorkPanelTab,
+  type WorkPanelTabKind,
+  type WorkPanelTabsState,
+} from "./work-panel-tabs";
+
 export type WorkPanelTarget =
   | { kind: "approval"; jobId: string; runId: string; callId: string }
   | { kind: "file"; path: string; line: number }
   | null;
 interface PanelSelection {
-  tab: WorkPanelTab;
+  tabs: WorkPanelTabsState;
   target: WorkPanelTarget;
   width: number;
   collapsed: boolean;
@@ -58,7 +67,7 @@ function writeStoredPanelWidth(width: number): void {
 }
 
 const initialSelection = (): PanelSelection => ({
-  tab: "run",
+  tabs: defaultWorkPanelTabs(),
   target: null,
   width: WORK_PANEL_DEFAULT_WIDTH,
   collapsed:
@@ -100,9 +109,13 @@ export function useWorkPanel(
     selections.current.set(key, { ...(selections.current.get(key) ?? initialSelection()), ...patch });
     render((value) => value + 1);
   }
-  function open(tab = selection.tab, target = selection.target, trigger?: HTMLElement | null) {
-    update({ collapsed: false, tab, target,
-      returnFocus: trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null) });
+  function open(kind = selection.tabs.activeKind ?? "status", target = selection.target, trigger?: HTMLElement | null) {
+    update({
+      collapsed: false,
+      tabs: openWorkPanelTab(selection.tabs, kind),
+      target,
+      returnFocus: trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null),
+    });
   }
   function close() {
     update({ collapsed: true });
@@ -128,8 +141,19 @@ export function useWorkPanel(
     [key],
   );
   return {
-    ...selection, open, close,
-    setTab: (tab: WorkPanelTab) => update({ tab }),
+    ...selection,
+    tabs: selection.tabs.tabs,
+    activeKind: selection.tabs.activeKind,
+    open,
+    close,
+    openTab: (kind: WorkPanelTabKind) =>
+      update({ tabs: openWorkPanelTab(selection.tabs, kind) }),
+    activateTab: (kind: WorkPanelTabKind) =>
+      update({ tabs: activateWorkPanelTab(selection.tabs, kind) }),
+    closeTab: (kind: WorkPanelTabKind) =>
+      update({ tabs: closeWorkPanelTab(selection.tabs, kind) }),
+    replaceTab: (from: WorkPanelTabKind, kind: WorkPanelTabKind) =>
+      update({ tabs: replaceWorkPanelTab(selection.tabs, from, kind) }),
     setTarget: (target: WorkPanelTarget) => update({ target }),
     setWidth,
     resizeByKeyboard: (

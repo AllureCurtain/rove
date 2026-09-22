@@ -1,6 +1,11 @@
 "use client";
 
-import { ChevronLeftIcon, ChevronRightIcon, Cross2Icon } from "@radix-ui/react-icons";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  Cross2Icon,
+  PlusIcon,
+} from "@radix-ui/react-icons";
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { useCopy } from "../copy/CopyProvider";
@@ -25,6 +30,17 @@ import type {
 import { ApprovalCard } from "../chat/Transcript";
 import { type WorkPanelLayout } from "./work-panel-layout";
 import { usePanelResize } from "./use-panel-resize";
+import {
+  WORK_PANEL_LAUNCHER_KINDS,
+  activateWorkPanelTab,
+  closeWorkPanelTab,
+  defaultWorkPanelTabs,
+  openWorkPanelTab,
+  replaceWorkPanelTab,
+  workPanelTabStep,
+  type WorkPanelTabKind,
+  type WorkPanelTabsState,
+} from "./work-panel-tabs";
 import { type WorkPanelState } from "./use-work-panel";
 export function RunInspector({
   productSessionId,
@@ -91,9 +107,79 @@ export function RunInspector({
 }) {
   const { t } = useCopy();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const [fallbackTab, setFallbackTab] = useState<"run" | "review" | "approval">("run");
-  const tab = panel?.tab ?? fallbackTab;
-  const setTab = panel?.setTab ?? setFallbackTab;
+  // The tab strip is a dynamic set (PI-Desktop `WorkPanel`), so a shell that
+  // hosts the panel owns the state and a standalone render keeps its own.
+  const [fallbackTabs, setFallbackTabs] = useState<WorkPanelTabsState>(() =>
+    defaultWorkPanelTabs(),
+  );
+  // `activeKind` may legitimately be null (every tab closed), so the panel must
+  // be selected by presence, not with a nullish fallback.
+  const tabs = panel ? panel.tabs : fallbackTabs.tabs;
+  const activeKind = panel ? panel.activeKind : fallbackTabs.activeKind;
+  const openTab = (kind: WorkPanelTabKind) =>
+    panel ? panel.openTab(kind) : setFallbackTabs((state) => openWorkPanelTab(state, kind));
+  const activateTab = (kind: WorkPanelTabKind) =>
+    panel ? panel.activateTab(kind) : setFallbackTabs((state) => activateWorkPanelTab(state, kind));
+  const closeTab = (kind: WorkPanelTabKind) =>
+    panel ? panel.closeTab(kind) : setFallbackTabs((state) => closeWorkPanelTab(state, kind));
+  const replaceTab = (from: WorkPanelTabKind, kind: WorkPanelTabKind) =>
+    panel
+      ? panel.replaceTab(from, kind)
+      : setFallbackTabs((state) => replaceWorkPanelTab(state, from, kind));
+
+  const tabButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const plusButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Keep the active tab in view inside a scrollable strip (PI-Desktop parity).
+  useEffect(() => {
+    if (!activeKind) {
+      return;
+    }
+    tabButtonRefs.current[activeKind]?.scrollIntoView({
+      block: "nearest",
+      inline: "nearest",
+    });
+  }, [activeKind, tabs.length]);
+
+  const closeTabAndFocus = (kind: WorkPanelTabKind) => {
+    const index = tabs.findIndex((item) => item.kind === kind);
+    const next = index >= 0 ? tabs[index + 1] ?? tabs[index - 1] : undefined;
+    closeTab(kind);
+    requestAnimationFrame(() => {
+      if (next) {
+        tabButtonRefs.current[next.kind]?.focus();
+      } else {
+        plusButtonRef.current?.focus();
+      }
+    });
+  };
+
+  const onTabKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    kind: WorkPanelTabKind,
+  ) => {
+    const index = tabs.findIndex((item) => item.kind === kind);
+    if (index < 0) {
+      return;
+    }
+    // Delete/Backspace closes, like the reference tab strip.
+    if (event.key === "Delete" || event.key === "Backspace") {
+      event.preventDefault();
+      closeTabAndFocus(kind);
+      return;
+    }
+    const step = workPanelTabStep(event, index, tabs.length);
+    if (step === null) {
+      return;
+    }
+    event.preventDefault();
+    const next = tabs[step];
+    if (!next) {
+      return;
+    }
+    activateTab(next.kind);
+    requestAnimationFrame(() => tabButtonRefs.current[next.kind]?.focus());
+  };
 
   useEffect(() => {
     if (dialogOpen) {
@@ -106,8 +192,10 @@ export function RunInspector({
   )?.id;
   useEffect(() => {
     if (activeReviewId) {
-      setTab("review");
+      openTab("review");
     }
+    // Only the active review identity may open the tab; re-running on every
+    // render would fight the user's own tab choice.
   }, [activeReviewId]);
 
   const phase = resolveInspectorPhase(runState);
@@ -211,34 +299,103 @@ export function RunInspector({
           {dialogOpen ? <Cross2Icon /> : <ChevronRightIcon />}
         </button>
       </div>
-      <div className="inspector-tabs" role="tablist" aria-label={t("inspector.title")}>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "run"}
-          className={tab === "run" ? "tab-button tab-button--active" : "tab-button"}
-          onClick={() => setTab("run")}
+      <div className="inspector-tabs-row">
+        <div
+          className="inspector-tabs"
+          role="tablist"
+          aria-label={t("inspector.tabsLabel")}
         >
-          {t("inspector.tabRun")}
-        </button>
+        {tabs.map((item) => {
+          const selected = item.kind === activeKind;
+          const label = workPanelTabLabel(item.kind, t, {
+            waiting: waiting.length,
+            reviews: reviews.length,
+          });
+          return (
+            <div className="inspector-tab" key={item.kind}>
+              <button
+                ref={(node) => {
+                  tabButtonRefs.current[item.kind] = node;
+                }}
+                type="button"
+                role="tab"
+                id={`inspector-tab-${item.kind}`}
+                aria-selected={selected}
+                aria-controls={`inspector-surface-${item.kind}`}
+                tabIndex={selected ? 0 : -1}
+                className={selected ? "tab-button tab-button--active" : "tab-button"}
+                onClick={() => activateTab(item.kind)}
+                onAuxClick={(event) => {
+                  // Middle-click closes, like the reference panel's tab strip.
+                  if (event.button !== 1) return;
+                  event.preventDefault();
+                  closeTabAndFocus(item.kind);
+                }}
+                onKeyDown={(event) => onTabKeyDown(event, item.kind)}
+              >
+                {label}
+              </button>
+              <button
+                type="button"
+                className="inspector-tab-close"
+                aria-label={t("inspector.closeTab", { name: label })}
+                title={t("inspector.closeTab", { name: label })}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => closeTabAndFocus(item.kind)}
+              >
+                <Cross2Icon />
+              </button>
+            </div>
+          );
+        })}
+        </div>
+        {/* The launcher sits at the end of the strip (PI-Desktop parity) and
+            outside the tablist, because only tabs belong in a tablist. */}
         <button
+          ref={plusButtonRef}
           type="button"
-          role="tab"
-          aria-selected={tab === "review"}
-          className={tab === "review" ? "tab-button tab-button--active" : "tab-button"}
-          onClick={() => setTab("review")}
+          className="ghost icon-button inspector-open-tab"
+          onClick={() => openTab("new")}
+          aria-label={t("inspector.openTab")}
+          title={t("inspector.openTab")}
         >
-          {t("inspector.tabReview")}
-          {reviews.length > 0 ? ` (${reviews.length})` : ""}
+          <PlusIcon />
         </button>
-        {panel ? <button type="button" role="tab" aria-selected={tab === "approval"}
-          className={tab === "approval" ? "tab-button tab-button--active" : "tab-button"}
-          onClick={() => setTab("approval")}>
-          {t("inspector.tabApproval")} ({waiting.length})
-        </button> : null}
       </div>
-      <div className="inspector-body">
-        {tab === "approval" ? (
+      <div
+        className="inspector-body"
+        id={activeKind ? `inspector-surface-${activeKind}` : undefined}
+        role="tabpanel"
+        aria-labelledby={activeKind ? `inspector-tab-${activeKind}` : undefined}
+      >
+        {activeKind === "new" ? (
+          <section
+            className="inspector-section"
+            aria-label={t("inspector.launcherTitle")}
+          >
+            <h3>{t("inspector.launcherTitle")}</h3>
+            <ul className="inspector-launcher">
+              {WORK_PANEL_LAUNCHER_KINDS.map((kind) => (
+                <li key={kind}>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => replaceTab("new", kind)}
+                  >
+                    {workPanelTabLabel(kind, t, {
+                      waiting: waiting.length,
+                      reviews: reviews.length,
+                    })}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+        {activeKind === null ? (
+          <p className="inspector-empty-line">{t("inspector.noTabs")}</p>
+        ) : null}
+        {activeKind === "pending" ? (
           <section className="approval-detail" aria-label={t("inspector.approvalDetail")}>
             {approvalError ? <p role="alert">{approvalError}</p> : null}
             {waiting.map((tool) => <button key={tool.id} type="button" className="secondary"
@@ -252,14 +409,14 @@ export function RunInspector({
                 onApproval={onApproval} />
             </> : <p role="status">{t("inspector.approvalUnavailable")}</p>}
             {/* Plan P4: the durable authorization history for this session. */}
-            {tab === "approval" && workspaceId ? (
+            {workspaceId ? (
               <SessionAuthorizationPanel
                 sessionId={productSessionId}
                 workspaceId={workspaceId}
               />
             ) : null}
           </section>
-        ) : tab === "review" ? (
+        ) : activeKind === "review" ? (
           <ReviewPanel
             reviews={reviews}
             selectedReviewId={selectedReviewId}
@@ -274,11 +431,13 @@ export function RunInspector({
             onCancel={onCancelReview ?? (() => undefined)}
             onLoadFindings={onLoadReviewFindings ?? (() => undefined)}
             onOpenFinding={(path, line) => {
-              setTab("run");
+              // The finding's file lives in the files tab, so the panel opens it
+              // rather than only switching the suspended run tab.
+              openTab("files");
               onOpenReviewFinding?.(path, line);
             }}
           />
-        ) : (
+        ) : activeKind === "status" ? (
           <>
             <ExportPanel sessionId={productSessionId} />
 
@@ -316,7 +475,7 @@ export function RunInspector({
               </div>
             ) : null}
 
-            {phase !== "empty" ? (
+            {phase !== "empty" || activeKind !== "status" ? (
               <>
                 <section className="inspector-section">
                   <div className="inspector-section__heading">
@@ -382,32 +541,46 @@ export function RunInspector({
                   )}
                 </section>
 
-                {workspaceId ? (
-                  <FilesPanel
-                    workspaceId={workspaceId}
-                    focusPath={fileFocusPath}
-                    focusLine={fileFocusLine}
-                  />
-                ) : null}
+              </>
+            ) : null}
+          </>
+        ) : null}
 
-                <section className="inspector-section">
-                  <h3>{t("inspector.filesTitle")}</h3>
-                  {mutations.length === 0 ? (
-                    <p className="inspector-empty-line">{t("inspector.filesNone")}</p>
-                  ) : (
-                    <ul className="mutation-list">
-                      {mutations.map(({ tool, mutation }, index) => (
-                        <li key={`${tool.id}-${mutation.path}-${index}`}>
-                          <strong>{mutation.path}</strong>
-                          <span>{mutation.operation}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </section>
+        {activeKind === "files" ? (
+          workspaceId ? (
+            <FilesPanel
+              workspaceId={workspaceId}
+              focusPath={fileFocusPath}
+              focusLine={fileFocusLine}
+            />
+          ) : null
+        ) : null}
 
-                <ArtifactPanel sessionId={productSessionId} />
-                <DiffPanel sessionId={productSessionId} />
+        {activeKind === "changes" ? (
+          <>
+            <section className="inspector-section">
+              <h3>{t("inspector.filesTitle")}</h3>
+              {mutations.length === 0 ? (
+                <p className="inspector-empty-line">{t("inspector.filesNone")}</p>
+              ) : (
+                <ul className="mutation-list">
+                  {mutations.map(({ tool, mutation }, index) => (
+                    <li key={`${tool.id}-${mutation.path}-${index}`}>
+                      <strong>{mutation.path}</strong>
+                      <span>{mutation.operation}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <ArtifactPanel sessionId={productSessionId} />
+            <DiffPanel sessionId={productSessionId} />
+          </>
+        ) : null}
+
+        {activeKind === "status" && phase !== "empty" ? (
+          <>
 
                 <section className="inspector-section">
                   <h3>{t("inspector.planTitle")}</h3>
@@ -429,23 +602,31 @@ export function RunInspector({
                   )}
                 </section>
 
-                <section className="inspector-section">
-                  <h3>{t("inspector.approvalsTitle")}</h3>
-                  {waiting.length === 0 ? (
-                    <p className="inspector-empty-line">
-                      {t("inspector.approvalsNone")}
-                    </p>
-                  ) : (
-                    <ul className="tool-list">
-                      {waiting.map((tool) => (
-                        <li key={tool.id} data-tone="waiting">
-                          <strong>{tool.name}</strong>
-                          <div>{tool.reason ?? tool.details}</div>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </section>
+          </>
+        ) : null}
+
+        {activeKind === "pending" ? (
+          <section className="inspector-section">
+            <h3>{t("inspector.approvalsTitle")}</h3>
+            {waiting.length === 0 ? (
+              <p className="inspector-empty-line">
+                {t("inspector.approvalsNone")}
+              </p>
+            ) : (
+              <ul className="tool-list">
+                {waiting.map((tool) => (
+                  <li key={tool.id} data-tone="waiting">
+                    <strong>{tool.name}</strong>
+                    <div>{tool.reason ?? tool.details}</div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        ) : null}
+
+        {activeKind === "status" && phase !== "empty" ? (
+          <>
 
                 <section className="inspector-section">
                   <h3>{t("inspector.toolsTitle")}</h3>
@@ -465,13 +646,40 @@ export function RunInspector({
                     </ul>
                   )}
                 </section>
-              </>
-            ) : null}
           </>
-        )}
+        ) : null}
       </div>
     </aside>
   );
+}
+
+/**
+ * Tab label, including the badge counts the previous fixed tabs carried.
+ * Every kind is host-owned in rove, so a kind maps to one localized label.
+ */
+export function workPanelTabLabel(
+  kind: WorkPanelTabKind,
+  t: (path: string, params?: Record<string, string | number>) => string,
+  counts: { waiting: number; reviews: number },
+): string {
+  switch (kind) {
+    case "new":
+      return t("inspector.tabNew");
+    case "pending":
+      return counts.waiting > 0
+        ? `${t("inspector.tabPending")} (${counts.waiting})`
+        : t("inspector.tabPending");
+    case "files":
+      return t("inspector.tabFiles");
+    case "changes":
+      return t("inspector.tabChanges");
+    case "review":
+      return counts.reviews > 0
+        ? `${t("inspector.tabReview")} (${counts.reviews})`
+        : t("inspector.tabReview");
+    case "status":
+      return t("inspector.tabStatus");
+  }
 }
 
 function trapFocus(event: KeyboardEvent<HTMLElement>) {

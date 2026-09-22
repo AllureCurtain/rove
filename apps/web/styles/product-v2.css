@@ -1929,23 +1929,65 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   padding: 0 4px;
 }
 
+.product-app-frame[data-ui-version="v2"] .inspector-open-tab {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 26px;
+  margin-bottom: 2px;
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-open-tab:hover {
+  background: var(--v2-surface);
+  color: var(--v2-ink);
+}
+
 .product-app-frame[data-ui-version="v2"] .inspector-body {
   gap: 0;
   padding: 0 14px 24px;
   overscroll-behavior: contain;
 }
 
-.product-app-frame[data-ui-version="v2"] .inspector-tabs {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 2px;
-  padding: 8px 12px 0;
+/* Work panel tab strip: the set of tabs is dynamic and closable
+   (PI-Desktop `WorkPanel`), so the strip scrolls instead of dividing a fixed
+   count across fixed columns. The launcher sits at the trailing edge. */
+.product-app-frame[data-ui-version="v2"] .inspector-tabs-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 8px 8px 0 12px;
   border-bottom: 1px solid var(--v2-border);
   background: var(--v2-surface-raised);
 }
 
+.product-app-frame[data-ui-version="v2"] .inspector-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-tab {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
 .product-app-frame[data-ui-version="v2"] .inspector-tabs .tab-button {
   min-height: 30px;
+  min-width: 0;
+  max-width: 132px;
+  padding: 0 4px;
+  overflow: hidden;
   border: 0;
   border-bottom: 2px solid transparent;
   border-radius: 0;
@@ -1953,11 +1995,52 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   color: var(--v2-ink-3);
   font-size: 10px;
   font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .product-app-frame[data-ui-version="v2"] .inspector-tabs .tab-button--active {
   border-bottom-color: var(--v2-signal);
   color: var(--v2-ink);
+}
+
+/* Close affordance stays out of the way until the tab is hovered, focused or
+   selected, but is always present for keyboard and assistive technology. */
+.product-app-frame[data-ui-version="v2"] .inspector-tab-close {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 30px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--v2-ink-3);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-tab:hover .inspector-tab-close,
+.product-app-frame[data-ui-version="v2"] .inspector-tab:focus-within .inspector-tab-close,
+.product-app-frame[data-ui-version="v2"] .inspector-tab .tab-button--active + .inspector-tab-close {
+  opacity: 1;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-tab-close:hover {
+  background: var(--v2-surface);
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-launcher {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-launcher .secondary {
+  width: 100%;
+  justify-content: flex-start;
 }
 
 .product-app-frame[data-ui-version="v2"] .review-panel__select-label {
@@ -3212,9 +3295,6 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 }
 
 /* Shared work panel: bounded selection controls, not permission state. */
-.product-app-frame[data-ui-version="v2"] .inspector-tabs:has([role="tab"]:nth-child(3)) {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
 .product-app-frame[data-ui-version="v2"] .approval-detail {
   display: grid;
   gap: 12px;
