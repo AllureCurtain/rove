@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
+  FOLLOW_SCROLL_BEHAVIOR,
   TRANSCRIPT_SCROLL_ROUNDING_TOLERANCE_PX,
   bottomScrollTop,
   isRecentScrollGesture,
@@ -32,6 +33,10 @@ export function useFollowScroll(): {
   followNow: () => void;
   /** Prepending content adjusts `scrollTop`; tell the state machine where it landed. */
   recordScrollPosition: (top: number) => void;
+  /** Leave follow mode deliberately (a jump to an older turn is not a clamp). */
+  releaseFollow: () => void;
+  /** Scroll a marked turn into view and stay released until the reader returns. */
+  jumpToMarker: (messageId: string) => void;
 } {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
@@ -40,22 +45,25 @@ export function useFollowScroll(): {
   const frameRef = useRef(0);
   const [showJump, setShowJump] = useState(false);
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
-    const element = scrollRef.current;
-    if (!element) {
-      return;
-    }
-    element.scrollTo({
-      top: bottomScrollTop(element.scrollHeight, element.clientHeight),
-      behavior,
-    });
-    // Record where the scroller actually landed, not what was asked for: a
-    // fractional device pixel ratio lands a fraction away, and the intended value
-    // would make the following native scroll event read as a user scrolling up.
-    if (behavior === "auto") {
-      lastScrollTopRef.current = element.scrollTop;
-    }
-  }, []);
+  const scrollToBottom = useCallback(
+    (behavior: ScrollBehavior = FOLLOW_SCROLL_BEHAVIOR) => {
+      const element = scrollRef.current;
+      if (!element) {
+        return;
+      }
+      element.scrollTo({
+        top: bottomScrollTop(element.scrollHeight, element.clientHeight),
+        behavior,
+      });
+      // Record where the scroller actually landed, not what was asked for: a
+      // fractional device pixel ratio lands a fraction away, and the intended value
+      // would make the following native scroll event read as a user scrolling up.
+      if (behavior !== "smooth") {
+        lastScrollTopRef.current = element.scrollTop;
+      }
+    },
+    [],
+  );
 
   const cancelFollow = useCallback(() => {
     cancelAnimationFrame(frameRef.current);
@@ -105,6 +113,39 @@ export function useFollowScroll(): {
   }, [scrollToBottom]);
 
   useEffect(() => cancelFollow, [cancelFollow]);
+
+  const releaseFollow = useCallback(() => {
+    cancelFollow();
+    pinnedRef.current = false;
+    setShowJump(true);
+  }, [cancelFollow]);
+
+  /**
+   * Marker navigation is a deliberate reading move, so follow is released and
+   * stays released. The scroll it produces carries no user gesture at its end
+   * (a smooth jump outlives the 200ms gesture window), so the landing position is
+   * recorded for the state machine instead of being read as a layout clamp.
+   */
+  const jumpToMarker = useCallback(
+    (messageId: string) => {
+      const scroller = scrollRef.current;
+      const target = scroller?.querySelector<HTMLElement>(
+        `[data-message-id="${CSS.escape(messageId)}"]`,
+      );
+      if (!scroller || !target) {
+        return;
+      }
+      releaseFollow();
+      target.scrollIntoView({
+        block: "start",
+        behavior: jumpScrollBehavior(
+          window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+        ),
+      });
+      requestAnimationFrame(() => recordScrollPosition(scroller.scrollTop));
+    },
+    [recordScrollPosition, releaseFollow],
+  );
 
   // A real scroll-up always follows a wheel/touch/key/pointer input within a
   // frame or two; programmatic follow scrolling and layout clamps do not.
@@ -165,5 +206,7 @@ export function useFollowScroll(): {
     pinToLatest,
     followNow,
     recordScrollPosition,
+    releaseFollow,
+    jumpToMarker,
   };
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  FOLLOW_SCROLL_BEHAVIOR,
   TRANSCRIPT_REPIN_THRESHOLD_PX,
   TRANSCRIPT_SCROLL_GESTURE_WINDOW_MS,
   TRANSCRIPT_SCROLL_ROUNDING_TOLERANCE_PX,
@@ -112,7 +113,10 @@ describe("transcript follow-scroll", () => {
   it("computes the bottom position and respects reduced motion on a jump", () => {
     expect(bottomScrollTop(2000, 500)).toBe(1500);
     expect(bottomScrollTop(100, 500)).toBe(0);
+    // The stylesheet says `scroll-behavior: smooth`; follow must override it, or a
+    // re-targeted animation settles short of the bottom.
+    expect(FOLLOW_SCROLL_BEHAVIOR).toBe("instant");
     expect(jumpScrollBehavior(false)).toBe("smooth");
-    expect(jumpScrollBehavior(true)).toBe("auto");
+    expect(jumpScrollBehavior(true)).toBe("instant");
   });
 });

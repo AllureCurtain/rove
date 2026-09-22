@@ -83,7 +83,16 @@ export function bottomScrollTop(scrollHeight: number, clientHeight: number): num
   return Math.max(0, scrollHeight - clientHeight);
 }
 
+/**
+ * Follow must not animate. `.chat-transcript` sets `scroll-behavior: smooth`, and
+ * with it a `behavior: "auto"` scroll is *animated*: the next content growth then
+ * re-targets the animation, which settles short of the bottom (measured 22px at
+ * 1280x800). An explicit `instant` overrides the stylesheet, so following is a
+ * move rather than a journey — only the jump control is allowed to travel.
+ */
+export const FOLLOW_SCROLL_BEHAVIOR: ScrollBehavior = "instant";
+
 /** Scroll behaviour for a jump control: motion is optional, arrival is not. */
 export function jumpScrollBehavior(reducedMotion: boolean): ScrollBehavior {
-  return reducedMotion ? "auto" : "smooth";
+  return reducedMotion ? "instant" : "smooth";
 }

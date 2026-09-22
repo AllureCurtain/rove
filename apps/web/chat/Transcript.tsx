@@ -20,7 +20,9 @@ import { useCopy } from "../copy/CopyProvider";
 import { DiffView } from "../product-v2/DiffView";
 import { RichText } from "../product-v2/RichText";
 import type { ProductMessage } from "../product/product-api-types";
+import { ConversationMinimap } from "./ConversationMinimap";
 import { ReadingWidthHandles } from "./ReadingWidthHandles";
+import { buildConversationMinimapMarkers } from "./conversation-minimap";
 import { useFollowScroll } from "./use-follow-scroll";
 import {
   describeTranscriptPartialReason,
@@ -29,6 +31,9 @@ import {
 
 const INITIAL_VISIBLE_RUNS = 24;
 const RUN_PAGE_SIZE = 16;
+
+/** Sub-pixel slack before the transcript counts as scrolling. */
+const TRANSCRIPT_OVERFLOW_SLACK_PX = 4;
 
 export function Transcript({
   timeline,
@@ -80,6 +85,26 @@ export function Transcript({
   const hiddenRunCount = Math.max(0, timeline.length - visibleTimeline.length);
   const itemCount = visibleTimeline.reduce((total, group) => total + group.items.length, 0)
     + actionableMessages.length;
+  // One marker per rendered turn: jumping is only offered to what is on screen.
+  const minimapMarkers = useMemo(
+    () =>
+      buildConversationMinimapMarkers(
+        visibleTimeline.flatMap((group) =>
+          group.items.flatMap((item) =>
+            item.kind === "message"
+              ? [
+                  {
+                    id: item.message.id,
+                    role: item.message.role,
+                    content: item.message.content,
+                  },
+                ]
+              : [],
+          ),
+        ),
+      ),
+    [visibleTimeline],
+  );
   const {
     scrollRef: transcriptRef,
     showJump,
@@ -88,8 +113,10 @@ export function Transcript({
     pinToLatest,
     followNow,
     recordScrollPosition,
+    jumpToMarker,
   } = useFollowScroll();
   const prependHeightRef = useRef<number | null>(null);
+  const [transcriptOverflows, setTranscriptOverflows] = useState(false);
 
   useEffect(() => {
     const transcript = transcriptRef.current;
@@ -106,12 +133,23 @@ export function Transcript({
         recordScrollPosition(transcript.scrollTop);
         return;
       }
+      // The minimap only earns its lane once the transcript actually scrolls.
+      // React bails out when the boolean is unchanged, so repeated observer
+      // callbacks at a settled size cost nothing.
+      setTranscriptOverflows(
+        transcript.scrollHeight - transcript.clientHeight > TRANSCRIPT_OVERFLOW_SLACK_PX,
+      );
       // Re-pin from the observer callback itself: a frame scheduled from here
       // paints one unpinned frame before the follow lands.
       followNow();
     });
     const content = transcript.firstElementChild ?? transcript;
     observer.observe(content);
+    // Observe the scroller as well as its content. A taller composer (or a new
+    // queued-message row) shrinks the viewport by tens of pixels without
+    // touching the content box, which leaves the pinned position short of the
+    // bottom — measured 22px at 1280x800 — until something else re-pins.
+    observer.observe(transcript);
     followNow();
     return () => observer.disconnect();
   }, [followNow, recordScrollPosition, transcriptRef]);
@@ -207,6 +245,12 @@ export function Transcript({
           {t("chat.returnToLatest")}
         </button>
       ) : null}
+      <ConversationMinimap
+        markers={minimapMarkers}
+        overflows={transcriptOverflows}
+        hasEarlier={hiddenRunCount > 0}
+        onJumpTo={jumpToMarker}
+      />
       {/* Dual edge handles for the centered reading band (PI-Desktop D439). */}
       <ReadingWidthHandles />
     </div>
@@ -315,6 +359,8 @@ function TranscriptItem({
             className="chat-bubble"
             data-role={item.message.role}
             data-status={item.message.status}
+            // Anchor for the conversation minimap: one marker per turn message.
+            data-message-id={item.message.id}
           >
             <div className="message-byline">
               <strong>

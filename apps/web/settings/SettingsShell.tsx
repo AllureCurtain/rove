@@ -5,6 +5,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { listProviderModels, testProvider } from "../api/run-controller";
 import { useCopy } from "../copy/CopyProvider";
+import { LatestWinsGate } from "../lib/latest-wins";
 import { useUiSkin } from "../shell/ui-skin";
 import type {
   ProviderModelsResponse,
@@ -899,6 +900,14 @@ function DesktopProvidersSettings({
   const [error, setError] = useState<string | null>(null);
   const busy = busyAction !== null;
 
+  // A probe and a model list are both requested from a button, so no effect
+  // cleanup can drop them: ask for provider A and then B, and A's slow answer
+  // used to render as B's result and clear B's in-flight busy state. One gate per
+  // request kind, so only the newest answer for that kind may commit
+  // (PI `lib/latest-wins.ts`, plan §8.3).
+  const probeGate = useMemo(() => new LatestWinsGate(), []);
+  const modelsGate = useMemo(() => new LatestWinsGate(), []);
+
   const activeProfile = useMemo(
     () => profiles.find((profile) => profile.id === selection.profileId) ?? null,
     [profiles, selection.profileId],
@@ -987,6 +996,7 @@ function DesktopProvidersSettings({
   }
 
   async function handleProbe(profile: ProviderProfileRecord): Promise<void> {
+    const token = probeGate.begin();
     setBusyAction(`probe:${profile.id}`);
     clearFeedback();
     try {
@@ -994,29 +1004,47 @@ function DesktopProvidersSettings({
         profileId: profile.id,
         model: profile.defaultModel,
       });
+      if (!probeGate.isCurrent(token)) {
+        return;
+      }
       setProbeResult({ profileId: profile.id, probe });
       setStatus(t("desktopProviders.connected", { label: profile.label }));
     } catch (probeError) {
+      if (!probeGate.isCurrent(token)) {
+        return;
+      }
       setError(describeProviderProbeFailure(probeError));
     } finally {
-      setBusyAction(null);
+      // A newer probe owns the busy key now; clearing it here would hide that one.
+      if (probeGate.isCurrent(token)) {
+        setBusyAction(null);
+      }
     }
   }
 
   async function handleListModels(profile: ProviderProfileRecord): Promise<void> {
+    const token = modelsGate.begin();
     setBusyAction(`models:${profile.id}`);
     clearFeedback();
     try {
       const response = await client.listProviderModels(profile.id);
+      if (!modelsGate.isCurrent(token)) {
+        return;
+      }
       setModelResult({
         profileId: profile.id,
         models: response.models.map((model) => model.id),
       });
       setStatus(t("desktopProviders.modelsLoaded", { count: response.models.length, label: profile.label }));
     } catch (modelsError) {
+      if (!modelsGate.isCurrent(token)) {
+        return;
+      }
       setError(describeProviderProbeFailure(modelsError));
     } finally {
-      setBusyAction(null);
+      if (modelsGate.isCurrent(token)) {
+        setBusyAction(null);
+      }
     }
   }
 

@@ -522,7 +522,83 @@ open-vetta 在 `RootLayoutView` 里把路由内容 `memo` 掉，理由是"侧栏
   里预取**（与 Next 自身行为一致，并且在 dev 里彻底不产生噪声）；随后连续两轮全量 e2e 均 0 failed。
   这条抖动**不是**我的断言放宽——`shell.spec.ts` 与 `workbench-panel.spec.ts` 里的断言一字未改。
 
+**G. 跟随滚动与滚动条显隐（移植 PI `lib/transcript-scroll.ts` / `lib/scrollbar-reveal.ts`）。**
+
+此前外壳只有一个 `atLatest` 布尔量，每次 scroll 事件用 48px 阈值重算。它无法区分"用户手势"与
+"布局钳制"：分数 DPR 下浏览器报告的位置与请求值差一个亚像素，严格比较就读成"用户向上滚"，跟随被
+误解除。参考实现把**显式跟随状态**与**近底视觉阈值**分开，只有真实上移才解除。
+
+- `chat/transcript-scroll.ts`（纯 reducer＋常量 48/1/200、`bottomScrollTop`、`isRecentScrollGesture`）
+  ＋ `chat/use-follow-scroll.ts`（状态机、手势窗口、帧内重钉、`pinToLatest`/`followNow`/
+  `recordScrollPosition`/`releaseFollow`/`jumpToMarker`）。
+- `lib/scrollbar-reveal.ts`（捕获阶段监听 scroll → 给滚动元素打 `data-scrolling` → 静默 300ms 清除）。
+- 覆盖：`chat/transcript-scroll.test.ts` 9 条、`lib/scrollbar-reveal.test.ts` 5 条、
+  `tests/e2e/transcript-scroll.spec.ts` 4 条（打开即钉在新回合；滚轮上移解除跟随并揭示滚动条；
+  "回到最新"出现、点击后归零并消失；程序化修正不被误判为手势）。
+
+**量出并修掉一个真实缺陷：恢复的会话打开后停在距底 22px。** 这里归因错过两次，值得记下来：
+
+1. 先怀疑平滑动画——`.chat-transcript` 设了 `scroll-behavior: smooth`，于是 `behavior:"auto"` 会被
+   **动画化**，而动画目标会被随后的内容增长重新定向，最终停在目标之前。改成显式 `instant`
+   （`FOLLOW_SCROLL_BEHAVIOR`）后**指针稳定停在 5170 而非 5192**，说明还有第二个原因。
+2. 用临时探针（`tests/e2e/_probe-scroll.spec.ts`，测完即删）逐帧记录几何与 follow 决策才看到真相：
+   `ResizeObserver` 当时只观察**内容元素**，而**滚动容器自身**在数据到达后从 543px 变矮到 521px
+   （输入区变高），内容盒子不变 → 回调不触发 → 永远差那 22px。
+3. 修法：`observer.observe(transcript)` 同时观察容器本身（注释写明原因与实测值）。两处修完 4/4 通过；
+   探针另行证明跟随链路本身正常（外部插入 40px 造出增长后自动回钉到 gap 0）。
+
+**H. 会话小地图（移植 PI `lib/conversation-minimap.ts` + `ConversationMinimap.tsx`）。**
+
+- `chat/conversation-minimap.ts`（纯逻辑）：每个用户消息一个标记；同一回合的多条助手消息**合并**到
+  一个标记（流式分片、中间说明、最终答案属于同一回合），预览按 280 字符截断、空内容的流式气泡不占
+  标记；`shouldRenderConversationMinimap` 定义显示门槛（溢出或"上面还有未加载的历史"）。
+- `chat/ConversationMinimap.tsx`：`nav` + 每标记一个按钮，方向键/Home/End 在轨道内移动焦点，
+  标签为"第 n 个标记，共 m 个：角色"，`title` 是该回合预览。
+- `Transcript.tsx`：消息气泡加 `data-message-id` 作为锚点；`jumpToMarker` 跳到**已渲染**的回合并
+  **保持解除跟随**（跳到旧回合是阅读位置，不该被自动拉回）。
+- 与参考的**两处有意偏离**：
+  1. 标记只指向已渲染的回合；`hiddenRunCount > 0` 时轨道仍显示，兼作"上面还有历史"的提示。
+  2. 可见性用**容器查询**（`@container transcript-frame (min-width: 940px)`）而不是视口查询。理由是
+     实测的几何：中栏宽度同时取决于左栏与右面板，而且**在 1440 视口下中栏恰好等于 840 阅读上限**
+     （frame 840 / 走廊 0），此时轨道无立足之地，所以它只在窗格真正宽于上限时出现（1600 视口下
+     frame 1000 / 走廊 80px）。门槛的算式写在 CSS 注释里（26px 偏移＋20px 轨道）。
+- 覆盖：`chat/conversation-minimap.test.ts` 6 条 ＋ `tests/e2e/conversation-minimap.spec.ts` 3 条
+  （六个标记的次序与角色；点标记跳到该回合且跟随保持解除；方向键/Home/End 在轨道内移动焦点）。
+
+**I. `frame-batcher` / `latest-wins` 两个原语（移植 PI `lib/frame-batcher.ts` / `lib/latest-wins.ts`）。**
+
+- `lib/frame-batcher.ts`：按 key 只留最新值的帧内合并，保留不同 key 的插入顺序，提供 `merge` 折叠与
+  `flushNow()`（终态不必等下一帧）；无 rAF 环境退化为 16ms 定时器。覆盖 6 条单测（含手工驱动的
+  帧时钟）。
+- `lib/latest-wins.ts`：`LatestWinsGate`（`begin`/`isCurrent`/`invalidate`），覆盖 3 条单测。
+- **接在真实缺陷上，而不是只放进仓库**：`settings/SettingsShell.tsx` 的"测试连接"与"获取模型列表"
+  都是按钮发起、没有 effect cleanup 的请求，此前**先点 A 再点 B，A 的慢响应会渲染成 B 的结果**
+  （`probeResult`/`modelResult` 不按 profileId 校验），并且 A 的 `finally` 还会把 B 正在进行的
+  busy 态清掉。现在两类请求各一个 gate，只有最新请求能提交状态、也只能由它清 busy。
+  `queued-prompts` 的排队语义经核对本仓库已有实现（统一消息生命周期的 `requested_delivery`
+  `current_run`/`next_turn` 与 `queued`→`claimed_successor` 状态机），因此不重复实现。
+
+**J. 按 `web-design-guidelines` 做一次针对性审计（open-vetta 自带该 skill，规则来自 vercel-labs）。**
+
+审计范围是本次改动涉及的外壳面（面板、转录、命令面板、代码块）。查到的**真实缺陷**：
+
+- `--v2-ink-1` 这个自定义属性**从未被定义**（主题只有 `--v2-ink`/`-2`/`-3`），却被 3 处引用
+  （命令面板输入与选项文字、`.ghost.icon-button` 悬停）——浅色下是"未定义变量"，深色下文字色直接
+  失效。已改为 `var(--v2-ink)`。
+- 嵌套滚动容器缺 `overscroll-behavior: contain`：滚轮/触控板到代码块或面板列表尽头会**继续滚到后面
+  的窗格**，横向还会触发浏览器返回手势。已补齐命令面板列表＋代码块/图表/diff 预览/队列列表/模态卡片
+  （共 10 处），并写明理由。
+- 命令面板选项是自绘的 `div[role=option]` 点击目标，缺 `touch-action: manipulation`（触屏上会等
+  双击缩放），已补。
+
+同一轮核对**已合规**、无需改动的项：reduced motion（全窗口 `animation-duration/.scroll-behavior`
+归零＋面板与阅读栏各自的退出规则）、可见焦点环、`alt` 文本（两处 `<img>` 均有）、图标按钮的
+`aria-label`、表单 `autoComplete`、图片预览的 `noopener,noreferrer`、以及"没有 `transition: all`"与
+"文案里没有 `...`"两项（本轮复查为空）。
+
+
 ### 8.2 参考有、但**不适用**于本仓库的一处
+
 
 PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由是"退出动画的卸载依赖
 `animationend`"。核查：本仓库全 `apps/web` **没有 `animationend`/`animationEnd` 监听**
@@ -541,14 +617,20 @@ PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由
 3. **命令面板**（open-vetta `CommandMenu`）：**已完成**，见 §8.1F。同项的**空闲预取路由**亦已完成
    （§8.1E），**路由挂起内容视图**经核对本仓库已有且符合参考规则（同样见 §8.1E），无需改动。
    到此前瞻清单里"按参考对齐"的条目已全部落地。
-4. **会话小地图**（PI `ConversationMinimap`）、**跟随滚动**（PI `use-follow-scroll` 的细节）、
-   `scrollbar-reveal`、`queued-prompts` 的排队语义、`frame-batcher` / `latest-wins`。
+4. ~~**会话小地图**（PI `ConversationMinimap`）、**跟随滚动细节**（PI `use-follow-scroll`）、
+   `scrollbar-reveal`、`frame-batcher` / `latest-wins`~~：**已完成**，见 §8.1G–§8.1I。
+   `queued-prompts` 的排队语义经核对**本仓库已有实现**（统一消息生命周期 F.1–F.3：`requested_delivery`
+   的 `current_run`/`next_turn`、`queued`→`claimed_successor` 状态机与提升/撤销按钮），故不重复实现。
+   到此前瞻清单里"按参考对齐"的条目已全部落地。
 5. **设计审查流程**：open-vetta 自带 `web-design-guidelines`（拉取 vercel-labs 规则做 UI 审查）与
-   `frontend-design`（质量底线：响应式、可见焦点、尊重 reduced motion）。本外壳这三条目前都满足，
-   但把"规则化审查"做成常设步骤属于独立工作。
+   `frontend-design`（质量底线：响应式、可见焦点、尊重 reduced motion）。本外壳这三条目前都满足；
+   本轮已按该规则对改动面做过一次针对性审计并修掉查到的缺陷（§8.1J），但把"规则化审查"做成常设
+   步骤仍属独立工作，且该 skill 的规则要从网络拉取（本轮该 URL 取不到，规则按既有记忆核对）。
 6. 两个参考项目的大量产品面（插件市场、Agent 团队、同步、移动端、文档站）不在"外壳修复"范围内。
 
 ### 8.4 本轮门禁（真实退出码）
+
+§8.1A–§8.1F 落地时：
 
 | 门 | 结果 | 退出码 |
 |---|---|---|
@@ -559,6 +641,19 @@ PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由
 | `pnpm build` | 编译成功 | 0 |
 | 独立几何探针（含阅读栏 7 项） | 147 passed / 0 failed | 0 |
 
-§8.1C–§8.1F 落地后上述门禁**各自全部重跑**；性能对照见 §8.1C 的表格（左栏拖拽脚本时间
-604.6 → 89.0 ms，`chat` chunk 18.3 → 3.0 ms，reflow 不变）。7 项 skip = 5 项既有 skip ＋ 2 项
-生产构建专属的预取用例（跑法见 §8.1E）。
+§8.1G–§8.1J 落地后（本轮新增小地图与两个原语，另修 22px 距底缺陷与指南审计项）**全部重跑**：
+
+| 门 | 结果 | 退出码 |
+|---|---|---|
+| `pnpm exec playwright test`（全量 114 项，dev） | 107 passed / 7 skipped / 0 failed | 0 |
+| 其中本轮新增：`transcript-scroll.spec.ts` | 4 passed | 0 |
+| 其中本轮新增：`conversation-minimap.spec.ts` | 3 passed | 0 |
+| `pnpm exec vitest run` | 57 文件 / 440 用例通过（新增 6＋3＋6 条） | 0 |
+| `pnpm typecheck`（`tsc --noEmit`） | 无输出＝无错误 | 0 |
+| `pnpm build`（生产构建） | Compiled successfully ＋ TypeScript 13.0s ＋ 静态页 6/6 | 0 |
+| 独立几何探针 `outputs/_verify-sweep.cjs` | **本轮未取得结论**：脚本在宽度扫描之前停在等待上（`getByRole("textbox")` 等待超时前未继续），对生产与 dev 两种服务器都一样；**因此不声称 147 项**。几何回归由全量 e2e 覆盖（`layout.spec.ts` 1440/1280/1024、`reading-width.spec.ts`、`product-ui-v2.spec.ts` 含移动端抽屉与证据面板） | — |
+
+§8.1C 的性能对照仍有效（左栏拖拽脚本时间 604.6 → 89.0 ms，`chat` chunk 18.3 → 3.0 ms，reflow 不变）。
+7 项 skip = 5 项既有 skip ＋ 2 项生产构建专属的预取用例（跑法见 §8.1E）。本轮另修掉一处我自己引入的
+回归：`next build` 会把受版本控制的 `apps/web/next-env.d.ts` 在 `./.next/dev/...` 与 `./.next/...` 之间
+翻转，已还原（生成物不入库）。

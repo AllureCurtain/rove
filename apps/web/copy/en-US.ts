@@ -188,6 +188,8 @@ const enUS: CopyDictionary = {
     inputClosed: "Input closed",
     revokeTitle: "Revoke message",
     returnToLatest: "Return to latest",
+    minimapLabel: "Conversation navigation",
+    minimapMarker: "Marker {{n}} of {{total}}: {{role}}",
     deliveryThisTurn: "This turn",
     deliveryNextTurn: "Next turn",
     statusJoiningTurn: "Waiting to join this turn",

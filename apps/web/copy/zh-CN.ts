@@ -185,6 +185,8 @@ const zhCN = {
     inputClosed: "输入已关闭",
     revokeTitle: "撤销该消息",
     returnToLatest: "回到最新",
+    minimapLabel: "会话导航",
+    minimapMarker: "第 {{n}} 个标记，共 {{total}} 个：{{role}}",
     deliveryThisTurn: "当前回合",
     deliveryNextTurn: "下一回合",
     statusJoiningTurn: "等待回合内接管",

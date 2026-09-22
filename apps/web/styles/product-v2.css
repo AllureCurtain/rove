@@ -738,6 +738,91 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   margin-inline: auto;
 }
 
+/* Conversation minimap (ported from PI-Desktop `lib/conversation-minimap.ts`):
+   one marker per turn, in the gutter the reading column leaves beside itself.
+   The lane is measured against the *transcript frame*, not the viewport, because
+   the frame's width also depends on the rail and the work panel: a viewport query
+   would let the rail overlap prose whenever the panel is open. Below the reading
+   cap there is no dedicated gutter, so the rail stands down. */
+.product-app-frame[data-ui-version="v2"] .chat-transcript-frame {
+  container-type: inline-size;
+  container-name: transcript-frame;
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-minimap {
+  display: none;
+  position: absolute;
+  top: 50%;
+  /* Hug the reading column's right edge from outside it, and never leave the
+     frame: the container query below guarantees a lane wide enough for this. */
+  right: max(2px, calc((100% - min(100%, var(--reading-column-max))) / 2 - 26px));
+  z-index: 4;
+  max-height: 60%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  transform: translateY(-50%);
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-minimap::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* The rail needs a lane: at least 26px of offset plus its own 20px, on both sides
+   of the 840px reading cap — and no less. Measured evidence for the boundary: with
+   the work panel open the reading column is exactly the cap at a 1440 viewport
+   (frame 840, gutter 0), so the rail stays out of the way there and appears once
+   the pane is genuinely wider than the cap (frame >= 940 at a 1600 viewport). */
+@container transcript-frame (min-width: 940px) {
+  .product-app-frame[data-ui-version="v2"] .conversation-minimap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+  }
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-minimap__marker {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 14px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-minimap__marker > span {
+  display: block;
+  width: 11px;
+  height: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--v2-ink-3) 40%, transparent);
+  transition:
+    width var(--motion-duration-fast) var(--motion-ease-out),
+    background-color var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-minimap__marker[data-role="user"] > span {
+  background: color-mix(in srgb, var(--v2-ink) 52%, transparent);
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-minimap__marker:hover > span,
+.product-app-frame[data-ui-version="v2"] .conversation-minimap__marker:focus-visible > span {
+  width: 16px;
+  background: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-minimap__marker:focus-visible {
+  outline: 2px solid var(--v2-signal);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
 /* Conversation reading band handles (ported from PI-Desktop D439
    `ConversationWidthHandles`). Each handle straddles its band edge, so the
    offset is half of the 12px hit area. At rest they are invisible: a short
@@ -2598,7 +2683,7 @@ html[data-reading-resizing="true"] * {
 
 .product-app-frame[data-ui-version="v2"] a.ghost.icon-button:hover {
   background: var(--v2-surface-hover);
-  color: var(--v2-ink-1);
+  color: var(--v2-ink);
 }
 
 .product-app-frame[data-ui-version="v2"] .evidence-preview {
@@ -3892,7 +3977,7 @@ body.is-resizing-column * {
   border: 0;
   border-bottom: 1px solid var(--v2-border);
   background: transparent;
-  color: var(--v2-ink-1);
+  color: var(--v2-ink);
   font-size: 14px;
 }
 
@@ -3904,6 +3989,7 @@ body.is-resizing-column * {
 .product-app-frame[data-ui-version="v2"] .command-palette__list {
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 6px;
 }
 
@@ -3933,8 +4019,10 @@ body.is-resizing-column * {
   gap: 10px;
   padding: 7px 8px;
   border-radius: var(--v2-radius-sm);
-  color: var(--v2-ink-1);
+  color: var(--v2-ink);
   cursor: pointer;
+  /* A tap target: no double-tap-zoom delay on touch (Web Interface Guidelines). */
+  touch-action: manipulation;
 }
 
 .product-app-frame[data-ui-version="v2"] .command-palette__option[data-selected="true"] {
@@ -3973,5 +4061,21 @@ body.is-resizing-column * {
   .product-app-frame[data-ui-version="v2"] .command-palette {
     animation: none;
   }
+}
+
+/* Nested scroll containment (Web Interface Guidelines): a scrollable pane inside
+   the shell must not chain its scroll to the frame behind it — a wheel at the end
+   of a code block or a modal body should stop there, and a trackpad swipe at the
+   end of a code block should not trigger browser back navigation. */
+.product-app-frame[data-ui-version="v2"] .approval-card pre,
+.product-app-frame[data-ui-version="v2"] .approval-detail pre,
+.product-app-frame[data-ui-version="v2"] .mermaid-state pre,
+.product-app-frame[data-ui-version="v2"] .mermaid-diagram,
+.product-app-frame[data-ui-version="v2"] .rich-code pre,
+.product-app-frame[data-ui-version="v2"] .diff-view[data-fallback="true"] pre,
+.product-app-frame[data-ui-version="v2"] .evidence-diff-list__patch,
+.product-app-frame[data-ui-version="v2"] .control-queue__list,
+.product-app-frame[data-ui-version="v2"] .modal-card {
+  overscroll-behavior: contain;
 }
 
