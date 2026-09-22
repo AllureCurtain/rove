@@ -645,7 +645,7 @@ PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由
 
 | 门 | 结果 | 退出码 |
 |---|---|---|
-| `pnpm exec playwright test`（全量 114 项，dev） | 107 passed / 7 skipped / 0 failed | 0 |
+| `pnpm exec playwright test`（全量 117 项，dev，在提交后的树上复跑） | 110 passed / 7 skipped / 0 failed | 0 |
 | 其中本轮新增：`transcript-scroll.spec.ts` | 4 passed | 0 |
 | 其中本轮新增：`conversation-minimap.spec.ts` | 3 passed | 0 |
 | `pnpm exec vitest run` | 57 文件 / 440 用例通过（新增 6＋3＋6 条） | 0 |
