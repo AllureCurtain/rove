@@ -110,6 +110,17 @@ button:disabled {
   background: transparent;
 }
 
+/* Reveal while scrolling (PI-Desktop styles/base.css): `data-scrolling` is set on
+   whatever element scrolled by lib/scrollbar-reveal.ts. The thumb carries a
+   stronger ink while the scroller is active and settles back once it is quiet. */
+[data-scrolling] {
+  scrollbar-color: var(--scrollbar-hover) transparent;
+}
+
+[data-scrolling]::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-hover);
+}
+
 button.secondary,
 button.ghost {
   background: var(--surface-soft);

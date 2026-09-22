@@ -27,6 +27,7 @@ import {
   type ComposerDraftStore,
 } from "../state/composer-draft-store";
 import { selectTranscriptTimeline } from "../lib/rove-state";
+import { installScrollbarReveal } from "../lib/scrollbar-reveal";
 import { DRAWER_MEDIA_QUERY } from "../lib/viewport-breakpoints";
 import {
   SIDEBAR_OVERLAY_CLOSE_DELAY_MS,
@@ -427,6 +428,11 @@ function ServerProductApp({ uiVersion, draftStore }: {
 
   // A pending peek timer must not outlive the shell.
   useEffect(() => cancelPeekClose, []);
+
+  // Reveal-while-scrolling for every scroller in the shell (PI-Desktop's
+  // `data-scrolling` contract): one capture-phase listener at the root, marking
+  // whichever element scrolled and clearing the mark once it has been quiet.
+  useEffect(() => installScrollbarReveal(document), []);
 
   function closeInspector() {
     panel.close();
