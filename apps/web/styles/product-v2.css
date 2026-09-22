@@ -3296,15 +3296,22 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 /* ─── Left navigation width, collapse and motion (design §3.1 / §3.3) ─── */
 
 .product-app-frame[data-ui-version="v2"] .product-body:not([data-settings="true"]) {
+  position: relative;
   grid-template-columns: var(--sidebar-nav-width) minmax(0, 1fr) auto;
   transition: grid-template-columns var(--motion-duration-normal) var(--motion-ease-out);
 }
 
-/* The handle is a real separator: it must not steal the rail's width budget. */
+/* The handle is a real separator: it must not steal the rail's width budget.
+   It therefore overlays the rail's trailing edge instead of occupying a grid
+   track. As a grid item in column 2 it consumed the middle track, which pushed
+   <main> into column 3 (auto-sized) and moved the inspector onto a second row —
+   measured at 1440x900: main at x=538 and the inspector at y=476 on the left,
+   with the rail, main and inspector all only 424px tall. */
 .product-app-frame[data-ui-version="v2"] .sidebar-resize-handle {
-  grid-column: 2;
-  grid-row: 1;
-  align-self: stretch;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--sidebar-nav-width);
   width: 8px;
   margin-left: -4px;
   z-index: 3;
