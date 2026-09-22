@@ -1,7 +1,7 @@
-﻿# P5b 本地 HTML 预览威胁模型
+# P5b 本地 HTML 预览威胁模型
 
-> 状态：**Proposed / Not Implemented。这是威胁模型，不是实现，也不是验收报告。**
-> 日期：2026-09-17（本轮新增）。
+> 状态：**Implemented（门槛 1–6 已有测试证据；安装版与跨平台 gate 未跑）**。这是威胁模型与实施边界记录，不是安装版验收报告。
+> 日期：2026-09-17（本轮新增）；2026-09-22 记录实现落地与门槛证据。
 > 关联：[设计](./2026-09-17-pi-desktop-workbench-design.md) §7、[实施计划](../plans/2026-09-17-pi-desktop-workbench-implementation.md) P5b、[P0/P1a 证据报告](../plans/2026-09-17-pi-desktop-workbench-p0-evidence.md)。
 
 实施计划 P5b 规定"先写威胁模型，再实现资源服务和面板"，且资源服务落点（`apps/api` 或独立受控进程）要按威胁模型选定并记录。本文件就是那一步。
@@ -85,4 +85,17 @@
 - 未评估 macOS/Linux 上回环多 origin 的行为差异；未跑安装版。
 - A1 的"产品令牌在预览 origin 不可用"依赖浏览器同源策略按预期执行，需以真实浏览器用例证明，不能只靠代码审读。
 
-在这些门槛满足前，P5b 保持未实现。**本文件不授权实现。**
+门槛 1–6 已由下列证据关闭；安装版与跨平台 gate 仍未跑。
+
+## 8. 门槛落地证据（2026-09-22）
+
+| 门槛 | 证据 |
+|---|---|
+| 1. origin 隔离 + 产品令牌在预览 origin 不可用 | `tests/api.rs` `product_preview_credentials_and_origins_stay_separate`；真实浏览器 `apps/web/tests/e2e/workbench-preview-origin.spec.ts` |
+| 2. 复用 `join_safe`/`is_secret_filename` 与负向用例 | `product_preview_rejects_raw_traversal_and_revokes_on_close`、`product_preview_validates_the_entry_and_bounds_session_count` |
+| 3. 令牌生命周期（关闭即撤销、不进日志） | 同上 revoke 用例；令牌仅出现在创建响应 URL，不落 `PreviewSession` Debug/日志 |
+| 4. 数量/大小/超时/并发上限 | session cap 429、8 MiB 单资源上限、并发信号量、请求超时 |
+| 5. 未信任项目被拒 | `product_preview_honours_project_trust_revocation` |
+| 6. `docs/runtime/subsystems.md` + OpenAPI | 本批同步；OpenAPI 契约测试含 previews/authorizations 路径 |
+
+仍未跑：安装版 Windows 预览旅程、macOS/Linux 回环多 origin、真实攻击载荷。

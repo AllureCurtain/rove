@@ -85,6 +85,7 @@ struct ApiStateInner {
     provider_catalog: ProviderCatalogService,
     project_trust: Option<Arc<ProjectTrustRepository>>,
     product_transcript_reader: Option<Arc<dyn ProductTranscriptReader>>,
+    preview: product::preview::PreviewRegistry,
     shutdown_token: CancellationToken,
     job_starts: TaskTracker,
     supervisors: TaskTracker,
@@ -279,12 +280,16 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(product::files::get_workspace_file_content))
         .routes(routes!(product::files::download_workspace_file))
         .routes(routes!(product::files::preview_workspace_file))
+        .routes(routes!(product::preview::create_product_preview))
+        .routes(routes!(product::preview::close_product_preview))
         .routes(routes!(product::artifacts::list_session_artifacts))
         .routes(routes!(product::artifacts::get_artifact_content))
         .routes(routes!(product::artifacts::download_artifact))
         .routes(routes!(product::artifacts::preview_artifact))
         .routes(routes!(product::diff::get_session_diff))
-        .routes(routes!(product::authorizations::list_product_session_authorizations))
+        .routes(routes!(
+            product::authorizations::list_product_session_authorizations
+        ))
         .routes(routes!(product::export::export_product_session))
         .routes(routes!(product::routes::list_product_provider_profiles))
         .routes(routes!(product::routes::create_product_provider_profile))
@@ -438,10 +443,66 @@ pub async fn serve_state_listener(
     state: ApiState,
 ) -> anyhow::Result<()> {
     let shutdown = state.inner.shutdown_token.clone();
+    spawn_preview_listener(&state).await;
     let result = serve_listener(listener, router(state.clone()), shutdown).await;
     state.inner.shutdown_token.cancel();
     drain_job_supervisors(&state).await;
     result
+}
+
+/// Bind the isolated preview origin on an ephemeral loopback port and serve
+/// it until shutdown (plan P5b). In-process hosts and integration tests call
+/// this once per state before creating preview sessions. A bind failure is
+/// recorded on the registry so the product create route answers with a typed
+/// `product_preview_unavailable` 503 instead of pretending previews work.
+pub async fn spawn_preview_listener(state: &ApiState) {
+    match tokio::net::TcpListener::bind(("127.0.0.1", 0)).await {
+        Ok(listener) => {
+            let addr = match listener.local_addr() {
+                Ok(addr) => addr,
+                Err(error) => {
+                    state
+                        .inner
+                        .preview
+                        .record_listener_unavailable(format!(
+                            "preview listener address is unavailable: {error}"
+                        ))
+                        .await;
+                    return;
+                }
+            };
+            state.inner.preview.record_listener_bound(addr).await;
+            let registry = state.inner.preview.clone();
+            let shutdown = state.inner.shutdown_token.clone();
+            state.inner.supervisors.spawn(async move {
+                if let Err(error) = serve_listener(
+                    listener,
+                    product::preview::preview_router(registry),
+                    shutdown,
+                )
+                .await
+                {
+                    tracing::warn!("preview listener failed: {error}");
+                }
+            });
+        }
+        Err(error) => {
+            tracing::warn!("preview listener could not bind: {error}");
+            state
+                .inner
+                .preview
+                .record_listener_unavailable(format!("preview listener could not bind: {error}"))
+                .await;
+        }
+    }
+}
+
+impl ApiState {
+    /// The loopback address of the isolated preview origin, when bound.
+    /// Tests and hosts use it to build preview URLs without guessing ports.
+    pub async fn preview_origin_addr(&self) -> Option<SocketAddr> {
+        self.inner.preview.origin_addr().await
+    }
 }
 
 pub async fn serve_listener(
@@ -563,6 +624,7 @@ impl ApiState {
                 provider_catalog,
                 project_trust,
                 product_transcript_reader,
+                preview: product::preview::PreviewRegistry::new(),
                 shutdown_token,
                 job_starts: TaskTracker::new(),
                 supervisors: TaskTracker::new(),
@@ -4440,10 +4502,10 @@ impl ToolApprovalProvider for ApiApprovalProvider {
                 drop(pending);
                 if let Err(err) = index
                     .record_approval_decision_async(
-                call_id,
-                "cancelled".to_string(),
-                "job_cancel".to_string(),
-            )
+                        call_id,
+                        "cancelled".to_string(),
+                        "job_cancel".to_string(),
+                    )
                     .await
                 {
                     tracing::warn!(job_id = %record.job_id, call_id = %call_id, "failed to mark cancelled approval registration: {err}");
@@ -4781,6 +4843,20 @@ pub(crate) struct ApiError {
 }
 
 impl ApiError {
+    pub(crate) const fn status(&self) -> StatusCode {
+        self.status
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn code(&self) -> &'static str {
+        self.code
+    }
+
+    #[cfg(test)]
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
     fn agent_engine_assembly(error: &anyhow::Error) -> Self {
         if let Some(error) = error.downcast_ref::<SelectorError>() {
             return Self {
@@ -4889,6 +4965,17 @@ impl ApiError {
         }
     }
 
+    pub(crate) fn service_unavailable_with_code(
+        code: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code,
+            message: message.into(),
+        }
+    }
+
     pub(crate) fn internal(err: impl std::fmt::Display) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -4912,6 +4999,10 @@ impl From<ProductStoreError> for ApiError {
             | ProductErrorCode::ProjectTrustUnavailable
             | ProductErrorCode::ReviewUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ProductErrorCode::ProductStorageFailure => StatusCode::INTERNAL_SERVER_ERROR,
+            ProductErrorCode::ProductPreviewInvalidInput => StatusCode::BAD_REQUEST,
+            ProductErrorCode::ProductPreviewNotFound => StatusCode::NOT_FOUND,
+            ProductErrorCode::ProductPreviewUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            ProductErrorCode::ProductPreviewLimit => StatusCode::TOO_MANY_REQUESTS,
             ProductErrorCode::ProductSessionActive
             | ProductErrorCode::ProductSessionWorkspaceMismatch
             | ProductErrorCode::ProductSessionResumeConflict

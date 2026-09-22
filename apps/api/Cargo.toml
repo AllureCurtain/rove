@@ -37,6 +37,7 @@ tokio.workspace = true
 tokio-stream.workspace = true
 tokio-util = { workspace = true, features = ["io", "rt"] }
 tower.workspace = true
+ulid.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 utoipa.workspace = true
