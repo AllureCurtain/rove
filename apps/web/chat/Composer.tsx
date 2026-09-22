@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, type Ref, useState } from "react";
+import { FormEvent, type KeyboardEvent, type Ref, useState } from "react";
 import {
   MagnifyingGlassIcon,
   PaperPlaneIcon,
@@ -8,6 +8,8 @@ import {
 } from "@radix-ui/react-icons";
 
 import { useCopy } from "../copy/CopyProvider";
+import type { ComposerDraftBinding } from "../state/composer-draft-store";
+import { useComposerDraft } from "../state/use-composer-draft";
 import { QuickModelControl } from "../product-v2/QuickModelControl";
 import type {
   ProviderProfileRecord,
@@ -20,6 +22,7 @@ import type {
 } from "../product/product-api-types";
 
 export function Composer({
+  draftBinding,
   disabled,
   busy,
   disabledReason,
@@ -38,6 +41,7 @@ export function Composer({
   reviewError = null,
   onCreateReview,
 }: {
+  draftBinding?: ComposerDraftBinding;
   disabled: boolean;
   busy: boolean;
   disabledReason?: string;
@@ -57,8 +61,9 @@ export function Composer({
   onCreateReview?: (target: ProductReviewTargetSpec) => Promise<boolean>;
 }) {
   const { t } = useCopy();
-  const [message, setMessage] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  const draft = useComposerDraft(draftBinding);
+  const { text: message, submitting } = draft;
+  const displayError = error || (draft.sendFailed ? t("chat.sendUnexpectedError") : null);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewKind, setReviewKind] = useState<ProductReviewTargetSpec["kind"]>("uncommitted");
   const [reviewRevision, setReviewRevision] = useState("");
@@ -67,27 +72,36 @@ export function Composer({
     !submitting &&
     !disabled;
 
-  async function handleSubmit(event: FormEvent) {
+  async function submitDraft() {
+    if (!canSubmit) return;
+    await draft.submit(onSend);
+  }
+
+  function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    const trimmed = message.trim();
-    if (!trimmed || !canSubmit) {
+    void submitDraft();
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== "Enter" || event.shiftKey) {
       return;
     }
-    setSubmitting(true);
-    try {
-      if (await onSend(trimmed)) {
-        setMessage("");
-      }
-    } finally {
-      setSubmitting(false);
+    if (event.nativeEvent.isComposing || event.keyCode === 229) {
+      return;
     }
+    if (!event.ctrlKey && !event.metaKey) {
+      return; // Plain Enter keeps the newline behavior.
+    }
+    event.preventDefault();
+    if (event.repeat) return;
+    void submitDraft();
   }
 
   return (
     <form className="chat-composer" onSubmit={handleSubmit} aria-label={t("chat.placeholder")}>
-      {error ? (
+      {displayError ? (
         <div className="chat-error" id="composer-error" role="alert">
-          {error}
+          {displayError}
         </div>
       ) : null}
       <div className="chat-composer__meta">
@@ -98,13 +112,14 @@ export function Composer({
         <textarea
           ref={textareaRef}
           aria-label={t("chat.placeholder")}
-          aria-keyshortcuts="/"
+          aria-keyshortcuts="/ Control+Enter Meta+Enter"
           value={message}
-          onChange={(event) => setMessage(event.target.value)}
+          onChange={(event) => draft.setText(event.target.value)}
+          onKeyDown={handleKeyDown}
           placeholder={t("chat.placeholder")}
           disabled={disabled || submitting}
-          aria-invalid={error ? "true" : undefined}
-          aria-describedby={error ? "composer-error" : undefined}
+          aria-invalid={displayError ? "true" : undefined}
+          aria-describedby={displayError ? "composer-error" : undefined}
         />
         <button type="submit" disabled={!canSubmit} aria-label={t("chat.send")}>
           <PaperPlaneIcon />

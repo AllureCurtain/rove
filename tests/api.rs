@@ -856,6 +856,71 @@ async fn product_workspace_files_list_and_content_reject_traversal() {
 }
 
 #[tokio::test]
+async fn product_workspace_files_deny_a_revoked_project_trust_root() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    std::fs::write(folder.path().join("hello.txt"), b"hello product files").unwrap();
+
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let authority = std::sync::Arc::new(ProjectTrustRepository::new(
+        server.path().join("project-trust.sqlite"),
+    ));
+    let app = router(ApiState::with_project_trust_repository(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+        authority.clone(),
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let trust_uri = format!("/product/workspaces/{workspace_id}/trust");
+
+    // No durable decision yet: the root is unknown, which still allows the
+    // user-registered workspace root to be browsed.
+    let before = get_response(&app, &format!("/product/workspaces/{workspace_id}/files")).await;
+    assert_eq!(before.status(), StatusCode::OK);
+
+    // An explicit restriction also keeps the exact root readable; trust then
+    // only governs the capabilities run creation needs.
+    let restricted = request_json(
+        &app,
+        "PUT",
+        &trust_uri,
+        serde_json::json!({"decision": "deny", "capabilities": []}),
+    )
+    .await;
+    assert_eq!(restricted.status(), StatusCode::OK);
+    let restricted = get_response(&app, &format!("/product/workspaces/{workspace_id}/files")).await;
+    assert_eq!(restricted.status(), StatusCode::OK);
+
+    // A revoked root is denied on every bounded read surface: listing,
+    // content, download and preview all fail closed with the same typed code
+    // run creation uses.
+    let revoked = request_json(
+        &app,
+        "PUT",
+        &trust_uri,
+        serde_json::json!({"decision": "revoke", "capabilities": []}),
+    )
+    .await;
+    assert_eq!(revoked.status(), StatusCode::OK);
+    let revoked: serde_json::Value = decode_json(revoked).await;
+    assert_eq!(revoked["state"], "revoked");
+
+    for uri in [
+        format!("/product/workspaces/{workspace_id}/files"),
+        format!("/product/workspaces/{workspace_id}/files/content?path=hello.txt"),
+        format!("/product/workspaces/{workspace_id}/files/download?path=hello.txt"),
+        format!("/product/workspaces/{workspace_id}/files/preview?path=hello.txt"),
+    ] {
+        let blocked = get_response(&app, &uri).await;
+        assert_eq!(blocked.status(), StatusCode::CONFLICT, "{uri}");
+        let blocked: serde_json::Value = decode_json(blocked).await;
+        assert_eq!(blocked["code"], "project_trust_required", "{uri}");
+    }
+}
+
+#[tokio::test]
 async fn product_session_artifacts_list_system_files_after_a_completed_run() {
     let server = tempfile::TempDir::new().unwrap();
     let folder = tempfile::TempDir::new().unwrap();

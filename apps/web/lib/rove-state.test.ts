@@ -1305,6 +1305,69 @@ describe("workbenchReducer", () => {
     });
   });
 
+  it("keeps a terminal tool outcome when a snapshot drops its pending approval", () => {
+    const created = workbenchReducer(createWorkbenchState(), {
+      type: "job_created",
+      jobId: "job-1",
+      runId: "run-1",
+    });
+    const waiting = workbenchReducer(created, {
+      type: "stream_event",
+      seq: 1,
+      event: {
+        type: "tool_call_approval_needed",
+        call_id: "call-1",
+        name: "write_file",
+        args: { path: "notes.md" },
+        reason: "destructive tool requires explicit approval",
+      },
+    });
+    // The call finishes while the approval object is still attached to it, so
+    // the reducer leaves a stale pendingApproval on a terminal tool.
+    const completed = workbenchReducer(waiting, {
+      type: "stream_event",
+      seq: 2,
+      event: {
+        type: "tool_call_completed",
+        call_id: "call-1",
+        result: {
+          call_id: "call-1",
+          output: "wrote notes.md",
+          mutations: [{ path: "notes.md", operation: "create", diff: "+hello" }],
+        },
+      },
+    });
+    expect(completed.tools[0]).toMatchObject({
+      id: "call-1",
+      status: "done",
+      details: "wrote notes.md",
+    });
+    expect(completed.tools[0]?.pendingApproval).toBeDefined();
+
+    const synced = workbenchReducer(completed, {
+      type: "job_state_synced",
+      state: {
+        job_id: "job-1",
+        run_id: "run-1",
+        status: "running",
+        event_count: 2,
+        events: [],
+        pending_approvals: [],
+        pending_inputs: [],
+      },
+    });
+
+    // The durable outcome is authoritative. A stale pendingApproval must be
+    // dropped, and it must never rewrite the finished call back to "running"
+    // with a generic "Approval state synced" detail.
+    expect(synced.tools[0]).toMatchObject({
+      id: "call-1",
+      status: "done",
+      details: "wrote notes.md",
+    });
+    expect(synced.tools[0]?.pendingApproval).toBeUndefined();
+  });
+
   it("closes a missing pending input from a running job snapshot", () => {
     const created = workbenchReducer(createWorkbenchState(), {
       type: "job_created",

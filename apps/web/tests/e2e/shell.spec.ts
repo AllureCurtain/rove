@@ -38,7 +38,8 @@ test("inline approval works in product shell", async ({ page }) => {
 
   const approval = page.getByLabel("审批");
   await expect(approval).toBeVisible();
-  await expect(approval).toBeFocused();
+  // The card announces via role="alert" but no longer captures focus on mount,
+  // so an arriving approval never yanks focus out of the composer.
   await expect(approval.getByRole("button", { name: "批准" })).not.toBeFocused();
   await expect(
     approval.getByText("destructive tool requires explicit approval"),
@@ -52,7 +53,12 @@ test("inline approval works in product shell", async ({ page }) => {
     page.getByRole("button", { name: "批准" }).click(),
   ]);
 
-  await expect(page.getByLabel("Conversation").getByText("Approved write completed")).toBeVisible();
+  // data-role="assistant" pins the bubble semantically; the tool-card article and
+  // queued user messages are excluded without depending on byline copy.
+  const assistantReply = page.getByLabel("Conversation")
+    .locator('article[data-role="assistant"]').filter({ hasText: "Approved write completed" });
+  await expect(assistantReply).toHaveCount(1);
+  await expect(assistantReply.getByText("Approved write completed", { exact: true })).toBeVisible();
 });
 
 test("theme toggle flips data-theme on the document", async ({ page }) => {

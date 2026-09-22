@@ -206,8 +206,9 @@ test("removing the active workspace does not override a newer settings route", a
   });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  await page.getByRole("button", { name: "从列表移除工作区" }).click();
-  await page.getByLabel("设置", { exact: true }).click();
+  await page.getByRole("button", { name: `${workspace.display_name} 的操作` }).click();
+  await page.getByRole("menuitem", { name: "从列表移除工作区" }).click();
+  await page.getByRole("banner").getByRole("button", { name: "设置", exact: true }).click();
 
   await expect(page).toHaveURL(/\/settings\/providers$/u);
   await expect.poll(() => api.workspaces).toHaveLength(0);

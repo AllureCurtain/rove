@@ -1,4 +1,7 @@
-"use client";
+﻿"use client";
+
+import { HamburgerMenuIcon } from "@radix-ui/react-icons";
+import type { CSSProperties } from "react";
 
 import {
   useEffect,
@@ -11,7 +14,12 @@ import { Composer } from "../chat/Composer";
 import { CopyProvider, useCopy } from "../copy/CopyProvider";
 import { Transcript } from "../chat/Transcript";
 import { RunInspector } from "../inspector/RunInspector";
+import { useWorkPanel } from "../inspector/use-work-panel";
 import { useSessionUsage } from "../state/use-session-usage";
+import {
+  createComposerDraftStore,
+  type ComposerDraftStore,
+} from "../state/composer-draft-store";
 import { selectTranscriptTimeline } from "../lib/rove-state";
 import { SettingsShell } from "../settings/SettingsShell";
 import { matchKeyboardShortcut } from "../settings/keyboard-settings-model";
@@ -35,6 +43,8 @@ import type { WorkspaceKind } from "../state/product-types";
 import { M1MigrationGate } from "./M1MigrationGate";
 import { TopBar } from "./TopBar";
 import { UiSkinProvider, useUiSkin, type UiSkin } from "./ui-skin";
+import { SidebarResizeHandle } from "./SidebarResizeHandle";
+import { useSidebarWidth } from "./use-sidebar-width";
 
 export type ProductUiVersion = "v1" | "v2";
 export type { UiSkin };
@@ -52,16 +62,20 @@ export function ProductApp({
 }: {
   uiVersion?: ProductUiVersion;
 }) {
+  const [draftStore] = useState(createComposerDraftStore);
   return (
     <CopyProvider>
       <UiSkinProvider>
-        <ProductFrame uiVersion={uiVersion} />
+        <ProductFrame uiVersion={uiVersion} draftStore={draftStore} />
       </UiSkinProvider>
     </CopyProvider>
   );
 }
 
-function ProductFrame({ uiVersion }: { uiVersion: ProductUiVersion }) {
+function ProductFrame({ uiVersion, draftStore }: {
+  uiVersion: ProductUiVersion;
+  draftStore: ComposerDraftStore;
+}) {
   const { skin } = useUiSkin();
   return (
     <div
@@ -70,32 +84,52 @@ function ProductFrame({ uiVersion }: { uiVersion: ProductUiVersion }) {
       data-skin={skin}
     >
       <M1MigrationGate>
-        <ServerProductApp uiVersion={uiVersion} />
+        <ServerProductApp uiVersion={uiVersion} draftStore={draftStore} />
       </M1MigrationGate>
     </div>
   );
 }
 
-function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
+function ServerProductApp({ uiVersion, draftStore }: {
+  uiVersion: ProductUiVersion;
+  draftStore: ComposerDraftStore;
+}) {
   const { t } = useCopy();
   const server = useServerProductState();
   const settingsClient = useMemo(() => createSettingsPlatformClient(), []);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const workspaceButtonRef = useRef<HTMLButtonElement>(null);
   const inspectorButtonRef = useRef<HTMLButtonElement>(null);
-  const [inspectorCollapsed, setInspectorCollapsed] = useState(true);
+  const panel = useWorkPanel(
+    server.catalog.active.workspaceId,
+    server.catalog.active.sessionId,
+    inspectorButtonRef,
+  );
+  // Left navigation width and collapse are UI-only layout state (design 搂3.1).
+  // The width persists as a UI preference; the collapse does not, so a reload
+  // always returns to the expanded rail.
+  const sidebar = useSidebarWidth();
+  const [navCollapsed, setNavCollapsed] = useState(false);
+  // Focus target for the narrow-screen "select session, close rail" flow.
+  const sessionTitleRef = useRef<HTMLHeadingElement>(null);
+  const panelRef = useRef(panel);
+  const inspectorCollapsed = panel.collapsed;
   const [mobileLayout, setMobileLayout] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
-  const [reviewFileFocus, setReviewFileFocus] = useState<{
-    path: string;
-    line: number;
-  } | null>(null);
+
+  // Keep a stable ref to the panel for the *current* workspace/session. The
+  // media-query listener below is registered once, so it must not close over
+  // the panel object from the first render (that would drive another
+  // session's cached selection instead of the one being viewed).
+  useEffect(() => {
+    panelRef.current = panel;
+  });
 
   useEffect(() => {
     const narrow = window.matchMedia("(max-width: 960px)");
     const syncInspector = () => {
       setMobileLayout(narrow.matches);
-      setInspectorCollapsed(narrow.matches);
+      panelRef.current.setCollapsed(narrow.matches);
       if (!narrow.matches) {
         setWorkspaceOpen(false);
       }
@@ -211,10 +245,7 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
   }
 
   function closeInspector() {
-    setInspectorCollapsed(true);
-    if (mobileLayout) {
-      window.requestAnimationFrame(() => inspectorButtonRef.current?.focus());
-    }
+    panel.close();
   }
 
   async function handleOpenWorkspace(path: string, kind: WorkspaceKind) {
@@ -316,7 +347,7 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
           if (routing.viewSettings || !activeWorkspace || !activeSession) {
             handled = false;
           } else {
-            setInspectorCollapsed((value) => !value);
+            panel.toggle();
           }
           break;
       }
@@ -334,6 +365,7 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
     composerDisabled,
     routing,
     server.catalogMutationBusy,
+    panel,
   ]);
 
   if (server.bootState.status !== "ready") {
@@ -378,6 +410,36 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
             ? undefined
             : () => setWorkspaceOpen((value) => !value)
         }
+        // When the rail is collapsed its entries move to the header so they
+        // stay reachable (design 搂3.1).
+        collapsedActions={
+          navCollapsed && !routing.viewSettings ? (
+            <>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  if (server.catalog.active.workspaceId) {
+                    void handleNewSession(server.catalog.active.workspaceId);
+                  } else {
+                    setNavCollapsed(false);
+                  }
+                }}
+              >
+                {t("nav.newSession")}
+              </button>
+              <button
+                type="button"
+                className="ghost icon-button"
+                onClick={() => setNavCollapsed(false)}
+                aria-label={t("nav.expandWorkspace")}
+                title={t("nav.expandWorkspace")}
+              >
+                <HamburgerMenuIcon />
+              </button>
+            </>
+          ) : null
+        }
       />
 
       {routing.viewSettings ? (
@@ -421,6 +483,10 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
           className="product-body"
           data-workspace-open={workspaceOpen}
           data-inspector-open={mobileLayout && !inspectorCollapsed}
+          data-nav-collapsed={navCollapsed}
+          style={{
+            "--sidebar-nav-width": `${sidebar.width}px`,
+          } as CSSProperties}
         >
           <WorkspaceTree
             workspaces={workspaces}
@@ -433,6 +499,13 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
             onSelectSession={(workspaceId, sessionId) => {
               routing.navigateSession(workspaceId, sessionId);
               setWorkspaceOpen(false);
+              // Narrow screen: the rail closes on selection, so move focus to
+              // the session title in the conversation header (design 搂3.1).
+              if (mobileLayout) {
+                window.requestAnimationFrame(() =>
+                  sessionTitleRef.current?.focus(),
+                );
+              }
             }}
             onNewSession={(workspaceId) => void handleNewSession(workspaceId)}
             onTogglePin={(workspaceId) =>
@@ -447,7 +520,17 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
               setWorkspaceOpen(false);
               routing.openSettings("general");
             }}
+            railCollapsed={navCollapsed}
+            onToggleCollapsed={() => setNavCollapsed((value) => !value)}
           />
+          {/* Hidden on narrow layouts by CSS; the drawer has no width to drag. */}
+          {!mobileLayout && !navCollapsed ? (
+            <SidebarResizeHandle
+              width={sidebar.width}
+              settleWidth={sidebar.settleWidth}
+              onHandleKeyDown={sidebar.onHandleKeyDown}
+            />
+          ) : null}
 
           <main
             className="product-main"
@@ -481,7 +564,7 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
               <div className="chat-pane">
                 <div className="chat-pane__header">
                   <div>
-                    <h1>{activeSession.title}</h1>
+                    <h1 ref={sessionTitleRef} tabIndex={-1}>{activeSession.title}</h1>
                     <p>
                       {activeWorkspace.displayName} / {formatDisplayPath(activeWorkspace.rootPath)}
                     </p>
@@ -498,7 +581,7 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
                     ref={inspectorButtonRef}
                     type="button"
                     className="secondary"
-                    onClick={() => setInspectorCollapsed((value) => !value)}
+                    onClick={panel.toggle}
                     aria-label={
                       inspectorCollapsed
                         ? t("nav.expandInspector")
@@ -516,6 +599,13 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
                   messageBusy={continuity.controlBusy}
                   canPromote={controlAvailable}
                   approvalBusy={continuity.approvalBusy}
+                  approvalError={continuity.approvalError}
+                  onApprovalDetail={(tool, trigger) => {
+                    const { activeJobId, activeRunId } = continuity.runState;
+                    if (activeJobId && activeRunId) panel.open("approval", {
+                      kind: "approval", jobId: activeJobId, runId: activeRunId, callId: tool.id,
+                    }, trigger);
+                  }}
                   inputBusy={continuity.inputBusy}
                   restoreState={transcriptRestoreState}
                   onRetryRestore={() =>
@@ -530,6 +620,11 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
                   onRevokeMessage={(messageId) => void continuity.revokeMessage(messageId)}
                 />
                 <Composer
+                  draftBinding={{
+                    store: draftStore,
+                    workspaceId: activeWorkspace.id,
+                    productSessionId: activeSession.id,
+                  }}
                   disabled={composerDisabled}
                   busy={busy}
                   disabledReason={composerDisabledReason}
@@ -549,7 +644,7 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
                   onCreateReview={async (target) => {
                     const created = await reviews.create(target);
                     if (created) {
-                      setInspectorCollapsed(false);
+                      panel.open("review");
                     }
                     return created;
                   }}
@@ -563,16 +658,15 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
           !routing.routeError &&
           !routing.routePending ? (
             <RunInspector
+              key={`${activeWorkspace.id}:${activeSession.id}`}
+              panel={panel}
+              approvalBusy={continuity.approvalBusy}
+              approvalError={continuity.approvalError}
+              onApproval={continuity.approve}
               productSessionId={activeSession.id}
               workspaceId={activeWorkspace.id}
               collapsed={inspectorCollapsed}
-              onToggle={() => {
-                if (!inspectorCollapsed) {
-                  closeInspector();
-                } else {
-                  setInspectorCollapsed(false);
-                }
-              }}
+              onToggle={panel.toggle}
               runState={continuity.runState}
               restoreState={transcriptRestoreState}
               sessionUsage={sessionUsage}
@@ -592,10 +686,10 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
                 void reviews.loadFindings(reviewId, cursor);
               }}
               onOpenReviewFinding={(path, line) => {
-                setReviewFileFocus({ path, line });
+                panel.setTarget({ kind: "file", path, line });
               }}
-              fileFocusPath={reviewFileFocus?.path}
-              fileFocusLine={reviewFileFocus?.line}
+              fileFocusPath={panel.target?.kind === "file" ? panel.target.path : undefined}
+              fileFocusLine={panel.target?.kind === "file" ? panel.target.line : undefined}
             />
           ) : (
             <div />

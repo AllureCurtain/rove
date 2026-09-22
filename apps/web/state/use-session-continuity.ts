@@ -69,7 +69,9 @@ export function useSessionContinuity({
   const [restoreState, setRestoreState] = useState<TranscriptRestoreState>({
     status: "idle",
   });
-  const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
+  const [approvalBusyKey, setApprovalBusyKey] = useState<string | null>(null);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+  const approvalRequestsRef = useRef(new Set<string>());
   const [inputBusy, setInputBusy] = useState<string | null>(null);
   const [controls, setControls] = useState<ProductControl[]>([]);
   const [messages, setMessages] = useState<ProductMessage[]>([]);
@@ -81,6 +83,8 @@ export function useSessionContinuity({
     undefined,
     createWorkbenchState,
   );
+  const approvalContextRef = useRef({ activeSession, runState });
+  approvalContextRef.current = { activeSession, runState };
   const controllerRef = useRef<ReturnType<typeof createRunController> | null>(null);
   // The send callback is stable, so the provider guard reads selection and
   // profiles through refs instead of capturing a stale render's values.
@@ -116,6 +120,8 @@ export function useSessionContinuity({
 
   const clearControls = useCallback(() => {
     ++controlsGenerationRef.current;
+    setApprovalBusyKey(null);
+    setApprovalError(null);
     setControls([]);
     setControlsLoading(false);
     setControlBusy(null);
@@ -835,29 +841,38 @@ export function useSessionContinuity({
 
   const approve = useCallback(
     async (tool: ToolCallView, decision: "approve" | "reject") => {
-      if (!runState.activeJobId || !tool.pendingApproval) {
-        return;
-      }
-      setApprovalBusy(tool.id);
+      const { activeSession: session, runState: state } = approvalContextRef.current;
+      const controller = controllerRef.current;
+      const currentTool = state.tools.find((item) => item === tool);
+      if (!session || focusedSessionRef.current !== session.id || !controller ||
+          !state.activeJobId || !state.activeRunId || !currentTool?.pendingApproval) return;
+      const key = JSON.stringify([session.workspaceId, session.id,
+        state.activeJobId, state.activeRunId, tool.id]);
+      if (approvalRequestsRef.current.has(key)) return;
+      approvalRequestsRef.current.add(key);
+      setApprovalBusyKey(key);
+      setApprovalError(null);
+      const isCurrent = () => {
+        const current = approvalContextRef.current;
+        return controllerRef.current === controller && focusedSessionRef.current === session.id &&
+          current.activeSession?.id === session.id &&
+          current.activeSession.workspaceId === session.workspaceId &&
+          current.runState.activeJobId === state.activeJobId &&
+          current.runState.activeRunId === state.activeRunId;
+      };
       try {
-        await controllerRef.current?.approve(runState.activeJobId, tool.id, decision);
-        if (activeSession) {
-          markSession(activeSession.id, {
-            status: decision === "reject" ? "idle" : "running",
-          });
-        }
+        await controller.approve(state.activeJobId, tool.id, decision, state.activeRunId);
+        if (isCurrent()) void refreshStatusesRef.current();
       } catch (error) {
-        if (!isRunControllerInactive(error)) {
-          dispatch({ type: "set_error", error: describeError(error) });
-          if (activeSession) {
-            markSession(activeSession.id, { status: "error" });
-          }
+        if (isCurrent() && !isRunControllerInactive(error)) {
+          setApprovalError(describeError(error));
         }
       } finally {
-        setApprovalBusy(null);
+        approvalRequestsRef.current.delete(key);
+        if (isCurrent()) setApprovalBusyKey((current) => current === key ? null : current);
       }
     },
-    [activeSession, markSession, runState.activeJobId],
+    [],
   );
 
   const answer = useCallback(
@@ -923,7 +938,11 @@ export function useSessionContinuity({
   return {
     runState,
     restoreState,
-    approvalBusy,
+    approvalBusy: runState.tools.find((tool) => approvalBusyKey === JSON.stringify([
+      activeSession?.workspaceId, activeSession?.id, runState.activeJobId,
+      runState.activeRunId, tool.id,
+    ]))?.id ?? null,
+    approvalError,
     inputBusy,
     controls,
     messages,
