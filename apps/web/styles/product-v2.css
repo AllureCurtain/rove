@@ -1,4 +1,4 @@
-﻿/* rove product web — layer 2 of 3: v2 presentation and the shell layout.
+/* rove product web — layer 2 of 3: v2 presentation and the shell layout.
  *
  * Loaded after `styles/product.css` and before `styles/v3/index.css` (see
  * `app/layout.tsx`). Every rule in this file is scoped to
@@ -3845,3 +3845,133 @@ body.is-resizing-column * {
 .product-app-frame[data-ui-version="v2"] .product-inspector[data-open="true"] {
   transition-property: opacity, transform;
 }
+
+/* Command palette (open-vetta's `CommandMenuView` adapted to this shell): a
+   top-centred picker over a dim scrim, one input, and grouped options that the
+   arrows own. Fixed positioning so the palette covers the viewport rather than
+   the shell frame it is rendered inside. */
+.product-app-frame[data-ui-version="v2"] .command-palette-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: color-mix(in srgb, var(--v2-bg) 62%, transparent);
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette {
+  position: fixed;
+  top: 12vh;
+  left: 50%;
+  z-index: 51;
+  display: flex;
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(60vh, 520px);
+  flex-direction: column;
+  overflow: hidden;
+  transform: translateX(-50%);
+  border: 1px solid var(--v2-border-strong);
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-bg);
+  box-shadow: var(--v2-shadow-md);
+  animation: command-palette-in var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+@keyframes command-palette-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__input {
+  flex: none;
+  padding: 12px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--v2-border);
+  background: transparent;
+  color: var(--v2-ink-1);
+  font-size: 14px;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__input:focus-visible {
+  outline: 2px solid var(--v2-rail-signal);
+  outline-offset: -2px;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__group + .command-palette__group {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--v2-border);
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__group-title,
+.product-app-frame[data-ui-version="v2"] .command-palette__more {
+  margin: 4px 8px;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__more {
+  text-transform: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: var(--v2-radius-sm);
+  color: var(--v2-ink-1);
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__option[data-selected="true"] {
+  background: color-mix(in srgb, var(--v2-rail-signal) 16%, transparent);
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__option[data-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__option-title {
+  font-size: 13px;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__option-title mark {
+  background: transparent;
+  color: var(--v2-rail-signal);
+  font-weight: 600;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__option-subtitle,
+.product-app-frame[data-ui-version="v2"] .command-palette__option-note {
+  flex: none;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__empty {
+  margin: 10px 8px;
+  color: var(--v2-ink-3);
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .product-app-frame[data-ui-version="v2"] .command-palette {
+    animation: none;
+  }
+}
+

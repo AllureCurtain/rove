@@ -42,7 +42,7 @@ import { ProjectTrustSettings } from "./ProjectTrustSettings";
 import { RuntimeSettings } from "./RuntimeSettings";
 import { describeProviderProbeFailure } from "./provider-settings-model";
 import type { SettingsSectionId } from "./sections";
-import { SETTINGS_SECTIONS } from "./sections";
+import { SETTINGS_SECTION_COPY_KEYS, SETTINGS_SECTIONS } from "./sections";
 import type { SettingsPlatformClient } from "./settings-platform-client";
 
 type MaybePromise = void | Promise<unknown>;
@@ -138,17 +138,12 @@ export function SettingsShell(props: SettingsShellProps) {
     });
   }, [section]);
 
-  const sectionLabels: Record<SettingsSectionId, string> = {
-    general: t("settings.sectionGeneral"),
-    providers: t("settings.sectionProviders"),
-    tools: t("settings.sectionTools"),
-    workspace: t("settings.sectionWorkspace"),
-    memory: t("settings.sectionMemory"),
-    sessions: t("settings.sectionSessions"),
-    keyboard: t("settings.sectionKeyboard"),
-    advanced: t("settings.sectionAdvanced"),
-    about: t("settings.sectionAbout"),
-  };
+  const sectionLabels = Object.fromEntries(
+    SETTINGS_SECTIONS.map((item) => [
+      item.id,
+      t(SETTINGS_SECTION_COPY_KEYS[item.id]),
+    ]),
+  ) as Record<SettingsSectionId, string>;
 
   return (
     <div className="settings-shell">

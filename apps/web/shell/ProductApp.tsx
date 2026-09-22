@@ -33,10 +33,23 @@ import {
   shouldFocusSessionHeadingAfterSelection,
   shouldShowSidebarHoverZone,
 } from "./sidebar-overlay";
+import { CommandPalette, type CommandPaletteLabels } from "./CommandPalette";
+import {
+  type CommandPaletteAction,
+  type CommandPaletteEntry,
+} from "./command-palette";
 import { routePrefetchTargets } from "./route-prefetch";
 import { useIdleRoutePrefetch } from "./use-idle-route-prefetch";
 import { SettingsShell } from "../settings/SettingsShell";
 import { matchKeyboardShortcut } from "../settings/keyboard-settings-model";
+import {
+  KEYBOARD_SHORTCUTS,
+  type KeyboardShortcutActionId,
+} from "../settings/keyboard-settings-model";
+import {
+  SETTINGS_SECTION_COPY_KEYS,
+  VISIBLE_SETTINGS_SECTIONS,
+} from "../settings/sections";
 import { createSettingsPlatformClient } from "../settings/settings-platform-client";
 import { EmptyState } from "../sidebar/EmptyState";
 import { WorkspaceTree } from "../sidebar/WorkspaceTree";
@@ -144,6 +157,8 @@ function ServerProductApp({ uiVersion, draftStore }: {
   // into a modal dialog (open-vetta's hover-summoned overlay).
   const [workspacePeek, setWorkspacePeek] = useState(false);
   const peekCloseTimerRef = useRef<number | null>(null);
+  // The command palette is shell chrome: open state only, the entries are data.
+  const [commandOpen, setCommandOpen] = useState(false);
 
   // ── Shared three-column width budget (design §5.0, ported from PI-Desktop) ──
   const [shellNode, setShellNode] = useState<HTMLDivElement | null>(null);
@@ -486,42 +501,46 @@ function ServerProductApp({ uiVersion, draftStore }: {
     }
   }
 
+  /**
+   * One implementation of "what a shortcut does", shared by the global key
+   * listener and the command palette so the two can never drift.
+   */
+  function runShortcut(action: KeyboardShortcutActionId): boolean {
+    switch (action) {
+      case "focus-composer":
+        if (routing.viewSettings || composerDisabled || !composerRef.current) {
+          return false;
+        }
+        composerRef.current.focus();
+        return true;
+      case "new-session":
+        if (!activeWorkspace || server.catalogMutationBusy) {
+          return false;
+        }
+        void handleNewSession(activeWorkspace.id);
+        return true;
+      case "open-settings":
+        routing.openSettings("general");
+        return true;
+      case "toggle-inspector":
+        if (routing.viewSettings || !activeWorkspace || !activeSession) {
+          return false;
+        }
+        panel.toggle();
+        return true;
+      case "open-command-palette":
+        setCommandOpen((open) => !open);
+        return true;
+    }
+  }
+
   useEffect(() => {
     function handleShortcut(event: KeyboardEvent) {
       const shortcut = matchKeyboardShortcut(event);
       if (!shortcut) {
         return;
       }
-
-      let handled = true;
-      switch (shortcut.action) {
-        case "focus-composer":
-          if (routing.viewSettings || composerDisabled || !composerRef.current) {
-            handled = false;
-          } else {
-            composerRef.current.focus();
-          }
-          break;
-        case "new-session":
-          if (!activeWorkspace || server.catalogMutationBusy) {
-            handled = false;
-          } else {
-            void handleNewSession(activeWorkspace.id);
-          }
-          break;
-        case "open-settings":
-          routing.openSettings("general");
-          break;
-        case "toggle-inspector":
-          if (routing.viewSettings || !activeWorkspace || !activeSession) {
-            handled = false;
-          } else {
-            panel.toggle();
-          }
-          break;
-      }
-
-      if (handled) {
+      if (runShortcut(shortcut.action)) {
         event.preventDefault();
       }
     }
@@ -536,6 +555,143 @@ function ServerProductApp({ uiVersion, draftStore }: {
     server.catalogMutationBusy,
     panel,
   ]);
+
+  const commandLabels = useMemo<CommandPaletteLabels>(
+    () => ({
+      title: t("commandPalette.title"),
+      placeholder: t("commandPalette.placeholder"),
+      empty: t("commandPalette.empty"),
+      groups: {
+        actions: t("commandPalette.groupActions"),
+        workspaces: t("commandPalette.groupWorkspaces"),
+        sessions: t("commandPalette.groupSessions"),
+        settings: t("commandPalette.groupSettings"),
+      },
+    }),
+    [t],
+  );
+
+  // Entries are data, so the palette stays a pure view and this is the only place
+  // that knows how to build them from the catalog and the shortcut registry.
+  const commandEntries = useMemo<CommandPaletteEntry[]>(() => {
+    const actionTitles: Record<KeyboardShortcutActionId, string> = {
+      "focus-composer": t("commandPalette.actionFocusComposer"),
+      "new-session": t("commandPalette.actionNewSession"),
+      "open-settings": t("commandPalette.actionOpenSettings"),
+      "toggle-inspector": t("commandPalette.actionToggleInspector"),
+      "open-command-palette": t("commandPalette.title"),
+    };
+    const entries: CommandPaletteEntry[] = [];
+
+    for (const descriptor of KEYBOARD_SHORTCUTS) {
+      // The palette is not an entry inside itself.
+      if (descriptor.action === "open-command-palette") {
+        continue;
+      }
+      const unavailable =
+        descriptor.action === "new-session" && !activeWorkspace
+          ? t("commandPalette.unavailableNoWorkspace")
+          : descriptor.action === "toggle-inspector" &&
+              (!activeWorkspace || !activeSession)
+            ? t("commandPalette.unavailableNoSession")
+            : descriptor.action === "focus-composer" &&
+                (routing.viewSettings || composerDisabled)
+              ? t("commandPalette.unavailableComposer")
+              : undefined;
+      entries.push({
+        id: `action:${descriptor.action}`,
+        groupKey: "actions",
+        title: actionTitles[descriptor.action],
+        subtitle: descriptor.display,
+        // A command that cannot run right now is shown and disabled rather than
+        // dropped: "it is not here" is a worse answer than "not yet".
+        disabled: unavailable !== undefined,
+        disabledReason: unavailable,
+        order: entries.length,
+        action: { kind: "shortcut", action: descriptor.action },
+      });
+    }
+    entries.push({
+      id: "action:toggle-theme",
+      groupKey: "actions",
+      title: t("commandPalette.actionToggleTheme"),
+      order: entries.length,
+      action: { kind: "toggle-theme" },
+    });
+
+    workspaces.forEach((workspace, index) => {
+      entries.push({
+        id: `workspace:${workspace.id}`,
+        groupKey: "workspaces",
+        title: workspace.displayName,
+        subtitle: formatDisplayPath(workspace.rootPath),
+        order: index,
+        action: { kind: "open-workspace", workspaceId: workspace.id },
+      });
+    });
+
+    const workspaceNames = new Map(
+      server.catalog.workspaces.map((workspace) => [
+        workspace.id,
+        workspace.displayName,
+      ]),
+    );
+    server.catalog.sessions.forEach((session, index) => {
+      entries.push({
+        id: `session:${session.id}`,
+        groupKey: "sessions",
+        title: session.title,
+        subtitle: workspaceNames.get(session.workspaceId) ?? "",
+        order: index,
+        action: {
+          kind: "open-session",
+          workspaceId: session.workspaceId,
+          sessionId: session.id,
+        },
+      });
+    });
+
+    VISIBLE_SETTINGS_SECTIONS.forEach((section, index) => {
+      entries.push({
+        id: `settings:${section.id}`,
+        groupKey: "settings",
+        title: t(SETTINGS_SECTION_COPY_KEYS[section.id]),
+        order: index,
+        action: { kind: "open-settings-section", section: section.id },
+      });
+    });
+
+    return entries;
+  }, [
+    activeSession,
+    activeWorkspace,
+    composerDisabled,
+    routing.viewSettings,
+    server.catalog,
+    t,
+    workspaces,
+  ]);
+
+  /** The single place that turns a palette action into navigation or a command. */
+  function handleCommandAction(action: CommandPaletteAction) {
+    switch (action.kind) {
+      case "shortcut":
+        runShortcut(action.action);
+        return;
+      case "toggle-theme":
+        server.changeTheme(server.theme === "dark" ? "light" : "dark");
+        return;
+      case "open-settings-section":
+        routing.openSettings(action.section);
+        return;
+      case "open-workspace":
+        routing.navigateWorkspace(action.workspaceId);
+        return;
+      case "open-session":
+        routing.navigateSession(action.workspaceId, action.sessionId);
+        return;
+    }
+  }
 
   if (server.bootState.status !== "ready") {
     return (
@@ -924,6 +1080,13 @@ function ServerProductApp({ uiVersion, draftStore }: {
           ) : null}
         </div>
       )}
+      <CommandPalette
+        open={commandOpen}
+        entries={commandEntries}
+        labels={commandLabels}
+        onAction={handleCommandAction}
+        onClose={() => setCommandOpen(false)}
+      />
     </div>
   );
 }

@@ -462,6 +462,38 @@ open-vetta 在 `RootLayoutView` 里把路由内容 `memo` 掉，理由是"侧栏
   ＋ `sidebar-hover-overlay.spec.ts` 3 条（唤出且不抢焦点/非 dialog/离开再在宽限期内返回保持打开；
   偷看态选中会话不移动焦点而按钮路径会移动到标题；宽屏没有热区）。
 
+**F. 命令面板（移植 open-vetta `CommandMenu`）。**
+
+读的是 `types.ts`、`lib/match.ts`、`lib/build-groups.ts`、`components/CommandMenu.tsx`、
+`hooks/useCommandMenuModel.ts`。照搬其中**三条载荷级决策**（不是外观）：
+
+1. **动作用数据描述，不用闭包**：适配层因此是纯函数、可直接断言；真正的导航副作用只发生在宿主一处。
+2. **组序是常量，永不按相关性重排**：五个源的延迟差两个数量级，异步结果到达时若参与同一全局排序，会把
+   光标下的行顶走——用户回车打开的将是从未看见的东西。
+3. **子串匹配而非模糊子序列**，且多 token 全命中（AND）：中文没有词边界，子序列会让「设置」命中
+   「设计与配置」，"搜不到"就不再可信；副标题命中仍算，但分数明显更低。
+
+落地：
+
+- `shell/command-palette.ts`（纯模型）：组序 `actions|workspaces|sessions|settings`、每组上限 6、
+  规范化/tokenize、区间合并（避免嵌套高亮）、前缀 3 > 词首 2 > 任意 1 > 副标题 0.5 的打分、按 **id**
+  锚定的选择移动（跳过禁用项并环绕）、高亮切分。
+- `shell/CommandPalette.tsx`（视图）：`combobox` + `listbox` + `aria-activedescendant`，打开即聚焦输入框、
+  Escape 关闭并**还原焦点**、Tab 不离开输入框（列表归方向键管）、命中但当前不可用的命令**显示为禁用**并
+  给出原因，而不是静默过滤。
+- `ProductApp`：把快捷键分发从原来的 `switch` 抽成 `runShortcut`，键盘监听与面板**共用同一实现**；
+  条目覆盖既有 4 个快捷键、切换主题、工作区、会话、设置分区；`handleCommandAction` 是唯一的副作用分发点。
+- 复用而非另起一套：新增 `open-command-palette`（Ctrl/Cmd+K，`allowInEditable: true`——**在输入框里也
+  能唤起**，否则没人会用）；设置分区标签抽到 `sections.ts` 的 `SETTINGS_SECTION_COPY_KEYS` 与
+  `VISIBLE_SETTINGS_SECTIONS`（`SettingsShell` 与面板共用，去掉一处重复映射，并让「advanced 只是路由
+  兼容别名」这条事实只有一个来源）。
+- 覆盖：`command-palette.test.ts` 14 条（子串非子序列的 CJK 用例、固定组序、每组上限、禁用项跳过、
+  按 id 锚定、区间合并与高亮不丢字）＋ `command-palette.spec.ts` 5 条（从输入框唤起并执行、CJK 语义、
+  显示为禁用、方向键/Escape/焦点还原、从面板跳转工作区与会话）。
+- **顺带修掉我自己的一处断言缺陷**：`layout.spec.ts` 的左栏键盘用例用 `expect(width).toBe(288)` 去读
+  **正在动画**的宽度，整轮负载下读到 `287.390625` 而失败（同一用例两次通过过）。改为
+  `expect.poll(...).toBeCloseTo(288, 0)`——断言收敛，比原来更强。
+
 **E. 空闲预取路由（移植 open-vetta `useIdleRoutePrefetch`）。**
 
 参考：`useIdleRoutePrefetch.ts` 用 `requestIdleCallback(run, { timeout: 8000 })`，无该 API 时退化为
@@ -506,9 +538,9 @@ PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由
    CSS 变量+叶子订阅，收益与风险都需另测）。
 2. ~~**窄屏侧栏改为悬停浮层**（open-vetta `SidebarOverlay` + `scheduleOverlayClose`）：我们现在必须
    点击才出现。~~ **已完成**，见 §8.1D。
-3. **命令面板**（open-vetta `CommandMenu`，挂在根布局）**仍未做**——这是新功能面（新快捷键、文案、
-   用例），量级大于前面的对齐改动。同项的**空闲预取路由**已完成（§8.1E）；**路由挂起内容视图**经核对
-   本仓库已有且符合参考规则（同样见 §8.1E），无需改动。
+3. **命令面板**（open-vetta `CommandMenu`）：**已完成**，见 §8.1F。同项的**空闲预取路由**亦已完成
+   （§8.1E），**路由挂起内容视图**经核对本仓库已有且符合参考规则（同样见 §8.1E），无需改动。
+   到此前瞻清单里"按参考对齐"的条目已全部落地。
 4. **会话小地图**（PI `ConversationMinimap`）、**跟随滚动**（PI `use-follow-scroll` 的细节）、
    `scrollbar-reveal`、`queued-prompts` 的排队语义、`frame-batcher` / `latest-wins`。
 5. **设计审查流程**：open-vetta 自带 `web-design-guidelines`（拉取 vercel-labs 规则做 UI 审查）与
@@ -520,13 +552,13 @@ PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由
 
 | 门 | 结果 | 退出码 |
 |---|---|---|
-| `pnpm exec playwright test`（全量 105 项，dev） | 98 passed / 7 skipped / 0 failed；**连续两轮**一致 | 0 |
+| `pnpm exec playwright test`（全量 110 项，dev） | 103 passed / 7 skipped / 0 failed | 0 |
 | `pnpm exec playwright test route-prefetch`（生产构建，`ROVE_E2E_PROD=1`） | 2 passed | 0 |
-| `pnpm exec vitest run` | 51 文件 / 397 用例通过 | 0 |
+| `pnpm exec vitest run` | 52 文件 / 411 用例通过 | 0 |
 | `pnpm typecheck` | 无错误 | 0 |
 | `pnpm build` | 编译成功 | 0 |
 | 独立几何探针（含阅读栏 7 项） | 147 passed / 0 failed | 0 |
 
-§8.1C / §8.1D / §8.1E 落地后上述门禁**各自全部重跑**；性能对照见 §8.1C 的表格（左栏拖拽脚本时间
+§8.1C–§8.1F 落地后上述门禁**各自全部重跑**；性能对照见 §8.1C 的表格（左栏拖拽脚本时间
 604.6 → 89.0 ms，`chat` chunk 18.3 → 3.0 ms，reflow 不变）。7 项 skip = 5 项既有 skip ＋ 2 项
 生产构建专属的预取用例（跑法见 §8.1E）。

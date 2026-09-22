@@ -446,13 +446,24 @@ test("the rail handle resizes from the keyboard within its bounds", async ({
   await expect(handle).toHaveAttribute("aria-valuenow", "256");
   await handle.press("Shift+ArrowRight");
   await expect(handle).toHaveAttribute("aria-valuenow", "288");
-  expect((await box(page, ".product-sidebar")).width).toBe(288);
+  // The rail width is animated, so the rendered box converges rather than
+  // snapping: poll it instead of reading a frame of the easing tail.
+  await expect
+    .poll(async () => (await box(page, ".product-sidebar")).width, {
+      message: "the rail converges on the width the handle announced",
+    })
+    .toBeCloseTo(288, 0);
   await handle.press("Home");
   await expect(handle).toHaveAttribute("aria-valuenow", "200");
   await handle.press("ArrowLeft");
   await expect(handle).toHaveAttribute("aria-valuenow", "200");
   await handle.press("End");
   await expect(handle).toHaveAttribute("aria-valuenow", "360");
+  await expect
+    .poll(async () => (await box(page, ".product-sidebar")).width, {
+      message: "End converges on the maximum rail width",
+    })
+    .toBeCloseTo(360, 0);
 });
 
 
