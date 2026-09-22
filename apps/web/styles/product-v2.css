@@ -1,4 +1,19 @@
-﻿/* Product UI V2 presentation only. Runtime and product state remain owned by ProductApp. */
+﻿/* rove product web — layer 2 of 3: v2 presentation and the shell layout.
+ *
+ * Loaded after `styles/product.css` and before `styles/v3/index.css` (see
+ * `app/layout.tsx`). Every rule in this file is scoped to
+ * `.product-app-frame[data-ui-version="v2"]`, so the v1 layout stays intact
+ * when `ROVE_PRODUCT_UI_VERSION=v1` is set.
+ *
+ * The shell's width budget is owned by `shell/ProductApp.tsx` +
+ * `inspector/work-panel-layout.ts` and consumed here as
+ * `panelLayout.panelWidth`; this sheet must not re-derive a budget from other
+ * column widths. Responsive behaviour uses the 960px drawer boundary mirrored
+ * by `DRAWER_MAX_WIDTH` / `DRAWER_MEDIA_QUERY` in `lib/viewport-breakpoints.ts`.
+ * See `docs/plans/2026-09-22-ui-shell-layout-remediation.md`.
+ */
+
+/* Product UI V2 presentation only. Runtime and product state remain owned by ProductApp. */
 .product-app-frame[data-ui-version="v2"] {
   color-scheme: light;
 
@@ -85,6 +100,8 @@
   --sidebar-width: 248px;
   --inspector-width: 304px;
   --topbar-height: 52px;
+  /* Design §3.3: the conversation's reading measure. */
+  --reading-column-max: 840px;
 
   width: 100%;
   min-width: 0;
@@ -707,9 +724,18 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   min-height: 0;
   gap: 0;
   overscroll-behavior: contain;
-  padding: 22px 24px 38px;
+  padding: 22px 16px 38px;
   scroll-padding-bottom: 38px;
   scroll-behavior: smooth;
+}
+
+/* Design §3.3: one reading measure for the conversation. The transcript column
+   and the composer resolve the same box (column − 32px, capped at
+   `--reading-column-max`), so prose and composer share both edges. */
+.product-app-frame[data-ui-version="v2"] .chat-transcript__content {
+  width: 100%;
+  max-width: var(--reading-column-max);
+  margin-inline: auto;
 }
 
 .product-app-frame[data-ui-version="v2"] .transcript-run {
@@ -1536,7 +1562,11 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   position: relative;
   display: grid;
   gap: 8px;
-  margin: 0 16px 14px;
+  /* Same reading measure as the transcript content box (design §3.3). */
+  align-self: center;
+  width: calc(100% - 32px);
+  max-width: var(--reading-column-max);
+  margin: 0 0 14px;
   border: 1px solid var(--v2-border-strong);
   border-radius: var(--v2-radius-md);
   background: var(--v2-surface-raised);
@@ -2921,6 +2951,9 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   }
 }
 
+/* Drawer layout. The 960px boundary mirrors `DRAWER_MAX_WIDTH` /
+   `DRAWER_MEDIA_QUERY` in `lib/viewport-breakpoints.ts`; the rail becomes a
+   drawer and the work panel opens as a dialog at or below it. */
 @media (max-width: 960px) {
   .product-app-frame[data-ui-version="v2"] .product-body:not([data-settings="true"]) {
     position: relative;
@@ -3125,7 +3158,10 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   }
 
   .product-app-frame[data-ui-version="v2"] .chat-composer {
-    margin: 0 8px 8px;
+    align-self: center;
+    width: calc(100% - 20px);
+    max-width: var(--reading-column-max);
+    margin: 0 0 8px;
     padding: 8px;
   }
 
@@ -3585,7 +3621,8 @@ body.is-resizing-column * {
   margin-left: 12px;
 }
 
-/* Narrow layouts: the rail is a drawer, so it has no width to drag. */
+/* Narrow layouts: the rail is a drawer (mirrors `DRAWER_MAX_WIDTH` in
+   `lib/viewport-breakpoints.ts`), so it has no width to drag. */
 @media (max-width: 960px) {
   .product-app-frame[data-ui-version="v2"] .sidebar-resize-handle {
     display: none;

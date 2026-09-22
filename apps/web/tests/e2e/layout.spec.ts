@@ -255,8 +255,11 @@ test("work panel tab strip opens, closes and reopens tabs", async ({ page }) => 
   await expect(statusTab).toBeFocused();
   await expect(statusTab).toHaveAttribute("aria-selected", "true");
 
-  // Delete closes the focused tab and focuses the neighbour.
+  // Delete closes the focused tab and focuses the neighbour. Focus is asserted
+  // first, because tab focus moves in a frame after the arrow key.
   await page.keyboard.press("ArrowRight");
+  await expect(filesTab).toBeFocused();
+  await expect(filesTab).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Delete");
   await expect(filesTab).toHaveCount(0);
   await expect(statusTab).toHaveAttribute("aria-selected", "true");
@@ -281,6 +284,69 @@ test("work panel tab strip opens, closes and reopens tabs", async ({ page }) => 
   await openTabButton.click();
   await expect(launcherTab).toBeVisible();
 });
+
+/**
+ * Design §3.3: the conversation has one reading measure. The transcript column
+ * and the composer must share both edges, the measure must stay capped, and at
+ * desktop sizes the conversation column must keep its 680px comfort width.
+ */
+const READING_COLUMN_VIEWPORTS = [
+  { width: 1440, height: 900, desktop: true },
+  { width: 1280, height: 800, desktop: true },
+  { width: 375, height: 812, desktop: false },
+];
+
+for (const viewport of READING_COLUMN_VIEWPORTS) {
+  test(`conversation keeps one reading measure at ${viewport.width}x${viewport.height}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    const workspace = createMockWorkspace();
+    const session = createMockSession();
+    await installMockProductApi(page, {
+      workspaces: [workspace],
+      sessions: [session],
+      transcripts: {
+        [session.id]: completedTranscript(
+          workspace,
+          session,
+          "Reading measure question",
+          "Reading measure answer",
+        ),
+      },
+      activeWorkspaceId: workspace.id,
+      activeSessionId: session.id,
+    });
+    await page.goto(`/w/${workspace.id}/s/${session.id}`);
+    await expect(page.getByText("Reading measure answer", { exact: true })).toBeVisible();
+
+    const main = await box(page, ".product-main");
+    const content = await box(page, ".chat-transcript__content");
+    const composer = await box(page, ".chat-composer");
+
+    if (viewport.desktop) {
+      expect(main.width, "conversation keeps its 680px comfort width").toBeGreaterThanOrEqual(
+        680,
+      );
+    }
+    expect(content.width, "reading measure is capped at 840px").toBeLessThanOrEqual(840);
+    expect(
+      Math.abs(content.width - composer.width),
+      "composer shares the transcript measure",
+    ).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs(content.x - composer.x),
+      "composer shares the transcript left edge",
+    ).toBeLessThanOrEqual(1);
+    // Centered inside the conversation column.
+    const leftGap = content.x - main.x;
+    const rightGap = main.x + main.width - (content.x + content.width);
+    expect(Math.abs(leftGap - rightGap), "reading measure is centered").toBeLessThanOrEqual(2);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+  });
+}
 
 async function box(
   page: Page,

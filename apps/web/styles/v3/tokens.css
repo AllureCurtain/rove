@@ -1,3 +1,11 @@
+/* rove product web — layer 3 of 3: design tokens and the optional skin.
+ *
+ * Imported last by `app/layout.tsx` through `styles/v3/index.css`, so these
+ * rules win over layers 1-2. Keep this layer token- and skin-only: no shell
+ * layout geometry, no width budgets, no responsive breakpoints. Structural
+ * change belongs in `styles/product-v2.css`.
+ */
+
 /* Warm ivory skin — Anthropic-inspired. Bridges every --v2-* token so unscoped rules recolor. */
 
 .product-app-frame[data-skin="warm"] {

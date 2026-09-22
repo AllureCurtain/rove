@@ -10,6 +10,7 @@ import {
   workPanelMinimumFor,
 } from "./work-panel-layout";
 
+import { matchesDrawerLayout } from "../lib/viewport-breakpoints";
 import {
   activateWorkPanelTab,
   closeWorkPanelTab,
@@ -70,9 +71,7 @@ const initialSelection = (): PanelSelection => ({
   tabs: defaultWorkPanelTabs(),
   target: null,
   width: WORK_PANEL_DEFAULT_WIDTH,
-  collapsed:
-    typeof window === "undefined" ||
-    window.matchMedia("(max-width: 960px)").matches,
+  collapsed: matchesDrawerLayout(),
   returnFocus: null,
 });
 

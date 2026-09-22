@@ -26,6 +26,7 @@ import {
   type ComposerDraftStore,
 } from "../state/composer-draft-store";
 import { selectTranscriptTimeline } from "../lib/rove-state";
+import { DRAWER_MEDIA_QUERY } from "../lib/viewport-breakpoints";
 import { SettingsShell } from "../settings/SettingsShell";
 import { matchKeyboardShortcut } from "../settings/keyboard-settings-model";
 import { createSettingsPlatformClient } from "../settings/settings-platform-client";
@@ -193,7 +194,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
   });
 
   useEffect(() => {
-    const narrow = window.matchMedia("(max-width: 960px)");
+    const narrow = window.matchMedia(DRAWER_MEDIA_QUERY);
     const syncInspector = () => {
       setMobileLayout(narrow.matches);
       panelRef.current.setCollapsed(narrow.matches);

@@ -1,10 +1,10 @@
 # rove 三栏外壳布局修复与产品化补齐
 
-> 状态：**Partially Implemented**。P0（阻断级网格缺陷）、P1a（设计 §5.0 共享宽度
-> 预算）与 P1b（PI-Desktop 式分隔条、宽度持久化、左栏先让位/重开让位、预算上限
-> 取代固定上限）已在 worktree `fix/ui-shell-layout` 实现并有自动化回归；
-> 仍未实现：断点统一 1180/760、死变量清理（`--inspector-width`/`--sidebar-width`）、
-> P2（右栏信息架构）、P3（中栏阅读区）、P4（样式表层收敛）。
+> 状态：**Implemented（P0–P4）**。P0（阻断级网格缺陷）、P1a（设计 §5.0 共享宽度预算）、
+> P1b（PI-Desktop 式分隔条、宽度持久化、左栏先让位/重开让位、预算上限取代固定上限）、
+> P2（右栏动态页签）、P3（中栏统一阅读列）、P4（样式分层契约）均已在 worktree
+> `fix/ui-shell-layout` 实现并有自动化回归；逐阶段实测退出码见 §3b–§3f。
+> 两处与初稿不同的落地决定记录在 §3f 与 §6（保留 960 断点、保留 v1 布局层）。
 > 日期：2026-09-22。
 > 基线：`f853a97`（`origin/main`）。
 > 参照：[工作台设计](../design/2026-09-17-pi-desktop-workbench-design.md) §3 / §4.0 / §5.0、
@@ -138,7 +138,108 @@
 验证：27 条 e2e 通过（layout/workbench-panel/shell/polish/navigation-motion），退出码 0；
 `pnpm typecheck` 退出码 0；`pnpm exec vitest run` 47 文件 / 364 用例通过，退出码 0。
 
-未做：断点仍为 960（设计为 1180/760）；`--inspector-width`、`--sidebar-width` 等死变量未清理。
+P1b 遗留复核（同日完成）：
+
+- 断点：不改为 1180/760。核实后 960 在 JS 与 CSS 两侧**本来就一致**（v2 的两处
+  `@media (max-width: 960px)` 与 `ProductApp`/`use-work-panel` 的 `matchMedia` 都是 960），
+  1180 处只有中栏行宽微调、与面板无关。真正的问题是"同一个数字散落四处"，因此改为
+  单一来源：新增 `lib/viewport-breakpoints.ts`（`DRAWER_MAX_WIDTH = 960`、
+  `DRAWER_MEDIA_QUERY`、`matchesDrawerLayout()`），`ProductApp` 与 `use-work-panel`
+  改为消费它，两份 CSS 在该断点处加注释指向该模块。改值只影响抽屉/对话框的开启宽度，
+  与设计中的"三栏 ≥1024 一行"不冲突（1024 仍为三栏，已由 `layout.spec.ts` 钉住）。
+- `--inspector-width` / `--sidebar-width` **不是死变量**：`ROVE_PRODUCT_UI_VERSION=v1`
+  仍是一条受支持的开关（`app/(product)/layout.tsx`），`product.css` 的 v1 布局确实消费
+  它们（`product-body` 的 `grid-template-columns`、`product-inspector` 的 `width`）。
+  删除会破坏 v1 路径，因此**不删**，改为在 §3f 明确三层的归属契约。
+
+## 3d. P2：右栏动态页签（已实现）
+
+对照 PI-Desktop `components/workpanel/WorkPanel.tsx` + `lib/work-panel-tabs.ts` 移植，去掉 rove
+没有的插件视图，保留全部**动态**语义：页签可开、可关、可原地替换、按会话各自持有。
+
+- 新增 `apps/web/inspector/work-panel-tabs.ts`（纯模块，13 个单测）：kind 集合
+  `new | pending | status | files | changes | review`；`defaultWorkPanelTabs`（新会话只开"运行"）、
+  `openWorkPanelTab`（已开则只激活，不重复）、`closeWorkPanelTab`（激活后继/前驱，允许清空）、
+  `activateWorkPanelTab`、`replaceWorkPanelTab`（`+` 启动页被选中的 kind 原地替换）、
+  `sanitizeWorkPanelTabs`（丢弃未知 kind/重复并修复 activeKind）、`workPanelTabStep`（左右环绕、Home/End）。
+- `apps/web/inspector/use-work-panel.ts`：`PanelSelection.tab` → `tabs: WorkPanelTabsState`，
+  新增 `openTab/activateTab/closeTab/replaceTab`；`open(kind, target, trigger)` 默认沿用当前激活 kind。
+  页签状态随会话（`RunInspector` 以 `workspace:session` 为 key），切会话/刷新不串。
+- `apps/web/inspector/RunInspector.tsx`：页签条改为 `role="tablist"` 动态渲染，每个页签带独立关闭按钮，
+  尾部 `+` 启动按钮放在 tablist **之外**（只有 tab 属于 tablist）；roving tabIndex（选中 0、其余 -1）、
+  左右/Home/End 移动选择并转移焦点、Delete/Backspace 关闭、中键关闭、选中页签 `scrollIntoView`、
+  `role="tabpanel"` + `aria-labelledby`/`aria-controls`。正文按激活 kind 真正条件渲染（不再把 8 个分区
+  堆在一个页签里）：
+  - 待处理：审批卡详情 + 待批工具列表 + P4 会话级授权；
+  - 运行：导出、空/加载/错误态、度量、时间线、计划、工具列表；
+  - 文件：文件树（含审查发现定位）；
+  - 变更：改动文件、工件、diff；
+  - 审查：`ReviewPanel`（有进行中的审查时自动开页签）；
+  - 启动页：五个 kind 的入口；全部关闭后正文提示"没有打开的页签，用 + 打开一个"。
+- 审批触发 `panel.open("pending", …)`、审查发现跳转 `panel.open("files", …)`：不再依赖"三个固定页签
+  永远存在"，关闭过的页签必须能被重新打开。
+- 文案：`inspector.tabRun`/`inspector.tabApproval` 退役，新增 `tabsLabel`/`tabNew`/`tabPending`/`tabStatus`/
+  `tabFiles`/`tabChanges`/`openTab`/`closeTab`/`launcherTitle`/`noTabs`，zh-CN 与 en-US 同步。
+- CSS：页签条由 grid 固定列改为 flex 滚动条带（页签数量运行时变化），关闭按钮在 hover/focus/选中时显现。
+
+修复过程中发现并修掉一个真实缺陷：`activeKind` 用 `??` 回退到内置 fallback，导致"关掉最后一个页签"后
+tablist 已空、正文却仍渲染"运行"内容。状态源改为按 panel 是否存在选择，不再用 nullish 回退。
+
+实测：`layout.spec.ts` 新增 "work panel tab strip opens, closes and reopens tabs"，覆盖默认单页签、
+`+` 启动页 → 原地替换、roving tabIndex、方向键、Delete、中键、关闭按钮、清空后的回退入口；
+`workbench-panel.spec.ts` 的文件分页用例改为经 `+` 打开"文件"页签（关闭过的页签必须能被重新打开）。
+`pnpm exec playwright test layout workbench-panel shell polish navigation-motion`：31 passed，退出码 0。
+
+## 3e. P3：中栏统一阅读列（已实现）
+
+设计 §3.3 要求中栏只有一个阅读测量宽度，composer 与正文同宽：
+
+- `apps/web/styles/product-v2.css` 新增 `--reading-column-max: 840px`（仅 v2 层）。
+- `.chat-transcript` 左右内边距固定 16px；`.chat-transcript__content` 为
+  `width: 100%; max-width: var(--reading-column-max); margin-inline: auto`。
+- `.chat-composer` 改为 `width: calc(100% - 32px); max-width: var(--reading-column-max);
+  align-self: center`，窄屏移动端按 10px 内边距对应 `calc(100% - 20px)`。
+  两者解析出的盒子完全相同（列宽 − 32px，上限 840px），因此在任何宽度下左右边缘都对齐。
+- 第一阶段实现用 `max(16px, calc((100% - var(--reading-column-max)) / 2))` 与
+  `min(100% - 32px, var(--reading-column-max))`，实测**两条声明都失效**（计算值回落到初始值：
+  `.chat-transcript` padding 变成 0，composer 宽度变成内容宽度 403px）。已在 §3e 定稿为不含
+  裸算术的写法（`max-width` + `calc(100% - 32px)`），并由几何用例钉住。
+
+实测（`layout.spec.ts` 新增 3 条）：1440×900 中栏 840 → 阅读列 808；1280×800 中栏 680 → 648；
+375×812 移动端 355。三种视口下 `|正文宽 − composer 宽| ≤ 1`、`|正文 x − composer x| ≤ 1`、
+左右留白差 ≤ 2、无横向溢出，退出码 0。该改动不新增任何动效，`polish.spec.ts` 的 reduced-motion
+断言继续覆盖动效一致性。
+
+## 3f. P4：样式分层契约（已实现，结论与初稿不同）
+
+层级事实（`app/layout.tsx` 的导入顺序即层叠顺序）：
+
+| 层 | 文件 | 归属 |
+|---|---|---|
+| 1 | `styles/product.css` + `styles/tokens.css` | 基础重置、共享组件类、**v1 布局**（`ROVE_PRODUCT_UI_VERSION=v1`） |
+| 2 | `styles/product-v2.css` | 默认 v2 表现与三栏外壳布局，全部规则限定在 `[data-ui-version="v2"]` |
+| 3 | `styles/v3/index.css`（`tokens.css` + `base.css`） | 设计 token 与可选 `data-skin="warm"` 皮肤，后加载故可覆盖 1–2 层 |
+
+结论：初稿"v1 布局段迁入 v2 后删除"**不执行**。v1 是受支持的开关路径（`ProductUiVersion` 含
+`"v1"`，由环境变量选择），删除会破坏它，且 `--sidebar-width`/`--inspector-width` 只有 v1 消费。
+因此 P4 的落地方式是把分层契约写进代码，让后续改动不会越层：
+
+- 三个样式表头部各加一段层级说明（谁是第几层、v2 规则必须限定 scope、第 3 层只能 token/skin）。
+- `product-v2.css` 头部额外声明：宽度预算的唯一真源是 `shell/ProductApp.tsx` +
+  `inspector/work-panel-layout.ts`，该表只消费 `panelLayout.panelWidth`，不得再从别的列反推预算；
+  960 断点镜像 `lib/viewport-breakpoints.ts`。
+- `docs/runtime/` 没有描述过这两个样式表（已核对全部 `docs/runtime/*.md`），因此本阶段不产生
+  运行文档改动；分层事实记录在本文件与样式表头。
+
+验证（P1b + P3 + P4 合并后一次性跑完）：
+
+| 门 | 结果 | 退出码 |
+|---|---|---|
+| `pnpm exec playwright test layout workbench-panel shell polish navigation-motion` | 31 passed | 0 |
+| `pnpm typecheck` | 无错误 | 0 |
+| `pnpm exec vitest run` | 48 文件 / 377 用例通过 | 0 |
+
+（含 `polish.spec.ts` 对 warm skin 与 reduced-motion 的回归。）
 
 ## 4. 目标（以设计文档为准）
 
@@ -160,14 +261,15 @@
 | P3 | 中栏阅读列 680–840 居中、composer 同宽、按 §3.3 核对动效 | Playwright 视觉/几何用例；reduced-motion 断言 |
 | P4 | 样式表层收敛（v3 只留 token/skin，v1 布局段迁入 v2 后删除）并同步 `docs/runtime/` | `pnpm test/typecheck/build/test:e2e` 全绿；文档与代码一致 |
 
-## 6. 待确认的决策
+## 6. 实施期的决策结论
 
-1. **右栏信息架构（P2 的前置）**。"四页签"来自设计 §5.0 对 PI-Desktop `WorkPanel`
-   的映射（P2 第 1 条同样如此），它属于参考实现的分类建议，**与"三栏布局"决策
-   无关**；而且现状实现并未照做（现在是活动/审查/待处理三页签，且默认"活动"页签
-   内堆了 8 个分区）。用户的意向是"右栏 = 当前的一些状态"。建议改为
-   `待处理 / 运行状态 / 文件与变更`，审查仅在有审查项时作为第 4 个出现。
-2. 断点：按设计 1180/760，还是保留现状 960。
-3. 右栏默认宽度：设计 400（320–640）还是现状 360（280–560）。
-4. 是否把 `_start-stack.ps1` / `_layout-probe.cjs` 提升为受版本控制的 `scripts/`
-   工具（便于 worktree 与 CI 复用同一套"起服务 + 量布局"证据）。
+1. **右栏信息架构（P2 的前置）**：已按参考实现落地为**动态页签**，而不是"四页签固定映射"。
+   五个 host kind（待处理 / 运行 / 文件 / 变更 / 审查）共享 PI-Desktop 的开、关、替换语义，
+   新会话默认只开"运行"；审查页签在出现进行中的审查时自动打开。用户的意向"右栏 = 当前
+   的一些状态"由默认页签 + 计数徽标（待处理 / 审查）满足，同时不再把 8 个分区堆在一个页签里。
+2. **断点**：保留 960，不改为 1180/760（理由见 §3c 复核）。改的是"单一来源"而不是数值。
+3. **右栏默认宽度**：保留 360（P1a/P1b 的预算与 e2e 均以它为准；改成设计里的 400 需要同时
+   重跑预算用例与 1024 让位用例，收益只是观感，留作后续可选项）。
+4. **`_start-stack.ps1` / `_layout-probe.cjs` 提升到 `scripts/`**：**未做**（可选）。它们现在只在
+   worktree 的 `outputs/` 下作为本地证据工具使用；若要给 CI 复用，需要先脱敏并确认仓库的
+   `scripts/` 约定，属于独立变更。
