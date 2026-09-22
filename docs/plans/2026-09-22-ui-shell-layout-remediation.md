@@ -575,6 +575,12 @@ open-vetta 在 `RootLayoutView` 里把路由内容 `memo` 掉，理由是"侧栏
   都是按钮发起、没有 effect cleanup 的请求，此前**先点 A 再点 B，A 的慢响应会渲染成 B 的结果**
   （`probeResult`/`modelResult` 不按 profileId 校验），并且 A 的 `finally` 还会把 B 正在进行的
   busy 态清掉。现在两类请求各一个 gate，只有最新请求能提交状态、也只能由它清 busy。
+  **但必须说清这条接线的证据强度**——这正是我写文档时先写过强、后来被测试纠正的一处：
+  这两个按钮属于**桌面（Tauri）面板**，`desktopProviderCredentialPromptAvailable()` 在浏览器里为假，
+  e2e 实测该面板行内只有「使用/编辑/删除」，浏览器根本渲染不到它；该面板又用 `disabled={busy}` 串行化
+  动作，真正的竞态窗口只剩"同一次任务内两次派发"（极快双击）。所以这条接线目前的证据是
+  **原语单测 3 条 ＋ 代码审查**，**没有**浏览器级验证（临时写的 `provider-latest-wins.spec.ts`
+  探明不可达后已删除，而不是留一个永不失败的假测试）。
   `queued-prompts` 的排队语义经核对本仓库已有实现（统一消息生命周期的 `requested_delivery`
   `current_run`/`next_turn` 与 `queued`→`claimed_successor` 状态机），因此不重复实现。
 
@@ -648,10 +654,11 @@ PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由
 | `pnpm exec playwright test`（全量 117 项，dev，在提交后的树上复跑） | 110 passed / 7 skipped / 0 failed | 0 |
 | 其中本轮新增：`transcript-scroll.spec.ts` | 4 passed | 0 |
 | 其中本轮新增：`conversation-minimap.spec.ts` | 3 passed | 0 |
+| 其中本轮新增：`layout-sweep.spec.ts`（几何不变量＋小地图走廊边界） | 2 passed | 0 |
 | `pnpm exec vitest run` | 57 文件 / 440 用例通过（新增 6＋3＋6 条） | 0 |
 | `pnpm typecheck`（`tsc --noEmit`） | 无输出＝无错误 | 0 |
 | `pnpm build`（生产构建） | Compiled successfully ＋ TypeScript 13.0s ＋ 静态页 6/6 | 0 |
-| 独立几何探针 `outputs/_verify-sweep.cjs` | **本轮未取得结论**：脚本在宽度扫描之前停在等待上（`getByRole("textbox")` 等待超时前未继续），对生产与 dev 两种服务器都一样；**因此不声称 147 项**。几何回归由全量 e2e 覆盖（`layout.spec.ts` 1440/1280/1024、`reading-width.spec.ts`、`product-ui-v2.spec.ts` 含移动端抽屉与证据面板） | — |
+| 独立几何探针 `outputs/_verify-sweep.cjs` | **本轮未取得结论**：脚本在宽度扫描之前停在等待上（`getByRole("textbox")` 等待超时前未继续），对生产与 dev 两种服务器都一样；**因此不声称 147 项**。它原本覆盖的几何边界已改写为**常驻用例** `tests/e2e/layout-sweep.spec.ts`：1024/1280/1440/1600/1920 下的阅读列算术（`min(frame − 32, 840)`）、无横向溢出、以及小地图走廊的两侧边界与"可见时不得压正文"。测量前先等布局稳定（让位动画会让中途读数读成 646px 而非 450px，这一条已写进用例注释） | — |
 
 §8.1C 的性能对照仍有效（左栏拖拽脚本时间 604.6 → 89.0 ms，`chat` chunk 18.3 → 3.0 ms，reflow 不变）。
 7 项 skip = 5 项既有 skip ＋ 2 项生产构建专属的预取用例（跑法见 §8.1E）。本轮另修掉一处我自己引入的
