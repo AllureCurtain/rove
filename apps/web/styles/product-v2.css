@@ -1897,7 +1897,10 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 
 /* Run evidence inspector */
 .product-app-frame[data-ui-version="v2"] .product-inspector {
-  width: 304px;
+  /* The grid track owns the width (design §5.0 shared budget): the panel fills
+     its track so the track can shrink before the conversation drops below its
+     450px floor. An inline width here would make the panel unshrinkable. */
+  width: 100%;
   min-width: 0;
   border-color: var(--v2-border);
   background: var(--v2-bg);
@@ -2821,14 +2824,11 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 }
 
 @media (max-width: 1180px) {
-  .product-app-frame[data-ui-version="v2"] .product-body {
-    grid-template-columns: 224px minmax(0, 1fr) auto;
-  }
-
-  .product-app-frame[data-ui-version="v2"] .product-inspector {
-    width: 268px;
-  }
-
+  /* The rail, panel and conversation widths are all owned by the shared width
+     budget rule below (design §5.0). Pinning `grid-template-columns: 224px …`
+     or `.product-inspector { width: 268px }` here only survived as dead code
+     while the panel still carried an inline width, and it silently defeated the
+     budget once the panel started filling its track. */
   .product-app-frame[data-ui-version="v2"] .transcript-item {
     grid-template-columns: 62px minmax(0, 700px);
   }
@@ -3297,7 +3297,15 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 
 .product-app-frame[data-ui-version="v2"] .product-body:not([data-settings="true"]) {
   position: relative;
-  grid-template-columns: var(--sidebar-nav-width) minmax(0, 1fr) auto;
+  /* Design §5.0 shared width budget: the conversation column holds a 450px
+     floor and the work panel yields first. `--work-panel-track` is set inline to
+     `min(requested, 100% − rail − floor)`, so a narrow container shrinks the
+     panel instead of overflowing or squeezing the conversation. */
+  --pane-floor: 450px;
+  grid-template-columns:
+    var(--sidebar-nav-width)
+    minmax(var(--pane-floor), 1fr)
+    var(--work-panel-track, auto);
   transition: grid-template-columns var(--motion-duration-normal) var(--motion-ease-out);
 }
 
@@ -3426,7 +3434,12 @@ body.is-resizing-column * {
 /* Left rail collapse: the placeholder width settles instantly, the panel
    slides out over 240ms and its subtree stays mounted (inert + aria-hidden). */
 .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] {
-  grid-template-columns: 0 minmax(0, 1fr) auto;
+  /* Same shared budget with the rail collapsed (design §5.0); `auto` here would
+     make the panel track circular with the panel's 100% width. */
+  grid-template-columns:
+    0
+    minmax(var(--pane-floor), 1fr)
+    var(--work-panel-track, auto);
 }
 .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] .product-sidebar {
   transform: translateX(-102%);

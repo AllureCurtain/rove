@@ -484,9 +484,17 @@ function ServerProductApp({ uiVersion, draftStore }: {
           data-workspace-open={workspaceOpen}
           data-inspector-open={mobileLayout && !inspectorCollapsed}
           data-nav-collapsed={navCollapsed}
-          style={{
-            "--sidebar-nav-width": `${sidebar.width}px`,
-          } as CSSProperties}
+          style={
+            {
+              "--sidebar-nav-width": `${sidebar.width}px`,
+              // Design §5.0 shared width budget: the panel takes what is left
+              // after the rail and the conversation's floor, so it shrinks
+              // instead of squeezing the conversation or overflowing.
+              "--work-panel-track": inspectorCollapsed
+                ? "minmax(0, var(--work-panel-collapsed-width, 40px))"
+                : `min(${panel.width}px, calc(100% - var(--sidebar-nav-width) - var(--pane-floor)))`,
+            } as CSSProperties
+          }
         >
           <WorkspaceTree
             workspaces={workspaces}
@@ -660,6 +668,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
             <RunInspector
               key={`${activeWorkspace.id}:${activeSession.id}`}
               panel={panel}
+              uiVersion={uiVersion}
               approvalBusy={continuity.approvalBusy}
               approvalError={continuity.approvalError}
               onApproval={continuity.approve}

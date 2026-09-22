@@ -1,7 +1,8 @@
 # rove 三栏外壳布局修复与产品化补齐
 
-> 状态：**Partially Implemented**。P0（阻断级网格缺陷）已在 worktree
-> `fix/ui-shell-layout` 实现并有自动化回归；P1–P4 尚未实现，仍为提议。
+> 状态：**Partially Implemented**。P0（阻断级网格缺陷）与 P1a（设计 §5.0 共享宽度
+> 预算）已在 worktree `fix/ui-shell-layout` 实现并有自动化回归；P1b（分隔条、
+> 宽度持久化、断点 1180/760）与 P2–P4 尚未实现，仍为提议。
 > 日期：2026-09-22。
 > 基线：`f853a97`（`origin/main`）。
 > 参照：[工作台设计](../design/2026-09-17-pi-desktop-workbench-design.md) §3 / §4.0 / §5.0、
@@ -18,7 +19,8 @@
 | 1440×900 修复前 | `240px 298px 902px` | (0,52) 240×**424** | (538,52) 902×424 | (**0**,**476**) 360×424 |
 | 1440×900 修复后 | `240px 840px 360px` | (0,52) 240×**848** | (240,52) 840×848 | (1080,52) 360×848 |
 | 1024×768 修复前 | `240px 0px 784px` | (0,52) 240×358 | (240,52) 784×358 | (**0**,**410**) 360×358 |
-| 1024×768 修复后 | `240px 424px 360px` | (0,52) 240×716 | (240,52) 424×716 | (664,52) 360×716 |
+| 1024×768 P0 后 | `240px 424px 360px` | (0,52) 240×716 | (240,52) 424×716 | (664,52) 360×716 |
+| 1024×768 P1a 后 | `240px 450px 334px` | (0,52) 240×716 | (240,52) **450**×716 | (690,52) 334×716 |
 | 768×1024 / 375×812 | 单列 | 抽屉 | 正常 | 抽屉（0×0） |
 
 期望契约：`rail | conversation | panel` 同行，三者高度 = 视口 − 顶栏 52px。
@@ -67,7 +69,37 @@
 - `pnpm exec vitest run`：46 文件 / 354 用例通过，退出码 0；
 - 多视口几何见 §1 表；修复后的界面截图见 worktree `outputs/_shots-after/`。
 
-未做：P1–P4；未跑 `pnpm build`；未跑 Rust 门禁（本阶段无 Rust 变更）。
+未做：P1b（分隔条替换 range 滑块、宽度持久化、断点统一 1180/760）与 P2–P4；
+未跑 `pnpm build`；未跑 Rust 门禁（本阶段无 Rust 变更）。
+
+## 3b. P1a：共享宽度预算（已实现）
+
+设计 §5.0 要求"中栏 450px 硬底线优先，右栏让位"。实现方式：由 `.product-body` 的
+网格轨道承担，面板自身不再设宽（内联 width 会让面板无法收窄）。
+
+- `apps/web/styles/product-v2.css`：`.product-body:not([data-settings="true"])` 定义
+  `--pane-floor: 450px` 与 `grid-template-columns: var(--sidebar-nav-width) minmax(var(--pane-floor), 1fr) var(--work-panel-track, auto)`；
+  `.product-inspector` 的 `width` 由 `304px` 改为 `100%`（填满所属轨道）；
+  删除 `@media (max-width:1180px)` 里已被覆盖的 `224px` 轨道与 `width: 268px`
+  —— 后者此前被内联宽度掩盖，一旦面板改为填满轨道就会静默破坏预算。
+- `apps/web/shell/ProductApp.tsx`：在 `.product-body` 内联
+  `--work-panel-track: min(<请求宽度>px, calc(100% − var(--sidebar-nav-width) − var(--pane-floor)))`；
+  左栏收起时用 `minmax(0, var(--work-panel-collapsed-width, 40px))`。
+- `apps/web/inspector/RunInspector.tsx`：仅 v1 皮肤保留内联宽度（v1 没有该轨道），
+  通过新增的 `uiVersion` 属性区分。
+- `apps/web/tests/e2e/layout.spec.ts`：把原先的 `test.fixme` 转为正式断言——1024 下
+  中栏 ≥450、右栏 ≤ `1024 − 左栏 − 450`、三栏宽度和等于视口。
+
+实测（探针 `outputs/_shots/layout-probe-budget.json`）：
+
+| 视口 | 列 | 左栏+中栏+右栏 | 中栏 ≥450 | 横向溢出 |
+|---|---|---|---|---|
+| 1440×900 | `240px 840px 360px` | 1440 | 是 | 无 |
+| 1280×800 | `240px 680px 360px` | 1280 | 是 | 无 |
+| 1024×768 | `240px 450px 334px` | 1024 | 是 | 无 |
+
+验证：`pnpm exec playwright test layout.spec.ts workbench-panel.spec.ts shell.spec.ts workbench-navigation-motion.spec.ts polish.spec.ts` → 27 passed，退出码 0；
+`pnpm typecheck` 退出码 0；`pnpm exec vitest run` 46 文件 / 354 用例通过，退出码 0。
 
 ## 4. 目标（以设计文档为准）
 
@@ -80,18 +112,22 @@
 - 拖拽 = 8px 分隔条 + 键盘（16 / Shift 32 / Home·End），保留
   `role="separator"` 与 `aria-valuenow`。
 
-## 5. P1–P4（提议，待确认）
+## 5. P1b–P4（提议，待确认）
 
 | 阶段 | 内容 | 退出条件 |
 |---|---|---|
-| P1 | 宽度来源收敛为 `--sidebar-width` + `--work-panel-width`；实现 450 硬底线与"先收左栏"降级；右栏 range 换成 8px 分隔条；JS/CSS 断点统一 1180/760 | 1024 下中栏 ≥450 且无横向溢出；`layout.spec.ts` 的 fixme 转为通过 |
-| P2 | 右栏改固定四页签（待处理/文件/变更/浏览），把 Files/Diff/Artifact/预览从"活动"提升；键盘可达与空态 | 页签用例 + 浏览器用例通过；设计 §5.0 对照表逐行可核 |
+| P1b | 宽度来源收敛为 `--sidebar-width` + 单一面板宽度变量；右栏 range 换成 8px 分隔条（保留键盘/aria）；面板宽度持久化到 localStorage；JS/CSS 断点统一 1180/760；预算不足时"先自动收起左栏" | 分隔条鼠标+键盘用例；刷新后宽度恢复；1180/760 断点行为与设计一致 |
+| P2 | 右栏信息架构（**形态待用户确认**，见 §6 第 1 条）：待处理 / 运行状态 / 文件与变更（审查仅在有审查项时出现）或按设计四页签 | 页签用例 + 浏览器用例通过；设计 §5.0 对照表逐行可核 |
 | P3 | 中栏阅读列 680–840 居中、composer 同宽、按 §3.3 核对动效 | Playwright 视觉/几何用例；reduced-motion 断言 |
 | P4 | 样式表层收敛（v3 只留 token/skin，v1 布局段迁入 v2 后删除）并同步 `docs/runtime/` | `pnpm test/typecheck/build/test:e2e` 全绿；文档与代码一致 |
 
 ## 6. 待确认的决策
 
-1. 右栏页签集合：设计四页签 vs 现状三页签；"活动"时间线与用量归入哪个页签。
+1. **右栏信息架构（P2 的前置）**。"四页签"来自设计 §5.0 对 PI-Desktop `WorkPanel`
+   的映射（P2 第 1 条同样如此），它属于参考实现的分类建议，**与"三栏布局"决策
+   无关**；而且现状实现并未照做（现在是活动/审查/待处理三页签，且默认"活动"页签
+   内堆了 8 个分区）。用户的意向是"右栏 = 当前的一些状态"。建议改为
+   `待处理 / 运行状态 / 文件与变更`，审查仅在有审查项时作为第 4 个出现。
 2. 断点：按设计 1180/760，还是保留现状 960。
 3. 右栏默认宽度：设计 400（320–640）还是现状 360（280–560）。
 4. 是否把 `_start-stack.ps1` / `_layout-probe.cjs` 提升为受版本控制的 `scripts/`

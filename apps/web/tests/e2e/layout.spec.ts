@@ -134,13 +134,11 @@ for (const viewport of DESKTOP_VIEWPORTS) {
 }
 
 /**
- * Design §5.0 makes the conversation column the first claim on the width
- * budget: panel width = container − rail − 450, and the panel (or the rail)
- * yields first. Today the panel keeps its 360px and the conversation drops to
- * 424px at 1024, so the budget is not implemented yet. This is recorded as a
- * known-failing test instead of a silent pass, and Phase 1 implements it.
+ * Design §5.0 shared width budget: the conversation column is the first claim on
+ * the width, so at 1024x768 the work panel shrinks to `1024 − rail − 450`
+ * instead of squeezing the conversation down to 424px.
  */
-test.fixme("the work panel yields to the 450px conversation floor at 1024x768", async ({
+test("the work panel yields to the 450px conversation floor at 1024x768", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1024, height: 768 });
@@ -161,9 +159,17 @@ test.fixme("the work panel yields to the 450px conversation floor at 1024x768", 
   const rail = await box(page, ".product-sidebar");
   const main = await box(page, ".product-main");
   const panel = await box(page, "aside.product-inspector");
+
   expect(rail.width + main.width + panel.width).toBeCloseTo(1024, 0);
-  expect(main.width).toBeGreaterThanOrEqual(MAIN_PANE_MIN_WIDTH);
-  expect(panel.width).toBeLessThanOrEqual(1024 - rail.width - MAIN_PANE_MIN_WIDTH);
+  expect(
+    main.width,
+    "conversation keeps its 450px floor",
+  ).toBeGreaterThanOrEqual(MAIN_PANE_MIN_WIDTH);
+  expect(
+    panel.width,
+    "panel shrinks to fit the budget",
+  ).toBeLessThanOrEqual(1024 - rail.width - MAIN_PANE_MIN_WIDTH);
+  expect(panel.width, "panel does not collapse to nothing").toBeGreaterThan(200);
 });
 
 async function box(

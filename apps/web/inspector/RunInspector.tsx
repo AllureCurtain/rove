@@ -49,6 +49,7 @@ export function RunInspector({
   fileFocusPath,
   fileFocusLine,
   panel,
+  uiVersion = "v2",
   approvalBusy = null,
   approvalError = null,
   onApproval,
@@ -77,6 +78,8 @@ export function RunInspector({
   fileFocusPath?: string | null;
   fileFocusLine?: number | null;
   panel?: WorkPanelState;
+  /** v2 sizes the panel from its grid track; v1 keeps an inline width. */
+  uiVersion?: "v1" | "v2";
   approvalBusy?: string | null;
   approvalError?: string | null;
   onApproval?: (tool: ToolCallView, decision: "approve" | "reject") => void;
@@ -145,7 +148,14 @@ export function RunInspector({
       data-open={dialogOpen}
       aria-modal={dialogOpen ? true : undefined}
       role={dialogOpen ? "dialog" : undefined}
-      style={panel && !dialogOpen ? { width: `min(${panel.width}px, 45vw)` } : undefined}
+      style={
+        // The v2 shell sizes the panel from its grid track (design §5.0 shared
+        // width budget), so an inline width would make it unshrinkable. The v1
+        // skin has no such track and keeps the direct width.
+        panel && !dialogOpen && uiVersion === "v1"
+          ? { width: `min(${panel.width}px, 45vw)` }
+          : undefined
+      }
       onKeyDown={
         dialogOpen
           ? (event: KeyboardEvent<HTMLElement>) => {
