@@ -1,150 +1,93 @@
 ﻿import { describe, expect, it } from "vitest";
 
-import type { ProductTranscriptResponse } from "../product/product-api-types";
+import type { ProductAuthorizationsResponse } from "../product/product-api-types";
 import { collectSessionAuthorizationRecords } from "./SessionAuthorizationPanel";
 
-function segment(overrides: {
-  ordinal: number;
-  runId: string;
-  inherited?: boolean;
-  events: Array<{ seq: number; event: unknown }>;
-}) {
+function record(overrides: Partial<ProductAuthorizationsResponse["authorizations"][number]> = {}) {
   return {
-    binding: {
-      product_session_id: "ps-1",
-      ordinal: overrides.ordinal,
-      runtime_session_id: "rs-1",
-      runtime_job_id: "job-1",
-      runtime_run_id: overrides.runId,
-      bound_at: "2026-09-17T00:00:00Z",
-    },
-    inherited: overrides.inherited ?? false,
-    run_status: "done" as const,
-    observed_through_seq: 0,
-    last_event_seq: 0,
-    events: overrides.events,
-  } as ProductTranscriptResponse["segments"][number];
+    call_id: "call-1",
+    job_id: "job-1",
+    run_id: "run-a",
+    tool: "write_file",
+    args: { path: "notes.md" },
+    reason: "destructive tool requires explicit approval",
+    status: "pending",
+    requested_at: "2026-09-17T00:00:00Z",
+    updated_at: "2026-09-17T00:00:01Z",
+    ...overrides,
+  } as ProductAuthorizationsResponse["authorizations"][number];
 }
 
-function transcript(
-  segments: ProductTranscriptResponse["segments"],
-): ProductTranscriptResponse {
+function response(
+  authorizations: ProductAuthorizationsResponse["authorizations"],
+  truncated = false,
+): ProductAuthorizationsResponse {
   return {
-    product_session_id: "ps-1",
-    workspace_id: "pw-1",
-    status: "complete",
-    partial_reasons: [],
-    segments,
-  } as ProductTranscriptResponse;
-}
-
-function approvalNeeded(callId: string, name: string, seq: number) {
-  return {
-    seq,
-    event: {
-      type: "tool_call_approval_needed",
-      call_id: callId,
-      name,
-      args: { path: "notes.md" },
-      reason: "destructive tool requires explicit approval",
-    },
+    session_id: "ps-1",
+    authorizations,
+    truncated,
   };
 }
 
 describe("collectSessionAuthorizationRecords", () => {
-  it("projects the durable request side of every authorization request", () => {
+  it("projects the durable request and decision side of every authorization", () => {
     const records = collectSessionAuthorizationRecords(
-      transcript([
-        segment({
-          ordinal: 1,
-          runId: "run-a",
-          events: [
-            approvalNeeded("call-1", "write_file", 3),
-            { seq: 4, event: { type: "llm_message", full: "hi" } },
-          ],
+      response([
+        record({
+          call_id: "call-1",
+          status: "approved",
+          decided_via: "job_api",
+          outcome: { event: "tool_call_completed", seq: 4 },
         }),
       ]),
     );
 
     expect(records).toEqual([
-      {
-        callId: "call-1",
-        toolName: "write_file",
-        runId: "run-a",
-        runOrdinal: 1,
-        seq: 3,
-        reason: "destructive tool requires explicit approval",
-        inherited: false,
-      },
+      record({
+        call_id: "call-1",
+        status: "approved",
+        decided_via: "job_api",
+        outcome: { event: "tool_call_completed", seq: 4 },
+      }),
     ]);
   });
 
-  it("keeps only the first occurrence when an event is replayed", () => {
+  it("keeps unknown decision fields unknown instead of inventing an actor", () => {
     const records = collectSessionAuthorizationRecords(
-      transcript([
-        segment({
-          ordinal: 1,
-          runId: "run-a",
-          events: [approvalNeeded("call-1", "write_file", 3)],
-        }),
-        segment({
-          ordinal: 2,
-          runId: "run-b",
-          events: [approvalNeeded("call-1", "write_file", 3)],
+      response([
+        record({
+          status: "approved",
+          decided_via: null,
         }),
       ]),
     );
 
-    expect(records).toHaveLength(1);
-    expect(records[0]?.runId).toBe("run-a");
+    expect(records[0]?.decided_via).toBeNull();
+    expect(records[0]?.outcome).toBeUndefined();
   });
 
-  it("orders records newest-first and marks inherited runs", () => {
+  it("preserves newest-first order from the durable endpoint", () => {
     const records = collectSessionAuthorizationRecords(
-      transcript([
-        segment({
-          ordinal: 2,
-          runId: "run-b",
-          inherited: true,
-          events: [approvalNeeded("call-2", "shell", 9)],
-        }),
-        segment({
-          ordinal: 1,
-          runId: "run-a",
-          events: [approvalNeeded("call-1", "write_file", 3)],
-        }),
+      response([
+        record({ call_id: "call-2", run_id: "run-b", updated_at: "2026-09-17T00:02:00Z" }),
+        record({ call_id: "call-1", run_id: "run-a", updated_at: "2026-09-17T00:01:00Z" }),
       ]),
     );
 
-    expect(records.map((record) => record.callId)).toEqual(["call-2", "call-1"]);
-    expect(records[0]).toMatchObject({ runId: "run-b", inherited: true });
-    expect(records[1]).toMatchObject({ runId: "run-a", inherited: false });
+    expect(records.map((item) => item.call_id)).toEqual(["call-2", "call-1"]);
   });
 
   it("returns nothing for a session with no authorization requests", () => {
-    const records = collectSessionAuthorizationRecords(
-      transcript([
-        segment({
-          ordinal: 1,
-          runId: "run-a",
-          events: [{ seq: 1, event: { type: "llm_message", full: "hi" } }],
-        }),
-      ]),
-    );
-
-    expect(records).toEqual([]);
+    expect(collectSessionAuthorizationRecords(response([]))).toEqual([]);
   });
 
   it("bounds the section so one session cannot flood the panel", () => {
-    const events = Array.from({ length: 80 }, (_unused, index) =>
-      approvalNeeded(`call-${index}`, "write_file", index + 1),
+    const authorizations = Array.from({ length: 80 }, (_unused, index) =>
+      record({ call_id: `call-${index}`, updated_at: `2026-09-17T00:00:${String(index).padStart(2, "0")}Z` }),
     );
-    const records = collectSessionAuthorizationRecords(
-      transcript([segment({ ordinal: 1, runId: "run-a", events })]),
-    );
+    const records = collectSessionAuthorizationRecords(response(authorizations));
 
     expect(records).toHaveLength(50);
-    // Newest-first, so the bound keeps the most recent requests.
-    expect(records[0]?.seq).toBe(80);
+    expect(records[0]?.call_id).toBe("call-0");
   });
 });

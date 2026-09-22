@@ -4,6 +4,7 @@
 //! browser migration coordination, and canonical-event transcript projection.
 
 pub(crate) mod artifacts;
+pub(crate) mod authorizations;
 mod contracts;
 pub(crate) mod cursor;
 pub(crate) mod diff;
@@ -27,6 +28,9 @@ pub(crate) mod workspace_picker;
 pub use artifacts::{
     ProductArtifactAvailability, ProductArtifactContentEnvelope, ProductArtifactPreviewKind,
     ProductArtifactSourceKind, ProductArtifactView, ProductArtifactsResponse,
+};
+pub use authorizations::{
+    ProductAuthorizationOutcome, ProductAuthorizationRecord, ProductAuthorizationsResponse,
 };
 pub use contracts::*;
 pub use cursor::{

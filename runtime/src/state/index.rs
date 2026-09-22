@@ -9,7 +9,7 @@ use crate::events::StreamEvent;
 use crate::types::{JobId, RunId, SessionId, TaskState};
 use rove_core::CallId;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 4;
+pub const CURRENT_SCHEMA_VERSION: i64 = 5;
 const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
 const MAX_SNAPSHOT_EVENTS: usize = 2_000;
 const MAX_SNAPSHOT_EVENT_JSON_BYTES: usize = 1_048_576;
@@ -174,11 +174,20 @@ const MIGRATION_004: &str = r#"
 DROP TABLE IF EXISTS event_offsets;
 "#;
 
+/// P4 decision-side authorization history: `decided_via` records which
+/// surface resolved an approval (e.g. `job_api`, `job_cancel`). The column is
+/// nullable; rows decided before this migration keep NULL, which readers must
+/// render as "not recorded" instead of guessing an actor.
+const MIGRATION_005: &str = r#"
+ALTER TABLE pending_approvals ADD COLUMN decided_via TEXT;
+"#;
+
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "runtime_state_index", MIGRATION_001),
     (2, "runs_by_job_index", MIGRATION_002),
     (3, "conversation_messages", MIGRATION_003),
     (4, "drop_event_offsets", MIGRATION_004),
+    (5, "pending_approvals_decided_via", MIGRATION_005),
 ];
 
 #[derive(Debug, Clone)]
@@ -308,6 +317,27 @@ pub struct EventIndexRecord {
     pub seq: u64,
     pub event_name: String,
     pub event_json: String,
+}
+
+/// One durable approval request and its decision side, if one was recorded.
+///
+/// Identifiers stay as stored strings: they are opaque to readers, and a
+/// corrupted row must surface through the API instead of aborting the whole
+/// history read. `decided_via` is `None` for requests that are still pending
+/// and for rows decided before schema v5, both of which render as "not
+/// recorded".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalHistoryEntry {
+    pub call_id: String,
+    pub job_id: String,
+    pub run_id: String,
+    pub tool: String,
+    pub args_json: String,
+    pub reason: String,
+    pub status: String,
+    pub decided_via: Option<String>,
+    pub requested_at: String,
+    pub updated_at: String,
 }
 
 /// One bounded, internally consistent read of a run and its indexed events.
@@ -1573,6 +1603,183 @@ impl StateIndex {
         status: &str,
     ) -> std::io::Result<()> {
         self.mark_pending_status("pending_approvals", "call_id", call_id, status)
+    }
+
+    pub async fn record_approval_decision_async(
+        &self,
+        call_id: CallId,
+        status: String,
+        decided_via: String,
+    ) -> std::io::Result<()> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || {
+            index.record_approval_decision(call_id, &status, &decided_via)
+        })
+        .await
+        .map_err(std::io::Error::other)?
+    }
+
+    /// Record a terminal approval decision together with the surface that
+    /// made it (`decided_via`, e.g. `job_api` or `job_cancel`). Rows decided
+    /// before schema v5 carry NULL, which readers must render as "not
+    /// recorded" rather than guessing an actor.
+    pub fn record_approval_decision(
+        &self,
+        call_id: CallId,
+        status: &str,
+        decided_via: &str,
+    ) -> std::io::Result<()> {
+        let conn = self.connect()?;
+        let now = now_rfc3339();
+        conn.execute(
+            r#"
+            UPDATE pending_approvals
+            SET status = ?2, decided_via = ?3, updated_at = ?4
+            WHERE call_id = ?1
+            "#,
+            params![call_id.to_string(), status, decided_via, now],
+        )
+        .map_err(io_other)?;
+        Ok(())
+    }
+
+    pub async fn approvals_for_runs_async(
+        &self,
+        run_ids: Vec<RunId>,
+        limit: usize,
+    ) -> std::io::Result<Vec<ApprovalHistoryEntry>> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.approvals_for_runs(&run_ids, limit))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    /// Approval request + decision history for the given runs, newest update
+    /// first, bounded to `limit` rows. `run_ids` is capped defensively; the
+    /// caller (product history endpoint) already bounds the runs it asks for.
+    pub fn approvals_for_runs(
+        &self,
+        run_ids: &[RunId],
+        limit: usize,
+    ) -> std::io::Result<Vec<ApprovalHistoryEntry>> {
+        const MAX_RUN_IDS: usize = 256;
+        if run_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        if run_ids.len() > MAX_RUN_IDS {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("approvals_for_runs accepts at most {MAX_RUN_IDS} run ids"),
+            ));
+        }
+        let conn = self.connect()?;
+        let placeholders = std::iter::repeat_n("?", run_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            r#"
+            SELECT call_id, job_id, run_id, name, args_json, reason, status,
+                   decided_via, created_at, updated_at
+            FROM pending_approvals
+            WHERE run_id IN ({placeholders})
+            ORDER BY updated_at DESC, call_id DESC
+            LIMIT ?
+            "#
+        );
+        let mut statement = conn.prepare(&sql).map_err(io_other)?;
+        let mut parameters: Vec<rusqlite::types::Value> = run_ids
+            .iter()
+            .map(|run_id| run_id.to_string().into())
+            .collect();
+        parameters.push((limit as i64).into());
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(parameters), |row| {
+                Ok(ApprovalHistoryEntry {
+                    call_id: row.get(0)?,
+                    job_id: row.get(1)?,
+                    run_id: row.get(2)?,
+                    tool: row.get(3)?,
+                    args_json: row.get(4)?,
+                    reason: row.get(5)?,
+                    status: row.get(6)?,
+                    decided_via: row.get(7)?,
+                    requested_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                })
+            })
+            .map_err(io_other)?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row.map_err(io_other)?);
+        }
+        Ok(entries)
+    }
+
+    pub async fn tool_outcome_records_for_runs_async(
+        &self,
+        run_ids: Vec<RunId>,
+        limit: usize,
+    ) -> std::io::Result<Vec<EventIndexRecord>> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.tool_outcome_records_for_runs(&run_ids, limit))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    /// Terminal tool events (`tool_call_completed` / `tool_call_failed`) for
+    /// the given runs, in sequence order and bounded. The authorization
+    /// history endpoint correlates these with approval rows by `call_id`
+    /// without scanning each run's whole event log.
+    pub fn tool_outcome_records_for_runs(
+        &self,
+        run_ids: &[RunId],
+        limit: usize,
+    ) -> std::io::Result<Vec<EventIndexRecord>> {
+        const MAX_RUN_IDS: usize = 256;
+        if run_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        if run_ids.len() > MAX_RUN_IDS {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("tool_outcome_records_for_runs accepts at most {MAX_RUN_IDS} run ids"),
+            ));
+        }
+        let conn = self.connect()?;
+        let placeholders = std::iter::repeat_n("?", run_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            r#"
+            SELECT run_id, seq, event_name, event_json
+            FROM events
+            WHERE run_id IN ({placeholders})
+                AND event_name IN ('tool_call_completed', 'tool_call_failed')
+            ORDER BY run_id ASC, seq ASC
+            LIMIT ?
+            "#
+        );
+        let mut statement = conn.prepare(&sql).map_err(io_other)?;
+        let mut parameters: Vec<rusqlite::types::Value> = run_ids
+            .iter()
+            .map(|run_id| run_id.to_string().into())
+            .collect();
+        parameters.push((limit as i64).into());
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(parameters), |row| {
+                Ok(EventIndexRecord {
+                    run_id: run_id_from_row(row, 0)?,
+                    seq: nonnegative_u64_from_row(row, 1)?,
+                    event_name: row.get(2)?,
+                    event_json: row.get(3)?,
+                })
+            })
+            .map_err(io_other)?;
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row.map_err(io_other)?);
+        }
+        Ok(records)
     }
 
     pub async fn mark_pending_input_status_async(
@@ -3038,6 +3245,101 @@ mod tests {
             .unwrap()
             .expect("terminal run should become resumable after guard release");
         assert!(contender.release_job_resume_claim(&claim).unwrap());
+    }
+
+    fn ok_tool_result(call_id: CallId) -> rove_core::ToolResult {
+        rove_core::ToolResult {
+            call_id,
+            output: "ok".to_string(),
+            mutations: Vec::new(),
+            metadata: rove_core::ToolExecutionMetadata::default(),
+            envelope: None,
+        }
+    }
+
+    #[test]
+    fn approval_decision_records_decided_via_and_history_reads_it_back() {
+        let (_temp, index, _session_id, job_id, run_id) = indexed_run();
+        let call_id = CallId::new();
+        index
+            .record_pending_approval(
+                call_id,
+                job_id,
+                run_id,
+                "write_file",
+                r#"{"path":"a.txt"}"#,
+                "destructive tool requires explicit approval",
+            )
+            .unwrap();
+
+        let pending = index.approvals_for_runs(&[run_id], 10).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].status, "pending");
+        assert_eq!(pending[0].decided_via, None);
+
+        index
+            .record_approval_decision(call_id, "approved", "job_api")
+            .unwrap();
+        let decided = index.approvals_for_runs(&[run_id], 10).unwrap();
+        assert_eq!(decided.len(), 1);
+        assert_eq!(decided[0].status, "approved");
+        assert_eq!(decided[0].decided_via.as_deref(), Some("job_api"));
+        assert_eq!(decided[0].tool, "write_file");
+    }
+
+    #[test]
+    fn approval_history_is_bounded_and_ordered_by_update() {
+        let (_temp, index, _session_id, job_id, run_id) = indexed_run();
+        for offset in 0..3 {
+            let call_id = CallId::new();
+            index
+                .record_pending_approval(call_id, job_id, run_id, "write_file", "{}", "reason")
+                .unwrap();
+            index
+                .record_approval_decision(call_id, "rejected", "job_api")
+                .unwrap();
+            // Force distinct updated_at values within the same second.
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let _ = offset;
+        }
+
+        let bounded = index.approvals_for_runs(&[run_id], 2).unwrap();
+        assert_eq!(bounded.len(), 2);
+        let all = index.approvals_for_runs(&[run_id], 10).unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(all[0].updated_at >= all[1].updated_at);
+        assert!(all[1].updated_at >= all[2].updated_at);
+    }
+
+    #[test]
+    fn tool_outcome_records_return_only_terminal_tool_events() {
+        let (_temp, index, _session_id, _job_id, run_id) = indexed_run();
+        let call_id = CallId::new();
+        let started = StreamEvent::ToolCallStarted {
+            call_id,
+            tool_use_id: None,
+            name: "write_file".to_string(),
+            args: serde_json::json!({}),
+        };
+        let completed = StreamEvent::ToolCallCompleted {
+            call_id,
+            result: ok_tool_result(call_id),
+        };
+        index.append_event(run_id, 1, &started, "{}").unwrap();
+        index.append_event(run_id, 2, &completed, "{}").unwrap();
+
+        let outcomes = index.tool_outcome_records_for_runs(&[run_id], 10).unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].event_name, "tool_call_completed");
+        assert_eq!(outcomes[0].seq, 2);
+    }
+
+    #[test]
+    fn approval_history_rejects_oversized_run_id_batches() {
+        let (_temp, index, _session_id, _job_id, _run_id) = indexed_run();
+        let run_ids: Vec<RunId> = (0..257).map(|_| RunId::new()).collect();
+        assert!(index.approvals_for_runs(&run_ids, 1).is_err());
+        assert!(index.tool_outcome_records_for_runs(&run_ids, 1).is_err());
     }
 
     #[test]

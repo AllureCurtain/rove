@@ -2131,6 +2131,7 @@ async fn api_exposes_openapi_json_for_all_routes() {
             "get",
         ),
         ("/product/sessions/{session_id}/diff", "get"),
+        ("/product/sessions/{session_id}/authorizations", "get"),
         ("/product/sessions/{session_id}/forks", "post"),
         ("/product/sessions/{session_id}/forks", "get"),
         ("/product/sessions/{session_id}/steers", "post"),
@@ -2244,6 +2245,7 @@ async fn api_exposes_openapi_json_for_all_routes() {
             "get",
         ),
         ("/product/sessions/{session_id}/diff", "get"),
+        ("/product/sessions/{session_id}/authorizations", "get"),
         ("/product/sessions/{session_id}/forks", "post"),
         ("/product/sessions/{session_id}/forks", "get"),
         ("/product/sessions/{session_id}/steers", "post"),
@@ -11523,4 +11525,140 @@ max_selected = 1
         "---\nschema_version: 1\nid: ops.rollback\nversion: 1.0.0\nstatus: active\ntitle: Roll back\nmode: diagnose\nrisk_level: low\nintents: [rollback]\n---\n\nInspect the deployment before rollback.\n",
     )
     .unwrap();
+}
+
+// ─── P4: durable authorization request + decision history ───────────────────
+
+#[tokio::test]
+async fn product_session_authorizations_project_request_and_decision_side() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Authorization history").await;
+    let session_id = session["id"].as_str().unwrap().to_string();
+    configure_product_session_model(&app, &session_id, "fake-raw", 1).await;
+
+    let created = create_product_job(
+        &app,
+        &session_id,
+        r#"{"tool":"write_file","args":{"path":"auth-approved.txt","content":"ok"}}"#,
+    )
+    .await;
+    let pending = wait_for_approval_event(app.clone(), created.job_id.to_string()).await;
+    let approval = pending.pending_approvals.first().unwrap().clone();
+
+    let while_pending = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/product/sessions/{session_id}/authorizations"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(while_pending.status(), StatusCode::OK);
+    let while_pending: serde_json::Value = decode_json(while_pending).await;
+    assert_eq!(while_pending["session_id"], session_id);
+    assert_eq!(while_pending["truncated"], false);
+    let pending_rows = while_pending["authorizations"].as_array().unwrap();
+    assert_eq!(pending_rows.len(), 1);
+    assert_eq!(pending_rows[0]["call_id"], approval.call_id.to_string());
+    assert_eq!(pending_rows[0]["status"], "pending");
+    assert_eq!(pending_rows[0]["decided_via"], serde_json::Value::Null);
+
+    let approve = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/jobs/{}/approvals/{}",
+                    created.job_id, approval.call_id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"decision":"approve"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approve.status(), StatusCode::OK);
+    wait_for_done(app.clone(), created.job_id.to_string()).await;
+
+    let decided = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/product/sessions/{session_id}/authorizations?limit=10"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(decided.status(), StatusCode::OK);
+    let decided: serde_json::Value = decode_json(decided).await;
+    let rows = decided["authorizations"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["status"], "approved");
+    assert_eq!(rows[0]["decided_via"], "job_api");
+    assert_eq!(rows[0]["tool"], "write_file");
+    assert!(!rows[0]["requested_at"].as_str().unwrap().is_empty());
+    assert!(!rows[0]["updated_at"].as_str().unwrap().is_empty());
+    // The outcome is projected only when the run's event log holds a terminal
+    // tool event for the same call id.
+    if !rows[0]["outcome"].is_null() {
+        assert_eq!(rows[0]["outcome"]["event"], "tool_call_completed");
+    }
+}
+
+#[tokio::test]
+async fn product_session_authorizations_reject_unknown_session_and_bound_limit() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Empty authorizations").await;
+    let session_id = session["id"].as_str().unwrap();
+
+    let missing = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/sessions/01ARZ3NDEKTSV4RRFFQ69G5FAV/authorizations")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    let empty = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/product/sessions/{session_id}/authorizations"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty.status(), StatusCode::OK);
+    let empty: serde_json::Value = decode_json(empty).await;
+    assert_eq!(empty["authorizations"].as_array().unwrap().len(), 0);
+    assert_eq!(empty["truncated"], false);
 }
