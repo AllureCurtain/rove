@@ -302,8 +302,10 @@ export function RunInspector({
       <div className="inspector-tabs-row">
         <div
           className="inspector-tabs"
-          role="tablist"
-          aria-label={t("inspector.tabsLabel")}
+          // An empty tablist owns no tabs, which is an ARIA violation, so the
+          // role only exists while the strip has content.
+          role={tabs.length > 0 ? "tablist" : undefined}
+          aria-label={tabs.length > 0 ? t("inspector.tabsLabel") : undefined}
         >
         {tabs.map((item) => {
           const selected = item.kind === activeKind;
@@ -365,7 +367,9 @@ export function RunInspector({
       <div
         className="inspector-body"
         id={activeKind ? `inspector-surface-${activeKind}` : undefined}
-        role="tabpanel"
+        // Without an active tab there is no tab to label the surface, and an
+        // unlabelled tabpanel is not worth exposing.
+        role={activeKind ? "tabpanel" : undefined}
         aria-labelledby={activeKind ? `inspector-tab-${activeKind}` : undefined}
       >
         {activeKind === "new" ? (

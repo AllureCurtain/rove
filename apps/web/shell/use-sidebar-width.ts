@@ -59,6 +59,24 @@ function writeStoredWidth(width: number): void {
 }
 
 /**
+ * Rail width requested by a pointer position.
+ *
+ * The handle is pinned to the rail's trailing edge, so it slides with the width
+ * it is measuring. Using the handle's own rect as the origin makes the grab
+ * itself change the width: a 240px rail computes `240 - 236 = 4px` and snaps to
+ * the minimum, and every later frame recomputes against the moved handle. The
+ * caller therefore passes the container's left edge, which does not move with
+ * the rail, so the pointer position *is* the requested rail width.
+ */
+export function sidebarWidthFromPointer(
+  clientX: number,
+  containerLeft: number,
+): number {
+  const left = Number.isFinite(containerLeft) ? containerLeft : 0;
+  return boundSidebarWidth(clientX - left);
+}
+
+/**
  * Keyboard stepping for the width handle: arrows move by the design step,
  * Shift multiplies it, Home/End jump to the bounds. Returns null when the key
  * is not a resize key, so the caller can leave it alone.
@@ -114,8 +132,11 @@ export function useSidebarWidth(): {
   // would re-render the whole rail and fight the drag.
   const settleWidth = useCallback(
     (clientX: number, element: HTMLElement) => {
-      const rect = element.getBoundingClientRect();
-      setWidth(clientX - rect.left);
+      // The origin is the shell the handle is anchored in, not the handle: see
+      // sidebarWidthFromPointer for why the handle's own rect cannot be used.
+      const container = element.parentElement ?? element;
+      const rect = container.getBoundingClientRect();
+      setWidth(sidebarWidthFromPointer(clientX, rect.left));
     },
     [setWidth],
   );

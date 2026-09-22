@@ -281,6 +281,10 @@ test("work panel tab strip opens, closes and reopens tabs", async ({ page }) => 
   await strip.getByRole("button", { name: "关闭 运行", exact: true }).click();
   await expect(strip.getByRole("tab")).toHaveCount(0);
   await expect(page.getByText("没有打开的页签，用 + 打开一个。", { exact: true })).toBeVisible();
+  // An empty strip must not leave invalid ARIA behind: `tablist` requires owned
+  // tabs and a `tabpanel` needs the tab that labels it.
+  await expect(page.getByRole("tablist")).toHaveCount(0);
+  await expect(page.getByRole("tabpanel")).toHaveCount(0);
   await openTabButton.click();
   await expect(launcherTab).toBeVisible();
 });
@@ -347,6 +351,110 @@ for (const viewport of READING_COLUMN_VIEWPORTS) {
     );
   });
 }
+
+/**
+ * The rail handle must resize the rail it sits on.
+ *
+ * `settleWidth` used to measure from the handle's own rect, but the handle is
+ * pinned to the rail's trailing edge and slides with the rail: grabbing a 240px
+ * rail computed `240 - 236 = 4px`, which snapped the rail to its 200px minimum
+ * on the first pointer move and then kept re-measuring from the moved handle.
+ * Measured on the pre-fix build at 1440x900: a +40px drag left the rail at 200.
+ */
+test("dragging the rail handle resizes the rail and keeps the columns", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const workspace = createMockWorkspace();
+  const session = createMockSession();
+  await installMockProductApi(page, {
+    workspaces: [workspace],
+    sessions: [session],
+    transcripts: {
+      [session.id]: completedTranscript(workspace, session, "Rail question", "Rail answer"),
+    },
+    activeWorkspaceId: workspace.id,
+    activeSessionId: session.id,
+  });
+  await page.goto(`/w/${workspace.id}/s/${session.id}`);
+  await expect(page.getByText("Rail answer", { exact: true })).toBeVisible();
+
+  const before = await box(page, ".product-sidebar");
+  expect(before.width, "the rail starts at its 240px default").toBe(240);
+
+  const handle = await box(page, ".sidebar-resize-handle");
+  const startX = handle.x + handle.width / 2;
+  const y = handle.y + 60;
+  await page.mouse.move(startX, y);
+  await page.mouse.down();
+  for (let step = 1; step <= 4; step += 1) {
+    await page.mouse.move(startX + step * 10, y);
+  }
+  await page.mouse.up();
+
+  const grown = await box(page, ".product-sidebar");
+  expect(
+    grown.width,
+    "the rail must follow the pointer instead of snapping to its minimum",
+  ).toBeGreaterThanOrEqual(276);
+  expect(grown.width, "the drag must not overshoot").toBeLessThanOrEqual(284);
+
+  // The columns must survive the resize: conversation still on the floor, panel
+  // still on the first row and still flush with the viewport edge.
+  const main = await box(page, ".product-main");
+  const panel = await box(page, "aside.product-inspector");
+  expect(main.x, "the conversation starts where the rail ends").toBeCloseTo(
+    grown.width,
+    0,
+  );
+  expect(main.width).toBeGreaterThanOrEqual(MAIN_PANE_MIN_WIDTH);
+  expect(panel.y, "the work panel stays on the first row").toBeCloseTo(main.y, 0);
+  expect(panel.x + panel.width, "the panel stays flush with the viewport").toBeCloseTo(
+    1440,
+    0,
+  );
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+  ).toBe(true);
+});
+
+/**
+ * Keyboard resizing must keep working next to the pointer path: the handle is a
+ * `role="separator"` with a bounded value, not a decorative grip.
+ */
+test("the rail handle resizes from the keyboard within its bounds", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const workspace = createMockWorkspace();
+  const session = createMockSession();
+  await installMockProductApi(page, {
+    workspaces: [workspace],
+    sessions: [session],
+    transcripts: {
+      [session.id]: completedTranscript(workspace, session, "Rail question", "Rail answer"),
+    },
+    activeWorkspaceId: workspace.id,
+    activeSessionId: session.id,
+  });
+  await page.goto(`/w/${workspace.id}/s/${session.id}`);
+  await expect(page.getByText("Rail answer", { exact: true })).toBeVisible();
+
+  const handle = page.getByRole("separator", { name: /导航宽度|sidebar width/ });
+  await handle.focus();
+  await handle.press("ArrowRight");
+  await expect(handle).toHaveAttribute("aria-valuenow", "256");
+  await handle.press("Shift+ArrowRight");
+  await expect(handle).toHaveAttribute("aria-valuenow", "288");
+  expect((await box(page, ".product-sidebar")).width).toBe(288);
+  await handle.press("Home");
+  await expect(handle).toHaveAttribute("aria-valuenow", "200");
+  await handle.press("ArrowLeft");
+  await expect(handle).toHaveAttribute("aria-valuenow", "200");
+  await handle.press("End");
+  await expect(handle).toHaveAttribute("aria-valuenow", "360");
+});
+
 
 async function box(
   page: Page,

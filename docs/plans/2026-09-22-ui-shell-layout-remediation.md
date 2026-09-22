@@ -5,6 +5,9 @@
 > P2（右栏动态页签）、P3（中栏统一阅读列）、P4（样式分层契约）均已在 worktree
 > `fix/ui-shell-layout` 实现并有自动化回归；逐阶段实测退出码见 §3b–§3f。
 > 两处与初稿不同的落地决定记录在 §3f 与 §6（保留 960 断点、保留 v1 布局层）。
+> **2026-09-22 追加一轮独立复核**（§7）：用与本用例集无关的几何探针在 11 个视口量测，发现并修掉
+> 两个自杀用例集漏掉的缺陷（左栏拖拽原点取到会随宽度移动的把手上；清空页签后残留非法 ARIA），
+> 并补齐 `pnpm build` 门禁。§5 的阶段表原为"提议，待确认"，现已被 §3b–§3f 的实现取代。
 > 日期：2026-09-22。
 > 基线：`f853a97`（`origin/main`）。
 > 参照：[工作台设计](../design/2026-09-17-pi-desktop-workbench-design.md) §3 / §4.0 / §5.0、
@@ -252,7 +255,10 @@ tablist 已空、正文却仍渲染"运行"内容。状态源改为按 panel 是
 - 拖拽 = 8px 分隔条 + 键盘（16 / Shift 32 / Home·End），保留
   `role="separator"` 与 `aria-valuenow`。
 
-## 5. P1b–P4（提议，待确认）
+## 5. P1b–P4（原提议表，已由 §3b–§3f 的实现取代）
+
+> 本表是复核阶段的初稿提议。实际落地见 §3b–§3f 与 §7；两处偏离（保留 960 断点、保留 v1 布局层）
+> 见 §3c/§3e/§6。P2 的"形态待用户确认"已按 §6 第 1 条落为动态页签，因此本表仅作历史记录。
 
 | 阶段 | 内容 | 退出条件 |
 |---|---|---|
@@ -273,3 +279,87 @@ tablist 已空、正文却仍渲染"运行"内容。状态源改为按 panel 是
 4. **`_start-stack.ps1` / `_layout-probe.cjs` 提升到 `scripts/`**：**未做**（可选）。它们现在只在
    worktree 的 `outputs/` 下作为本地证据工具使用；若要给 CI 复用，需要先脱敏并确认仓库的
    `scripts/` 约定，属于独立变更。
+
+## 7. 独立复核与由此发现并修掉的缺陷（2026-09-22）
+
+复核动机：`layout.spec.ts` 等断言是本轮修复自带的，通过它们只能证明"代码与自己的假设一致"，
+不能证明"界面是对的"。因此另写了一个与用例集无关的几何/交互探针
+`outputs/_verify-sweep.cjs`（未纳入版本控制）：在 11 个视口量真实 DOM，再验证分隔条键盘/拖拽/
+Escape、页签生命周期、左栏让位与重开、刷新持久化，逐项打印原始数字而非只打印通过/失败。
+
+### 7.1 实测宽度扫描（真实退出码 0，140 项全通过）
+
+| 视口 | `.product-body` 计算列 | 左栏 | 中栏 | 右栏 | 横向溢出 | 左栏收起 |
+|---|---|---|---|---|---|---|
+| 1440×900 | `240px 840px 360px` | 240×848 | 840×848 | 360×848 | 0 | false |
+| 1280×800 | `240px 680px 360px` | 240×848 | 680×848 | 360×848 | 0 | false |
+| 1180×900 | `240px 580px 360px` | 240×848 | 580×848 | 360×848 | 0 | false |
+| 1100×900 | `240px 500px 360px` | 240×848 | 500×848 | 360×848 | 0 | false |
+| 1024×768 | `0px 664px 360px` | 收起 | **664**×848 | 360×848 | 0 | true |
+| 1000×900 | `0px 640px 360px` | 收起 | 640×848 | 360×848 | 0 | true |
+| **961×900** | `0px 601px 360px` | 收起 | 601×848 | 360×848 | 0 | true |
+| **960×900** | `960px`（单列） | 抽屉 | 960×848 | 抽屉（0×0） | 0 | false |
+| 900 / 768 / 375 | 单列 | 抽屉 | 占满 | 抽屉 | 0 | false |
+
+要点：961/960 断点两侧都正确（961 仍在三栏内，由左栏让位保住 450 底线；960 起转抽屉）；
+每个视口三栏 y 相同、高 = 视口 − 52、相邻不重叠、宽度之和 = 外壳宽度、分隔条恒为 8px。
+1024 下中栏从修复前的 424 变为 664（设计 §5.0 的 450 底线不再被击穿）。
+
+### 7.2 缺陷 A（**本轮 P0 之前就存在**，已修）：左栏拖拽把宽度算到了把手上
+
+`use-sidebar-width.settleWidth` 原本用**把手自己的 rect.left** 作原点：`width = clientX − rect.left`。
+但把手钉在左栏右缘、随宽度一起移动（P0 之后 `left: var(--sidebar-nav-width)`），于是抓取动作本身
+就把宽度算成 `240 − 236 = 4px`，被钳到 200 下限；之后每一帧又从移动后的把手重新量，永远回不来。
+实测：1440 下把把手向右拖 40px，左栏从 240 掉到 200。
+
+A/B 判定责任归属：把 origin/main 的把手几何（网格项、`grid-column: 2`）注入当前页面后重跑同一拖拽：
+
+```
+[A] 当前 CSS（P0 绝对定位覆盖）：handleLeft=236，+40px 拖拽后 rail=200
+[B] origin/main 几何（网格项，注入）：handleLeft=236，+40px 拖拽后 rail=200
+```
+
+两种几何完全相同 ⇒ **P0 没有改变该行为**，是既有缺陷，不是本轮引入。
+
+修复：新增纯函数 `sidebarWidthFromPointer(clientX, containerLeft)`，`settleWidth` 改从**外壳**
+（把手父元素，不随左栏移动）取原点，使"指针位置 = 请求的左栏宽度"。修复后同一探针：+40px ⇒ 276–284。
+
+### 7.3 缺陷 B（**P2 引入**，已修）：清空页签后残留非法 ARIA
+
+动态页签允许关到 0 个页签（P2 有意设计）。此时 `role="tablist"` 仍渲染但**不拥有任何 tab**
+（ARIA `aria-required-children` 违规），`role="tabpanel"` 也仍在且 `aria-labelledby` 为 undefined
+（无名的 tabpanel）。两者都可达：点最后一个页签的 ✕ 即可。
+
+修复：`role`/`aria-label`/`aria-labelledby` 改为按状态输出——`tabs.length > 0` 才有 tablist，
+`activeKind !== null` 才有 tabpanel；空态继续显示 `inspector.noTabs` 引导文案。
+
+### 7.4 复核中发现的其他事实（不改代码，记录备查）
+
+- **`--work-panel-collapsed-width` 全仓未被定义**（`git grep` 仅 `ProductApp.tsx` 一处引用），
+  因此内联轨道 `minmax(0, var(--work-panel-collapsed-width, 40px))` 实际恒取 40px 兜底。
+  该值与 origin/main 既有的 `.product-inspector[data-collapsed="true"] { width: 40px }` 一致，
+  所以行为正确（探针实测宽屏收起后右栏 = 40px、无溢出），但这是个"引用未定义变量"的味道问题，
+  后续可把它改成显式常量或补上变量定义。
+- 宽屏收起时，8px 分隔条仍在 40px 残条内（探针 INFO 记录）。不影响布局与可操作性，属观感项。
+- 本轮探针自身有过 3 处断言写法错误（`locator().locator()` 只查后代；把"重新推导后的
+  aria-valuemax"与按下瞬间的 now 相比；左栏拖拽方向断言），已修正后重跑；修正过程与原始
+  失败输出保留在 `outputs/_sweep.*.log`，未美化。
+- PI-Desktop 参考实现路径 `D:\Study\project\agent\third-party-agents` **可用**（本文件早前的
+  摘要曾误记为不可达），`work-panel-resize.ts` 的 `244/360/450/460/1` 常量与
+  `workPanelLayout`/`workPanelWidthForSidebarReopen` 语义已逐行比对一致；差异仅为 rove 侧新增的
+  键盘步进与 `finiteOr` 防御（PI 的 `shouldCollapseSidebar` 用原始请求值，rove 用钳后值，
+  仅影响非整数输入且 ≤1px）。
+
+### 7.5 追加复核后的门禁（均为真实退出码）
+
+| 门 | 结果 | 退出码 |
+|---|---|---|
+| `pnpm exec playwright test`（全量浏览器用例，非仅本轮涉及文件） | 91 passed / 5 skipped / 0 failed；`.last-run.json`=`passed` | 0 |
+| `pnpm exec vitest run` | 48 文件 / 380 用例通过 | 0 |
+| `pnpm typecheck` | 无错误 | 0 |
+| `pnpm build` | 编译成功（此前从未跑过，本轮补齐） | 0 |
+| 独立几何探针 `outputs/_verify-sweep.cjs` | 140 passed / 0 failed | 0 |
+
+新增回归：`use-sidebar-width.test.ts` 3 条（含"抓取不得把左栏压到下限"的缺陷 A 回归）、
+`layout.spec.ts` 2 条（左栏拖拽后三栏仍成立；左栏键盘 16/32/Home/End），并在既有页签用例里
+补 `tablist`/`tabpanel` 空态断言（缺陷 B 回归）。
