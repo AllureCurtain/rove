@@ -462,6 +462,34 @@ open-vetta 在 `RootLayoutView` 里把路由内容 `memo` 掉，理由是"侧栏
   ＋ `sidebar-hover-overlay.spec.ts` 3 条（唤出且不抢焦点/非 dialog/离开再在宽限期内返回保持打开；
   偷看态选中会话不移动焦点而按钮路径会移动到标题；宽屏没有热区）。
 
+**E. 空闲预取路由（移植 open-vetta `useIdleRoutePrefetch`）。**
+
+参考：`useIdleRoutePrefetch.ts` 用 `requestIdleCallback(run, { timeout: 8000 })`，无该 API 时退化为
+`setTimeout(3000)`，提前卸载则取消，预取失败静默（真正导航会重试）。
+
+- 先核对：**挂起视图与判据我们已经有了，且已符合参考的规则**——`routePending` 只在"URL 尚不能由目录
+  满足"时为真（启动/恢复期），分阶段打开会先乐观更新目录，所以不会盖掉乐观内容；`RouteLoadingView`
+  是 `role="status"` 的限额文案而不是白屏。这两项**未改**。
+- 真正缺的是预取：全仓此前没有任何 `router.prefetch`。新增 `shell/route-prefetch.ts`（纯策略：
+  `ROUTE_PREFETCH_IDLE_TIMEOUT_MS = 8000`、`ROUTE_PREFETCH_FALLBACK_DELAY_MS = 3000`、
+  `routePrefetchTargets` 只取"一键可达"的两项：顶栏齿轮直达的 `/settings/{general,providers}` 与
+  当前工作区 `/w/<id>`，上限 3 条，不预取整个目录以免和启动路径抢资源）＋ `shell/use-idle-route-prefetch.ts`
+  （同样的调度与取消语义）。
+- 覆盖：`route-prefetch.test.ts` 4 条（目标有界/去重/含工作区/常量与参考一致）＋
+  `tests/e2e/route-prefetch.spec.ts` 2 条。
+- **实测发现（值得记下）**：Next **只在生产构建里预取**，`next dev` 下不发请求——dev 上写断言只会
+  得到假阴性。因此该 e2e 默认 `test.skip`，并给出跑法（`pnpm build` + `next start` +
+  `ROVE_E2E_PROD=1 PLAYWRIGHT_BASE_URL=... pnpm exec playwright test route-prefetch`）。本轮已按该方式
+  实跑：**2 passed**，并在生产服务器上观察到
+  `/settings/providers?_rsc=…`、`/settings/general?_rsc=…`、`/w/<id>?_rsc=…` 三类预取请求
+  （`outputs/_probe-prefetch.cjs`）。
+- **同时量出一个真实副作用并据此收紧了实现**：把预取无条件打开后，全量 e2e 连续两轮各失败**一个不同
+  的**时序敏感用例（第一次 `shell.spec.ts` 的设置跳转、第二次 `workbench-panel.spec.ts` 的审批刷新），
+  两者单独跑都通过——典型的"整轮负载下变慢"型抖动；dev 下预取请求本身并不会发出去，但它会让服务端去做
+  按需编译，等于给每个用例加压。于是新增 `shouldPrefetchRoutes(process.env.NODE_ENV)`，**只在生产构建
+  里预取**（与 Next 自身行为一致，并且在 dev 里彻底不产生噪声）；随后连续两轮全量 e2e 均 0 failed。
+  这条抖动**不是**我的断言放宽——`shell.spec.ts` 与 `workbench-panel.spec.ts` 里的断言一字未改。
+
 ### 8.2 参考有、但**不适用**于本仓库的一处
 
 PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由是"退出动画的卸载依赖
@@ -478,8 +506,9 @@ PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由
    CSS 变量+叶子订阅，收益与风险都需另测）。
 2. ~~**窄屏侧栏改为悬停浮层**（open-vetta `SidebarOverlay` + `scheduleOverlayClose`）：我们现在必须
    点击才出现。~~ **已完成**，见 §8.1D。
-3. **命令面板**（open-vetta `CommandMenu`，挂在根布局）、**空闲预取路由**（`useIdleRoutePrefetch`）、
-   **路由挂起内容视图**（`RouteContentLoadingView`）。
+3. **命令面板**（open-vetta `CommandMenu`，挂在根布局）**仍未做**——这是新功能面（新快捷键、文案、
+   用例），量级大于前面的对齐改动。同项的**空闲预取路由**已完成（§8.1E）；**路由挂起内容视图**经核对
+   本仓库已有且符合参考规则（同样见 §8.1E），无需改动。
 4. **会话小地图**（PI `ConversationMinimap`）、**跟随滚动**（PI `use-follow-scroll` 的细节）、
    `scrollbar-reveal`、`queued-prompts` 的排队语义、`frame-batcher` / `latest-wins`。
 5. **设计审查流程**：open-vetta 自带 `web-design-guidelines`（拉取 vercel-labs 规则做 UI 审查）与
@@ -491,11 +520,13 @@ PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由
 
 | 门 | 结果 | 退出码 |
 |---|---|---|
-| `pnpm exec playwright test`（全量 103 项） | 98 passed / 5 skipped / 0 failed；`.last-run.json`=`passed` | 0 |
-| `pnpm exec vitest run` | 50 文件 / 392 用例通过 | 0 |
+| `pnpm exec playwright test`（全量 105 项，dev） | 98 passed / 7 skipped / 0 failed；**连续两轮**一致 | 0 |
+| `pnpm exec playwright test route-prefetch`（生产构建，`ROVE_E2E_PROD=1`） | 2 passed | 0 |
+| `pnpm exec vitest run` | 51 文件 / 397 用例通过 | 0 |
 | `pnpm typecheck` | 无错误 | 0 |
 | `pnpm build` | 编译成功 | 0 |
 | 独立几何探针（含阅读栏 7 项） | 147 passed / 0 failed | 0 |
 
-§8.1C 与 §8.1D 落地后上述四项（playwright / vitest / typecheck / 探针）**各自全部重跑**，结果同上；
-性能对照见 §8.1C 的表格（左栏拖拽脚本时间 604.6 → 89.0 ms，`chat` chunk 18.3 → 3.0 ms，reflow 不变）。
+§8.1C / §8.1D / §8.1E 落地后上述门禁**各自全部重跑**；性能对照见 §8.1C 的表格（左栏拖拽脚本时间
+604.6 → 89.0 ms，`chat` chunk 18.3 → 3.0 ms，reflow 不变）。7 项 skip = 5 项既有 skip ＋ 2 项
+生产构建专属的预取用例（跑法见 §8.1E）。

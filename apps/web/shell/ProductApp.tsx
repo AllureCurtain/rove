@@ -33,6 +33,8 @@ import {
   shouldFocusSessionHeadingAfterSelection,
   shouldShowSidebarHoverZone,
 } from "./sidebar-overlay";
+import { routePrefetchTargets } from "./route-prefetch";
+import { useIdleRoutePrefetch } from "./use-idle-route-prefetch";
 import { SettingsShell } from "../settings/SettingsShell";
 import { matchKeyboardShortcut } from "../settings/keyboard-settings-model";
 import { createSettingsPlatformClient } from "../settings/settings-platform-client";
@@ -121,6 +123,16 @@ function ServerProductApp({ uiVersion, draftStore }: {
   // The width persists as a UI preference; the collapse does not, so a reload
   // always returns to the expanded rail.
   const sidebar = useSidebarWidth();
+  // Warm the routes the header can reach in one click, off the boot path
+  // (open-vetta's idle prefetch; see `route-prefetch`).
+  const prefetchTargets = useMemo(
+    () =>
+      routePrefetchTargets({
+        activeWorkspaceId: server.catalog.active.workspaceId,
+      }),
+    [server.catalog.active.workspaceId],
+  );
+  useIdleRoutePrefetch(prefetchTargets);
   const [navCollapsed, setNavCollapsed] = useState(false);
   // Focus target for the narrow-screen "select session, close rail" flow.
   const sessionTitleRef = useRef<HTMLHeadingElement>(null);
