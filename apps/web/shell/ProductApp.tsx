@@ -15,6 +15,11 @@ import { CopyProvider, useCopy } from "../copy/CopyProvider";
 import { Transcript } from "../chat/Transcript";
 import { RunInspector } from "../inspector/RunInspector";
 import { useWorkPanel } from "../inspector/use-work-panel";
+import {
+  MAIN_PANE_MIN_WIDTH,
+  workPanelLayout,
+  workPanelWidthForSidebarReopen,
+} from "../inspector/work-panel-layout";
 import { useSessionUsage } from "../state/use-session-usage";
 import {
   createComposerDraftStore,
@@ -116,6 +121,68 @@ function ServerProductApp({ uiVersion, draftStore }: {
   const inspectorCollapsed = panel.collapsed;
   const [mobileLayout, setMobileLayout] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+
+  // ── Shared three-column width budget (design §5.0, ported from PI-Desktop) ──
+  const [shellNode, setShellNode] = useState<HTMLDivElement | null>(null);
+  const [shellWidth, setShellWidth] = useState(0);
+  // A callback ref rather than a mount-time effect: `.product-body` only exists
+  // once the boot state resolves, so an effect with `[]` dependencies could run
+  // against a null ref and never observe the shell.
+  useEffect(() => {
+    if (!shellNode) {
+      return;
+    }
+    const sync = () => setShellWidth(shellNode.clientWidth);
+    sync();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", sync);
+      return () => window.removeEventListener("resize", sync);
+    }
+    const observer = new ResizeObserver(sync);
+    observer.observe(shellNode);
+    return () => observer.disconnect();
+  }, [shellNode]);
+  // The first render precedes the observer's first notification, so it uses the
+  // same conservative estimate PI-Desktop uses: the request plus the rail plus
+  // the conversation floor.
+  const measuredShellWidth =
+    shellWidth > 0
+      ? shellWidth
+      : panel.width + (navCollapsed ? 0 : sidebar.width) + MAIN_PANE_MIN_WIDTH;
+  const panelLayout = useMemo(
+    () =>
+      workPanelLayout({
+        containerWidth: measuredShellWidth,
+        sidebarWidth: sidebar.width,
+        sidebarCollapsed: navCollapsed,
+        requestedPanelWidth: panel.width,
+      }),
+    [measuredShellWidth, navCollapsed, panel.width, sidebar.width],
+  );
+  // The rail yields first: when the panel request cannot coexist with the
+  // conversation floor, collapse the rail instead of squeezing the chat. The
+  // effect settles in one step because collapsing removes the condition.
+  useEffect(() => {
+    if (!mobileLayout && shellWidth > 0 && panelLayout.shouldCollapseSidebar) {
+      setNavCollapsed(true);
+    }
+  }, [mobileLayout, panelLayout.shouldCollapseSidebar, shellWidth]);
+
+  /**
+   * Reopening the rail spends the panel's column instead of squeezing the
+   * conversation: the panel gives up space first (PI-Desktop
+   * `workPanelWidthForSidebarReopen`).
+   */
+  function expandRail() {
+    panel.setWidth(
+      workPanelWidthForSidebarReopen({
+        containerWidth: measuredShellWidth,
+        sidebarWidth: sidebar.width,
+        currentPanelWidth: panel.width,
+      }),
+    );
+    setNavCollapsed(false);
+  }
 
   // Keep a stable ref to the panel for the *current* workspace/session. The
   // media-query listener below is registered once, so it must not close over
@@ -422,7 +489,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
                   if (server.catalog.active.workspaceId) {
                     void handleNewSession(server.catalog.active.workspaceId);
                   } else {
-                    setNavCollapsed(false);
+                    expandRail();
                   }
                 }}
               >
@@ -431,7 +498,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
               <button
                 type="button"
                 className="ghost icon-button"
-                onClick={() => setNavCollapsed(false)}
+                onClick={expandRail}
                 aria-label={t("nav.expandWorkspace")}
                 title={t("nav.expandWorkspace")}
               >
@@ -481,18 +548,21 @@ function ServerProductApp({ uiVersion, draftStore }: {
       ) : (
         <div
           className="product-body"
+          ref={setShellNode}
           data-workspace-open={workspaceOpen}
           data-inspector-open={mobileLayout && !inspectorCollapsed}
           data-nav-collapsed={navCollapsed}
           style={
             {
               "--sidebar-nav-width": `${sidebar.width}px`,
-              // Design §5.0 shared width budget: the panel takes what is left
-              // after the rail and the conversation's floor, so it shrinks
-              // instead of squeezing the conversation or overflowing.
+              // Design §5.0 shared width budget: `workPanelLayout` owns the
+              // answer (it knows the rail's actual state), and the CSS keeps a
+              // viewport-level safety net against a stale measurement. Deriving
+              // the cap from the rail's *expanded* width here instead would let
+              // CSS and JS disagree whenever the rail is collapsed.
               "--work-panel-track": inspectorCollapsed
                 ? "minmax(0, var(--work-panel-collapsed-width, 40px))"
-                : `min(${panel.width}px, calc(100% - var(--sidebar-nav-width) - var(--pane-floor)))`,
+                : `min(${panelLayout.panelWidth}px, calc(100% - var(--pane-floor)))`,
             } as CSSProperties
           }
         >
@@ -529,7 +599,9 @@ function ServerProductApp({ uiVersion, draftStore }: {
               routing.openSettings("general");
             }}
             railCollapsed={navCollapsed}
-            onToggleCollapsed={() => setNavCollapsed((value) => !value)}
+            onToggleCollapsed={() =>
+              navCollapsed ? expandRail() : setNavCollapsed(true)
+            }
           />
           {/* Hidden on narrow layouts by CSS; the drawer has no width to drag. */}
           {!mobileLayout && !navCollapsed ? (
@@ -668,6 +740,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
             <RunInspector
               key={`${activeWorkspace.id}:${activeSession.id}`}
               panel={panel}
+              panelLayout={panelLayout}
               uiVersion={uiVersion}
               approvalBusy={continuity.approvalBusy}
               approvalError={continuity.approvalError}

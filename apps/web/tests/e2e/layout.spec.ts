@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
+import { WORK_PANEL_DEFAULT_WIDTH } from "../../inspector/work-panel-layout";
 import {
   completedTranscript,
   createMockSession,
@@ -29,9 +30,11 @@ const MAIN_PANE_MIN_WIDTH = 450;
  * styling preference.
  */
 const DESKTOP_VIEWPORTS = [
-  { width: 1440, height: 900 },
-  { width: 1280, height: 800 },
-  { width: 1024, height: 768 },
+  { width: 1440, height: 900, railExpanded: true },
+  { width: 1280, height: 800, railExpanded: true },
+  // 1024 − 240 (rail) − 360 (panel) = 424 < 450, so the rail yields first
+  // instead of the conversation being squeezed (design §5.0 priority order).
+  { width: 1024, height: 768, railExpanded: false },
 ];
 
 for (const viewport of DESKTOP_VIEWPORTS) {
@@ -66,14 +69,14 @@ for (const viewport of DESKTOP_VIEWPORTS) {
     const rail = await box(page, ".product-sidebar");
     const main = await box(page, ".product-main");
     const panel = await box(page, "aside.product-inspector");
-    const handle = await box(page, ".sidebar-resize-handle");
     const expectedHeight = viewport.height - TOPBAR_HEIGHT;
 
-    // One row: all three columns start under the top bar and fill the viewport.
+    // One row: every visible column starts under the top bar and fills the
+    // viewport height.
     for (const [name, element] of [
-      ["rail", rail],
       ["conversation", main],
       ["work panel", panel],
+      ...(viewport.railExpanded ? ([["rail", rail]] as const) : []),
     ] as const) {
       expect(element.y, `${name} must start below the top bar`).toBeCloseTo(
         TOPBAR_HEIGHT,
@@ -86,10 +89,18 @@ for (const viewport of DESKTOP_VIEWPORTS) {
     }
 
     // No empty grid track between the rail and the conversation.
-    expect(main.x, "conversation must start where the rail ends").toBeCloseTo(
-      rail.x + rail.width,
-      0,
-    );
+    if (viewport.railExpanded) {
+      expect(main.x, "conversation must start where the rail ends").toBeCloseTo(
+        rail.x + rail.width,
+        0,
+      );
+    } else {
+      // The rail yields first rather than squeezing the conversation.
+      await expect(page.locator(".product-body")).toHaveAttribute(
+        "data-nav-collapsed",
+        "true",
+      );
+    }
     expect(
       main.x + main.width,
       "conversation must end where the work panel starts",
@@ -97,26 +108,26 @@ for (const viewport of DESKTOP_VIEWPORTS) {
 
     // The work panel is the right column, not a second-row box on the left.
     expect(panel.x, "work panel must sit right of the rail").toBeGreaterThan(
-      rail.x + rail.width,
+      0,
     );
     expect(
       panel.x + panel.width,
       "work panel must end at the viewport edge",
     ).toBeCloseTo(viewport.width, 0);
 
-    // The resize handle overlays the rail's trailing edge instead of taking a track.
-    expect(
-      handle.x,
-      "handle must overlay the rail's trailing edge",
-    ).toBeGreaterThanOrEqual(rail.x + rail.width - 8);
-    expect(handle.x, "handle must not consume the conversation column").toBeLessThan(
-      main.x + 1,
-    );
+    // The rail handle overlays the rail's trailing edge instead of taking a track.
+    if (viewport.railExpanded) {
+      const handle = await box(page, ".sidebar-resize-handle");
+      expect(
+        handle.x,
+        "handle must overlay the rail's trailing edge",
+      ).toBeGreaterThanOrEqual(rail.x + rail.width - 8);
+      expect(
+        handle.x,
+        "handle must not consume the conversation column",
+      ).toBeLessThan(main.x + 1);
+    }
 
-    expect(
-      main.width,
-      "conversation must fill the space between the rail and the panel",
-    ).toBeCloseTo(viewport.width - rail.width - panel.width, 0);
     if (viewport.width - rail.width - panel.width >= MAIN_PANE_MIN_WIDTH) {
       expect(
         main.width,
@@ -134,11 +145,11 @@ for (const viewport of DESKTOP_VIEWPORTS) {
 }
 
 /**
- * Design §5.0 shared width budget: the conversation column is the first claim on
- * the width, so at 1024x768 the work panel shrinks to `1024 − rail − 450`
- * instead of squeezing the conversation down to 424px.
+ * Design §5.0 priority order — conversation floor > panel request > rail — so at
+ * 1024x768 the rail yields instead of the conversation dropping to 424px, and
+ * reopening the rail spends the panel's column rather than the chat's.
  */
-test("the work panel yields to the 450px conversation floor at 1024x768", async ({
+test("the rail yields before the conversation floor at 1024x768", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1024, height: 768 });
@@ -156,20 +167,39 @@ test("the work panel yields to the 450px conversation floor at 1024x768", async 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
   await expect(page.getByText("Layout answer", { exact: true })).toBeVisible();
 
-  const rail = await box(page, ".product-sidebar");
+  const body = page.locator(".product-body");
+  await expect(body).toHaveAttribute("data-nav-collapsed", "true");
+  const collapsedRail = await box(page, ".product-sidebar");
   const main = await box(page, ".product-main");
   const panel = await box(page, "aside.product-inspector");
 
-  expect(rail.width + main.width + panel.width).toBeCloseTo(1024, 0);
+  expect(
+    collapsedRail.x + collapsedRail.width,
+    "the collapsed rail must not hold a column",
+  ).toBeLessThanOrEqual(1);
   expect(
     main.width,
     "conversation keeps its 450px floor",
   ).toBeGreaterThanOrEqual(MAIN_PANE_MIN_WIDTH);
+  expect(panel.width, "panel keeps its stored width").toBeCloseTo(
+    WORK_PANEL_DEFAULT_WIDTH,
+    0,
+  );
+  expect(main.x + main.width + panel.width).toBeCloseTo(1024, 0);
+
+  // Reopening the rail spends the panel's column, not the conversation's.
+  await page.getByRole("button", { name: "展开工作区列表" }).click();
+  await expect(body).toHaveAttribute("data-nav-collapsed", "false");
+  const reopenedMain = await box(page, ".product-main");
+  const reopenedPanel = await box(page, "aside.product-inspector");
   expect(
-    panel.width,
-    "panel shrinks to fit the budget",
-  ).toBeLessThanOrEqual(1024 - rail.width - MAIN_PANE_MIN_WIDTH);
-  expect(panel.width, "panel does not collapse to nothing").toBeGreaterThan(200);
+    reopenedMain.width,
+    "conversation keeps its floor after reopening the rail",
+  ).toBeGreaterThanOrEqual(MAIN_PANE_MIN_WIDTH);
+  expect(
+    reopenedPanel.width,
+    "the panel gives up the space the rail took",
+  ).toBeLessThan(WORK_PANEL_DEFAULT_WIDTH);
 });
 
 async function box(

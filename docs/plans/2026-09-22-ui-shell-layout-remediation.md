@@ -1,8 +1,10 @@
 # rove 三栏外壳布局修复与产品化补齐
 
-> 状态：**Partially Implemented**。P0（阻断级网格缺陷）与 P1a（设计 §5.0 共享宽度
-> 预算）已在 worktree `fix/ui-shell-layout` 实现并有自动化回归；P1b（分隔条、
-> 宽度持久化、断点 1180/760）与 P2–P4 尚未实现，仍为提议。
+> 状态：**Partially Implemented**。P0（阻断级网格缺陷）、P1a（设计 §5.0 共享宽度
+> 预算）与 P1b（PI-Desktop 式分隔条、宽度持久化、左栏先让位/重开让位、预算上限
+> 取代固定上限）已在 worktree `fix/ui-shell-layout` 实现并有自动化回归；
+> 仍未实现：断点统一 1180/760、死变量清理（`--inspector-width`/`--sidebar-width`）、
+> P2（右栏信息架构）、P3（中栏阅读区）、P4（样式表层收敛）。
 > 日期：2026-09-22。
 > 基线：`f853a97`（`origin/main`）。
 > 参照：[工作台设计](../design/2026-09-17-pi-desktop-workbench-design.md) §3 / §4.0 / §5.0、
@@ -100,6 +102,43 @@
 
 验证：`pnpm exec playwright test layout.spec.ts workbench-panel.spec.ts shell.spec.ts workbench-navigation-motion.spec.ts polish.spec.ts` → 27 passed，退出码 0；
 `pnpm typecheck` 退出码 0；`pnpm exec vitest run` 46 文件 / 354 用例通过，退出码 0。
+
+## 3c. P1b：PI-Desktop 式分隔条与让位策略（已实现）
+
+对照 PI-Desktop `components/workpanel/WorkPanel.tsx` 与 `lib/work-panel-resize.ts` 逐项移植：
+
+- 新增 `apps/web/inspector/work-panel-layout.ts`（纯模块，10 个单测）：`WORK_PANEL_MIN_WIDTH=244`、
+  `WORK_PANEL_DEFAULT_WIDTH=360`、`WORK_PANEL_COMPACT_MIN_WIDTH=1`、`MAIN_PANE_MIN_WIDTH=450`、
+  `MAIN_PANE_REOPEN_TARGET_WIDTH=460`；`workPanelLayout`（**上限 = 实时预算**，不再有 560 固定上限）、
+  `workPanelWidthForSidebarReopen`、`workPanelKeyboardWidth`（左/右键 ±16、Shift ±32、Home=min、
+  **End=实时上限**）、`parseStoredWorkPanelWidth`。比 PI 多一处硬化：非有限测量值按"无空间"处理，
+  不再传播 `NaN`。
+- 新增 `apps/web/inspector/use-panel-resize.ts`：分隔条指针拖拽（pointer capture + 单帧 rAF 合并 +
+  松开提交 + Escape 取消 + 卸载清理 + `html[data-work-panel-resizing]` 全局光标），对齐 PI 的分隔条语义。
+- `apps/web/inspector/RunInspector.tsx`：删除可见的 `<input type="range">` 滑块，改为面板左缘
+  `role="separator"` 的 8px 分隔条（aria-valuemin/max/now、tabIndex、指针与键盘）。
+- `apps/web/inspector/use-work-panel.ts`：宽度改为 localStorage UI 偏好（`rove.ui-work-panel-width`），
+  仅约束下界，渲染宽度由预算决定；新增 `resizeByKeyboard`。
+- `apps/web/shell/ProductApp.tsx`：ResizeObserver 量测 shell 宽度（回调 ref，避免 boot 未就绪时
+  错过观察），计算 `workPanelLayout`；**左栏先让位**（`shouldCollapseSidebar` 触发自动收起），
+  手动重开左栏时先用 `workPanelWidthForSidebarReopen` 收窄右栏而不是挤压中栏。
+- 预算的唯一真源是 JS：CSS 轨道只消费 `panelLayout.panelWidth`，并保留
+  `calc(100% - var(--pane-floor))` 作为测量竞态兜底。此前 CSS 用**展开态**的左栏宽度重复推导上限，
+  一旦左栏收起就会与 JS 分歧（实测：`aria-valuemax` 830 而渲染 590）。
+
+实测（`pnpm exec playwright test layout.spec.ts workbench-panel.spec.ts`）：
+
+| 场景 | 结果 |
+|---|---|
+| 1440×900 / 1280×800 | 左栏 240 保留，中栏 840 / 680，右栏 360 |
+| 1024×768 | 中栏命中 450 底线 → **左栏自动收起**，右栏保持 360，中栏 ≥450，无横向溢出 |
+| 1024 手动重开左栏 | 右栏让位到 `1024 − 240 − 460 = 324`，中栏 460 |
+| 键盘 | Home=244、ArrowLeft +16、Shift+ArrowLeft +32、End=实时上限；到下限后 ArrowRight 不越界 |
+
+验证：27 条 e2e 通过（layout/workbench-panel/shell/polish/navigation-motion），退出码 0；
+`pnpm typecheck` 退出码 0；`pnpm exec vitest run` 47 文件 / 364 用例通过，退出码 0。
+
+未做：断点仍为 960（设计为 1180/760）；`--inspector-width`、`--sidebar-width` 等死变量未清理。
 
 ## 4. 目标（以设计文档为准）
 

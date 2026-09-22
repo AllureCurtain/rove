@@ -23,7 +23,9 @@ import type {
 } from "../product/product-api-types";
 
 import { ApprovalCard } from "../chat/Transcript";
-import { PANEL_MIN_WIDTH, PANEL_MAX_WIDTH, type WorkPanelState } from "./use-work-panel";
+import { type WorkPanelLayout } from "./work-panel-layout";
+import { usePanelResize } from "./use-panel-resize";
+import { type WorkPanelState } from "./use-work-panel";
 export function RunInspector({
   productSessionId,
   workspaceId,
@@ -49,6 +51,7 @@ export function RunInspector({
   fileFocusPath,
   fileFocusLine,
   panel,
+  panelLayout,
   uiVersion = "v2",
   approvalBusy = null,
   approvalError = null,
@@ -78,6 +81,8 @@ export function RunInspector({
   fileFocusPath?: string | null;
   fileFocusLine?: number | null;
   panel?: WorkPanelState;
+  /** Live width budget for the panel separator (design §5.0). */
+  panelLayout?: WorkPanelLayout;
   /** v2 sizes the panel from its grid track; v1 keeps an inline width. */
   uiVersion?: "v1" | "v2";
   approvalBusy?: string | null;
@@ -107,6 +112,13 @@ export function RunInspector({
 
   const phase = resolveInspectorPhase(runState);
   const waiting = runState.tools.filter((tool) => tool.pendingApproval);
+  // The separator owns the pointer/keyboard resize; the budget owns the cap.
+  const panelResize = usePanelResize({
+    renderedWidth: panelLayout?.panelWidth ?? panel?.width ?? 0,
+    maxPanelWidth: panelLayout?.maxPanelWidth ?? panel?.width ?? 0,
+    setWidth: panel?.setWidth ?? (() => undefined),
+    resizeByKeyboard: panel?.resizeByKeyboard ?? (() => undefined),
+  });
   const target = panel?.target;
   const selectedApproval = target?.kind === "approval" &&
     target.jobId === runState.activeJobId && target.runId === runState.activeRunId
@@ -169,6 +181,24 @@ export function RunInspector({
           : undefined
       }
     >
+      {panel && !dialogOpen ? (
+        <div
+          className="inspector-resize"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={t("inspector.panelWidth")}
+          aria-valuemin={panelResize.minimumWidth}
+          aria-valuemax={panelResize.maximumWidth}
+          aria-valuenow={Math.round(panelResize.value)}
+          tabIndex={0}
+          onPointerDown={panelResize.onPointerDown}
+          onPointerMove={panelResize.onPointerMove}
+          onPointerUp={panelResize.onPointerUp}
+          onPointerCancel={panelResize.onPointerCancel}
+          onLostPointerCapture={panelResize.onPointerCancel}
+          onKeyDown={panelResize.onKeyDown}
+        />
+      ) : null}
       <div className="inspector-header">
         <h2>{t("inspector.title")}</h2>
         <button
@@ -181,10 +211,6 @@ export function RunInspector({
           {dialogOpen ? <Cross2Icon /> : <ChevronRightIcon />}
         </button>
       </div>
-      {panel && !dialogOpen ? <input className="work-panel-width" type="range"
-        aria-label={t("inspector.panelWidth")} min={PANEL_MIN_WIDTH} max={PANEL_MAX_WIDTH}
-        step={20} value={panel.width}
-        onChange={(event) => panel.setWidth(Number(event.target.value))} /> : null}
       <div className="inspector-tabs" role="tablist" aria-label={t("inspector.title")}>
         <button
           type="button"
