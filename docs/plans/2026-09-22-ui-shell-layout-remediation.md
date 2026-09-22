@@ -408,6 +408,40 @@ A/B 判定责任归属：把 origin/main 的把手几何（网格项、`grid-col
 - 覆盖：`tests/e2e/sidebar-armed-delete.spec.ts` 2 条（首击不移除＋次击移除；到期自动解除＋
   关闭后重开不残留），并同步改掉 `continuity.spec.ts` 里原本"一击即移除"的既有用例。
 
+**C. 外壳几何不再穿过 React 状态（先量后改，不是照搬 open-vetta 的结论）。**
+
+open-vetta 在 `RootLayoutView` 里把路由内容 `memo` 掉，理由是"侧栏折叠状态不隔离则每次 toggle
+重渲染整棵内容树（~28ms）"。本仓库结构上同源（`ProductApp` 内联渲染 `Transcript`，几何状态也在
+其中），但结论不能照搬，所以先测：`outputs/_profile-shell.cjs` 用 CDP `Profiler` + `Performance`
+指标，对**鼠标动作完全相同**（24 步 × 4px）的三种拖拽取 CPU 自耗时，并按 Next dev chunk 名归因。
+
+| 拖拽 | 修前 ScriptDuration | 修后 | 说明 |
+|---|---|---|---|
+| **左栏把手**（每 pointermove 提交 state → 整棵 shell 重渲染） | **604.6 ms**（react/vendor 163.0、**chat 18.3**） | **89.0 ms**（react/vendor 33.4、**chat 3.0**） | 本轮修的就是它 |
+| 右栏分隔条（预览态在 RunInspector 内部） | 147.0 ms | 未改动 | 成本是面板自身逐帧预览，不是内容树 |
+| 阅读栏手柄（叶子预览 + 命令式 CSS 变量） | 40.7 ms | 未改动 | 本轮新代码本来就是这个形态 |
+
+**中途纠正过一次自己的结论**：最初拿"右栏 vs 阅读栏"做 A/B，把它当作"内容树重渲染"的证据——
+那是错的，右栏拖拽并不会重渲染内容树（ProductApp 只在提交时渲染一次），147ms 主要是
+`RunInspector` 自身的逐帧预览。真正做到"内容树逐帧重渲染"的是**左栏**路径（`chat` chunk 在左栏
+拖拽时执行 18.3ms，其它两种只有 0.6–2.3ms），修在左栏才对。
+
+改动：
+
+- `use-sidebar-width`：`settleWidth`（每次 pointermove 都 `setState` + 写 localStorage）拆成
+  `previewWidth`（直接写 `.product-body` 的 `--sidebar-nav-width` 与手柄自身的 `aria-valuenow`，
+  不经过 React）/ `commitWidth`（释放时提交一次 state + 持久化）/ `cancelPreview`（Escape 或
+  pointercancel 时把 CSS 变量与 aria 还原成已提交值）。这正是 PI 分隔条注释里写的策略，
+  而本仓库原实现与自己的注释相反。
+- `SidebarResizeHandle`：pointerup 提交、pointercancel/lostpointercapture/window blur 取消、
+  Escape 取消（与右栏、阅读栏两个分隔条一致）。
+- `ProductApp`：ResizeObserver 回调先按最新输入算一次预算，**结果没变就不 setState**（窗口缩放
+  不再逐像素重渲染内容树）。视觉仍然精确：轨道是 `min(panelWidth, calc(100% - var(--pane-floor)))`，
+  `100%` 由 CSS 实时求值，所以 JS 状态落后一帧不影响几何。`expandRail()` 改读实时 ref，避免用到
+  过期的宽度。
+- 结果：左栏拖拽 604.6 → **89.0 ms** 脚本时间，`chat` chunk 18.3 → 3.0 ms，而真正必要的
+  reflow（LayoutDuration/LayoutCount）不变（37.2/48 → 31.9/48）。
+
 ### 8.2 参考有、但**不适用**于本仓库的一处
 
 PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由是"退出动画的卸载依赖
@@ -418,10 +452,10 @@ PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由
 
 按价值/成本排序，均**未**在本轮改动：
 
-1. **内容子树与外壳布局状态解耦**（open-vetta）：其 `RootLayoutView` 把路由内容 `memo` 掉并注明
-   理由——侧栏折叠状态在 model 里，不隔离的话每次 toggle 会同步重渲染整棵内容树（实测多 ~28ms）。
-   本仓库 `ProductApp` 持有 `shellWidth`（ResizeObserver 驱动）并内联渲染 `Transcript`，同一个
-   问题结构上成立。改动前需要先测出这里的真实渲染成本，否则是在照搬结论。
+1. ~~**内容子树与外壳布局状态解耦**（open-vetta）~~：**已完成**，见 §8.1C（左栏拖拽 604.6 →
+   89.0 ms 脚本时间，`chat` chunk 18.3 → 3.0 ms）。同源问题里还剩一项未做：右栏 `RunInspector`
+   自身逐帧预览约 147ms/24 步（预览态在组件内部，属面板自己的重渲染；要再降低需要把预览降到
+   CSS 变量+叶子订阅，收益与风险都需另测）。
 2. **窄屏侧栏改为悬停浮层**（open-vetta `SidebarOverlay` + `scheduleOverlayClose`）：我们现在必须
    点击才出现。
 3. **命令面板**（open-vetta `CommandMenu`，挂在根布局）、**空闲预取路由**（`useIdleRoutePrefetch`）、
@@ -442,3 +476,6 @@ PI 的 reduced-motion 用 `animation-duration: 0.01ms` 而不是 `none`，理由
 | `pnpm typecheck` | 无错误 | 0 |
 | `pnpm build` | 编译成功 | 0 |
 | 独立几何探针（含新增阅读栏 7 项） | 147 passed / 0 failed | 0 |
+
+§8.1C 落地后上述四项（playwright / vitest / typecheck / 探针）**全部重跑**，结果同上；性能对照见 §8.1C
+的表格（左栏拖拽脚本时间 604.6 → 89.0 ms，`chat` chunk 18.3 → 3.0 ms，reflow 不变）。

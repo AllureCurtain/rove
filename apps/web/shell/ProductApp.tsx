@@ -19,6 +19,7 @@ import {
   MAIN_PANE_MIN_WIDTH,
   workPanelLayout,
   workPanelWidthForSidebarReopen,
+  type WorkPanelLayout,
 } from "../inspector/work-panel-layout";
 import { useSessionUsage } from "../state/use-session-usage";
 import {
@@ -126,6 +127,23 @@ function ServerProductApp({ uiVersion, draftStore }: {
   // ── Shared three-column width budget (design §5.0, ported from PI-Desktop) ──
   const [shellNode, setShellNode] = useState<HTMLDivElement | null>(null);
   const [shellWidth, setShellWidth] = useState(0);
+  // The live measurement, for event handlers that must not read a stale render.
+  const shellWidthRef = useRef(0);
+  // The budget inputs and the layout they produced. The shell is a parent of the
+  // whole conversation, so a resize that does not move the budget must not
+  // re-render: the visible geometry stays exact anyway because the track is
+  // `min(panelWidth, calc(100% - floor))` and CSS evaluates `100%` live.
+  const geometryRef = useRef<{
+    sidebarWidth: number;
+    navCollapsed: boolean;
+    requestedPanelWidth: number;
+    layout: WorkPanelLayout | null;
+  }>({
+    sidebarWidth: sidebar.width,
+    navCollapsed: false,
+    requestedPanelWidth: panel.width,
+    layout: null,
+  });
   // A callback ref rather than a mount-time effect: `.product-body` only exists
   // once the boot state resolves, so an effect with `[]` dependencies could run
   // against a null ref and never observe the shell.
@@ -133,7 +151,28 @@ function ServerProductApp({ uiVersion, draftStore }: {
     if (!shellNode) {
       return;
     }
-    const sync = () => setShellWidth(shellNode.clientWidth);
+    const sync = () => {
+      const next = shellNode.clientWidth;
+      const snapshot = geometryRef.current;
+      const layout = workPanelLayout({
+        containerWidth: next,
+        sidebarWidth: snapshot.sidebarWidth,
+        sidebarCollapsed: snapshot.navCollapsed,
+        requestedPanelWidth: snapshot.requestedPanelWidth,
+      });
+      const previous = snapshot.layout;
+      shellWidthRef.current = next;
+      const unchanged =
+        previous !== null &&
+        previous.panelWidth === layout.panelWidth &&
+        previous.maxPanelWidth === layout.maxPanelWidth &&
+        previous.mainWidth === layout.mainWidth &&
+        previous.shouldCollapseSidebar === layout.shouldCollapseSidebar;
+      if (unchanged) {
+        return;
+      }
+      setShellWidth(next);
+    };
     sync();
     if (typeof ResizeObserver === "undefined") {
       window.addEventListener("resize", sync);
@@ -169,6 +208,17 @@ function ServerProductApp({ uiVersion, draftStore }: {
     }
   }, [mobileLayout, panelLayout.shouldCollapseSidebar, shellWidth]);
 
+  // Keep the observer's snapshot of the budget inputs current. Declared after
+  // `panelLayout` so it records the layout this render committed.
+  useEffect(() => {
+    geometryRef.current = {
+      sidebarWidth: sidebar.width,
+      navCollapsed,
+      requestedPanelWidth: panel.width,
+      layout: panelLayout,
+    };
+  });
+
   /**
    * Reopening the rail spends the panel's column instead of squeezing the
    * conversation: the panel gives up space first (PI-Desktop
@@ -177,7 +227,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
   function expandRail() {
     panel.setWidth(
       workPanelWidthForSidebarReopen({
-        containerWidth: measuredShellWidth,
+        containerWidth: shellWidthRef.current || measuredShellWidth,
         sidebarWidth: sidebar.width,
         currentPanelWidth: panel.width,
       }),
@@ -608,7 +658,9 @@ function ServerProductApp({ uiVersion, draftStore }: {
           {!mobileLayout && !navCollapsed ? (
             <SidebarResizeHandle
               width={sidebar.width}
-              settleWidth={sidebar.settleWidth}
+              previewWidth={sidebar.previewWidth}
+              commitWidth={sidebar.commitWidth}
+              cancelPreview={sidebar.cancelPreview}
               onHandleKeyDown={sidebar.onHandleKeyDown}
             />
           ) : null}
