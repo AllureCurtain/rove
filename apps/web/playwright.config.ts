@@ -19,8 +19,17 @@ if (productionBuild) {
   process.env.ROVE_ENABLE_DEV_ROUTES = "1";
 }
 
+/**
+ * Worker count. Playwright's default fan-out is right on a normal machine, but the
+ * acceptance runner's browser step has to fit the dev server plus one browser per worker
+ * in memory; an over-committed machine turns correct assertions into visibility timeouts.
+ * `ROVE_E2E_WORKERS=<n>` bounds the fan-out without changing any assertion.
+ */
+const workers = process.env.ROVE_E2E_WORKERS ? Number(process.env.ROVE_E2E_WORKERS) : undefined;
+
 export default defineConfig({
   testDir: "./tests/e2e",
+  workers,
   timeout: 30_000,
   expect: {
     timeout: 10_000,

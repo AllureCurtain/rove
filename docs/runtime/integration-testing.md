@@ -534,6 +534,16 @@ bash scripts/product-acceptance.sh
 Flags: `-SkipWeb` / `--skip-web`, `-SkipBrowser` / `--skip-browser`, and
 `-IncludeGated` / `--include-gated` for env-gated checks.
 
+On a machine that cannot afford the default browser fan-out, the `web-e2e` step fails with
+`toBeVisible` timeouts even though the assertions are correct: the dev server and one
+browser per worker have to fit in memory together. `ROVE_E2E_WORKERS=<n>` bounds the worker
+count without changing what is asserted:
+
+```powershell
+$env:ROVE_E2E_WORKERS = "3"
+powershell -ExecutionPolicy Bypass -File scripts/product-acceptance.ps1
+```
+
 Report contract:
 
 - Every status is derived from a real process exit code. There is no default or

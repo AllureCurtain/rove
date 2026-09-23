@@ -68,4 +68,14 @@ describe("Playwright config", () => {
     expect(server.command).toContain("--port 13043");
     expect(process.env.ROVE_ENABLE_DEV_ROUTES).toBe("1");
   });
+
+  it("keeps the default worker fan-out unless it is bounded", async () => {
+    delete process.env.ROVE_E2E_WORKERS;
+    const config = await loadPlaywrightConfig();
+    expect(config.workers).toBeUndefined();
+
+    process.env.ROVE_E2E_WORKERS = "3";
+    const bounded = await loadPlaywrightConfig();
+    expect(bounded.workers).toBe(3);
+  });
 });
