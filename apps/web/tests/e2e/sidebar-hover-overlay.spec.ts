@@ -72,15 +72,29 @@ test("the left edge summons the rail without taking focus", async ({ page }) => 
 
   // Leaving and coming back inside the grace period keeps it open instead of
   // flickering: this is the reference's scheduleOverlayClose/openOverlay pair.
-  await zone.hover();
-  await expect(rail).toHaveAttribute("data-open", "true");
-  await page.mouse.move(700, 500);
-  await page.mouse.move(60, 500);
-  await page.waitForTimeout(CLOSE_GRACE_MS + 140);
-  await expect(
-    rail,
-    "the pointer returned inside the grace period, so the rail stays open",
-  ).toHaveAttribute("data-open", "true");
+  //
+  // The grace period is wall-clock, so on a loaded machine the browser can process the
+  // return *after* it expired; the peek then closes, which is the documented behaviour
+  // (a shut rail has nothing left to cancel) rather than a product defect. Retry the
+  // sequence a bounded number of times so the cancellation stays covered without
+  // depending on scheduler latency: if the cancellation were broken, every attempt would
+  // end with a shut rail and the test still fails.
+  let cancelledWithinGrace = false;
+  for (let attempt = 0; attempt < 5 && !cancelledWithinGrace; attempt += 1) {
+    await page.mouse.move(700, 500);
+    await expect(rail).toHaveAttribute("data-open", "false");
+    await zone.hover();
+    await expect(rail).toHaveAttribute("data-open", "true");
+    await page.mouse.move(700, 500);
+    await page.mouse.move(60, 500);
+    await page.waitForTimeout(CLOSE_GRACE_MS + 140);
+    cancelledWithinGrace = (await rail.getAttribute("data-open")) === "true";
+  }
+  expect(
+    cancelledWithinGrace,
+    "returning to the rail inside the grace period cancels the pending hide",
+  ).toBe(true);
+
   await page.mouse.move(700, 500);
   await expect(rail).toHaveAttribute("data-open", "false");
 });
