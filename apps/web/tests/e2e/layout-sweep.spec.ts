@@ -24,6 +24,15 @@ const READING_CAP_PX = 840;
 const MINIMAP_LANE_PX = 50;
 
 /**
+ * This file measures settled geometry five times per case, and the first request
+ * against a cold `next dev` server also pays the route compile. The 30s suite default
+ * is sized for interaction cases, so a loaded machine could run out of budget while
+ * every measurement was still correct; give the measurement sweep its own bounded
+ * budget instead of failing on timing.
+ */
+test.describe.configure({ timeout: 90_000 });
+
+/**
  * The rail yields to the conversation floor with a transition, so a measurement
  * taken while the shell is still settling reads an intermediate frame width. Wait
  * for two consecutive identical samples of the columns before trusting anything.
@@ -36,7 +45,7 @@ async function waitForSettledColumns(page: Page) {
           const body = document.querySelector<HTMLElement>(".product-body");
           return body ? getComputedStyle(body).gridTemplateColumns : "";
         }),
-      { timeout: 5_000, intervals: [100, 150, 200, 250] },
+      { timeout: 15_000, intervals: [100, 150, 200, 250] },
     )
     .not.toBe("");
   let previous = "";
