@@ -696,3 +696,96 @@ web 四项都是真实退出码，并取代了本轮此前单独记录的 typech
 **这也是本轮"把该跑的都跑完"最有价值的产出**：仓库的门禁只在 dev 跑全量、生产构建只跑 2 条预取用例，
 把全量搬到生产构建就暴露出上面这批 dev 掩盖的问题。建议单开一条工作：给全量 e2e 增加一个生产构建档
 （或让这些断言在 dev/prod 下都成立），并修掉重复的 `robots` 标签。这条建议**没有**在本轮实施。
+
+### 8.6 复核轮（2026-09-23）：补完 §8.5 留下的三件事，并纠正两条结论
+
+本轮把 §8.5 结尾那三件"没跑完/没做到"的事补完：Rust 侧 7 个门、生产构建档、以及那条关于
+重复 `robots` 标签的建议。过程中纠正了 §8.4/§8.5 两处**不准确**的结论。
+
+#### A. Rust 侧：7 个门 + 全量 workspace 测试（真实退出码，全部 pass）
+
+工具链其实**装着**：`D:\Program\Rust\`（`cargo 1.98.0` / `rustc 1.98.0`，rustup home
+`D:\Program\Rust\.rustup`，装了 `stable` 与 1.89/1.94/1.97.1），只是没进 `PATH`。§8.5 的
+`not_run` 是**取数方式**的问题，不是环境缺失。把 `D:\Program\Rust\.cargo\bin` 前置并设
+`CARGO_HOME`/`RUSTUP_HOME` 后逐条重跑（都在 worktree `.worktrees/ui-shell-layout`，Rust 源码
+与本轮改动无关）：
+
+| 检查 | 结果 | 退出码 | 用时 |
+|---|---|---|---|
+| `cargo fmt --all --check` | 无差异 | 0 | 3.1s |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 无告警 | 0 | 76.5s |
+| `cargo test -p rove-integration-tests --test api -- --test-threads=1` | 128 passed / 0 failed | 0 | 307.8s |
+| `cargo test -p rove-integration-tests --test mcp` | 9 passed / 0 failed | 0 | 28.3s |
+| `cargo test -p rove-integration-tests --test e2e` | 113 passed / 0 failed | 0 | 22.8s |
+| `cargo test -p rove-integration-tests --test tool_safety` | 16 passed / 0 failed | 0 | 9.5s |
+| `cargo test -p rove-api --lib product:: -- --test-threads=1` | 136 passed / 0 failed（33 filtered） | 0 | 238.9s |
+| **`cargo test --workspace`（额外补跑，超出验收器范围）** | 56 个测试二进制 / **1753 passed / 0 failed** | 0 | 432.3s |
+
+一个**环境坑**，不写进代码但必须记下来，否则第二次跑还会卡住：`utoipa-swagger-ui 9.0.2` 的
+build script 会在编译期下载 Swagger UI（`v5.17.14.zip`），本机到 `github.com` 的连接被重置
+（`curl: (56) Recv failure: Connection was reset`），于是 `clippy` 和所有 `test-*` 都以
+`error: failed to run custom build command for utoipa-swagger-ui` 结束——**看起来像代码失败，
+实际是网络**。解法用的是该 crate 自带的口子：
+`SWAGGER_UI_DOWNLOAD_URL=file:///<本地已有的 v5.17.14.zip>`（之前联网构建留在
+`target/debug/build/utoipa-swagger-ui-*/out/v5.17.14.zip` 的原件复制到临时目录后指向它；build
+script 见到 `file:` 前缀即改为本地复制、不联网）。这是**本机环境**，不是仓库改动。
+
+#### B. 生产构建档（`pnpm test:e2e:prod`）与那条"重复 robots"建议的真相反转
+
+§8.5 建议的两条，落地与核实结果不同：
+
+- **生产构建档已实现**：`apps/web/scripts/run-e2e-prod.mjs` + `package.json` 的
+  `test:e2e:prod`（先 `next build`，再带 `ROVE_E2E_PROD=1` 跑整套），`playwright.config.ts`
+  见到该变量就把 `webServer` 从 `next dev` 换成 `next start`；`playwright.config.test.ts` 增加
+  对应用例；`docs/runtime/integration-testing.md` 的 Optional Gates 增加 "Production-Build
+  Web E2E"。
+- **"修掉重复的 `robots` 标签"这条建议不成立**：当前树上量不到重复标签，也没有产品侧缺陷。
+  §8.5 观察到的 7 例"生产构建下才失败"的用例，根因是 `/dev/*` 预览路由的**构建期门**
+  （`app/dev/layout.tsx` 的 `ROVE_ENABLE_DEV_ROUTES`）：不带门构建时这些路由被预渲染成 404，
+  于是整批预览用例失败，看起来像"重复 robots＋触发按钮缺失"。实测：
+
+| 请求 `/dev/product-ui-v2` | 状态 | `<title>` | `meta[name=robots]` |
+|---|---|---|---|
+| 构建时**无** `ROVE_ENABLE_DEV_ROUTES` | **404** | `rove`（根布局） | 恰好 **1** 个：`noindex`（Next 的 404 默认） |
+| 构建时**带**该门 | **200** | 预览页自己的标题 | 1 个：`noindex, nofollow`（页面 metadata） |
+
+  所以改动落在"构建时给门"，而不是去动 metadata。生产构建档因此也在构建与启动两侧都置该门。
+
+生产构建全量 e2e（**机器空载**，8 workers，`ROVE_E2E_PROD=1`）：**114 passed / 0 failed / 5 skipped，
+exit 0，95.1s**（119 项 = 114 + 5 skip；其中 dev 下被跳过的 2 条预取用例在生产构建下真正执行）。
+
+#### C. 被本轮纠正的结论
+
+1. §8.5 的"Rust 7 项 `not_run` = 本机没有工具链" → **不准确**：工具链在 `D:\Program\Rust`，
+   只是不在 `PATH`；补上后 7 项全 pass，`cargo test --workspace` 也 pass（见 A）。
+2. §8.5 的"重复 `meta[name=robots]`（既有缺陷）" → **不成立**，见 B 的实测表。
+
+#### D. 本轮修掉的两处**测试**脆弱性（产品代码未改）
+
+实测两次生产/验收全量跑各出现**一例**不同的超时失败，逐条定位后都不是产品缺陷：
+
+1. `sidebar-hover-overlay.spec.ts`「离开后 120ms 内回到栏内会取消关闭」：grace 是**墙钟**，
+   机器繁忙时浏览器可能在该窗口过期后才处理"返回"移动，此时 rail 已关（这是设计行为：关掉的
+   rail 没有可取消的关闭）。改为**有界重试**该序列（≤5 次），断言从"必须在第一次观察到"变成
+   "必须能观察到"——若取消失效，每次尝试都会关栏，测试仍然失败。
+2. `layout-sweep.spec.ts`：五个宽度各做一次"等布局稳定"的测量，加上冷 `next dev` 的首屏编译，
+   在 8 workers 的验收环境里会超过 30s 的**用例**默认预算（实测报 `Test timeout of 30000ms
+   exceeded`）。该文件改为 `test.describe.configure({ timeout: 90_000 })`，稳定轮询上限 5s→15s。
+
+两处都是**测量/时序**层面的加固，断言集合没有放宽。
+
+#### E. 仍然没有被证明的（本轮结束时的实际状态）
+
+1. **官方验收器在本机给出 PASS**：`scripts/product-acceptance.ps1` 的 Rust 7 项 +
+   `web-typecheck` + `web-test` + `web-build` 都是真实 `pass`（exit 0），但 `web-e2e` 这一步在本机
+   连续两次以**吞吐**失败（一次 82 failed / 30 passed 的成片 `toBeVisible` 超时，一次单例超时），
+   两次都发生在**空闲内存只有 1.1–2.8 GB**、且同一 worktree 里还有另一个会话在跑构建/测试时。
+   同一套用例单独重跑（`ROVE_E2E_WORKERS` 未设、8 workers）是 **112 passed / 7 skipped /
+   0 failed，exit 0**。因此这里的 FAIL 是**机器容量/争用**，不是断言失败；要得到 PASS 需要在
+   安静机器上重跑，或用 `ROVE_E2E_WORKERS` 限定并发（本轮为此加了该开关并写进
+   `docs/runtime/integration-testing.md`，默认值不变）。
+2. 那 7 例 prod-only 失败的"来源未验证"问题**已解决**（根因＝缺门，见 B）。
+3. 桌面（Tauri）专属的 `latest-wins` 接线仍无浏览器覆盖（构造上无法覆盖）。
+4. 非 Chromium 引擎、视觉回归基线仍未做。
+5. `RunInspector` 逐帧预览约 147ms/24 步（§8.3 遗留项）仍未处理。
+
