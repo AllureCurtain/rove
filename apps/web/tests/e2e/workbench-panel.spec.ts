@@ -102,9 +102,13 @@ test("refresh restores pending request; panel width is keyboard bounded and sele
   // survives a session switch; only the panel *selection* is session-isolated.
   await page.getByRole("button", { name: "Session B", exact: true }).click();
   await expect(page.getByRole("region", { name: "审批详情", exact: true })).toHaveCount(0);
-  expect(await widthNow()).toBe(WORK_PANEL_MIN_WIDTH + 16);
+  // Convergence, not a single read: a session switch re-mounts the panel, which
+  // reports the default width until the stored preference is applied again. Polling
+  // still fails if the preference is genuinely lost, but no longer depends on which
+  // frame the read lands in.
+  await expect.poll(widthNow).toBe(WORK_PANEL_MIN_WIDTH + 16);
   await page.getByRole("button", { name: /^Session A(?:,|$)/ }).click();
-  expect(await widthNow()).toBe(WORK_PANEL_MIN_WIDTH + 16);
+  await expect.poll(widthNow).toBe(WORK_PANEL_MIN_WIDTH + 16);
 
   // Widening to the live maximum may make the rail yield; the conversation keeps
   // its floor either way (design §5.0 priority order).
