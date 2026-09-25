@@ -110,7 +110,7 @@
   overflow: hidden;
   background: var(--v2-canvas);
   color: var(--v2-ink);
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale, 1));
   letter-spacing: 0;
 }
 
@@ -1159,8 +1159,8 @@ html[data-reading-resizing="true"] * {
 }
 
 .product-app-frame[data-ui-version="v2"] .tool-card__head {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   width: 100%;
@@ -1458,18 +1458,6 @@ html[data-reading-resizing="true"] * {
   text-wrap: balance;
 }
 
-.product-app-frame[data-ui-version="v2"] .rich-text h1 {
-  font-size: 18px;
-}
-
-.product-app-frame[data-ui-version="v2"] .rich-text h2 {
-  font-size: 16px;
-}
-
-.product-app-frame[data-ui-version="v2"] .rich-text h3,
-.product-app-frame[data-ui-version="v2"] .rich-text h4 {
-  font-size: 14px;
-}
 
 .product-app-frame[data-ui-version="v2"] .rich-text p,
 .product-app-frame[data-ui-version="v2"] .rich-text ul,
@@ -1768,6 +1756,7 @@ html[data-reading-resizing="true"] * {
 }
 
 .product-app-frame[data-ui-version="v2"] .chat-composer__row {
+  position: relative;
   min-width: 0;
   gap: 8px;
 }
@@ -4079,3 +4068,402 @@ body.is-resizing-column * {
   overscroll-behavior: contain;
 }
 
+
+.product-app-frame[data-ui-version="v2"] .tool-card__chip {
+  border-radius: var(--v2-radius-pill, 999px);
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink-3);
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__chip[data-tone="ok"] {
+  background: var(--v2-success-soft, var(--v2-surface-sunken));
+  color: var(--v2-success, var(--v2-ink-2));
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__chip[data-tone="warn"] {
+  background: var(--v2-warning-soft, var(--v2-surface-sunken));
+  color: var(--v2-warning, var(--v2-ink-2));
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__chip[data-tone="danger"] {
+  background: var(--v2-danger-soft);
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__list {
+  margin: 0;
+  padding-left: 18px;
+  font-family: var(--v2-font-mono, monospace);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__truncated {
+  margin: 4px 0 0;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .message-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+  opacity: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-bubble:hover .message-actions,
+.product-app-frame[data-ui-version="v2"] .chat-bubble:focus-within .message-actions {
+  opacity: 1;
+}
+
+
+.product-app-frame[data-ui-version="v2"] .activity-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink-2);
+  cursor: pointer;
+  text-align: left;
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__head strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__hint {
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__head svg[data-open] {
+  margin-left: auto;
+  transform: rotate(0deg);
+  transition: transform 160ms ease;
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__head svg[data-open="true"] {
+  transform: rotate(180deg);
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 12px;
+  border-left: 2px solid var(--v2-border);
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__hint + svg,
+.product-app-frame[data-ui-version="v2"] .activity-group__head > svg:last-child {
+  margin-left: auto;
+}
+
+/* ─── Composer waiting line (activity phase, W4) ─── */
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__phase {
+  margin: 0;
+  padding: 0 2px;
+  color: var(--v2-ink-3);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__phase::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 999px;
+  background: var(--v2-rail-signal, var(--v2-ink-3));
+  animation: activity-phase-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes activity-phase-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .product-app-frame[data-ui-version="v2"] .chat-composer__phase::before {
+    animation: none;
+  }
+}
+
+/* ─── Context usage ring (W4) ─── */
+
+.product-app-frame[data-ui-version="v2"] .context-usage {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-pill, 999px);
+  background: transparent;
+  color: var(--v2-ink-2);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage__track {
+  stroke: var(--v2-border-strong, var(--v2-border));
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage__fill {
+  stroke: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage[data-tone="warn"] .context-usage__fill {
+  stroke: var(--v2-warning, var(--v2-ink-2));
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage[data-tone="danger"] .context-usage__fill,
+.product-app-frame[data-ui-version="v2"] .context-usage[data-tone="danger"] .context-usage__value {
+  stroke: var(--v2-danger);
+  color: var(--v2-danger);
+}
+
+/* ─── Composer trigger menu (W10) ─── */
+
+.product-app-frame[data-ui-version="v2"] .composer-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  right: auto;
+  min-width: 240px;
+  max-width: min(420px, 90%);
+  max-height: 264px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--v2-border-strong, var(--v2-border));
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-popover, 0 8px 24px rgba(0, 0, 0, 0.16));
+  z-index: 30;
+}
+
+.product-app-frame[data-ui-version="v2"] .composer-menu li[role="option"] {
+  padding: 6px 10px;
+  border-radius: calc(var(--v2-radius-sm, 6px) - 2px);
+  font-family: var(--v2-font-mono, monospace);
+  font-size: 12px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .composer-menu li[role="option"][data-active="true"] {
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .composer-menu__note {
+  padding: 6px 10px;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+/* ─── Paste attachments (W11) ─── */
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.product-app-frame[data-ui-version="v2"] .paste-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .paste-chip details {
+  flex: none;
+  max-width: 60%;
+}
+
+.product-app-frame[data-ui-version="v2"] .paste-chip summary {
+  cursor: pointer;
+  color: var(--v2-ink-2);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .paste-chip pre {
+  max-height: 160px;
+  overflow: auto;
+  margin: 6px 0 0;
+  font-family: var(--v2-font-mono, monospace);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .paste-chip__preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__paste-notice {
+  margin: 0;
+  color: var(--v2-warning, var(--v2-ink-2));
+  font-size: 11px;
+}
+
+/* ─── Editing queued message (W3) ─── */
+
+.product-app-frame[data-ui-version="v2"] .queued-message[data-editing="true"] {
+  outline: 1px dashed var(--v2-border-strong, var(--v2-border));
+  outline-offset: 2px;
+}
+
+/* ─── Sidebar session row actions (W7) and failure dot (W4.4) ─── */
+
+.product-app-frame[data-ui-version="v2"] .session-branch {
+  position: relative;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__pinmark {
+  flex: none;
+  color: var(--v2-rail-signal, var(--v2-ink-3));
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__actions {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: none;
+  gap: 2px;
+  padding: 1px 2px;
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-canvas);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-branch:hover .session-item__actions,
+.product-app-frame[data-ui-version="v2"] .session-item__actions:focus-within {
+  display: inline-flex;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item--editing {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 6px;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item--editing input {
+  width: 100%;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__error {
+  margin: 0;
+  color: var(--v2-danger);
+  font-size: 11px;
+}
+
+/* ─── Settings: section breathe (W8.3) and keyboard overrides ─── */
+
+.settings-section-breathe {
+  position: relative;
+  border-radius: var(--v2-radius-sm, 8px);
+}
+
+.settings-section-breathe::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1px solid var(--v2-rail-signal, var(--v2-ink-3));
+  border-radius: inherit;
+  opacity: 0;
+  animation: settings-section-border-breathe 900ms ease-in-out 4;
+}
+
+@keyframes settings-section-border-breathe {
+  0%,
+  100% {
+    opacity: 0.12;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* No transition: land directly on the visible final state. */
+  .settings-section-breathe::after {
+    animation: none;
+    opacity: 0.5;
+  }
+}
+
+.keyboard-settings__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+kbd[data-recording="true"] {
+  color: var(--v2-rail-signal, var(--v2-ink-2));
+  border-style: dashed;
+}
+
+kbd[data-unbound="true"] {
+  color: var(--v2-ink-3);
+  border-style: dashed;
+}
+
+/* ─── Reader font scale (W8.2): the frame base and the reading surface ─── */
+
+
+.product-app-frame[data-ui-version="v2"] .rich-text h1 {
+  font-size: calc(18px * var(--font-scale, 1));
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text h2 {
+  font-size: calc(16px * var(--font-scale, 1));
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text h3,
+.product-app-frame[data-ui-version="v2"] .rich-text h4 {
+  font-size: calc(14px * var(--font-scale, 1));
+}

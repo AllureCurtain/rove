@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import {
   WORK_PANEL_COMPACT_MIN_WIDTH,
@@ -14,17 +14,40 @@ type DragState = {
   startWidth: number;
   minimumWidth: number;
   currentWidth: number;
-  frame: number;
 };
+
+/** The live drag preview rides on the shell's grid track variable. */
+const PREVIEW_VARIABLE = "--work-panel-preview";
+const RESIZING_ATTRIBUTE = "data-work-panel-resizing";
+
+function writePreview(width: number | null): void {
+  const root = document.documentElement;
+  if (width === null) {
+    root.style.removeProperty(PREVIEW_VARIABLE);
+  } else {
+    root.style.setProperty(PREVIEW_VARIABLE, `${Math.round(width)}px`);
+  }
+}
+
+function setResizingFlag(active: boolean): void {
+  const root = document.documentElement;
+  if (active) {
+    root.setAttribute(RESIZING_ATTRIBUTE, "true");
+  } else {
+    root.removeAttribute(RESIZING_ATTRIBUTE);
+  }
+}
 
 /**
  * Pointer and keyboard resizing for the work panel separator.
  *
- * Mirrors PI-Desktop's `WorkPanel` divider: the drag is measured against its own
- * start point (the separator sits on the panel's leading edge), pointer moves are
- * coalesced through one animation frame, the committed width is written when the
- * drag settles, and Escape reverts an in-flight drag. A `data-work-panel-resizing`
- * attribute on the document element gives the whole window the resize cursor.
+ * Mirrors PI-Desktop's `WorkPanel` divider and the left rail's committed
+ * pattern: the drag is measured against its own start point (the separator
+ * sits on the panel's leading edge), the preview is written straight to the
+ * `--work-panel-preview` CSS variable — no per-frame React render — and the
+ * committed width is stored only when the drag settles. Escape reverts an
+ * in-flight drag. The document attribute gives the whole window the resize
+ * cursor.
  */
 export function usePanelResize({
   renderedWidth,
@@ -42,18 +65,11 @@ export function usePanelResize({
     maxPanelWidth: number,
   ) => void;
 }) {
-  const [dragWidth, setDragWidth] = useState<number | null>(null);
   const dragRef = useRef<DragState | null>(null);
-
-  useEffect(() => {
-    const root = document.documentElement;
-    if (dragWidth === null) {
-      root.removeAttribute("data-work-panel-resizing");
-      return;
-    }
-    root.setAttribute("data-work-panel-resizing", "true");
-    return () => root.removeAttribute("data-work-panel-resizing");
-  }, [dragWidth]);
+  // The live budget cap moves as the shell re-measures; read it at drag time
+  // through a ref so the preview respects the same ceiling the commit will.
+  const maxPanelWidthRef = useRef(maxPanelWidth);
+  maxPanelWidthRef.current = maxPanelWidth;
 
   const finish = useCallback(
     (element: HTMLElement, pointerId: number, cancel: boolean) => {
@@ -61,11 +77,9 @@ export function usePanelResize({
       if (!drag || drag.pointerId !== pointerId) {
         return;
       }
-      if (drag.frame) {
-        cancelAnimationFrame(drag.frame);
-      }
       dragRef.current = null;
-      setDragWidth(null);
+      writePreview(null);
+      setResizingFlag(false);
       if (element.hasPointerCapture?.(pointerId)) {
         element.releasePointerCapture(pointerId);
       }
@@ -77,15 +91,15 @@ export function usePanelResize({
     [setWidth],
   );
 
-  // A mid-drag unmount must not leave the document flagged as resizing.
+  // A mid-drag unmount must not leave the document flagged as resizing or the
+  // preview variable stuck at a width the stored value never took.
   useEffect(
     () => () => {
-      const drag = dragRef.current;
-      if (drag?.frame) {
-        cancelAnimationFrame(drag.frame);
+      if (dragRef.current) {
+        dragRef.current = null;
       }
-      dragRef.current = null;
-      document.documentElement.removeAttribute("data-work-panel-resizing");
+      writePreview(null);
+      setResizingFlag(false);
     },
     [],
   );
@@ -104,9 +118,9 @@ export function usePanelResize({
         startWidth,
         minimumWidth,
         currentWidth: startWidth,
-        frame: 0,
       };
-      setDragWidth(startWidth);
+      setResizingFlag(true);
+      writePreview(startWidth);
       event.currentTarget.setPointerCapture(event.pointerId);
     },
     [renderedWidth],
@@ -121,16 +135,10 @@ export function usePanelResize({
       drag.startWidth + drag.startClientX - event.clientX,
       drag.minimumWidth,
     );
-    if (drag.frame) {
-      return;
-    }
-    drag.frame = requestAnimationFrame(() => {
-      if (dragRef.current !== drag) {
-        return;
-      }
-      drag.frame = 0;
-      setDragWidth(drag.currentWidth);
-    });
+    // The budget's live cap still bounds the preview; the committed width runs
+    // through the same clamp when the drag settles.
+    const capped = Math.min(drag.currentWidth, Math.max(0, maxPanelWidthRef.current));
+    writePreview(capped);
   }, []);
 
   const onPointerUp = useCallback(
@@ -160,12 +168,8 @@ export function usePanelResize({
     [finish, maxPanelWidth, resizeByKeyboard],
   );
 
-  const value = dragWidth ?? renderedWidth;
-  const minimumWidth = workPanelMinimumFor(value);
+  const minimumWidth = workPanelMinimumFor(renderedWidth);
   return {
-    /** Live preview width while dragging, else null. */
-    dragWidth,
-    value,
     minimumWidth: Math.min(
       minimumWidth,
       Math.max(WORK_PANEL_COMPACT_MIN_WIDTH, maxPanelWidth),

@@ -201,8 +201,11 @@ export function RunInspector({
   const phase = resolveInspectorPhase(runState);
   const waiting = runState.tools.filter((tool) => tool.pendingApproval);
   // The separator owns the pointer/keyboard resize; the budget owns the cap.
+  // The drag preview bypasses React entirely (--work-panel-preview), so the
+  // committed width is also what the ARIA value reports.
+  const renderedPanelWidth = panelLayout?.panelWidth ?? panel?.width ?? 0;
   const panelResize = usePanelResize({
-    renderedWidth: panelLayout?.panelWidth ?? panel?.width ?? 0,
+    renderedWidth: renderedPanelWidth,
     maxPanelWidth: panelLayout?.maxPanelWidth ?? panel?.width ?? 0,
     setWidth: panel?.setWidth ?? (() => undefined),
     resizeByKeyboard: panel?.resizeByKeyboard ?? (() => undefined),
@@ -277,9 +280,9 @@ export function RunInspector({
           aria-label={t("inspector.panelWidth")}
           aria-valuemin={panelResize.minimumWidth}
           aria-valuemax={panelResize.maximumWidth}
-          aria-valuenow={Math.round(panelResize.value)}
+          aria-valuenow={Math.round(renderedPanelWidth)}
           aria-valuetext={t("inspector.panelWidthValue", {
-            width: Math.round(panelResize.value),
+            width: Math.round(renderedPanelWidth),
           })}
           tabIndex={0}
           onPointerDown={panelResize.onPointerDown}

@@ -11,7 +11,15 @@ import {
   createWorkbenchState,
   workbenchReducer,
   type ToolCallView,
+  type WorkbenchAction,
 } from "../lib/rove-state";
+import {
+  IDLE_PHASE,
+  activityEventForStreamEvent,
+  reduceActivityPhase,
+  type ActivityEvent,
+  type ActivityPhase,
+} from "../chat/activity-phase";
 import type {
   ProductControl,
   ProductControlKind,
@@ -78,10 +86,27 @@ export function useSessionContinuity({
   const [controlsLoading, setControlsLoading] = useState(false);
   const [controlBusy, setControlBusy] = useState<string | null>(null);
   const [controlError, setControlError] = useState<string | null>(null);
-  const [runState, dispatch] = useReducer(
+  const [runState, baseDispatch] = useReducer(
     workbenchReducer,
     undefined,
     createWorkbenchState,
+  );
+  // The composer's waiting line is a second, tiny projection of the same
+  // dispatched facts. Every state change passes through this wrapper, so the
+  // phase never sees a fact the reducer did not.
+  const [activityPhase, trackActivityPhase] = useReducer(
+    reduceActivityPhase,
+    IDLE_PHASE,
+  );
+  const dispatch = useCallback(
+    (action: WorkbenchAction) => {
+      baseDispatch(action);
+      const phaseEvent = activityEventForWorkbenchAction(action);
+      if (phaseEvent) {
+        trackActivityPhase(phaseEvent);
+      }
+    },
+    [baseDispatch],
   );
   const approvalContextRef = useRef({ activeSession, runState });
   approvalContextRef.current = { activeSession, runState };
@@ -755,6 +780,7 @@ export function useSessionContinuity({
       }
       let accepted: ProductMessage | null = null;
       let lastError: unknown;
+      trackActivityPhase({ type: "send" });
       for (const delayMs of MESSAGE_SUBMISSION_RETRY_DELAYS_MS) {
         if (delayMs > 0) {
           await waitForReconciliationDelay(delayMs);
@@ -937,6 +963,7 @@ export function useSessionContinuity({
 
   return {
     runState,
+    activityPhase,
     restoreState,
     approvalBusy: runState.tools.find((tool) => approvalBusyKey === JSON.stringify([
       activeSession?.workspaceId, activeSession?.id, runState.activeJobId,
@@ -978,6 +1005,34 @@ function createControlIdempotencyKey(): string {
     return `control_${crypto.randomUUID()}`;
   }
   return `control_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+}
+
+const TERMINAL_JOB_STATUSES = new Set(["done", "error", "cancelled", "interrupted"]);
+
+/**
+ * Non-stream state changes also carry activity facts: a job attachment means
+ * the model is about to be waited on, and a terminal job sync ends the turn
+ * even when the stream never delivered `run_completed` (cancel, force close).
+ */
+function activityEventForWorkbenchAction(action: WorkbenchAction): ActivityEvent | null {
+  switch (action.type) {
+    case "reset":
+    case "hydrate":
+      return { type: "reset" };
+    case "prepare_job_attachment":
+    case "job_created":
+      return { type: "run_started" };
+    case "job_state_synced":
+      return TERMINAL_JOB_STATUSES.has(action.state.status)
+        ? { type: "reset" }
+        : { type: "run_started" };
+    case "set_busy":
+      return action.busy ? null : { type: "reset" };
+    case "stream_event":
+      return activityEventForStreamEvent(action.event);
+    default:
+      return null;
+  }
 }
 
 function controlLabel(kind: ProductControlKind): string {

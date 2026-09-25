@@ -26,6 +26,7 @@ function draftKey(identity: ComposerDraftIdentity): string {
  */
 export function createComposerDraftStore() {
   const drafts = new Map<string, ComposerDraftSnapshot>();
+  const sentHistory = new Map<string, string[]>();
   const listeners = new Set<() => void>();
   const read = (key: string) => drafts.get(key) ?? EMPTY_DRAFT;
   function publish(key: string, draft: ComposerDraftSnapshot) {
@@ -33,6 +34,7 @@ export function createComposerDraftStore() {
     listeners.forEach((listener) => listener());
   }
 
+   const SENT_HISTORY_LIMIT = 50;
   return {
     subscribe(listener: () => void) {
       listeners.add(listener);
@@ -64,6 +66,10 @@ export function createComposerDraftStore() {
       publish(key, { ...snapshot, submitting: true, sendFailed: false });
       try {
         const accepted = await onSend(message);
+        if (accepted) {
+          const history = sentHistory.get(key) ?? [];
+          sentHistory.set(key, [...history, message].slice(-SENT_HISTORY_LIMIT));
+        }
         const current = read(key);
         if (accepted && current.version === snapshot.version) {
           publish(key, { ...current, text: "", version: current.version + 1 });
@@ -79,6 +85,18 @@ export function createComposerDraftStore() {
       } finally {
         publish(key, { ...read(key), submitting: false });
       }
+    },
+    recall(identity: ComposerDraftIdentity, direction: "older" | "newer", cursor: number): { text: string; cursor: number } | null {
+      const history = sentHistory.get(draftKey(identity)) ?? [];
+      if (history.length === 0) return null;
+      const next = direction === "older" ? Math.min(history.length - 1, cursor + 1) : Math.max(-1, cursor - 1);
+      if (next < 0) return { text: "", cursor: -1 };
+      return { text: history[history.length - 1 - next] ?? "", cursor: next };
+    },
+    restore(identity: ComposerDraftIdentity, text: string) {
+      const key = draftKey(identity);
+      const current = read(key);
+      publish(key, { ...current, text, version: current.version + 1, sendFailed: false });
     },
   };
 }
