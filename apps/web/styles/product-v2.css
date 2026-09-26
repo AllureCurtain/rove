@@ -4079,3 +4079,107 @@ body.is-resizing-column * {
   overscroll-behavior: contain;
 }
 
+.product-app-frame[data-ui-version="v2"] .tool-card__chip {
+  border-radius: var(--v2-radius-pill, 999px);
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink-3);
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__chip[data-tone="ok"] {
+  background: var(--v2-success-soft, var(--v2-surface-sunken));
+  color: var(--v2-success, var(--v2-ink-2));
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__chip[data-tone="warn"] {
+  background: var(--v2-warning-soft, var(--v2-surface-sunken));
+  color: var(--v2-warning, var(--v2-ink-2));
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__chip[data-tone="danger"] {
+  background: var(--v2-danger-soft);
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__list {
+  margin: 0;
+  padding-left: 18px;
+  font-family: var(--v2-font-mono, monospace);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__truncated {
+  margin: 4px 0 0;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .message-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+  opacity: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-bubble:hover .message-actions,
+.product-app-frame[data-ui-version="v2"] .chat-bubble:focus-within .message-actions {
+  opacity: 1;
+}
+
+
+.product-app-frame[data-ui-version="v2"] .activity-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink-2);
+  cursor: pointer;
+  text-align: left;
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__head strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__hint {
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__head svg[data-open] {
+  margin-left: auto;
+  transform: rotate(0deg);
+  transition: transform 160ms ease;
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__head svg[data-open="true"] {
+  transform: rotate(180deg);
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 12px;
+  border-left: 2px solid var(--v2-border);
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__hint + svg,
+.product-app-frame[data-ui-version="v2"] .activity-group__head > svg:last-child {
+  margin-left: auto;
+}
+

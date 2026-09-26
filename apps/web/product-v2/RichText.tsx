@@ -11,6 +11,7 @@ import {
   openDesktopExternalLink,
 } from "../platform/desktop-commands";
 import { useCopy } from "../copy/CopyProvider";
+import { segmentMarkdown } from "../chat/streaming-blocks";
 
 const RichCodeBlock = dynamic(() => import("./RichCodeBlock"), {
   loading: () => <div className="rich-render-loading" role="status">Loading code renderer…</div>,
@@ -23,28 +24,35 @@ const MAX_MARKDOWN_CHARACTERS = 300_000;
 
 export function RichText({ content }: { content: string }) {
   const bounded = content.slice(0, MAX_MARKDOWN_CHARACTERS);
+  // An unclosed fence stays plain text (inside segmentMarkdown's prose), so it
+  // cannot swallow the prose that follows it — including the tail of a message
+  // that was cut off mid-code-block.
   const truncated = bounded.length !== content.length;
 
   return (
     <div className="rich-text">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        skipHtml
-        urlTransform={safeRichTextUrl}
-        components={{
-          a: SafeLink,
-          code: MarkdownCode,
-          img: BlockedImage,
-        }}
-      >
-        {bounded}
-      </ReactMarkdown>
+      {segmentMarkdown(bounded).map((segment, index) => (
+        <RichTextMarkdown key={index}>{segment.text}</RichTextMarkdown>
+      ))}
       {truncated ? (
         <p className="rich-text__limit" role="note">
           Message rendering stopped at the browser safety limit.
         </p>
       ) : null}
     </div>
+  );
+}
+
+function RichTextMarkdown({ children }: { children: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      skipHtml
+      urlTransform={safeRichTextUrl}
+      components={{ a: SafeLink, code: MarkdownCode, img: BlockedImage }}
+    >
+      {children}
+    </ReactMarkdown>
   );
 }
 
