@@ -1609,4 +1609,70 @@ describe("workbenchReducer", () => {
 
     expect(state.tools).toHaveLength(0);
   });
+
+  it("keeps the salvaged partial from a cancelled turn and marks it aborted", () => {
+    let state = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      seq: 1,
+      event: {
+        type: "run_started",
+        run_id: "run-1",
+        job_id: "job-1",
+        user_message: "Inspect the workspace",
+      },
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 2,
+      event: { type: "llm_chunk", delta: "partial" },
+    });
+    // R2b: after a stop the runtime sends the accumulated text as a final
+    // message with the marker, so the deltas on screen become durable text.
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 3,
+      event: {
+        type: "llm_message",
+        full: "partial worth keeping",
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+        aborted: true,
+      },
+    });
+
+    const assistant = state.messages.find(
+      (message) => message.role === "assistant",
+    );
+    expect(assistant?.content).toBe("partial worth keeping");
+    expect(assistant?.status).toBe("final");
+    expect(assistant?.aborted).toBe(true);
+    expect(state.messages).toHaveLength(2);
+  });
+
+  it("does not mark a complete model message as aborted", () => {
+    let state = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      seq: 1,
+      event: {
+        type: "run_started",
+        run_id: "run-1",
+        job_id: "job-1",
+        user_message: "Inspect the workspace",
+      },
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 2,
+      event: {
+        type: "llm_message",
+        full: "The read is complete.",
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      },
+    });
+
+    const assistant = state.messages.find(
+      (message) => message.role === "assistant",
+    );
+    expect(assistant?.content).toBe("The read is complete.");
+    expect(assistant?.aborted).toBeUndefined();
+  });
 });

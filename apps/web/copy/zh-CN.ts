@@ -151,6 +151,7 @@ const zhCN = {
   },
   chat: {
     responding: "正在回复…",
+    aborted: "(已中止)",
     assistant: "助手",
     you: "你",
     send: "发送",

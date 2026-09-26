@@ -177,6 +177,7 @@ mod tests {
             usage: Usage::default(),
             tool_calls: calls,
             assistant_turn: None,
+            aborted: false,
         }
     }
 

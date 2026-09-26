@@ -625,6 +625,13 @@ export type StreamEvent =
       full: string;
       usage: Usage;
       tool_calls?: ToolCallRef[];
+      /**
+       * R2b abort salvage: `true` when this message is the text a stop kept
+       * from a cancelled turn rather than a complete model response. The run
+       * still terminates as cancelled. Older servers and older persisted
+       * transcripts omit the field, which means "complete".
+       */
+      aborted?: boolean;
     }
   | {
       type: "tool_call_started";

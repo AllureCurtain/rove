@@ -260,7 +260,11 @@ impl AgentKernelHost for EmbeddedKernelHost<'_> {
                         yield KernelModelTurnItem::Finished(turn);
                         return;
                     }
-                    crate::model_turn::ModelTurnItem::Cancelled => {
+                    crate::model_turn::ModelTurnItem::Cancelled(_) => {
+                        // The embedded loop has no durable history to salvage
+                        // into, and the salvage window is a durable-engine
+                        // policy, so a cancelled embedded turn ends exactly as
+                        // it did before the runtime grew the abort contract.
                         yield KernelModelTurnItem::Cancelled;
                         return;
                     }

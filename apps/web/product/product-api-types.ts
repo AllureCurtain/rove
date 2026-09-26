@@ -4608,6 +4608,7 @@ export function parseStreamEvent(
           parseToolCallRef,
         );
       }
+      event.aborted = optionalBoolean(record, "aborted", path);
       return event;
     }
     case "tool_call_started": {

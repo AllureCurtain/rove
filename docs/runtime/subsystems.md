@@ -168,6 +168,21 @@ artifacts, trace events (including `step_result`, `plan_decision`, and
 skipped. There is no separate mutable lifecycle table or fourth ledger
 artifact.
 
+A cancelled model turn that had already published text is recorded instead of
+dropped (runtime document R2b): the stop waits at most `ABORT_SALVAGE_WINDOW`
+(1500 ms, `runtime/src/engine/model_turn.rs`) for the in-flight request, then
+records the surviving text as one canonical `StreamEvent::LlmMessage` with
+`aborted = false` when the message completed inside the window and `aborted =
+true` when the window expired. That single event both writes the assistant
+message into the resumable history and appends the trace fact, so the two
+surfaces agree by construction, while the run still ends as cancelled.
+`aborted` is an additive `#[serde(default)]` boolean, so older traces read as
+complete; the resumable-history projection deliberately drops the marker
+(presentation, not recoverable state), and a cancel with no published text keeps
+writing nothing at all. `tests/abort_salvage.rs` covers both sides of the window,
+repeated cancellation, the resume view, the no-text case, the untouched tool
+path, and a legacy trace line with no field.
+
 ## Context And Compaction
 
 The context builder and both compaction implementations live in

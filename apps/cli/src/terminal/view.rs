@@ -1484,6 +1484,7 @@ mod tests {
                 usage: usage(),
                 tool_calls: Vec::new(),
                 assistant_turn: None,
+                aborted: false,
             },
             StreamEvent::ToolCallStarted {
                 call_id,

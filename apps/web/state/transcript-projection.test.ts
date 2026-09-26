@@ -570,6 +570,39 @@ describe("product transcript projection", () => {
     ]);
     expect(transcriptProjectionInput(merged).status).toBe("partial");
   });
+
+  it("keeps the aborted marker when a restored segment replays a salvaged partial", () => {
+    // R2b: a cancelled run's segment carries the salvaged message in its
+    // canonical events, so restoring a session must show the same marker a
+    // live stream would have shown.
+    const segment = completedSegment(
+      1,
+      "job-1",
+      "run-1",
+      "Stop me",
+      "partial worth keeping",
+    );
+    segment.run_status = "cancelled";
+    segment.events = segment.events.map((stored) =>
+      stored.event.type === "llm_message"
+        ? { ...stored, event: { ...stored.event, aborted: true } }
+        : stored,
+    );
+
+    const state = projectProductTranscript({
+      product_session_id: "product-session",
+      workspace_id: "workspace",
+      status: "complete",
+      partial_reasons: [],
+      segments: [segment],
+    });
+
+    const assistant = state.messages.find(
+      (message) => message.role === "assistant",
+    );
+    expect(assistant?.content).toBe("partial worth keeping");
+    expect(assistant?.aborted).toBe(true);
+  });
 });
 
 function segmentFor(ordinal: number) {

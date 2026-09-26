@@ -207,6 +207,10 @@ impl RunArtifactRecorder {
                 usage,
                 tool_calls,
                 assistant_turn,
+                // A salvaged cancelled partial is still a durable assistant
+                // message: the marker is presentation, not persistence. The
+                // turn arrives text-only, so it can never offer resume a tool.
+                aborted: _,
             } => {
                 self.steps += 1;
                 let turn = assistant_turn

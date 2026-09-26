@@ -1,6 +1,8 @@
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use futures::stream::BoxStream;
 
 use crate::traits::{ModelClient, ModelClientId, ModelEvent};
@@ -25,6 +27,19 @@ pub enum FakeTurn {
     /// Emit some text and then fail, so a caller can prove that a turn which
     /// already produced output is not retried.
     TextThenFail { text: String, error: ModelError },
+    /// Emit `text` and then stay in flight until `release` is notified.
+    ///
+    /// This is the smallest deterministic way to hold a turn open while the
+    /// caller cancels the run: the gate replaces a wall-clock delay, so the
+    /// abort-salvage race is decided by the test rather than by scheduling.
+    /// Releasing the gate proves a request that completes after the cancel
+    /// signal; never releasing it proves one that outlives the salvage window.
+    /// `Notify` keeps a permit, so a release that happens before the turn
+    /// reaches the gate is not lost.
+    Gate {
+        text: String,
+        release: Arc<tokio::sync::Notify>,
+    },
 }
 
 /// Deterministic local model for smoke tests and demos.
@@ -66,18 +81,26 @@ impl FakeModelClient {
     }
 }
 
+/// The events every scripted turn ends with.
+fn turn_completion_events() -> Vec<Result<ModelEvent, ModelError>> {
+    vec![
+        Ok(ModelEvent::Usage {
+            usage: Usage::default(),
+        }),
+        Ok(ModelEvent::StopReason {
+            reason: StopReason::EndTurn,
+        }),
+        Ok(ModelEvent::Done),
+    ]
+}
+
 fn turn_events(turn: FakeTurn) -> Vec<Result<ModelEvent, ModelError>> {
     match turn {
-        FakeTurn::Text(text) => vec![
-            Ok(ModelEvent::TextDelta { text }),
-            Ok(ModelEvent::Usage {
-                usage: Usage::default(),
-            }),
-            Ok(ModelEvent::StopReason {
-                reason: StopReason::EndTurn,
-            }),
-            Ok(ModelEvent::Done),
-        ],
+        FakeTurn::Text(text) => {
+            let mut events = vec![Ok(ModelEvent::TextDelta { text })];
+            events.extend(turn_completion_events());
+            events
+        }
         FakeTurn::ToolUse { id, name, args } => vec![
             Ok(ModelEvent::ToolUseStart {
                 id: id.clone(),
@@ -118,6 +141,14 @@ fn turn_events(turn: FakeTurn) -> Vec<Result<ModelEvent, ModelError>> {
             }),
             Err(error),
         ],
+        // `stream` intercepts a gate so it can suspend mid-turn; this arm keeps
+        // the expansion total and describes exactly the events the same turn
+        // emits once its gate is released.
+        FakeTurn::Gate { text, .. } => {
+            let mut events = vec![Ok(ModelEvent::TextDelta { text })];
+            events.extend(turn_completion_events());
+            events
+        }
     }
 }
 
@@ -129,7 +160,20 @@ impl ModelClient for FakeModelClient {
         _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         if let Some(turn) = self.turns.lock().expect("turns mutex poisoned").pop() {
-            return Box::pin(futures::stream::iter(turn_events(turn)));
+            // The delta is emitted before the gate so the caller can observe
+            // text on screen and only then cancel the run; the completion
+            // events follow whichever signal wins.
+            return match turn {
+                FakeTurn::Gate { text, release } => Box::pin(
+                    futures::stream::iter([Ok(ModelEvent::TextDelta { text })]).chain(
+                        futures::stream::once(async move {
+                            release.notified().await;
+                        })
+                        .flat_map(|()| futures::stream::iter(turn_completion_events())),
+                    ),
+                ),
+                other => Box::pin(futures::stream::iter(turn_events(other))),
+            };
         }
 
         let response = if messages

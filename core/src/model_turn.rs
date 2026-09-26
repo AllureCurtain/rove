@@ -24,8 +24,24 @@ pub struct ModelTurn {
 pub enum ModelTurnItem {
     Event(AgentEvent),
     Finished(ModelTurn),
-    Cancelled,
+    /// Cancellation was observed before the turn completed.
+    ///
+    /// The item carries what the turn had already accumulated, because only the
+    /// turn knows it: hosts own persistence and canonical events, the turn owns
+    /// its in-memory outcome. Whether anything is done with it — and how long a
+    /// host waits for a late completion before giving up — is the host's policy.
+    Cancelled(CancelledTurn),
     Failed(ModelError),
+}
+
+/// What one in-flight model turn had accumulated when cancellation stopped it.
+#[derive(Debug, Clone, Default)]
+pub struct CancelledTurn {
+    /// Assistant text received from the provider before the stop.
+    pub partial: String,
+    /// Usage the provider reported before the stop, or the default when it
+    /// reported none. Inventing numbers here would make the cancel path lie.
+    pub usage: Usage,
 }
 
 pub fn run_model_turn<'a>(
@@ -54,7 +70,10 @@ pub fn run_model_turn<'a>(
             let chunk_result = tokio::select! {
                 biased;
                 _ = cancel_token.cancelled() => {
-                    yield ModelTurnItem::Cancelled;
+                    yield ModelTurnItem::Cancelled(CancelledTurn {
+                        partial: full_response,
+                        usage: assembler.usage().clone(),
+                    });
                     return;
                 }
                 chunk = model_stream.next() => chunk,
@@ -300,10 +319,10 @@ mod tests {
     use futures::stream::BoxStream;
     use tokio_util::sync::CancellationToken;
 
-    use super::{ModelTurnItem, build_action_from_model_output, run_model_turn};
-    use crate::{Action, CallId, ToolCallAction};
+    use super::{CancelledTurn, ModelTurnItem, build_action_from_model_output, run_model_turn};
+    use crate::{Action, AgentEvent, CallId, ToolCallAction};
     use rove_models::{
-        Message, ModelClient, ModelClientId, ModelError, ModelEvent, ModelToolSchema,
+        Message, ModelClient, ModelClientId, ModelError, ModelEvent, ModelToolSchema, Usage,
     };
 
     struct IncompleteModel;
@@ -377,6 +396,44 @@ mod tests {
 
         fn model_id(&self) -> &str {
             "legacy-eof"
+        }
+    }
+
+    /// Emits one delta and then stays in flight until it is cancelled, so the
+    /// cancel path can be observed with text already accumulated. Reported
+    /// usage is sent *before* that delta, because a stop can only be honest
+    /// about what the turn has already accounted for; `usage` is omitted
+    /// entirely when `None`, which is how a provider that reports none behaves.
+    struct HangingModel {
+        usage: Option<Usage>,
+    }
+
+    #[async_trait]
+    impl ModelClient for HangingModel {
+        fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ModelToolSchema],
+        ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+            let mut events = Vec::new();
+            if let Some(usage) = self.usage.clone() {
+                events.push(Ok(ModelEvent::Usage { usage }));
+            }
+            events.push(Ok(ModelEvent::TextDelta {
+                text: "half".to_string(),
+            }));
+            Box::pin(
+                futures::stream::iter(events)
+                    .chain(futures::stream::pending::<Result<ModelEvent, ModelError>>()),
+            )
+        }
+
+        fn model_id(&self) -> &str {
+            "hanging"
+        }
+
+        fn requires_terminal_event(&self) -> bool {
+            true
         }
     }
 
@@ -516,6 +573,75 @@ mod tests {
             Some(ModelTurnItem::Failed(ModelError::InvalidConfiguration(_)))
         ));
         assert_eq!(dispatches.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_turn_hands_back_its_accumulated_text_and_usage() {
+        let usage = Usage {
+            prompt_tokens: 3,
+            completion_tokens: 2,
+            total_tokens: 5,
+            cached_tokens: 1,
+        };
+        let cancel = CancellationToken::new();
+        let model = HangingModel {
+            usage: Some(usage.clone()),
+        };
+        let mut stream = run_model_turn(
+            &model,
+            vec![Message::user("hello")],
+            Vec::new(),
+            cancel.clone(),
+        );
+
+        assert!(matches!(
+            stream.next().await,
+            Some(ModelTurnItem::Event(AgentEvent::ModelStatus { .. }))
+        ));
+        assert!(matches!(
+            stream.next().await,
+            Some(ModelTurnItem::Event(AgentEvent::TextDelta { .. }))
+        ));
+
+        // The turn is now in flight with text the user has already seen.
+        cancel.cancel();
+        match stream.next().await {
+            Some(ModelTurnItem::Cancelled(CancelledTurn {
+                partial,
+                usage: seen,
+            })) => {
+                assert_eq!(partial, "half");
+                assert_eq!(
+                    seen, usage,
+                    "a cancelled turn must report the usage it actually saw"
+                );
+            }
+            other => panic!("expected the accumulated outcome, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_turn_that_reported_no_usage_keeps_the_default() {
+        let cancel = CancellationToken::new();
+        let model = HangingModel { usage: None };
+        // A model that only streams text and never reports usage: the cancel
+        // path must not invent token counts.
+        let mut stream = run_model_turn(
+            &model,
+            vec![Message::user("hello")],
+            Vec::new(),
+            cancel.clone(),
+        );
+        let _ = stream.next().await;
+        let _ = stream.next().await;
+        cancel.cancel();
+        match stream.next().await {
+            Some(ModelTurnItem::Cancelled(CancelledTurn { partial, usage })) => {
+                assert_eq!(partial, "half");
+                assert_eq!(usage, Usage::default());
+            }
+            other => panic!("expected the accumulated outcome, got {other:?}"),
+        }
     }
 
     #[tokio::test]

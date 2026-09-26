@@ -5195,6 +5195,53 @@ mod tests {
         );
     }
 
+    /// `llm_message` is how an aborted turn reaches a live client, so the
+    /// salvage marker has to survive the SSE frame itself — not just the
+    /// in-process event. The event name must stay `llm_message`, because that
+    /// is what a client written before this field dispatches on. The OpenAPI
+    /// projection of this event is an opaque object
+    /// (`#[schema(value_type = Object)]`), so the additive field changes no
+    /// documented schema.
+    #[tokio::test]
+    async fn sse_frame_carries_the_aborted_marker_on_llm_message() {
+        let frame = sse_event(JobStreamEvent {
+            seq: 7,
+            event: StreamEvent::LlmMessage {
+                full: "cut short".to_string(),
+                usage: rove_models::Usage::default(),
+                tool_calls: Vec::new(),
+                assistant_turn: None,
+                aborted: true,
+            },
+        })
+        .expect("an llm_message frame must serialize");
+        // Rendered through the same `Sse` response the route returns, so the
+        // assertions below are about the bytes a client actually reads.
+        let stream = futures::stream::iter(vec![frame]).map(Ok::<Event, std::convert::Infallible>);
+        let response = axum::response::IntoResponse::into_response(Sse::new(stream));
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(
+            text.contains("event: llm_message"),
+            "the frame name must not change: {text}"
+        );
+        assert!(
+            text.contains(r#""type":"llm_message""#),
+            "the payload keeps its variant tag: {text}"
+        );
+        assert!(
+            text.contains(r#""aborted":true"#),
+            "the salvage marker must reach the wire: {text}"
+        );
+        assert!(
+            text.contains(r#""v":"#),
+            "the frame keeps its protocol version first: {text}"
+        );
+    }
+
     async fn publish_terminal_event_after_barrier(
         record: &JobRecord,
         event: StreamEvent,

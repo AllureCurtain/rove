@@ -40,7 +40,7 @@
 | 编号 | 条目 | 优先级 | 主要触碰面 | 状态 |
 |---|---|---|---|---|
 | R1 | transcript 游标分页（F.4 闭环） | P0 | `apps/api` + `apps/web` 接线 | Implemented（见 §1.7） |
-| R2 | 回合失败恢复家族（a 静默回合 / b 中止保留 / c 重试预算+事件） | P0 | `core`/`runtime`/`models`/`apps/api`/事件合同 | R2c Implemented（见 §2.4）；R2a/R2b Proposed |
+| R2 | 回合失败恢复家族（a 静默回合 / b 中止保留 / c 重试预算+事件） | P0 | `core`/`runtime`/`models`/`apps/api`/事件合同 | R2c Implemented（见 §2.4）；R2b Implemented（见 §2.6）；R2a Proposed |
 | R3 | 会话 `last_outcome` 字段 | P1 | ProductStore 迁移 016 + contracts + web | Proposed |
 | R4 | 队列协议扩展（原子重排 / send-now 边界语义 / 重启存活验证） | P1 | `apps/api` + 迁移 017 | Proposed |
 | R5 | 产品级目录 SSE `/product/events` | P1 | `apps/api` + 迁移 018 + web | Proposed |
@@ -411,6 +411,99 @@ R2c 独立成一个 PR（对应 §11 的 PR-2，branch `feature/runtime-align-r2
 不在 routing 包装层再加预算（预算在 run loop，天然覆盖直连 provider）；
 不做 provider 级别的幂等键或请求重放去重（模型调用无副作用）。
 
+### 2.6 R2b 实施记录
+
+> 编号说明：R2a 的实施记录是 §2.5，在 `feature/runtime-align-r2a`（PR #76）上落地；
+> 它与本节都从 §2.4 之后接续，哪个先合入，另一个的编号都不变。
+
+R2b 仍然独立成一个 PR（§11 的 PR-3 只落 R2b；R2a 保持 Proposed，不在本次 diff 内）。
+本节记录 §2.2 的落地事实与两处刻意偏离。
+
+落地位置与形状：
+
+- 窗口本体是 runtime 私有常量：`runtime/src/engine/model_turn.rs` 的
+  `ABORT_SALVAGE_WINDOW = 1500ms`，**不是配置项**——它是取消合同的时延上界，
+  加配置只会让"停止到底多久变成终态"变成部署问题。
+- 唯一调用点是 `runtime/src/engine/run_loop.rs:906` 的 `run_kernel_model_turn`，
+  未规划（React）与规划（planned step）两条宿主路径共用它；窗口因此天然只有一个实现。
+- **core 不知道窗口**：`core/src/model_turn.rs` 只把这一回合的内存结局交出来——
+  `ModelTurnItem::Cancelled(CancelledTurn { partial, usage })`
+  （`partial` 是已累积文本，`usage` 是这一回合真正报过的用量，没报过就是类型默认值，
+  不编数字）。等不等、等多久、写不写，全是 runtime 的策略。
+- 判定"已累积非空文本"的面是**已落账的 `LlmChunk`**（`visible`），不是 provider 原始流：
+  与 R2c §2.4 第 4 条的"无输出"判定面同源。因此 Review 模式下文本被 redact、从不产生
+  `LlmChunk`，review 回合即使已流出文本也不会 salvage。
+- 进入窗口后，该回合后续输出**只被记账、不再作为新 `LlmChunk` 发布**：取消已经通知所有
+  消费方停止流式渲染，再补发 delta 会让 UI 重新长出一条已经停掉的流。
+- salvage 出来的消息是**纯文本**：`tool_calls: vec![]`、`stop_reason = Cancelled`，
+  两个分支都不把工具调用交给 kernel，所以 resume 不可能从 salvage 里找到可执行工具。
+- 落两个持久化面靠同一个事件：`RunArtifactRecorder`（`task_state.json` 的可恢复历史）
+  与 trace 的 `History` 行都由 `StreamEvent::LlmMessage` 投影，所以"写消息"和"发事件"
+  是同一件事，不存在只写一半的路径。
+
+落地时确认并解决的设计歧义：
+
+1. **不能用 `child_token()`**：`CancellationToken::child_token()` 会随父令牌一起取消，
+   用它驱动模型回合的话，取消被观察到的同一瞬间 in-flight 请求就死了，窗口无从谈起。
+   实现改成 runtime 自己新建一个令牌，只在"窗口到期"或"空文本立即停"时取消它——
+   取消语义其余部分不变（provider 请求仍在取消后立刻被丢弃，只是最多晚 1500ms，
+   且仅当屏幕上已经有文本）。
+2. **`aborted` 的语义边界**：字段加在 `StreamEvent::LlmMessage` 上
+   （`#[serde(default)]`，恒序列化），不是加在终态 `RunCompleted` 上。终态在两种情况下
+   都仍是 `Cancelled`："完整消息"和"被取消的回合"是两个独立事实，不互相覆盖。
+   旧 trace 没有该字段 → 反序列化为 `false`，正是 salvage 之前的含义。
+3. **`aborted` 不进可恢复历史**：`RunArtifactRecorder` 照常把 salvage 的文本写进
+   `task_state.json` 历史，但显式丢掉标记（`aborted: _`）——标记是呈现事实，
+   不是可恢复状态；`HistoryProjector` 也保持原样投影文本。
+   Review 持久化（`redacted_for_review_persistence`）原样透传标记，避免 redact 时静默丢字段。
+4. **重复取消幂等**：`cancel_observed` 置位后不再重新开窗，`salvage_until` 只会被清空，
+   因此第二次 cancel 既不重开窗口也不写第二条消息/事件。
+5. **空文本取消 = 现状**：`visible` 为空时立即 `turn_cancel.cancel()`，不写消息、不发事件、
+   不写历史（Web 的 smart-stop 依赖这条"什么都没产出"的判定）。
+6. **嵌入宿主不 salvage**：`core/src/agent.rs` 的嵌入式循环没有持久化历史，
+   窗口是持久化引擎的策略，因此它原样把 `Cancelled` 交出去。这是显式范围声明，
+   不是遗漏：嵌入式路径的行为与 R2b 之前完全一致。
+7. **API/OpenAPI 零改动**：`JobStreamEvent.event` 是
+   `#[schema(value_type = Object)]`，SSE 载荷本身是 opaque object，所以新增字段不需要
+   schema 变更；合同测试改为断言真实 SSE 帧字节（`Sse` 响应体）里出现
+   `"aborted":true` 且事件名仍是 `llm_message`。
+
+刻意偏离 §2.2 的地方（各一条理由）：
+
+1. **前端 smart-stop 文案分支未启用**（§2.2 的"smart-stop 改为提示已保留部分回复"）：
+   停止处理函数在用户按下停止时同步运行，那一刻 salvage 窗口还开着、`llm_message`
+   还不存在，因此无法从已定局的轮次读出标记——半做只会做出一个永远为假的判断。
+   决定：保持 `PARTIAL_ABORT_MARKER = undefined`，行为一字不变，把"从已定局轮次派生
+   该标记"登记为前端文档 F6 的后续（见 `2026-09-26-frontend-experience-alignment-design.md`
+   §7.5）。
+2. **`Transcript` 的标记位置**：§2.2 只说"后缀标记"，实现放在消息 byline 的状态位
+   （"助手 (已中止)"），而不是拼进正文——正文必须与模型产出的文本逐字一致，
+   标记是可访问性/状态信息，混进正文会污染复制与后续编辑。
+
+验证：
+
+- `tests/abort_salvage.rs`（8 个用例，全部走 fake provider，无 key/无网）：
+  流式中途取消保文本、窗口内完成不标 aborted、空文本取消零写入、连续取消幂等、
+  工具路径不 salvage（无第二次模型调用）、resume 只可见一次且不重放、
+  旧 trace 行缺字段重建为 `false`、窗口有界。
+- `tests/abort_salvage.rs` 的 fake 夹具：`models/src/fake.rs` 增
+  `FakeTurn::Gate { text, release }`（先发 delta 再等 `Notify`），把"窗口内完成 /
+  窗口超时"从时序运气变成一个由测试决定的显式选择。
+- `core/src/model_turn.rs` 单测：取消回合交出累积文本与"真正报过的"usage；
+  没报过 usage 时保持默认值。
+- `apps/api/src/lib.rs` 单测：`sse_frame_carries_the_aborted_marker_on_llm_message`
+  渲染真实 SSE 响应体，断言 `event: llm_message`、`"aborted":true`、`"v"` 仍在首位。
+- Web：`chat/Transcript.test.tsx`（只有被 salvage 的消息带 `(已中止)`）、
+  `lib/rove-state.test.ts`（`llm_message{aborted:true}` 投影为 final + `aborted`）、
+  `state/transcript-projection.test.ts`（恢复分段重放时标记仍在）。
+- 恢复路径不需要额外字段：`ProductTranscriptRunSegment.events` 就是规范
+  `JobStreamEvent`，所以恢复一段被取消的 run 时标记自然随事件回来。
+
+非目标（本轮明确不做）：不做静默回合恢复（R2a）；不为窗口加配置项；
+不等待工具/审批/用户输入（窗口只等文本）；不把 salvage 期间的 delta 重新发布；
+不改变工具路径、审批路径与取消的其它语义；不把 `aborted` 写进 `task_state.json`
+的可恢复历史或 OpenAPI schema。
+
 ---
 
 ## 3. R3 会话 `last_outcome` 字段
@@ -729,7 +822,7 @@ rove 当前最大的功能缺口（composer 只有粘贴文本 chip，`chat/comp
 |---|---|---|
 | PR-1 | R1（API 游标 + OpenAPI + 合同测试 + Web 接线） | 一个 PR 闭环 F.4（服务端+消费端），避免"半接线"状态过夜 |
 | PR-2 | R2c（ProviderRetry 事件 + run loop 预算 + fake 扩展 + Web 等待行） | 事件合同变更横切，独立成 PR |
-| PR-3 | R2a + R2b（静默恢复 + 中止保留，共享 fake 脚本化扩展与恢复配置组） | |
+| PR-3 | R2a + R2b（静默恢复 + 中止保留，共享 fake 脚本化扩展与恢复配置组） | R2b 已单独落地（§2.6），R2a 仍待做 |
 | PR-4 | R3（迁移 016 + contracts + Web 成功点） | |
 | PR-5 | R4（迁移 017 + 重排/边界派发 + 存活验证） | |
 | PR-6 | R5（迁移 018 + 端点 + Web 接入与轮询降级） | 与 F5 toast 联动 |
@@ -757,7 +850,9 @@ R2a/R2b 共享 fake provider 脚本化扩展（PR-2 先建）；R6 依赖 R1 的
 ## 13. 风险登记
 
 - R2b 的 1500ms 收尾窗口与取消 UX 的交互（用户感知"取消变慢"）：窗口只在
-  有非空累积文本时存在；UI 取消反馈即时（终态迁移不变）。
+  有非空累积文本时存在；UI 取消反馈即时（终态迁移不变）。已落地（§2.6）：
+  `tests/abort_salvage.rs::the_salvage_window_is_bounded` 钉住窗口上界，
+  空文本取消仍立即结束，重复取消不会重开窗口。
 - R2c 退避期间 run 占用 job：预算与上限必须可配且默认保守（已落地：分账 6/4、
   2s→30s、退避 sleep 受 cancel 保护）；provider-smoke 补
   长退避不阻塞其他会话的说明（每 run 独立 token）。

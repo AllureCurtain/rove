@@ -153,6 +153,7 @@ const enUS: CopyDictionary = {
   },
   chat: {
     responding: "Responding…",
+    aborted: "(aborted)",
     assistant: "Assistant",
     you: "You",
     send: "Send",

@@ -864,7 +864,9 @@ function MessageBubble({
             <span>
               {message.status === "streaming"
                 ? t("chat.responding")
-                : ""}
+                : message.aborted === true
+                  ? t("chat.aborted")
+                  : ""}
             </span>
           </div>
           <RichText content={message.content} />
