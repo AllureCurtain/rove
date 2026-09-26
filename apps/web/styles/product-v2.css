@@ -110,7 +110,7 @@
   overflow: hidden;
   background: var(--v2-canvas);
   color: var(--v2-ink);
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale, 1));
   letter-spacing: 0;
 }
 
@@ -1459,16 +1459,16 @@ html[data-reading-resizing="true"] * {
 }
 
 .product-app-frame[data-ui-version="v2"] .rich-text h1 {
-  font-size: 18px;
+  font-size: calc(18px * var(--font-scale, 1));
 }
 
 .product-app-frame[data-ui-version="v2"] .rich-text h2 {
-  font-size: 16px;
+  font-size: calc(16px * var(--font-scale, 1));
 }
 
 .product-app-frame[data-ui-version="v2"] .rich-text h3,
 .product-app-frame[data-ui-version="v2"] .rich-text h4 {
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale, 1));
 }
 
 .product-app-frame[data-ui-version="v2"] .rich-text p,
@@ -4411,3 +4411,70 @@ body.is-resizing-column * {
   font-size: 11px;
 }
 
+/* ─── Settings: section breathe (W8.3) and keyboard overrides ─── */
+
+.settings-section-breathe {
+  position: relative;
+  border-radius: var(--v2-radius-sm, 8px);
+}
+
+.settings-section-breathe::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1px solid var(--v2-rail-signal, var(--v2-ink-3));
+  border-radius: inherit;
+  opacity: 0;
+  animation: settings-section-border-breathe 900ms ease-in-out 4;
+}
+
+@keyframes settings-section-border-breathe {
+  0%,
+  100% {
+    opacity: 0.12;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* No transition: land directly on the visible final state. */
+  .settings-section-breathe::after {
+    animation: none;
+    opacity: 0.5;
+  }
+}
+
+.keyboard-settings__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+kbd[data-recording="true"] {
+  color: var(--v2-rail-signal, var(--v2-ink-2));
+  border-style: dashed;
+}
+
+kbd[data-unbound="true"] {
+  color: var(--v2-ink-3);
+  border-style: dashed;
+}
+
+/* ─── Reader font scale (W8.2): the frame base and the reading surface ─── */
+
+
+.product-app-frame[data-ui-version="v2"] .rich-text h1 {
+  font-size: calc(18px * var(--font-scale, 1));
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text h2 {
+  font-size: calc(16px * var(--font-scale, 1));
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text h3,
+.product-app-frame[data-ui-version="v2"] .rich-text h4 {
+  font-size: calc(14px * var(--font-scale, 1));
+}

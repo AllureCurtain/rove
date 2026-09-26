@@ -1,3 +1,5 @@
+import type { ShortcutBinding } from "./keybindings";
+
 export type KeyboardShortcutActionId =
   | "focus-composer"
   | "new-session"
@@ -130,6 +132,7 @@ export function isEditableShortcutTarget(target: EventTarget | null): boolean {
 
 export function matchKeyboardShortcut(
   event: KeyboardShortcutEventLike,
+  overrides?: Readonly<Record<string, ShortcutBinding | null>>,
 ): KeyboardShortcutDescriptor | null {
   if (
     event.defaultPrevented ||
@@ -144,15 +147,19 @@ export function matchKeyboardShortcut(
   const normalizedKey = event.key.toLowerCase();
 
   const shortcut =
-    KEYBOARD_SHORTCUTS.find(
-      (candidate) =>
-        candidate.key.toLowerCase() === normalizedKey &&
-        (candidate.modifiers.primary
-          ? onePrimaryPressed
-          : !anyPrimaryPressed) &&
-        candidate.modifiers.shift === event.shiftKey &&
-        candidate.modifiers.alt === event.altKey,
-    ) ?? null;
+    KEYBOARD_SHORTCUTS.find((descriptor) => {
+      const binding = effectiveShortcutBinding(descriptor, overrides);
+      if (binding === null) {
+        // Explicitly unbound: the action keeps its entry but no chord.
+        return false;
+      }
+      return (
+        binding.key.toLowerCase() === normalizedKey &&
+        (binding.primary ? onePrimaryPressed : !anyPrimaryPressed) &&
+        binding.shift === event.shiftKey &&
+        binding.alt === event.altKey
+      );
+    }) ?? null;
 
   if (
     shortcut !== null &&
@@ -163,4 +170,23 @@ export function matchKeyboardShortcut(
   }
 
   return shortcut;
+}
+
+/**
+ * The binding an action answers to right now: the stored override, null when
+ * the reader unbound it, or the built-in default.
+ */
+export function effectiveShortcutBinding(
+  descriptor: KeyboardShortcutDescriptor,
+  overrides?: Readonly<Record<string, ShortcutBinding | null>>,
+): ShortcutBinding | null {
+  if (!overrides || !(descriptor.action in overrides)) {
+    return {
+      key: descriptor.key,
+      primary: descriptor.modifiers.primary,
+      shift: descriptor.modifiers.shift,
+      alt: descriptor.modifiers.alt,
+    };
+  }
+  return overrides[descriptor.action] ?? null;
 }

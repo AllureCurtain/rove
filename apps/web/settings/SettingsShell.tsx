@@ -42,6 +42,8 @@ import { MCPSettings } from "./MCPSettings";
 import { ProjectTrustSettings } from "./ProjectTrustSettings";
 import { RuntimeSettings } from "./RuntimeSettings";
 import { describeProviderProbeFailure } from "./provider-settings-model";
+import { FONT_SCALE_DEFAULT, FONT_SCALE_MAX, FONT_SCALE_MIN } from "./font-scale";
+import { useFontScalePreference } from "./use-font-scale";
 import type { SettingsSectionId } from "./sections";
 import { SETTINGS_SECTION_COPY_KEYS, SETTINGS_SECTIONS } from "./sections";
 import type { SettingsPlatformClient } from "./settings-platform-client";
@@ -131,12 +133,37 @@ export function SettingsShell(props: SettingsShellProps) {
   } = props;
   const { t } = useCopy();
   const activeSectionRef = useRef<HTMLButtonElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     activeSectionRef.current?.scrollIntoView({
       block: "nearest",
       inline: "center",
     });
+  }, [section]);
+
+  // Deep-link landing feedback: the target section gets one brief breathe and
+  // is aligned to the top, where its heading is. Re-fires on section switches,
+  // which reads as confirmation that the click landed.
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content) {
+      return;
+    }
+    const panel = content.querySelector<HTMLElement>(".settings-panel");
+    if (!panel) {
+      return;
+    }
+    panel.scrollIntoView({ block: "start", inline: "nearest" });
+    panel.classList.add("settings-section-breathe");
+    const timer = window.setTimeout(
+      () => panel.classList.remove("settings-section-breathe"),
+      4_000,
+    );
+    return () => {
+      window.clearTimeout(timer);
+      panel.classList.remove("settings-section-breathe");
+    };
   }, [section]);
 
   const sectionLabels = Object.fromEntries(
@@ -163,7 +190,7 @@ export function SettingsShell(props: SettingsShellProps) {
           </button>
         ))}
       </nav>
-      <div className="settings-content">
+      <div className="settings-content" ref={contentRef}>
         {error ? (
           <div className="shell-alert" role="alert">
             {t("chrome.settingsError")}
@@ -256,6 +283,7 @@ function GeneralSettings({
 }) {
   const { t, locale, setLocale } = useCopy();
   const { skin, setSkin } = useUiSkin();
+  const { fontScale, stepFont, resetFont } = useFontScalePreference();
   return (
     <section className="settings-panel" aria-labelledby="general-settings-title">
       <h1 id="general-settings-title">{t("settings.sectionGeneral")}</h1>
@@ -278,6 +306,39 @@ function GeneralSettings({
             onClick={() => onThemeChange("dark")}
           >
             {t("settings.general.themeDark")}
+          </button>
+        </div>
+      </div>
+      <div className="settings-card">
+        <h2>{t("settings.general.fontScale")}</h2>
+        <p className="settings-inline-note">{t("settings.general.fontScaleDesc")}</p>
+        <div className="settings-segmented" role="group" aria-label={t("settings.general.fontScale")}>
+          <button
+            type="button"
+            aria-label={t("settings.general.fontScaleSmaller")}
+            disabled={fontScale <= FONT_SCALE_MIN}
+            onClick={() => stepFont("down")}
+          >
+            −
+          </button>
+          <span data-font-scale-value="true" aria-hidden="true">
+            {Math.round(fontScale * 100)}%
+          </span>
+          <button
+            type="button"
+            aria-label={t("settings.general.fontScaleLarger")}
+            disabled={fontScale >= FONT_SCALE_MAX}
+            onClick={() => stepFont("up")}
+          >
+            +
+          </button>
+          <button
+            type="button"
+            className="ghost"
+            onClick={resetFont}
+            disabled={fontScale === FONT_SCALE_DEFAULT}
+          >
+            {t("settings.general.fontScaleReset")}
           </button>
         </div>
       </div>
