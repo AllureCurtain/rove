@@ -21,6 +21,12 @@ export interface WorkspaceRecord {
 
 export type SessionStatus = "idle" | "running" | "error" | "needs_attention";
 
+/**
+ * Outcome of the most recently finished turn (R3). It is independent of
+ * `SessionStatus`: a successful turn and a never-run session are both `idle`.
+ */
+export type SessionOutcome = "success" | "failed" | "cancelled";
+
 export interface SessionRecord {
   id: string;
   workspaceId: string;
@@ -43,6 +49,12 @@ export interface SessionRecord {
    * under its workspace root. The server uses this binding for exact resume.
    */
   hasDurableTurn: boolean;
+  /**
+   * `null` means the session has never finished a turn. An unset field means
+   * the payload predates R3, which the sidebar treats like `null`.
+   */
+  lastOutcome?: SessionOutcome | null;
+  lastOutcomeAt?: string | null;
 }
 
 export interface ProviderProfileRecord {
@@ -131,6 +143,8 @@ export function fromProductSession(session: ProductSession): SessionRecord {
     forkPointRunId: session.fork_point_run_id ?? null,
     forkPointSeq: session.fork_point_seq ?? null,
     hasDurableTurn: session.runtime_binding !== undefined,
+    lastOutcome: session.last_outcome ?? null,
+    lastOutcomeAt: session.last_outcome_at ?? null,
   };
 }
 

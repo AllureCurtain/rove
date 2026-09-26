@@ -66,6 +66,19 @@ export const PRODUCT_SESSION_STATUSES = [
 ] as const;
 export type ProductSessionStatus = (typeof PRODUCT_SESSION_STATUSES)[number];
 
+/**
+ * Outcome of the most recently finished turn. `ProductSessionStatus` cannot
+ * express it: a session that just succeeded and one that never ran are both
+ * `idle`, so the sidebar could not draw a success mark before this field
+ * existed (R3, migration 016).
+ */
+export const PRODUCT_SESSION_OUTCOMES = [
+  "success",
+  "failed",
+  "cancelled",
+] as const;
+export type ProductSessionOutcome = (typeof PRODUCT_SESSION_OUTCOMES)[number];
+
 export const PRODUCT_PROVIDER_TYPES = [
   "openai",
   "openai-responses",
@@ -124,6 +137,12 @@ export interface ProductSession {
   parent_session_id?: ProductSessionId;
   fork_point_run_id?: string;
   fork_point_seq?: number;
+  /**
+   * Absent means no turn has finished yet; the API omits both fields together
+   * rather than sending `null`, and the parser rejects a lone one.
+   */
+  last_outcome?: ProductSessionOutcome;
+  last_outcome_at?: string;
   created_at: string;
   updated_at: string;
 }
@@ -1530,6 +1549,25 @@ export function parseProductSession(
       path,
       "complete fork provenance fields or no fork provenance fields",
     );
+  }
+  const lastOutcome = record.last_outcome;
+  if (lastOutcome !== undefined && lastOutcome !== null) {
+    session.last_outcome = expectEnum(
+      lastOutcome,
+      PRODUCT_SESSION_OUTCOMES,
+      `${path}.last_outcome`,
+    );
+  }
+  assignOptional(
+    session,
+    "last_outcome_at",
+    optionalString(record, "last_outcome_at", path, { nonEmpty: true }),
+  );
+  // The store writes the outcome and its timestamp in one statement, so a lone
+  // field means the payload is not one this client understands. Fail closed
+  // instead of guessing which half is authoritative.
+  if ((session.last_outcome === undefined) !== (session.last_outcome_at === undefined)) {
+    schemaError(path, "both last_outcome and last_outcome_at, or neither");
   }
   return session;
 }
