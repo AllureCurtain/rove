@@ -658,6 +658,92 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   overflow-wrap: anywhere;
 }
 
+/* Toast stack (design F5). Top-centred and narrow enough to leave the composer
+   alone; the viewport ignores pointer events so it can never block a click,
+   while each toast takes them back so it can be hovered and dismissed. */
+.product-app-frame[data-ui-version="v2"] .toast-viewport {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: grid;
+  gap: 8px;
+  width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .toast {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  border: 1px solid var(--v2-border-strong);
+  border-left-width: 3px;
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-md);
+  color: var(--v2-ink);
+  padding: 10px 8px 10px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  pointer-events: auto;
+  animation: v2-toast-in 160ms ease-out;
+}
+
+.product-app-frame[data-ui-version="v2"] .toast--success {
+  border-left-color: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .toast--info {
+  border-left-color: var(--v2-rail-signal);
+}
+
+.product-app-frame[data-ui-version="v2"] .toast--error {
+  border-left-color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .toast__message {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.product-app-frame[data-ui-version="v2"] .toast__dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--v2-radius-xs);
+  background: transparent;
+  color: var(--v2-ink-3);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .toast__dismiss:hover {
+  background: var(--v2-surface);
+  color: var(--v2-ink);
+}
+
+/* Reduced motion shows and hides the toast without the slide. */
+.product-app-frame[data-ui-version="v2"] .toast-viewport[data-motion="reduced"] .toast {
+  animation: none;
+}
+
+@keyframes v2-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .product-app-frame[data-ui-version="v2"] .session-list__actions {
   padding: 4px 0 8px 12px;
 }

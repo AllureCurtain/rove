@@ -145,7 +145,12 @@ describe("composer draft store", () => {
     expect(await store.submit(first, send)).toBe(false);
     expect(send).toHaveBeenCalledTimes(1);
     expect(store.getSnapshot(first)).toEqual({
-      text: "keep draft", version, submitting: false, sendFailed: true,
+      text: "keep draft",
+      version,
+      submitting: false,
+      sendFailed: true,
+      lastSend: null,
+      lastRestore: null,
     });
     expect(store.getSnapshot(second).sendFailed).toBe(false);
     expect(await store.submit(first, () => true)).toBe(true);
@@ -173,5 +178,99 @@ describe("composer draft store", () => {
     expect(await store.submit(first, send)).toBe(false);
     expect(send).not.toHaveBeenCalled();
     expect(store.getSnapshot(first)).toBe(original);
+  });
+
+  describe("send snapshots (design F6)", () => {
+    it("keeps the draft text and chips of an accepted send, not the folded message", async () => {
+      const store = createComposerDraftStore();
+      store.setText(first, "  explain this  ");
+      const accepted = await store.submit(
+        first,
+        () => true,
+        [{ text: "pasted body" }, { text: "second body" }],
+      );
+      expect(accepted).toBe(true);
+      const snapshot = store.getSnapshot(first);
+      expect(snapshot.text).toBe("");
+      expect(snapshot.lastSend?.text).toBe("  explain this  ");
+      expect(snapshot.lastSend?.chips.map((chip) => chip.text)).toEqual([
+        "pasted body",
+        "second body",
+      ]);
+      expect(snapshot.lastSend?.at).toBeGreaterThan(0);
+      // Another session keeps its own snapshot, if any.
+      expect(store.getSnapshot(second).lastSend).toBeNull();
+    });
+
+    it("keeps no snapshot for a send that was not accepted or that threw", async () => {
+      const store = createComposerDraftStore();
+      store.setText(first, "rejected");
+      expect(await store.submit(first, () => false, [{ text: "body" }])).toBe(false);
+      expect(store.getSnapshot(first).lastSend).toBeNull();
+      store.setText(first, "thrown");
+      expect(
+        await store.submit(first, () => {
+          throw new Error("no");
+        }),
+      ).toBe(false);
+      expect(store.getSnapshot(first).lastSend).toBeNull();
+    });
+
+    it("restores text and chips once, then reports that there is nothing to restore", async () => {
+      const store = createComposerDraftStore();
+      store.setText(first, "question");
+      await store.submit(first, () => true, [{ text: "body" }]);
+      store.setText(first, "");
+      expect(store.restoreLastSend(first)).toBe("snapshot");
+      const restored = store.getSnapshot(first);
+      expect(restored.text).toBe("question");
+      expect(restored.lastRestore).toMatchObject({
+        source: "snapshot",
+        chips: [{ text: "body" }],
+      });
+      // Consumed: a second stop has nothing to put back and says so.
+      expect(restored.lastSend).toBeNull();
+      expect(store.restoreLastSend(first)).toBe("none");
+    });
+
+    it("marks a folded-text restore as the degraded source and carries no chips", () => {
+      const store = createComposerDraftStore();
+      store.setText(first, "typed");
+      store.restore(first, "typed\n\n[pasted content: 4 characters]\n```\nbody\n```");
+      const restored = store.getSnapshot(first);
+      expect(restored.text).toContain("[pasted content: 4 characters]");
+      expect(restored.lastRestore).toEqual({
+        seq: 1,
+        source: "text",
+        chips: [],
+      });
+      // The counts keep climbing so a repeat restore still reaches the UI.
+      store.restore(first, "again");
+      expect(store.getSnapshot(first).lastRestore?.seq).toBe(2);
+    });
+
+    it("drops the snapshot when the turn reaches its terminal state", async () => {
+      const store = createComposerDraftStore();
+      store.setText(first, "question");
+      await store.submit(first, () => true, [{ text: "body" }]);
+      store.clearLastSend(first);
+      expect(store.getSnapshot(first).lastSend).toBeNull();
+      // The draft itself is untouched: the terminal turn consumed the message,
+      // not the reader's next draft.
+      expect(store.getSnapshot(first).text).toBe("");
+      expect(store.restoreLastSend(first)).toBe("none");
+    });
+
+    it("never restores a snapshot the reader has already edited past", async () => {
+      const store = createComposerDraftStore();
+      store.setText(first, "question");
+      await store.submit(first, () => true, [{ text: "body" }]);
+      store.setText(first, "a different question");
+      // A stop still restores the accepted send, but the newer draft text is
+      // what the reader typed, so the snapshot only supplies the chips.
+      expect(store.restoreLastSend(first)).toBe("snapshot");
+      expect(store.getSnapshot(first).text).toBe("question");
+      expect(store.getSnapshot(first).lastRestore?.chips).toEqual([{ text: "body" }]);
+    });
   });
 });

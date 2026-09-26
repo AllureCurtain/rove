@@ -41,6 +41,11 @@ import { MemorySettings } from "./MemorySettings";
 import { MCPSettings } from "./MCPSettings";
 import { ProjectTrustSettings } from "./ProjectTrustSettings";
 import { RuntimeSettings } from "./RuntimeSettings";
+import { useToast } from "../shell/toast/ToastProvider";
+import {
+  providerTestToastKind,
+  type ProviderTestOutcome,
+} from "../shell/toast/notifications";
 import { describeProviderProbeFailure } from "./provider-settings-model";
 import { FONT_SCALE_DEFAULT, FONT_SCALE_MAX, FONT_SCALE_MIN } from "./font-scale";
 import { useFontScalePreference } from "./use-font-scale";
@@ -551,6 +556,7 @@ function BrowserProvidersSettings({
   onSelectionChange,
 }: ProviderSettingsProps) {
   const { t } = useCopy();
+  const toast = useToast();
   const [label, setLabel] = useState("Local OpenAI");
   const [providerType, setProviderType] = useState<ProviderType>("openai");
   const [apiBase, setApiBase] = useState(providerDefaultApiBase("openai"));
@@ -566,6 +572,16 @@ function BrowserProvidersSettings({
   const [modelsResult, setModelsResult] = useState<ProviderModelsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const profileDeleteBusy = deletingProfileId !== null;
+  // The provider test's inline result lives here, so this panel is what decides
+  // whether the result still has somewhere to appear.
+  const mountedRef = useRef(true);
+
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
 
   const activeProfile = useMemo(
     () => profiles.find((profile) => profile.id === selection.profileId) ?? null,
@@ -671,17 +687,44 @@ function BrowserProvidersSettings({
     setTestBusy(true);
     setError(null);
     setTestResult(null);
+    const profileLabel = label.trim() || providerDisplayName(providerType);
+    let outcome: ProviderTestOutcome = "fail";
+    let detail = "";
     try {
-      setTestResult(
-        await testProvider({
-          provider: toApiProviderProfile(draftProfile()),
-          model: defaultModel.trim() || undefined,
-        }),
-      );
+      const response = await testProvider({
+        provider: toApiProviderProfile(draftProfile()),
+        model: defaultModel.trim() || undefined,
+      });
+      setTestResult(response);
+      if (response.status === "ok" && (response.key_present || !providerRequiresKey(providerType))) {
+        outcome = "pass";
+      } else if (response.status === "ok") {
+        outcome = "incomplete";
+      } else {
+        detail = t("settings.providers.unreachable");
+      }
     } catch (testError) {
-      setError(describeProviderProbeFailure(testError));
+      detail = describeProviderProbeFailure(testError);
+      setError(detail);
     } finally {
       setTestBusy(false);
+      // A test can outlive this panel: the reader may switch sections or leave
+      // settings while it runs, and the inline result would never be shown.
+      const kind = providerTestToastKind(mountedRef.current, outcome);
+      if (kind !== null) {
+        toast.notify({
+          kind,
+          message:
+            kind === "success"
+              ? t("toast.providerTestPassed", { profile: profileLabel })
+              : kind === "info"
+                ? t("toast.providerTestIncomplete", { profile: profileLabel })
+                : t("toast.providerTestFailed", {
+                    profile: profileLabel,
+                    error: detail,
+                  }),
+        });
+      }
     }
   }
 

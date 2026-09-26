@@ -40,3 +40,26 @@ export function lastRestorableUserMessage(
   }
   return lastUser;
 }
+
+/**
+ * The runtime's partial-abort marker, as of runtime document R2b.
+ *
+ * R2b registers an explicit `aborted` fact on the terminal run when a stop cut
+ * a turn short after the model had already produced content. The runtime does
+ * not emit it yet, so it stays `undefined` and the branch below is never taken:
+ * a stop that produced work keeps behaving exactly as it does today. Setting
+ * this to the marker once the runtime sends it is the whole switch.
+ */
+export const PARTIAL_ABORT_MARKER: boolean | undefined = undefined;
+
+/**
+ * Whether a stop was a partial abort: the run carries the R2b marker *and* the
+ * cancelled turn had already produced content. Reserved for the copy branch in
+ * design F6 — with no marker this is always false.
+ */
+export function isPartialAbort(input: {
+  aborted: boolean | undefined;
+  producedWork: boolean;
+}): boolean {
+  return input.aborted === true && input.producedWork;
+}
