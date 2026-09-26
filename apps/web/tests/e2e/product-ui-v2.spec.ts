@@ -15,9 +15,12 @@ test("Product UI V2 switches among independent mock sessions", async ({ page }) 
     "content",
     /noindex.*nofollow/,
   );
-  await expect(page.getByRole("note")).toHaveText(
-    "Inert design mock. No API, persistence, or real approvals.",
+  await expect(page.getByRole("note").first()).toContainText(
+    "Design mock, not product.",
   );
+  await expect(
+    page.locator('[role="note"]').filter({ hasText: "Inert design mock" }),
+  ).toHaveText("Inert design mock. No API, persistence, or real approvals.");
 
   const cases = [
     {
