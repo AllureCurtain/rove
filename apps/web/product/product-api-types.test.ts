@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { ProductApiSchemaError, parseStreamEvent } from "./product-api-types";
+import {
+  ProductApiSchemaError,
+  parseProductSession,
+  parseStreamEvent,
+} from "./product-api-types";
 
 /**
  * The tool result envelope is where the runtime publishes its own measurement
@@ -103,5 +107,77 @@ describe("tool result protocol metadata", () => {
       throw new Error("expected a completed tool call");
     }
     expect(event.result.envelope).toBeUndefined();
+  });
+});
+
+/**
+ * R3 (migration 016) adds the outcome of the most recently finished turn. The
+ * status field cannot express it, so the shell must be able to tell "the last
+ * turn succeeded" from "this session never ran", and must not invent an answer
+ * from a half-written payload.
+ */
+function sessionRecord(extra: Record<string, unknown> = {}) {
+  return {
+    id: "sess-1",
+    workspace_id: "ws-1",
+    title: "Session",
+    status: "idle",
+    created_at: "2026-09-26T00:00:00.000Z",
+    updated_at: "2026-09-26T00:00:00.000Z",
+    ...extra,
+  };
+}
+
+describe("product session outcome", () => {
+  it("leaves the outcome absent for a session that never ran", () => {
+    const session = parseProductSession(sessionRecord());
+
+    expect(session.last_outcome).toBeUndefined();
+    expect(session.last_outcome_at).toBeUndefined();
+  });
+
+  it("reads every published outcome with its timestamp", () => {
+    for (const outcome of ["success", "failed", "cancelled"] as const) {
+      const session = parseProductSession(
+        sessionRecord({
+          last_outcome: outcome,
+          last_outcome_at: "2026-09-26T12:00:00.000Z",
+        }),
+      );
+
+      expect(session.last_outcome).toBe(outcome);
+      expect(session.last_outcome_at).toBe("2026-09-26T12:00:00.000Z");
+    }
+  });
+
+  it("treats explicit nulls as no outcome", () => {
+    const session = parseProductSession(
+      sessionRecord({ last_outcome: null, last_outcome_at: null }),
+    );
+
+    expect(session.last_outcome).toBeUndefined();
+    expect(session.last_outcome_at).toBeUndefined();
+  });
+
+  it("rejects an outcome this client does not know", () => {
+    expect(() =>
+      parseProductSession(
+        sessionRecord({
+          last_outcome: "timed_out",
+          last_outcome_at: "2026-09-26T12:00:00.000Z",
+        }),
+      ),
+    ).toThrow(ProductApiSchemaError);
+  });
+
+  it("rejects a payload with only one half of the outcome", () => {
+    expect(() =>
+      parseProductSession(sessionRecord({ last_outcome: "success" })),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseProductSession(
+        sessionRecord({ last_outcome_at: "2026-09-26T12:00:00.000Z" }),
+      ),
+    ).toThrow(ProductApiSchemaError);
   });
 });

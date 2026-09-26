@@ -49,6 +49,9 @@ export interface MockSession {
   parent_session_id?: string;
   fork_point_run_id?: string;
   fork_point_seq?: number;
+  /** R3: the outcome of the most recently finished turn, when there is one. */
+  last_outcome?: "success" | "failed" | "cancelled";
+  last_outcome_at?: string;
 }
 
 export type MockSessionStatus = MockSession["status"];
@@ -1969,6 +1972,7 @@ export function createMockSession(
   id = "session-1",
   workspaceId = "workspace-1",
   title = "Durable session",
+  lastOutcome?: MockSession["last_outcome"],
 ): MockSession {
   return {
     id,
@@ -1977,6 +1981,9 @@ export function createMockSession(
     status: "idle",
     created_at: NOW,
     updated_at: NOW,
+    ...(lastOutcome === undefined
+      ? {}
+      : { last_outcome: lastOutcome, last_outcome_at: NOW }),
   };
 }
 
