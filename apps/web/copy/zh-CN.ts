@@ -613,6 +613,12 @@ const zhCN = {
     noSessionsBody: "该工作区下还没有会话。",
     sessionName: "会话名称",
     openPickerFailed: "无法打开文件夹选择器。",
+    sessionPin: "置顶会话",
+    sessionUnpin: "取消置顶",
+    sessionRename: "重命名会话",
+    sessionRenameEmpty: "标题不能为空。",
+    sessionRenameFailed: "重命名失败，已恢复原标题。",
+    sessionErrorDot: "该会话最近一次运行失败",
   },
   tools: {
     lede: "默认工具授权与执行上限。",

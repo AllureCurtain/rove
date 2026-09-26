@@ -4358,3 +4358,56 @@ body.is-resizing-column * {
   outline-offset: 2px;
 }
 
+/* ─── Sidebar session row actions (W7) and failure dot (W4.4) ─── */
+
+.product-app-frame[data-ui-version="v2"] .session-branch {
+  position: relative;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__pinmark {
+  flex: none;
+  color: var(--v2-rail-signal, var(--v2-ink-3));
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__actions {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: none;
+  gap: 2px;
+  padding: 1px 2px;
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-canvas);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-branch:hover .session-item__actions,
+.product-app-frame[data-ui-version="v2"] .session-item__actions:focus-within {
+  display: inline-flex;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item--editing {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 6px;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item--editing input {
+  width: 100%;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__error {
+  margin: 0;
+  color: var(--v2-danger);
+  font-size: 11px;
+}
+

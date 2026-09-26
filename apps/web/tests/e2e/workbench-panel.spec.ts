@@ -101,6 +101,8 @@ test("refresh restores pending request; panel width is keyboard bounded and sele
   // The width is a global UI preference (design §3 ownership table), so it
   // survives a session switch; only the panel *selection* is session-isolated.
   await page.getByRole("button", { name: "Session B", exact: true }).click();
+  // Select-then-paint: the pane follows the click one committed frame later.
+  await expect(page.getByRole("heading", { name: "Session B" })).toBeVisible();
   await expect(page.getByRole("region", { name: "审批详情", exact: true })).toHaveCount(0);
   // Convergence, not a single read: a session switch re-mounts the panel, which
   // reports the default width until the stored preference is applied again. Polling
@@ -153,6 +155,8 @@ test("late approval response cannot clear another session's pending submission",
   });
   await inline.getByRole("button", { name: "批准", exact: true }).click();
   await page.getByRole("button", { name: "Session B", exact: true }).click();
+  // Select-then-paint: the pane follows the click one committed frame later.
+  await expect(page.getByRole("heading", { name: "Session B" })).toBeVisible();
   await page.getByRole("textbox", { name: /输入消息/ }).fill("B note");
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await inline.getByRole("button", { name: "拒绝", exact: true }).click();

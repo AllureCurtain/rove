@@ -4,9 +4,11 @@ import {
   FormEvent,
   type KeyboardEvent,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import {
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -18,6 +20,7 @@ import {
   GearIcon,
   LockClosedIcon,
   MagnifyingGlassIcon,
+  Pencil1Icon,
   PlusIcon,
 } from "@radix-ui/react-icons";
 
@@ -28,6 +31,25 @@ import {
 import { useCopy } from "../copy/CopyProvider";
 import { useArmedDelete } from "../shell/use-armed-delete";
 import type { SessionRecord, WorkspaceKind, WorkspaceRecord } from "../state/product-types";
+import { orderSessions, type SessionPin } from "./session-order";
+import { filterSessions, normalizeSearch } from "./session-search";
+import { useSessionPins } from "./use-session-pins";
+
+/** Sidebar order: pins lead, then modification time (newest first). */
+function applySessionOrder(
+  sessions: SessionRecord[],
+  pins: readonly SessionPin[],
+  activeSessionId: string | null,
+): SessionRecord[] {
+  const dated = sessions.map((session) => ({
+    ...session,
+    modifiedAt: Number.isNaN(Date.parse(session.updatedAt)) ? 0 : Date.parse(session.updatedAt),
+  }));
+  return orderSessions(dated, pins, {
+    collapsedLimit: 0,
+    activeSessionId,
+  }).ordered;
+}
 
 export function WorkspaceTree({
   workspaces,
@@ -41,6 +63,7 @@ export function WorkspaceTree({
   onNewSession,
   onTogglePin,
   onRemoveWorkspace,
+  onRenameSession,
   mobileOpen = false,
   peekOpen = false,
   onCloseMobile,
@@ -72,6 +95,8 @@ export function WorkspaceTree({
   onOverlayPointerEnter?: () => void;
   onOverlayPointerLeave?: () => void;
   onOpenSettings?: () => void;
+  /** Persist a renamed session title; rejects when the server refused. */
+  onRenameSession?: (sessionId: string, title: string) => Promise<boolean>;
   /** Collapsed rail: the subtree stays mounted but inert and aria-hidden. */
   railCollapsed?: boolean;
   onToggleCollapsed?: () => void;
@@ -82,12 +107,70 @@ export function WorkspaceTree({
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const newSessionButtonRef = useRef<HTMLButtonElement>(null);
   const dialogTriggerRef = useRef<HTMLButtonElement | null>(null);
+  // Session pins and the paint-first selection live here so every workspace's
+  // list shares one ordering rule and one selection barrier.
+  const liveSessionIds = useMemo(
+    () =>
+      Object.values(sessionsByWorkspace)
+        .flat()
+        .map((session) => session.id),
+    [sessionsByWorkspace],
+  );
+  const { pins, togglePin, isPinned } = useSessionPins(liveSessionIds);
+  const [selectionPaint, setSelectionPaint] = useState<{
+    workspaceId: string;
+    sessionId: string;
+  } | null>(null);
+  const selectSequenceRef = useRef(0);
+  useEffect(() => {
+    // The real selection arrived: the optimistic highlight has served its purpose.
+    if (selectionPaint?.sessionId === activeSessionId) {
+      setSelectionPaint(null);
+    }
+  }, [activeSessionId, selectionPaint]);
+
+  /**
+   * Select-then-paint (open-vetta's `selectAfterPaint`): commit the highlight
+   * synchronously with the click (flushSync, so concurrent rendering cannot
+   * defer it), let one committed frame pass, then start the session load. A
+   * newer click invalidates the older request so rapid clicks never stack
+   * stale loads. Keyboard activation skips the barrier — repeated Enter must
+   * not pile up delayed navigations. Input typed inside the barrier belongs
+   * to the still-mounted session, exactly like the reference.
+   */
+  function handleSelectSession(workspaceId: string, sessionId: string, immediate: boolean) {
+    const sequence = ++selectSequenceRef.current;
+    // A discrete pointer action: commit the lightweight sidebar state before
+    // scheduling the navigation (open-vetta's flushSync contract).
+    flushSync(() => {
+      setSelectionPaint({ workspaceId, sessionId });
+    });
+    const navigate = () => {
+      if (sequence !== selectSequenceRef.current) {
+        return;
+      }
+      onSelectSession(workspaceId, sessionId);
+    };
+    if (immediate || typeof document === "undefined" || document.visibilityState === "hidden") {
+      navigate();
+      return;
+    }
+    // waitForCommittedPaint's web equivalent (open-vetta
+    // `committed-paint.ts`): one rAF to commit, one to present.
+    window.requestAnimationFrame(() => window.requestAnimationFrame(navigate));
+  }
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const visibleWorkspaces = workspaces.flatMap((workspace) => {
-    const allSessions = sessionsByWorkspace[workspace.id] ?? [];
+    const allSessions = applySessionOrder(
+      sessionsByWorkspace[workspace.id] ?? [],
+      pins,
+      activeSessionId,
+    );
     const workspaceMatches = workspace.displayName.toLocaleLowerCase().includes(normalizedQuery);
+    // Session filtering goes through the tested projection: substring,
+    // case-insensitive, empty query restores everything immediately.
     const sessions = normalizedQuery && !workspaceMatches
-      ? allSessions.filter((session) => session.title.toLocaleLowerCase().includes(normalizedQuery))
+      ? filterSessions(allSessions, normalizeSearch(query)).matches
       : allSessions;
     return normalizedQuery && !workspaceMatches && sessions.length === 0
       ? [] : [{ workspace, allSessions, sessions }];
@@ -369,8 +452,12 @@ export function WorkspaceTree({
                         allSessions={allSessions}
                         workspaceId={workspace.id}
                         activeSessionId={activeSessionId}
+                        paintedSessionId={selectionPaint?.sessionId ?? activeSessionId}
                         mutationBusy={mutationBusy}
-                        onSelectSession={onSelectSession}
+                        onSelectSession={handleSelectSession}
+                        onToggleSessionPin={togglePin}
+                        isSessionPinned={isPinned}
+                        onRenameSession={onRenameSession}
                       />
                       {sessions.length === 0 ? <p className="sidebar-empty">{t("workspace.noSessionsBody")}</p> : null}
                     </>
@@ -500,15 +587,24 @@ function SessionBranchList({
   allSessions,
   workspaceId,
   activeSessionId,
+  paintedSessionId,
   mutationBusy,
   onSelectSession,
+  onToggleSessionPin,
+  isSessionPinned,
+  onRenameSession,
 }: {
   sessions: SessionRecord[];
   allSessions: SessionRecord[];
   workspaceId: string;
   activeSessionId: string | null;
+  /** The optimistically highlighted session while a selection paints/loads. */
+  paintedSessionId: string | null;
   mutationBusy: boolean;
-  onSelectSession: (workspaceId: string, sessionId: string) => void;
+  onSelectSession: (workspaceId: string, sessionId: string, immediate: boolean) => void;
+  onToggleSessionPin: (sessionId: string) => void;
+  isSessionPinned: (sessionId: string) => boolean;
+  onRenameSession?: (sessionId: string, title: string) => Promise<boolean>;
 }) {
   const { t } = useCopy();
   const visibleSessionIds = new Set(sessions.map((session) => session.id));
@@ -538,8 +634,13 @@ function SessionBranchList({
           }
           workspaceId={workspaceId}
           activeSessionId={activeSessionId}
+          paintedSessionId={paintedSessionId}
           mutationBusy={mutationBusy}
+          pinned={isSessionPinned(session.id)}
+          onToggleSessionPin={onToggleSessionPin}
+          isSessionPinned={isSessionPinned}
           onSelectSession={onSelectSession}
+          onRenameSession={onRenameSession}
         />
       ))}
     </ul>
@@ -552,64 +653,201 @@ function SessionBranch({
   parentAvailable,
   workspaceId,
   activeSessionId,
+  paintedSessionId,
   mutationBusy,
+  pinned,
+  onToggleSessionPin,
+  isSessionPinned,
   onSelectSession,
+  onRenameSession,
 }: {
   session: SessionRecord;
   childrenByParent: Map<string, SessionRecord[]>;
   parentAvailable: boolean;
   workspaceId: string;
   activeSessionId: string | null;
+  paintedSessionId: string | null;
   mutationBusy: boolean;
-  onSelectSession: (workspaceId: string, sessionId: string) => void;
+  pinned: boolean;
+  onToggleSessionPin: (sessionId: string) => void;
+  isSessionPinned: (sessionId: string) => boolean;
+  onSelectSession: (workspaceId: string, sessionId: string, immediate: boolean) => void;
+  onRenameSession?: (sessionId: string, title: string) => Promise<boolean>;
 }) {
   const { t } = useCopy();
   const children = childrenByParent.get(session.id) ?? [];
+  const [renaming, setRenaming] = useState(false);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameSaving, setRenameSaving] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  const selected = session.id === paintedSessionId;
+  const active = session.id === activeSessionId;
+  // W4.4: a failed run leaves a dot on the row until the session is opened.
+  // Success cannot be distinguished from "never ran" by the status field
+  // alone, so only failure carries a dot (danger tone, not an inbox).
+  const failedInBackground = session.status === "error" && !active;
+
+  useEffect(() => {
+    if (renaming) {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }
+  }, [renaming]);
+
+  function startRename() {
+    if (!onRenameSession) {
+      return;
+    }
+    setRenameDraft(session.title);
+    setRenameError(null);
+    setRenaming(true);
+  }
+
+  function cancelRename() {
+    setRenaming(false);
+    setRenameError(null);
+  }
+
+  async function commitRename() {
+    if (!onRenameSession) {
+      return;
+    }
+    const title = renameDraft.trim();
+    if (!title) {
+      // An empty title keeps the editor open instead of silently clearing.
+      setRenameError(t("workspace.sessionRenameEmpty"));
+      return;
+    }
+    if (title === session.title) {
+      cancelRename();
+      return;
+    }
+    setRenameSaving(true);
+    try {
+      const persisted = await onRenameSession(session.id, title);
+      if (persisted) {
+        setRenaming(false);
+        setRenameError(null);
+      } else {
+        setRenameError(t("workspace.sessionRenameFailed"));
+      }
+    } catch {
+      setRenameError(t("workspace.sessionRenameFailed"));
+    } finally {
+      setRenameSaving(false);
+    }
+  }
+
   return (
     <li
       className="session-branch"
       data-forked={session.parentSessionId ? "true" : undefined}
       data-orphaned={session.parentSessionId && !parentAvailable ? "true" : undefined}
     >
-      <button
-        type="button"
-        className="session-item"
-        data-active={session.id === activeSessionId}
-        aria-current={session.id === activeSessionId ? "page" : undefined}
-        title={sessionAriaLabel(session, parentAvailable, t)}
-        data-status={session.status}
-        onClick={() => onSelectSession(workspaceId, session.id)}
-        aria-label={sessionAriaLabel(session, parentAvailable, t)}
-        disabled={mutationBusy}
-      >
-        <span className="session-item__title">
-          <span>{session.title}</span>
-          {session.parentSessionId ? (
-            <small className="session-item__lineage">
-              {forkPointLabel(session, parentAvailable, t)}
-            </small>
-          ) : null}
-        </span>
-        {session.status !== "idle" ? (
-          <span className="session-badge" data-status={session.status}>
-            {sessionStatusLabel(session.status, t)}
-          </span>
-        ) : null}
-        {/* Leading status icon (design §3.1/§3.3): running spins, awaiting
-            approval warns, otherwise a plain session mark. The badge above
-            stays as the accessible text. */}
-        <span
-          className="session-item__status"
+      {renaming ? (
+        <div className="session-item session-item--editing">
+          <input
+            ref={renameInputRef}
+            type="text"
+            value={renameDraft}
+            onChange={(event) => setRenameDraft(event.target.value)}
+            disabled={renameSaving}
+            aria-label={t("workspace.sessionRename")}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void commitRename();
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                cancelRename();
+              }
+            }}
+            onBlur={() => {
+              // Blur commits, matching the plan's contract; Escape still cancels
+              // because the keydown clears the editor before the blur lands.
+              if (!renameSaving) void commitRename();
+            }}
+          />
+          {renameError ? <p className="session-item__error" role="alert">{renameError}</p> : null}
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="session-item"
+          data-active={selected}
+          aria-current={active ? "page" : undefined}
+          title={sessionAriaLabel(session, parentAvailable, t)}
           data-status={session.status}
-          aria-hidden="true"
+          onClick={(event) =>
+            onSelectSession(workspaceId, session.id, event.detail === 0)
+          }
+          onDoubleClick={startRename}
+          aria-label={sessionAriaLabel(session, parentAvailable, t)}
+          disabled={mutationBusy}
         >
-          {session.status === "running" ? (
-            <span className="session-item__spinner" />
-          ) : session.status === "needs_attention" ? (
-            <span className="session-item__warning" />
+          {pinned ? (
+            <DrawingPinFilledIcon className="session-item__pinmark" aria-hidden="true" />
           ) : null}
-        </span>
-      </button>
+          <span className="session-item__title">
+            <span>{session.title}</span>
+            {session.parentSessionId ? (
+              <small className="session-item__lineage">
+                {forkPointLabel(session, parentAvailable, t)}
+              </small>
+            ) : null}
+          </span>
+          {session.status !== "idle" ? (
+            <span className="session-badge" data-status={session.status}>
+              {sessionStatusLabel(session.status, t)}
+            </span>
+          ) : null}
+          {/* Leading status icon (design §3.1/§3.3): running spins, awaiting
+              approval warns, a failed background run dots, otherwise nothing.
+              The badge above stays as the accessible text. */}
+          <span
+            className="session-item__status"
+            data-status={session.status}
+            aria-hidden="true"
+          >
+            {session.status === "running" ? (
+              <span className="session-item__spinner" />
+            ) : session.status === "needs_attention" ? (
+              <span className="session-item__warning" />
+            ) : null}
+          </span>
+          {failedInBackground ? (
+            <span
+              className="session-item__dot"
+              data-tone="danger"
+              role="status"
+              title={t("workspace.sessionErrorDot")}
+            />
+          ) : null}
+        </button>
+      )}
+      <span className="session-item__actions">
+        <button
+          type="button"
+          className="icon-button"
+          aria-label={pinned ? t("workspace.sessionUnpin") : t("workspace.sessionPin")}
+          title={pinned ? t("workspace.sessionUnpin") : t("workspace.sessionPin")}
+          onClick={() => onToggleSessionPin(session.id)}
+        >
+          <DrawingPinFilledIcon data-pinned={pinned || undefined} />
+        </button>
+        {onRenameSession ? (
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={t("workspace.sessionRename")}
+            title={t("workspace.sessionRename")}
+            onClick={startRename}
+          >
+            <Pencil1Icon />
+          </button>
+        ) : null}
+      </span>
       {children.length > 0 ? (
         <ul className="session-list session-list--branch">
           {children.map((child) => (
@@ -620,8 +858,13 @@ function SessionBranch({
               parentAvailable
               workspaceId={workspaceId}
               activeSessionId={activeSessionId}
+              paintedSessionId={paintedSessionId}
               mutationBusy={mutationBusy}
+              pinned={isSessionPinned(child.id)}
+              onToggleSessionPin={onToggleSessionPin}
+              isSessionPinned={isSessionPinned}
               onSelectSession={onSelectSession}
+              onRenameSession={onRenameSession}
             />
           ))}
         </ul>
