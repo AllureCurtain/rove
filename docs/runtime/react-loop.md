@@ -140,7 +140,9 @@ work could run.
 
 Model-call retries are configured separately from execution budgets, under
 `[runtime.recovery.retry]`. Every field is optional and an unset field keeps the
-runtime default, so an existing config behaves exactly as before:
+runtime default. The default budget is **enabled**, so adding the section does
+not change parsing but an unconfigured runtime retries where it previously did
+not; set both attempt fields to `1` to restore the pre-retry behaviour.
 
 ```toml
 [runtime.recovery.retry]
@@ -342,7 +344,9 @@ not by the provider or routing layer. The budget lives in
 `runtime/src/engine/recovery.rs` (`ProviderRetryPolicy`) and is spent inside
 `run_kernel_model_turn`, so it covers the React host and the planned-step host
 alike and also covers a directly assembled provider that
-`RoutingModelClient` never wraps.
+`RoutingModelClient` never wraps. Those two hosts are the covered call sites:
+the Planner, Replanner, Evaluator, Finalizer, and model compaction call
+`ModelClient::stream` directly and are not retried by this budget.
 
 - **Independent budgets.** Rate limiting and transient failures
   (`RequestFailed`, `StreamInterrupted`) each have their own attempt budget:
@@ -358,16 +362,27 @@ alike and also covers a directly assembled provider that
 - **Visibility.** Every scheduled retry emits
   `StreamEvent::ProviderRetry { attempt, max_attempts, delay_ms, reason, phase }`
   before sleeping. `attempt` is 1-based, so the first retry is `attempt = 2`, and
-  `reason` is a whitelist (`rate_limited` or `transient:<error_code>`). Provider
-  messages, headers, and bodies never reach the event, the trace, or the report.
-  CLI/TUI and the Web project these facts; they do not invent a policy.
+  `reason` is a whitelist (`rate_limited` or `transient:<error_code>`). The event
+  carries no provider text: messages, headers, and response bodies never reach
+  it. (A terminal `ModelError` still reaches the run-completion output and
+  therefore `trace.jsonl` and `report.json`, exactly as it did before this
+  budget existed; bounding that text is a separate open gap, not something the
+  retry event changes.) CLI/TUI and the Web project these facts; they do not
+  invent a policy.
 - **Cancellation.** The wait is cancellable and biased: cancelling during a
   backoff ends the turn immediately as cancelled instead of leaving a pending
   sleep or issuing one more request.
 - **Budget accounting.** A retry is the same model call, so it does not consume
   `budgets.max_model_turns` and does not advance a plan step attempt. The bound
-  is the retry budget itself, plus `max_wall_time_ms` when configured. An
-  accepted steer is announced once per model call, not once per attempt.
+  is the retry budget itself: at the defaults one model call can issue nine
+  provider calls (the first call plus five rate-limit and three transient
+  retries) and sleep roughly 74 seconds in total backoff. Backoff is not charged
+  against `max_wall_time_ms`; that dimension is evaluated on the planned-execution
+  budget path, and the React path does not refresh it. An accepted steer is
+  announced once per model call, not once per attempt.
+- **Independent counters.** `attempt` and `max_attempts` are per class, so a
+  sequence can read 5/6 and then 2/4. A single monotonic counter across both
+  classes would be a display change, not a budget change.
 - **No retry after output.** A retry is only allowed while the turn has not yet
   produced a `LlmChunk`. Once text has streamed, a failure is terminal for the
   turn: regenerating would duplicate text the user can already see. The same

@@ -1016,10 +1016,13 @@ text.
 `provider_retry` is the safe surface for model-call recovery. It carries
 `attempt`, `max_attempts`, `delay_ms`, a whitelisted `reason`
 (`rate_limited` or `transient:<error_code>`), and `phase`; provider messages,
-headers, and bodies never appear in it. The runtime owns the budget and the
-waiting time, so a consumer projects those facts instead of inventing a policy
-or a countdown. The budget itself, the no-retry-after-output rule, and the
-`[runtime.recovery.retry]` keys are documented in
+headers, and bodies never appear in it. `attempt` counts within its class, so a
+sequence can read 5/6 and then 2/4. The runtime owns the budget and the waiting
+time, so a consumer projects those facts instead of inventing a policy or a
+countdown. The Web stream parser rejects an unknown frame instead of ignoring
+it, so a new canonical event is a coordinated API/Web change even though the
+wire protocol version does not change. The budget itself, the no-retry-after-output
+rule, and the `[runtime.recovery.retry]` keys are documented in
 `docs/runtime/react-loop.md`.
 
 Adding a new event requires checking:
@@ -1286,8 +1289,10 @@ boundary (`docs/runtime/react-loop.md`). A failure that exhausts every routing
 candidate and is still retryable therefore reaches the outer budget, so a
 configured fallback chain multiplies the inner attempts and the outer budget
 bounds how many *whole model calls* may fail before the run terminates. The
-outer budget is also what covers a directly assembled provider that
-`RoutingModelClient` never wraps.
+outer budget is spent inside `run_kernel_model_turn`, so it covers the React host
+and the planned-step host — including a directly assembled provider that
+`RoutingModelClient` never wraps — and not the Planner, Replanner, Evaluator,
+Finalizer, or model compaction, which call `ModelClient::stream` directly.
 
 First-packet routing decisions are emitted through `tracing`: candidate start, skipped open circuit, committed first event, no content, timeout, error-before-commit, retry scheduling, and candidate exhaustion. These are observability records only; they do not add user-facing `StreamEvent` variants.
 
