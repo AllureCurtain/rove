@@ -629,7 +629,7 @@ function splitStableBlocks(markdown: string): BlockSplit
 | 密度设置 | — | 两个参考都没有，行距随字号 |
 | `animation-duration: 0.01ms` | PI reduced-motion | 全仓无 `animationend` 监听，`animation: none` 不会卡住卸载 |
 | 服务端会话全文搜索 | — | 本轮本地子串足够 |
-| 队列的原子重排 | — | 运行时无重排接口；W3 只做相邻交换并有回退 |
+| 队列的原子重排（Web 接线） | — | 原理由“运行时无重排接口”已被 [运行时文档](../design/2026-09-26-runtime-contract-alignment-design.md) R4（2026-09-26）解除：`POST /product/sessions/{session_id}/messages/reorder` 提供单事务原子重排。W3 目前仍是“撤销 + 重建”的相邻交换并带回退；改用该端点的 Web 接线归前端文档，详见该设计 §4.4 |
 | 按消息截断后重发 | PI `truncateFromMessageId` | 运行时无此接口；W12 先做"再发一条"，协议另案 |
 | 短语淡入的流式揭示 | open-vetta `streaming-reveal` | chunk 驱动无积压，不值得加动画调度（§15.3） |
 | 文件上传为附件 | — | 体积、类型与安全处理超出本轮；拖放只接受路径（§13.3） |

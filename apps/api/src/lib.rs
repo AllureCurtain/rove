@@ -304,6 +304,7 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(product::routes::list_product_session_messages))
         .routes(routes!(product::routes::promote_product_session_message))
         .routes(routes!(product::routes::revoke_product_session_message))
+        .routes(routes!(product::routes::reorder_product_session_messages))
         .routes(routes!(product::routes::list_product_session_controls))
         .routes(routes!(product::routes::revoke_product_session_control))
         .routes(routes!(product::routes::confirm_product_session_followup))

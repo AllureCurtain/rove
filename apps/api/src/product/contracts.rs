@@ -342,6 +342,13 @@ pub struct ProductMessage {
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_at: Option<String>,
+    /// Explicit successor-queue position, written by a reorder or a
+    /// `successor` promotion. `None` means the message has never been moved and
+    /// keeps its `seq` (creation) order; clients sort the queue by
+    /// `queue_order ?? seq`. The field is additive, so a pre-migration payload
+    /// parses unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_order: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
@@ -354,8 +361,44 @@ pub struct CreateProductMessageRequest {
     pub idempotency_key: Option<String>,
 }
 
+/// Optional body of a message promotion. An absent body keeps the historical
+/// `current_run` behaviour, so existing callers are unaffected.
+#[derive(Debug, Clone, Copy, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromoteProductMessageRequest {
+    #[serde(default)]
+    pub delivery: Option<ProductMessageDelivery>,
+}
+
+impl PromoteProductMessageRequest {
+    pub fn delivery(&self) -> ProductMessageDelivery {
+        self.delivery.unwrap_or(ProductMessageDelivery::CurrentRun)
+    }
+}
+/// Atomic successor-queue reorder. The list must name exactly the session's
+/// current queued (pending successor) messages, in the wanted order; a stale or
+/// partial list is rejected instead of being merged, which is what makes a
+/// concurrent promote, revoke, or drain a typed conflict.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReorderProductMessagesRequest {
+    pub ordered_ids: Vec<ProductControlId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductQueueResponse {
+    pub messages: Vec<ProductMessage>,
+}
+
 pub const DEFAULT_PRODUCT_MESSAGE_PAGE_LIMIT: usize = 64;
 pub const MAX_PRODUCT_MESSAGE_PAGE_LIMIT: usize = 128;
+
+/// Upper bound on the durable pending-message queue of one session. The store
+/// enforces it on send (it mirrors the bounded runtime steer channel, so a run
+/// attaching after an HTTP/API race can still inject every pending message at
+/// its first declared safe point), and the reorder endpoint uses the same bound
+/// to reject an oversized list before it touches the queue.
+pub const MAX_PENDING_MESSAGES_PER_SESSION: i64 = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductMessagesResponse {
@@ -2317,13 +2360,26 @@ pub trait ProductStore: Send + Sync {
         request: CreateProductMessageRequest,
     ) -> Result<(ProductMessage, bool /* already_existed */), ProductStoreError>;
 
-    /// Promote a still-queued successor message to the current run. This CAS
-    /// races the terminal successor claim inside the same SQLite authority.
+    /// Promote a still-queued successor message. With
+    /// [`ProductMessageDelivery::CurrentRun`] the store CASes the row into a
+    /// steer for the live run; with [`ProductMessageDelivery::Successor`] it
+    /// keeps the drainable shape and moves the row to the head of the successor
+    /// queue instead. Both race the terminal successor claim inside the same
+    /// SQLite authority.
     async fn promote_message(
         &self,
         session_id: &ProductSessionId,
         message_id: &ProductControlId,
+        delivery: ProductMessageDelivery,
     ) -> Result<ProductMessage, ProductStoreError>;
+
+    /// Atomically rewrite the successor-queue order and return the resulting
+    /// queue. The list must cover the current queue exactly.
+    async fn reorder_messages(
+        &self,
+        session_id: &ProductSessionId,
+        ordered_ids: &[ProductControlId],
+    ) -> Result<Vec<ProductMessage>, ProductStoreError>;
 
     /// Idempotently revoke a still-queued or needs-attention message.
     async fn revoke_message(

@@ -109,8 +109,11 @@ impl MessageRepository for ProductMessageRepository {
     ) -> Result<ConversationMessage, MessageDomainError> {
         let session_id = Self::session_id(session_id)?;
         let message_id = Self::message_id(message_id)?;
+        // The shared runtime message contract only knows "promote into the
+        // current run". API-only successor promotion is deliberately not part
+        // of this adapter; it is a queue move, not a runtime delivery mode.
         self.store
-            .promote_message(&session_id, &message_id)
+            .promote_message(&session_id, &message_id, ProductMessageDelivery::CurrentRun)
             .await
             .map(to_domain)
             .map_err(map_product_error)
