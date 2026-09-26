@@ -170,48 +170,71 @@ vetta 式**状态快照**：DOM 仍单实例，但把"离开会话瞬间"的 UI 
 
 ### 3.2 目标行为（三层，全部不依赖运行时合同）
 
-1. **工具卡时长徽标**：`ToolCard` 读取 `result.metadata.duration_ms`
+1. **工具卡时长徽标**：`ToolCard` 读取 `ToolOutputEnvelope.protocol_metadata.duration_ms`
    （`lib/rove-types.ts:465`，字段已在线上），≥1000ms 才显示 `X.Xs` 徽标；<1000ms
-   不显示（vetta 的"显著时长"原则，避免噪音）。
+   不显示（vetta 的"显著时长"原则，避免噪音）。实做补充：该字段位于 envelope，
+   Web 端 `parseToolOutputEnvelope` 原本不保留 `protocol_metadata`、
+   `toWorkbenchStreamEvent` 原本丢弃 `envelope`，因此本条同时补上这段投影。
 2. **活动组 elapsed**：活动组激活期间头部右侧显示"已运行 Ns"，逐秒更新；
    组内最后一个完成事件到达后冻结为总时长。计时基于**事件到达时刻**（事件进入
-   reducer 时用 `performance.now()` 记录到 ref Map，key 为 entry id），不用系统墙钟。
+   dispatch 包装器时用 `performance.now()` 记录），不用系统墙钟。实做补充：记录
+   在 `chat/tool-timing.ts` 的模块级到达台账里，key 为 tool call id / input id ——
+   dispatch 时事件只带这两个身份，entry id 需要 run scope（`run:…`/`job:…`），
+   在 dispatch 处并不可得。
 3. **展开详情**：工具卡展开区域在 `duration_ms` 存在时显示精确值；不存在时不显示占位。
 
 ### 3.3 关键边界：重放与到达时间失真
 
 - 到达时间 ≠ 服务端执行时间。两类失真必须处理：
   - **SSE 重放/恢复**（`Last-Event-ID` 续传、restore 后的快照重放）：事件成批到达，
-    elapsed 完全不可信。实现上由 `run-controller` 标记"重放批次"（attach 时快照重放
-    与实时流的分界已知），重放批次内的条目**不显示** elapsed，只认 `duration_ms`。
+    elapsed 完全不可信。实现上只把 `stream_event` 记为到达：`reset`/`hydrate`
+    清空台账，`job_state_synced`（attach 时快照重放、审批后的权威同步）不记录。
+    任何一项没有实时到达的活动就没有起点，**不显示** elapsed，只认 `duration_ms`。
   - **标签页后台节流**：后台标签的 timer/事件到达都会膨胀。冻结值
     （最后完成到达 − 首个开始到达）本身可能虚高；文案用"约"，且徽标类显示优先用
     `duration_ms`。
-- 计时逻辑抽纯模块 `chat/tool-timing.ts`：输入到达序列（含 replay 标记），输出
-  `{liveElapsed | frozenMs | null}`。禁止把这段逻辑散在组件里。
+- 计时逻辑抽纯模块 `chat/tool-timing.ts`：输入到达台账与 key 列表，输出
+  `{liveElapsed | frozenMs | null}`；缺一项到达、或跨度倒退（负数）都返回 `null`，
+  宁可不显示也不给一个 0 秒的假事实。禁止把这段逻辑散在组件里。
 
 ### 3.4 验证门
 
-- vitest：`tool-timing.ts`（实时序列、重放批次、乱序完成、无开始事件等）；
-  ToolCard 徽标阈值（999/1000/1001）。
-- e2e（mock）：流式期间组头计时更新、完成后冻结、重放路径不显示 elapsed、
-  `duration_ms` 徽标显示。
+- vitest：`tool-timing.ts`（实时序列、重放/恢复不显示、乱序与倒退、无开始事件等）；
+  徽标阈值（999/1000/2450/60000）与解析层（`protocol_metadata` 保留、非法值报错）。
+- e2e（mock）：流式期间组头计时逐秒更新、重放/恢复路径不显示 elapsed、
+  `duration_ms` 徽标与展开精确值显示。实做限制：mock 的 SSE 路由一次性 fulfill
+  整个事件列表，无法"先开始、过一会儿再完成"，因此**冻结转换**由 vitest 序列覆盖，
+  e2e 覆盖计时、重放与徽标。
 
 ---
 
 ## 4. F3 流式 markdown 的分块 memo 化
 
-### 4.1 背景与参考
+### 4.1 背景与参考（2026-09-26 核对修正）
 
-PI-Desktop 的增量 markdown：按顶层块切分，只有尾块重新解析，每块 memoized，
-token 流入时渲染成本恒定。rove 已有等价的切分（`segmentMarkdown`），缺的是 memo。
+PI-Desktop 的增量 markdown 按**顶层块**切分，只有尾块重新解析，因此 token 流入时
+渲染成本恒定。核对 `chat/streaming-blocks.ts` 后确认：rove 的 `segmentMarkdown`
+**不是**顶层块切分，`flushProse()` 只被**围栏开头**触发，所以只有**闭合围栏**
+才是段边界：
 
-### 4.2 目标行为
+- 纯 prose 流式（无围栏）→ 全程只有一个段，其 text 随每个 delta 变化；
+- 围栏打开但未闭合 → 围栏前的 prose 段已经固定，未闭合部分与尾部 prose 合并进
+  最后一个段；
+- 围栏闭合 → 该块从 prose 段变成 code 段，一次重写。
 
-- `RichTextMarkdown` 包 `React.memo`，比较 `content` 等渲染输入。
-- `RichText` 每次渲染仍重算 `segments`（字符串切分便宜），但已完成段的 content
-  字符串在追加 delta 时不变 → memo 命中跳过；只有尾段（正在增长的段）重新走
-  ReactMarkdown。
+因此本条能拿到的收益是"**已闭合围栏之前的段**在追加 delta 时字符串不变 → memo 命中"，
+而不是"所有已完成块的渲染成本恒定"。真正做顶层块切分需要一个匹配 CommonMark 的词法器
+（`marked` lexer、`streaming-markdown` 等），被 §17 拒绝；手写"按空行切 prose"会破坏
+跨块结构（松散列表被拆成多个独立列表、链接引用定义 `[x]: url` 不再对前面的块生效、
+引用块延迟续行丢失），风险大于收益，故**不做**，并在 4.2 如实标明限制。
+
+### 4.2 目标行为（修正后）
+
+- `RichTextMarkdown` 包 `React.memo`，比较该段的 text（段渲染输入只有它；kind 决定
+  怎么切分，不决定怎么渲染）。
+- `RichText` 用 `useMemo` 缓存 `segmentMarkdown(bounded)`；已完成段的 text 在追加
+  delta 时不变 → memo 命中跳过；只有尾段（正在增长的段）重新走 ReactMarkdown。
+- **已知限制**：纯 prose 长回复仍是单段重解析，本条不改变其成本（见 4.1）。
 - 围栏闭合瞬间（prose 段裂成 code 段）会导致该块一次重解析——可接受，记录为已知行为。
 - 不引入新依赖（Shiki/词法器等仍被 W 文档 §17 拒绝，本条不改）。
 
@@ -219,15 +242,19 @@ token 流入时渲染成本恒定。rove 已有等价的切分（`segmentMarkdow
 
 - `React.memo` 的 props 必须全部稳定：不传每次渲染新建的回调；若必须传，用
   `useCallback`。禁止用 index 之外的会变化的 prop 打破 memo。
+- `remarkPlugins` 与 `components` 必须是模块常量：react-markdown 在它们的 identity
+  变化时也会重新解析，逐渲染新建会抵消 memo。
 - `MAX_MARKDOWN_CHARACTERS = 300_000` 上限与懒加载的 `RichCodeBlock`/`MermaidDiagram`
   行为不变。
 
 ### 4.4 验证门
 
-- vitest：渲染计数断言——挂载后追加 N 个 delta，已完成块的组件渲染次数不随 N 增长
-  （在测试中用包装组件统计渲染次数）。
-- 手测证据：长回复（数千行 markdown）流式期间主线程无长任务（Performance 面板截图
-  进实施记录）。
+- vitest：渲染计数断言——用例必须包含**已闭合围栏**（否则没有"已完成块"可断言），
+  挂载后追加 N 个 delta，已完成块触发的解析次数不随 N 增长（`vi.mock("react-markdown")`
+  统计解析次数）。这是本仓库第一处 DOM 环境测试：`jsdom` 作为 devDependency 引入，
+  现有 SSR 测试栈（`renderToStaticMarkup`）无法观测 memo 命中。
+- 手测证据：长回复（数千行 markdown，含代码块）流式期间主线程无长任务
+  （Performance 面板截图进实施记录）；未运行时在实施记录里如实标注为未做。
 
 ---
 
