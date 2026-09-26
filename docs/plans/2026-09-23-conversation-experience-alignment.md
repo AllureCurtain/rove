@@ -231,6 +231,14 @@ type ActivityPhase =
 
 **不发明倒计时。** PI 的重试倒计时来自事件里的 `retryAt`，我们的 `model_status` 没有时间字段。没有时间就不画倒计时，避免一个假的进度。
 
+> 后续事实更新（不改写本条决策，实施当时的结论仍然成立）：运行时后来落地了
+> R2c 的 `ProviderRetry` 事件，它携带 `attempt`、`max_attempts`、`delay_ms` 和
+> 白名单 `reason`（见 `docs/design/2026-09-26-runtime-contract-alignment-design.md`
+> §2.4 与 `docs/runtime/react-loop.md`）。也就是说"没有时间字段"这一前提不再成立，
+> 但"不做倒计时"仍是前端设计文档 F12 的决策点，默认不做；R2c 只接线了最小投影
+> （状态行文案 + 阶段回到 `waiting-model`）。若将来做倒计时，事实来源必须是
+> `delay_ms`，不得由前端估算。
+
 呈现：composer 上方一行，`role="status"`、`aria-live="polite"`，只在非 `idle` 时出现。文案全部走 copy key。同一阶段的重复事件不改变文案，避免闪烁。
 
 ### 6.3 占用环

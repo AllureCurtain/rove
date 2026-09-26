@@ -8,6 +8,7 @@ use figment::providers::{Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
 
 use rove_runtime::agents::AgentSelector;
+use rove_runtime::engine::ProviderRetryPolicy;
 use rove_runtime::execution::{
     EvaluatorMode, ExecutionPolicy, FinalizerPolicy, StrategySelectionSource,
 };
@@ -119,6 +120,9 @@ pub struct RuntimeConfig {
     pub execution: ExecutionConfig,
     /// Runtime-owned Agent selection and bounded procedural context settings.
     pub agent: AgentConfig,
+    /// Run recovery: model-call retry budget (and, in later rounds, silent-turn
+    /// recovery). Unset fields keep the runtime defaults.
+    pub recovery: RecoveryConfig,
 }
 
 /// Operator-facing Agent activation settings.
@@ -254,6 +258,71 @@ impl ExecutionConfig {
 fn overlay<T: Copy>(slot: &mut Option<T>, configured: Option<T>) {
     if let Some(value) = configured {
         *slot = Some(value);
+    }
+}
+
+/// Operator-facing run recovery settings.
+///
+/// Recovery is a runtime behavior, so the typed
+/// [`rove_runtime::engine::ProviderRetryPolicy`] stays the single config truth
+/// and every field here only overlays it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RecoveryConfig {
+    pub retry: RecoveryRetryConfig,
+}
+
+/// Model-call retry budget overlay.
+///
+/// Every field is optional: an unset field keeps the runtime default. Setting
+/// both `*_max_attempts` to 1 disables retry entirely and restores the
+/// pre-recovery behavior.
+///
+/// Jitter is deliberately not configurable: it only spreads retries out, and
+/// keeping it out of configuration keeps this type free of floats.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RecoveryRetryConfig {
+    /// Total attempts for a rate-limited call, including the first. `0` is
+    /// clamped to 1, which disables retry for this class.
+    pub rate_limit_max_attempts: Option<u32>,
+    /// Total attempts for a transient transport failure, including the first.
+    pub transient_max_attempts: Option<u32>,
+    /// First backoff delay; each further retry doubles it.
+    pub backoff_base_ms: Option<u64>,
+    /// Ceiling for one backoff delay, and for a provider `retry_after_ms`.
+    pub backoff_max_ms: Option<u64>,
+}
+
+impl RecoveryConfig {
+    /// Apply configured retry dimensions on top of the runtime defaults.
+    pub fn retry_policy(&self) -> ProviderRetryPolicy {
+        let mut policy = ProviderRetryPolicy::default();
+        let mut configured = false;
+        if let Some(attempts) = self.retry.rate_limit_max_attempts {
+            policy.rate_limit_max_attempts = attempts.max(1);
+            configured = true;
+        }
+        if let Some(attempts) = self.retry.transient_max_attempts {
+            policy.transient_max_attempts = attempts.max(1);
+            configured = true;
+        }
+        if let Some(base) = self.retry.backoff_base_ms {
+            // `0` would contradict the documented "first backoff delay" and only
+            // behave as 1ms because the runtime re-clamps it.
+            policy.backoff_base_ms = base.max(1);
+            configured = true;
+        }
+        if let Some(max) = self.retry.backoff_max_ms {
+            policy.backoff_max_ms = max.max(1);
+            configured = true;
+        }
+        if configured {
+            // A base above the ceiling is a contradiction: keep the ceiling
+            // authoritative instead of producing delays longer than it.
+            policy.backoff_base_ms = policy.backoff_base_ms.min(policy.backoff_max_ms);
+        }
+        policy
     }
 }
 
@@ -401,6 +470,7 @@ impl Default for RuntimeConfig {
             context_reserved_tokens: 4_000,
             execution: ExecutionConfig::default(),
             agent: AgentConfig::default(),
+            recovery: RecoveryConfig::default(),
         }
     }
 }
@@ -3333,7 +3403,142 @@ max_steps = 7
             config.runtime.execution.is_empty(),
             "a missing section defaults to unconfigured"
         );
+        assert!(
+            config.runtime.recovery == RecoveryConfig::default(),
+            "a config written before the recovery section keeps the runtime default budget"
+        );
         config.validate().unwrap();
         clear_config_env();
+    }
+
+    #[test]
+    fn an_unconfigured_recovery_section_keeps_the_runtime_default_budget() {
+        let config = AppConfig::default();
+
+        let policy = config.runtime.recovery.retry_policy();
+
+        assert_eq!(policy, ProviderRetryPolicy::default());
+        assert_eq!(policy.rate_limit_max_attempts, 6);
+        assert_eq!(policy.transient_max_attempts, 4);
+        assert_eq!(policy.backoff_base_ms, 2_000);
+        assert_eq!(policy.backoff_max_ms, 30_000);
+        assert!(policy.is_enabled());
+    }
+
+    #[test]
+    fn a_recovery_section_round_trips_through_toml() {
+        let _guard = env_lock();
+        clear_config_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_dir = tmp.path().join(".rove");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[runtime.recovery.retry]
+rate_limit_max_attempts = 2
+transient_max_attempts = 3
+backoff_base_ms = 500
+backoff_max_ms = 9000
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(tmp.path(), trusted_overrides()).unwrap();
+
+        let retry = &config.runtime.recovery.retry;
+        assert_eq!(retry.rate_limit_max_attempts, Some(2));
+        assert_eq!(retry.transient_max_attempts, Some(3));
+        assert_eq!(retry.backoff_base_ms, Some(500));
+        assert_eq!(retry.backoff_max_ms, Some(9_000));
+
+        let policy = config.runtime.recovery.retry_policy();
+        assert_eq!(policy.rate_limit_max_attempts, 2);
+        assert_eq!(policy.transient_max_attempts, 3);
+        assert_eq!(policy.backoff_base_ms, 500);
+        assert_eq!(policy.backoff_max_ms, 9_000);
+        clear_config_env();
+    }
+
+    #[test]
+    fn configured_recovery_dimensions_overlay_the_runtime_defaults() {
+        let partial = RecoveryConfig {
+            retry: RecoveryRetryConfig {
+                transient_max_attempts: Some(2),
+                ..RecoveryRetryConfig::default()
+            },
+        };
+
+        let policy = partial.retry_policy();
+
+        assert_eq!(policy.transient_max_attempts, 2);
+        assert_eq!(
+            policy.rate_limit_max_attempts, 6,
+            "an unset dimension keeps the runtime default"
+        );
+        assert_eq!(policy.backoff_max_ms, 30_000);
+    }
+
+    #[test]
+    fn a_disabled_retry_budget_is_reachable_from_configuration() {
+        let disabled = RecoveryConfig {
+            retry: RecoveryRetryConfig {
+                rate_limit_max_attempts: Some(1),
+                transient_max_attempts: Some(1),
+                ..RecoveryRetryConfig::default()
+            },
+        };
+        assert!(!disabled.retry_policy().is_enabled());
+
+        // Zero attempts is not a way to disable retries by accident: it clamps
+        // to the one attempt that every class needs.
+        let zero = RecoveryConfig {
+            retry: RecoveryRetryConfig {
+                rate_limit_max_attempts: Some(0),
+                transient_max_attempts: Some(0),
+                ..RecoveryRetryConfig::default()
+            },
+        };
+        let policy = zero.retry_policy();
+        assert_eq!(policy.rate_limit_max_attempts, 1);
+        assert_eq!(policy.transient_max_attempts, 1);
+        assert!(!policy.is_enabled());
+    }
+
+    #[test]
+    fn a_recovery_backoff_base_above_its_ceiling_is_clamped() {
+        let contradictory = RecoveryConfig {
+            retry: RecoveryRetryConfig {
+                backoff_base_ms: Some(60_000),
+                backoff_max_ms: Some(1_000),
+                ..RecoveryRetryConfig::default()
+            },
+        };
+
+        let mut policy = contradictory.retry_policy();
+
+        assert_eq!(policy.backoff_base_ms, 1_000);
+        assert_eq!(policy.backoff_max_ms, 1_000);
+        // Jitter is a runtime-only detail this config never sets, so the exact
+        // comparison below disables it on the resolved policy first.
+        policy.jitter_ratio = 0.0;
+        assert_eq!(
+            policy.delay_ms(2, None),
+            1_000,
+            "no delay may exceed the configured ceiling"
+        );
+
+        // A zero base is clamped too, so the resolved policy never claims a
+        // first delay of zero: the documented value and the waited value agree.
+        let zero_base = RecoveryConfig {
+            retry: RecoveryRetryConfig {
+                backoff_base_ms: Some(0),
+                ..RecoveryRetryConfig::default()
+            },
+        };
+        let mut policy = zero_base.retry_policy();
+        assert_eq!(policy.backoff_base_ms, 1);
+        policy.jitter_ratio = 0.0;
+        assert_eq!(policy.delay_ms(2, None), 1);
     }
 }

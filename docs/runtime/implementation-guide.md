@@ -303,6 +303,10 @@ Common paths and defaults:
 | `runtime.agent.workspace_instructions` | `false` |
 | `runtime.agent.allow_remediation_procedures` | `false` |
 | `runtime.agent.max_procedure_selections` | `3` |
+| `runtime.recovery.retry.rate_limit_max_attempts` | `6` |
+| `runtime.recovery.retry.transient_max_attempts` | `4` |
+| `runtime.recovery.retry.backoff_base_ms` | `2000` |
+| `runtime.recovery.retry.backoff_max_ms` | `30000` |
 | `state.state_dir` | empty sentinel -> `<data_root>/workspaces/<storage_key>/` |
 | `state.sqlite_path` | empty sentinel -> `<data_root>/workspaces/<storage_key>/state.sqlite` |
 | `tool.mcp_config_path` | empty sentinel -> contract `mcp_servers.json` (legacy fallback before migration) |
@@ -983,6 +987,7 @@ Current event variants:
 - `run_started`
 - `llm_chunk`
 - `model_status`
+- `provider_retry`
 - `llm_message`
 - `tool_call_started`
 - `tool_call_approval_needed`
@@ -1015,6 +1020,18 @@ its sequence.
 that the model is thinking, has selected a tool, or that the run is waiting for
 approval. It must not expose raw provider `ThinkingDelta` or hidden reasoning
 text.
+
+`provider_retry` is the safe surface for model-call recovery. It carries
+`attempt`, `max_attempts`, `delay_ms`, a whitelisted `reason`
+(`rate_limited` or `transient:<error_code>`), and `phase`; provider messages,
+headers, and bodies never appear in it. `attempt` counts within its class, so a
+sequence can read 5/6 and then 2/4. The runtime owns the budget and the waiting
+time, so a consumer projects those facts instead of inventing a policy or a
+countdown. The Web stream parser rejects an unknown frame instead of ignoring
+it, so a new canonical event is a coordinated API/Web change even though the
+wire protocol version does not change. The budget itself, the no-retry-after-output
+rule, and the `[runtime.recovery.retry]` keys are documented in
+`docs/runtime/react-loop.md`.
 
 Adding a new event requires checking:
 
@@ -1272,6 +1289,18 @@ The JSON text action path remains for compatibility and fake-model tests. It is 
 Each routed provider candidate is attempted up to `routing.retry_max_attempts` before moving to fallback. Retryable request failures, stream interruptions, and rate limits before commit use exponential backoff from `routing.retry_backoff_base_ms` capped by `routing.retry_backoff_max_ms`; rate-limit `retry-after` values override the computed delay. Authentication, context-length, and invalid-provider-configuration errors are never retried, though another fallback candidate can still be tried if no output or tool-use has committed. After committed text or committed native tool-use begins, later stream errors are returned directly with no retry and no fallback.
 
 `models/src/health.rs` owns `ModelHealthStore`, `HealthConfig`, and circuit state. CLI-created routed clients keep private health state configured from `routing.failure_threshold` and `routing.open_cooldown_ms`. API state creates one process-shared `ModelHealthStore` and injects it into routed model clients so API jobs share circuit breaker decisions across runs in the same process.
+
+Routing retries compose with the run loop's model-call budget; they are not
+alternatives. The routing budget is per candidate and lives inside one model
+call, while `[runtime.recovery.retry]` is the outer budget spent at the model-call
+boundary (`docs/runtime/react-loop.md`). A failure that exhausts every routing
+candidate and is still retryable therefore reaches the outer budget, so a
+configured fallback chain multiplies the inner attempts and the outer budget
+bounds how many *whole model calls* may fail before the run terminates. The
+outer budget is spent inside `run_kernel_model_turn`, so it covers the React host
+and the planned-step host — including a directly assembled provider that
+`RoutingModelClient` never wraps — and not the Planner, Replanner, Evaluator,
+Finalizer, or model compaction, which call `ModelClient::stream` directly.
 
 First-packet routing decisions are emitted through `tracing`: candidate start, skipped open circuit, committed first event, no content, timeout, error-before-commit, retry scheduling, and candidate exhaustion. These are observability records only; they do not add user-facing `StreamEvent` variants.
 

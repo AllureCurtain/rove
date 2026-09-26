@@ -303,6 +303,43 @@ $env:ROVE_PROVIDER_SMOKE_OLLAMA_MODEL = "llama3.2"
 cargo test -p rove-integration-tests --test provider_smoke ollama_real_provider_smoke_when_enabled -- --exact --nocapture
 ```
 
+## Retry and failure semantics
+
+A smoke run observes the runtime's retry budget, not a provider-specific one.
+`RuntimeConfig.recovery.retry.*` configures it and `docs/runtime/react-loop.md`
+documents the full contract:
+
+```toml
+[runtime.recovery.retry]
+rate_limit_max_attempts = 6      # total attempts, first included
+transient_max_attempts = 4
+backoff_base_ms = 2000           # doubles per retry
+backoff_max_ms = 30000           # ceiling, also clamps a provider retry-after
+```
+
+Consequences for smoke interpretation:
+
+- A `429` (or a connection failure before any output) is retried inside one
+  model call, so a smoke that fails at the provider may still complete. Each
+  scheduled retry is visible as a `provider_retry` stream event carrying
+  `attempt`, `max_attempts`, `delay_ms`, and a whitelisted `reason`
+  (`rate_limited` or `transient:<error_code>`); provider messages and headers
+  never appear there.
+- A stream that breaks after text has already been streamed is **not** retried
+  and ends the turn with the provider's own error. Treat that as provider
+  evidence about stream stability, not as a runtime retry gap.
+- Retries are per run and per model call. A run waiting in backoff does not
+  block another session: each run owns its cancel token and its own budget.
+  Cancelling during backoff ends the turn immediately.
+- To observe raw provider behavior without the budget, set both
+  `*_max_attempts` to `1` in the evaluated configuration and record that in the
+  evidence, rather than inferring it from a shorter smoke.
+
+The budget is exercised deterministically and offline by
+`cargo test -p rove-integration-tests --test recovery`, which drives the scripted
+Fake provider through throttling, transport failures, output-before-failure,
+cancellation during backoff, and a disabled budget.
+
 ## Expected result
 
 Each enabled smoke runs two tiny checks: a direct final-answer request and one

@@ -608,6 +608,19 @@ export type StreamEvent =
       message: string;
     }
   | {
+      /**
+       * Runtime-owned retry progress. `attempt` is the 1-based index of the
+       * attempt about to run and `max_attempts` is that failure class' budget;
+       * the UI projects these facts instead of inventing a retry policy.
+       */
+      type: "provider_retry";
+      attempt: number;
+      max_attempts: number;
+      delay_ms: number;
+      reason: string;
+      phase: string;
+    }
+  | {
       type: "llm_message";
       full: string;
       usage: Usage;
@@ -996,6 +1009,7 @@ export const STREAM_EVENT_NAMES = [
   "execution_degraded",
   "llm_chunk",
   "model_status",
+  "provider_retry",
   "llm_message",
   "tool_call_started",
   "tool_call_approval_needed",

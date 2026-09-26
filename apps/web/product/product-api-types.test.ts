@@ -111,6 +111,58 @@ describe("tool result protocol metadata", () => {
 });
 
 /**
+ * The retry notice is a runtime fact the shell only projects, so parsing must
+ * keep the attempt accounting intact and refuse values that could not have come
+ * from the runtime.
+ */
+describe("provider retry notices", () => {
+  function retryEvent(overrides: Record<string, unknown> = {}) {
+    return {
+      type: "provider_retry",
+      attempt: 2,
+      max_attempts: 4,
+      delay_ms: 2_000,
+      reason: "transient:request_failed",
+      phase: "model_call",
+      ...overrides,
+    };
+  }
+
+  it("keeps the runtime's attempt accounting and whitelisted reason", () => {
+    const event = parseStreamEvent(retryEvent());
+
+    expect(event).toEqual(retryEvent());
+  });
+
+  it("rejects an attempt that could not come from the runtime", () => {
+    expect(() => parseStreamEvent(retryEvent({ attempt: 0 }))).toThrow(
+      ProductApiSchemaError,
+    );
+    expect(() => parseStreamEvent(retryEvent({ attempt: 1.5 }))).toThrow(
+      ProductApiSchemaError,
+    );
+    expect(() => parseStreamEvent(retryEvent({ max_attempts: 0 }))).toThrow(
+      ProductApiSchemaError,
+    );
+    expect(() => parseStreamEvent(retryEvent({ delay_ms: -1 }))).toThrow(
+      ProductApiSchemaError,
+    );
+  });
+
+  it("rejects a reason or phase that is not a bounded string", () => {
+    expect(() => parseStreamEvent(retryEvent({ reason: "" }))).toThrow(
+      ProductApiSchemaError,
+    );
+    expect(() => parseStreamEvent(retryEvent({ phase: 7 }))).toThrow(
+      ProductApiSchemaError,
+    );
+    expect(() =>
+      parseStreamEvent(retryEvent({ reason: "leak\u0000spoof" })),
+    ).toThrow(ProductApiSchemaError);
+  });
+});
+
+/**
  * R3 (migration 016) adds the outcome of the most recently finished turn. The
  * status field cannot express it, so the shell must be able to tell "the last
  * turn succeeded" from "this session never ran", and must not invent an answer

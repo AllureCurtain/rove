@@ -978,6 +978,21 @@ function applyStreamEvent(
         statusText: event.message,
         trace: prependTrace(state.trace, event.type, event.message),
       };
+    case "provider_retry": {
+      // The runtime owns the retry budget and reports only facts, so the shell
+      // narrates exactly what it was given: a deployment that disabled retry
+      // simply never produces this frame.
+      const wait =
+        event.delay_ms >= 1000
+          ? `${(event.delay_ms / 1000).toFixed(1)}s`
+          : `${event.delay_ms}ms`;
+      const message = `Retrying ${event.phase.replace(/_/g, " ")} (attempt ${event.attempt}/${event.max_attempts}) in ${wait}: ${event.reason.replace(/_/g, " ")}.`;
+      return {
+        ...next,
+        statusText: message,
+        trace: prependTrace(state.trace, event.type, message),
+      };
+    }
     case "llm_message": {
       const projection = finalizeAssistantMessage(
         state.messages,

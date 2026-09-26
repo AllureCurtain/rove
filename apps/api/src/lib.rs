@@ -25,7 +25,7 @@ use rove_app_bootstrap::{
     AppConfig, AppConfigOverrides, ProjectActivationState, ProjectTrustRepository, ProviderCatalog,
     ProviderCatalogService, UserConfigPaths,
 };
-use rove_app_bootstrap::{EngineOptions, build_engine, build_review_engine};
+use rove_app_bootstrap::{EngineOptions, ReviewEngineOptions, build_engine, build_review_engine};
 use rove_core::ToolError;
 use rove_models::ModelClient;
 use rove_models::fake::{FakeModelClient, FakeTurn};
@@ -1280,6 +1280,8 @@ pub(crate) async fn start_product_review_runtime(
     config.state.state_dir = state_root.clone();
     config.state.sqlite_path = state_root.join("state.sqlite");
     config.state.allow_external_paths = true;
+    // A Review run retries under the same configured budget as any other run.
+    let provider_retry = config.runtime.recovery.retry_policy();
     let record = new_job_record(NewJobRecord {
         state: &state,
         workspace: review_workspace,
@@ -1297,11 +1299,14 @@ pub(crate) async fn start_product_review_runtime(
     let (engine, submission_store) = build_review_engine(
         model,
         &workspace,
-        Arc::clone(&snapshot),
-        review.id.to_string(),
-        Some(&state_root),
-        Some(run_model_snapshot),
-        max_steps,
+        ReviewEngineOptions {
+            snapshot: Arc::clone(&snapshot),
+            review_id: review.id.to_string(),
+            state_root: Some(&state_root),
+            run_model_snapshot: Some(run_model_snapshot),
+            provider_retry,
+            max_steps,
+        },
     )
     .map_err(|error| ApiError::internal(format!("review engine assembly failed: {error}")))?;
     std::fs::create_dir_all(&state_root)

@@ -922,6 +922,14 @@ describe("workbenchReducer", () => {
         status: "thinking",
         message: "Model is thinking",
       },
+      {
+        type: "provider_retry",
+        attempt: 2,
+        max_attempts: 4,
+        delay_ms: 2_000,
+        reason: "transient:request_failed",
+        phase: "model_call",
+      },
       { type: "llm_chunk", delta: "sum" },
       {
         type: "llm_message",
@@ -1075,6 +1083,7 @@ describe("workbenchReducer", () => {
       expect.arrayContaining([
         "run_started",
         "model_status",
+        "provider_retry",
         "tool_call_started",
         "tool_call_approval_needed",
         "tool_call_completed",
@@ -1086,6 +1095,27 @@ describe("workbenchReducer", () => {
         "prompt_compacted",
         "run_completed",
       ]),
+    );
+  });
+
+  it("narrates a runtime retry notice as the fact it was given", () => {
+    const state = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      event: {
+        type: "provider_retry",
+        attempt: 2,
+        max_attempts: 4,
+        delay_ms: 2_000,
+        reason: "transient:request_failed",
+        phase: "model_call",
+      },
+    });
+
+    expect(state.statusText).toBe(
+      "Retrying model call (attempt 2/4) in 2.0s: transient:request failed.",
+    );
+    expect(state.trace.map((entry) => entry.label)).toContain(
+      "provider_retry",
     );
   });
 

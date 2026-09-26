@@ -14,7 +14,10 @@ pub mod state_migration;
 pub mod user_config;
 pub mod user_state;
 
-pub use assembly::{EngineOptions, build_engine, build_engine_with_registry, build_review_engine};
+pub use assembly::{
+    EngineOptions, ReviewEngineOptions, build_engine, build_engine_with_registry,
+    build_review_engine,
+};
 pub use config::{
     AgentConfig, ApiConfig, AppConfig, AppConfigOverrides, ConfigSourceSummary, MemoryConfig,
     ProviderConfig, ProviderOptions, RoutingConfig, RuntimeConfig, ShellConfig, StateConfig,

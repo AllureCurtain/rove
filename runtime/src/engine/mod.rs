@@ -5,9 +5,11 @@ pub mod facade;
 pub(crate) mod history_projection;
 pub(crate) mod model_turn;
 pub(crate) mod plan_loop;
+pub mod recovery;
 pub(crate) mod run_loop;
 pub(crate) mod step_runner;
 pub(crate) mod tool_turn;
 
 pub use control::{RunControlHandle, SteerId, SteerMessage};
 pub use facade::{Engine, EngineConfig, EngineEnvironmentOptions, RunStream};
+pub use recovery::{ProviderRetryPolicy, RetryClass};

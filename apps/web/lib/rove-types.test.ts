@@ -145,6 +145,14 @@ const streamEventFixtures: StreamEvent[] = [
     message: "Model is thinking",
   },
   {
+    type: "provider_retry",
+    attempt: 2,
+    max_attempts: 4,
+    delay_ms: 2_000,
+    reason: "transient:request_failed",
+    phase: "model_call",
+  },
+  {
     type: "llm_message",
     full: "hello",
     usage: {

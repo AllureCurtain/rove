@@ -77,6 +77,11 @@ export function activityEventForStreamEvent(event: StreamEvent): ActivityEvent |
       return { type: "run_completed" };
     case "model_status":
       return { type: "model_status", status: event.status };
+    case "provider_retry":
+      // A scheduled retry is still a wait on the model. Mapping it onto the
+      // known "retrying" status keeps the composer announcing the model phase
+      // instead of leaving whatever phase ran before it.
+      return { type: "model_status", status: "retrying" };
     case "prompt_compacted":
       return {
         type: "prompt_compacted",

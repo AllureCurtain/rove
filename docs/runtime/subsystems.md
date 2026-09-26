@@ -311,6 +311,18 @@ payloads become typed recoverable failures rather than terminal success.
 
 `RoutingModelClient` can fall back before user-visible content or committed tool-use begins. It tracks provider health with a failure threshold and cooldown. For each routed candidate, `routing.retry_max_attempts`, `routing.retry_backoff_base_ms`, and `routing.retry_backoff_max_ms` control retry behavior for retryable pre-commit failures; rate-limit `retry-after` values are honored directly. Auth and context-length errors are not retried, and once text or native tool-use has committed, no retry or fallback is attempted.
 
+That routing budget sits inside a model call. The run loop keeps a separate,
+outer budget at the model-call boundary (`runtime/src/engine/recovery.rs`,
+configured under `[runtime.recovery.retry]`), so a retryable failure that
+exhausts every routing candidate is still retried, and a directly assembled
+provider with no routing wrapper is covered too — in both kernel hosts, the
+React host and the planned `StepRunner`. Planner, Replanner, Evaluator,
+Finalizer, and model-compaction calls stream directly and are outside it. The
+outer budget is where the canonical `provider_retry` event is emitted and where
+backoff waits obey cancellation; `docs/runtime/react-loop.md` documents the
+contract and `docs/runtime/provider-smoke.md` what a real-provider smoke
+observes.
+
 ## Tool Orchestration
 
 `rove-core` owns `Tool`, `ToolOutput`, `ToolRegistry`, invocation-scoped

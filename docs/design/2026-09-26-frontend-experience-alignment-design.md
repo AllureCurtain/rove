@@ -710,6 +710,12 @@ storage 不可用）；`apps/web/tests/e2e/session-preferences.spec.ts`
 - 全局 `:focus-visible { outline: none }`（rove 要求可见焦点）；
 - 思考块折叠、子代理嵌套卡片、重试倒计时（**除非**运行时文档对应条目先落地：
   thinking 通道、parentToolCallId、R2c 的 ProviderRetry 事件）；
+  **状态更新（2026-09-26 之后，R2c 落地）**：`ProviderRetry` 事件已随
+  `feature/runtime-align-r2c` 落地（`attempt`/`max_attempts`/`delay_ms`/`reason` 都是
+  运行时事实，见运行时设计 §2.4），因此"重试倒计时"的前置条件已满足。本文档不因此
+  自动改判：它仍是 F12 决策点，默认不做；R2c 的 PR 只接线了最小投影（状态行 + 等待相
+  位回到 waiting-model，见 `apps/web/lib/rove-state.ts`、`apps/web/chat/activity-phase.ts`），
+  没有做倒计时 UI。
 - 货币成本显示（PI 自己也不显示）；
 - 会话拖拽重排/多选/批量、密度设置、代码块换行开关、markdown/纯文本复制区分
   （W 文档 §17）；

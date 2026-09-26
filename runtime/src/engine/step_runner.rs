@@ -10,9 +10,10 @@ use crate::events::StreamEvent;
 use crate::execution::ExecutionBudgetDimension;
 use crate::memory::session::append_session_notes_to_dir_sync;
 use crate::run_loop::{
-    ActiveInstructionTarget, LoopContext, active_target_covers, enrich_prompt_metadata,
-    extract_session_memory_notes, run_kernel_model_turn, runtime_guidance, scoped_paths_for_action,
-    scoped_prompt_events, scoped_prompt_for_target, shell_path_declaration_missing,
+    ActiveInstructionTarget, LoopContext, ModelTurnOptions, active_target_covers,
+    enrich_prompt_metadata, extract_session_memory_notes, run_kernel_model_turn, runtime_guidance,
+    scoped_paths_for_action, scoped_prompt_events, scoped_prompt_for_target,
+    shell_path_declaration_missing,
 };
 use crate::tool_turn::{
     ToolAction, ToolTurnItem, ToolTurnOutcome, append_tool_history, defer_tool_turn, run_tool_turn,
@@ -407,7 +408,10 @@ impl AgentKernelHost for StepKernelHost<'_> {
             cancel_token,
             std::mem::take(&mut self.pending_steer_ids),
             self.ctx.steer_lifecycle.clone(),
-            self.ctx.run_mode,
+            ModelTurnOptions {
+                run_mode: self.ctx.run_mode,
+                retry_policy: self.ctx.provider_retry.clone(),
+            },
         )
     }
 

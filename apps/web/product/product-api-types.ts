@@ -4612,6 +4612,27 @@ export function parseStreamEvent(
         status: expectString(record.status, `${path}.status`),
         message: expectString(record.message, `${path}.message`),
       };
+    case "provider_retry":
+      return {
+        type,
+        attempt: expectInteger(record.attempt, `${path}.attempt`, { min: 1 }),
+        max_attempts: expectInteger(
+          record.max_attempts,
+          `${path}.max_attempts`,
+          { min: 1 },
+        ),
+        delay_ms: expectInteger(record.delay_ms, `${path}.delay_ms`, { min: 0 }),
+        reason: expectString(record.reason, `${path}.reason`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          noControlCharacters: true,
+        }),
+        phase: expectString(record.phase, `${path}.phase`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          noControlCharacters: true,
+        }),
+      };
     case "llm_message": {
       const event: Extract<ProductStreamEvent, { type: "llm_message" }> = {
         type,
