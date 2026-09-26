@@ -29,7 +29,7 @@
 | F3 | 流式 markdown 的分块 memo 化 | P0 | 无 | Implemented |
 | F4 | 会话 hover 卡片 | P1 | 无 | Implemented |
 | F5 | Toast 通知层与后台失败可见性 | P1 | 无（收件箱部分依赖 R5） | Implemented（toast 层与后台失败；收件箱待 R5） |
-| F6 | smart-stop 发送快照（含粘贴 chips） | P1 | 无 | Implemented（部分中止文案分支待 R2b） |
+| F6 | smart-stop 发送快照（含粘贴 chips） | P1 | 无 | Implemented（R2b 已落地；`aborted` 标记已在 Transcript 渲染，smart-stop 文案分支见 §7.5 后续） |
 | F7 | 杂项清理（/dev 文案、mock 页标注、降级语义如实标注） | P1 | 无 | Proposed |
 | F8 | 样式 token linter 与 CI 接入 | P1 | 无 | Proposed |
 | F9 | 侧栏折叠动效合成器友好化 | P2 | 无 | Proposed |
@@ -392,12 +392,37 @@ chips 在发送瞬间折叠丢失。
   回调，在它决定这一轮已终结、要刷新会话的同一处触发。停止路径先消费快照，所以
   "被取消的回合"不会因此丢东西；这里的 `clearLastSend` 只会丢掉真正过期的快照。
 - 部分中止（模型已产出部分内容）的文案分支按 §7.2 预留：`PARTIAL_ABORT_MARKER`
-  常量为 `undefined`（运行时 R2b 尚未发出该标记），`isPartialAbort()` 只在标记为真
+  常量为 `undefined`（写这条记录时运行时 R2b 尚未发出该标记），`isPartialAbort()` 只在标记为真
   **且**该轮已产出内容时才为真，因此当前行为与改动前一致；单测把这两个条件都钉住，
-  标记落地时只需改这一个常量。
+  标记落地时只需改这一个常量。（该标记与渲染已于 2026-09-27 落地；下面两个常量条件之一
+  仍然成立，见 §7.5。）
 - 终态清除无法用浏览器用例区分（发送本身就会覆盖快照），因此由 store 单测覆盖；
   e2e 覆盖的是设计门要求的 chip 恢复，以及"没有快照时退回折叠文本"这条降级路径
   （刷新页面即丢掉内存草稿，正好构造出该状态）。
+
+### 7.5 R2b 联动记录（2026-09-27）
+
+运行时 R2b（`2026-09-26-runtime-contract-alignment-design.md` §2.5）已落地：
+`StreamEvent::LlmMessage` 带上 `aborted`，被中止回合已产出的文本不再被丢弃。
+前端据此只接了 §7.2 要求的**渲染**那一半：
+
+- 标记一路无私有通道：`lib/rove-types.ts` 的 `llm_message` 加可选 `aborted`；
+  `product/product-api-types.ts` 的严格解析用 `optionalBoolean` 读它（缺字段即"完整"）；
+  `lib/rove-state.ts` 的 `llm_message` 归约把它写进 `ChatMessage.aborted`
+  （重复完成不覆盖已有 `true`）；`chat/Transcript.tsx` 在消息 byline 的状态位渲染
+  `chat.aborted`（`"(已中止)"` / `"(aborted)"`）。
+- 标记放在 byline 而不是拼进正文：正文必须与模型产出的文本逐字一致，标记是状态信息，
+  混进去会污染复制、编辑与后续 fork 的文本。
+- 恢复路径不需要新字段：`ProductTranscriptRunSegment.events` 就是规范
+  `JobStreamEvent`，所以刷新/恢复一段被取消的会话时标记随事件回来，
+  `state/transcript-projection.test.ts` 钉住了这条。
+- §7.2 的 smart-stop 文案分支**仍不启用**：`PARTIAL_ABORT_MARKER` 保持 `undefined`。
+  原因是时机而不是缺数据——`handleCancelRun` 在用户按下停止的同步路径上跑，
+  那一刻 salvage 窗口还开着、终态 `llm_message` 还不存在，从"已定局轮次"派生标记
+  需要等这条消息到达后再决定提示文案。半做只会做出一个永远为假的判断，因此
+  行为一字不变；"停止后依据已定局消息决定是否提示已保留部分回复"是这条的后续。
+- 验证：`chat/Transcript.test.tsx`、`lib/rove-state.test.ts`、
+  `state/transcript-projection.test.ts`；`pnpm test` / `pnpm typecheck` / `pnpm build`。
 
 ---
 
