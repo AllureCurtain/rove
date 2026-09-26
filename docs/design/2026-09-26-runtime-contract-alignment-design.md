@@ -1,7 +1,8 @@
 # 运行时与产品合同对齐（下一轮）设计
 
 - 日期：2026-09-26
-- 状态：**Partially Implemented**。R1 已落地（§0.1 状态列与 §1.7）；其余条目仍未实现。
+- 状态：**Partially Implemented**。R1、R3、R4 已落地（§0.1 状态列、§1.7、§3.4、§4.4）；
+  R2c 在同批 PR 中待独立评审（§2.4）；其余条目仍未实现。
   每个条目落地时必须在同一变更中更新 `docs/runtime/` 对应现状文档与
   `docs/runtime/implementation-status.md`、`docs/runtime/acceptance-matrix.md`，
   并按 `CONTRIBUTING.md` 走 feature worktree + PR。
@@ -41,8 +42,8 @@
 |---|---|---|---|---|
 | R1 | transcript 游标分页（F.4 闭环） | P0 | `apps/api` + `apps/web` 接线 | Implemented（见 §1.7） |
 | R2 | 回合失败恢复家族（a 静默回合 / b 中止保留 / c 重试预算+事件） | P0 | `core`/`runtime`/`models`/`apps/api`/事件合同 | R2c Implemented（见 §2.4）；R2a/R2b Proposed |
-| R3 | 会话 `last_outcome` 字段 | P1 | ProductStore 迁移 016 + contracts + web | Proposed |
-| R4 | 队列协议扩展（原子重排 / send-now 边界语义 / 重启存活验证） | P1 | `apps/api` + 迁移 017 | Proposed |
+| R3 | 会话 `last_outcome` 字段 | P1 | ProductStore 迁移 016 + contracts + web | Implemented（见 §3.4） |
+| R4 | 队列协议扩展（原子重排 / send-now 边界语义 / 重启存活验证） | P1 | `apps/api` + 迁移 017 | Implemented（见 §4.4；Web 接线交接前端文档） |
 | R5 | 产品级目录 SSE `/product/events` | P1 | `apps/api` + 迁移 018 + web | Proposed |
 | R6 | 消息级编辑重发 = fork-at-message | P2 | `apps/api` fork 合同扩展 | Proposed |
 | R7 | 会话内容搜索（FTS5，先单会话） | P2 | ProductStore + 端点 | Proposed |
@@ -446,6 +447,51 @@ R2c 独立成一个 PR（对应 §11 的 PR-2，branch `feature/runtime-align-r2
 - 不改 `ProductSessionStatus` 枚举本身（`NeedsAttention` 语义保留）；
 - 不做 per-run 历史结果表（那是 R6/未来评估器的事）。
 
+### 3.4 实施记录
+
+服务端、迁移与 Web 最小接线同批落地（branch `feature/runtime-align-r3`）。
+
+- 迁移 016：`apps/api/src/product/store/schema.rs`（`CURRENT_SCHEMA_VERSION = 16`、
+  `MIGRATION_016_COLUMNS` 两列声明、`apply_migration_016` 幂等 + 逐列 `table_has_column`
+  守卫）。旧库升级**不回填**：既有行 `last_outcome`/`last_outcome_at` 保持 NULL。
+- 合同：`apps/api/src/product/contracts.rs`（`ProductSessionOutcome`、
+  `ProductSession` 两个 additive optional 字段、trait 方法签名带
+  `Option<ProductSessionOutcome>`）；`store/repository.rs`（读写投影、
+  `release_turn_claim_with_status` 用 `COALESCE(?3, last_outcome)` 写入）。
+- 写入点：与终态迁移同一事务（`apps/api/src/lib.rs` 的
+  `finish_final_product_turn` / `finish_nonfinal_product_turn` /
+  `finish_product_turn_needs_attention` / `finish_failed_product_start`）。
+- Web：`product/product-api-types.ts`（`PRODUCT_SESSION_OUTCOMES` + 严格解析 + 半写失败关闭）、
+  `state/product-types.ts`（`SessionOutcome` + 映射）、`sidebar/session-labels.ts`
+  （三态结果点与副标题）、`sidebar/WorkspaceTree.tsx`、`shell/ProductApp.tsx`、
+  `copy/{zh-CN,en-US}.ts`、`styles/product-v2.css`。
+
+落地时确认并解决的设计歧义（以本文档为准的记录，不静默改写历史）：
+
+1. **§3.2 写的 "`Done → success`" 与实现的差距**：`Done` 是把回合交给
+   `finish_nonfinal_product_turn` 处理的终态之一，语义是"run 结束但没有最终答复"，
+   会话状态落到 `NeedsAttention`。因此实现里 `success` **只由带最终答复的路径写入**
+   （`finish_session_turn_and_claim_followup` 分支 (a) 与 pending-follow-up 分支 (b)）；
+   无答复的 `Done`/`NeedsAttention` 收尾记 `failed`，与 §3.2 的
+   "`Error|Interrupted → failed`" 一致。保留 §3.2 原文不改写，差距以本条为准。
+2. **未成为回合的启动尝试不写结果**：workspace 提示不匹配（且不是 provider 恢复失败）
+   与引擎组装失败两条路径会把状态**还原**为上一步的状态，因此它们传
+   `None`，由 `COALESCE` 保留上一次真实结果；只有被分类为失败的路径
+   （runtime resume/binding/start、provider resume、需关注的收尾）写 `failed`。
+   否则一次失败的启动会覆盖上一回合的真实结果（实现中由
+   `product_cancel_releases_the_single_turn_claim_before_continuation` 暴露）。
+3. **Web 侧点语义以 `last_outcome` 为准**：旧的 W4.4 规则只看
+   `status === "error"`，成功与"从未运行"都画不出东西。实现改为
+   `success`/`failed`/`cancelled` 三态点（绿/红/灰），并在载荷完全没有
+   `lastOutcome`（早于 v16 的 API）时回退到旧规则；打开该会话仍清除点。
+   命令面板 session 条目副标题追加结果词，使副标题可被结果词搜到。
+4. **半写载荷失败关闭**：`last_outcome` 与 `last_outcome_at` 由同一条 UPDATE 写入，
+   因此 Web 解析器拒绝只有其一的载荷（与 fork provenance 三字段的既有约定一致），
+   而不是猜哪一半可信。
+
+非目标（本轮明确不做）：不改 `ProductSessionStatus`；不新增 per-run 结果表；
+不回填历史行；TUI 不加结果点（本轮 Web 最小接线，TUI 归前端/后续条目）。
+
 ---
 
 ## 4. R4 队列协议扩展
@@ -502,6 +548,78 @@ R2c 独立成一个 PR（对应 §11 的 PR-2，branch `feature/runtime-align-r2
   `delivery=successor` 的边界派发时序（当前回合终态后才派发，期间 revoke 仍有效）。
 - Web e2e：重排后顺序、立即发送不打断当前回合、终态后自动派发。
 - `docs/runtime/subsystems.md` 队列章节同变更更新。
+
+### 4.4 实现记录（2026-09-26）
+
+- **迁移 017**（`apps/api/src/product/store/schema.rs`）：`product_session_controls` 增
+  `queue_order INTEGER NULL`。迁移是纯增列（`MIGRATION_017_COLUMNS` + `apply_migration_017`），
+  历史行保持 NULL；`assert_integrated_v14` 校验该列与 schema 记录；重复执行幂等
+  （列已存在时只补记 schema 行）。
+- **排序键**：队列读取与 claim 的四处查询改为
+  `ORDER BY COALESCE(queue_order, seq) ASC, seq ASC`（`repository.rs` 的
+  `list_pending_followups`、`claim_next_pending_followup`、`claim_next_followup_turn`、
+  `pending_followup_for_session`）。`seq` 是台账顺序，任何重排都不重写它
+  （分页、transcript 投影仍按 `seq`）；`queue_order` 只表达投递顺序。
+- **契约**（`contracts.rs`）：`ProductMessage` 增可选 `queue_order`（additive、缺省省略，
+  旧载荷照常解析，客户端按 `queue_order ?? seq` 排序）；`PromoteProductMessageRequest`
+  增可选 `delivery`（缺省 `current_run`，与旧请求体兼容）；新增
+  `ReorderProductMessagesRequest`（`ordered_ids`）与 `ProductQueueResponse`（权威队列）。
+- **新端点**：`POST /product/sessions/{session_id}/messages/reorder`（单事务内重写
+  `queue_order`，返回重排后的完整队列）。
+- **promote 的边界语义**：`delivery = "successor"` 把消息移到队首并保持
+  `status = queued`（`requested_delivery = successor`，`queue_order` = 当前队首 − 1），
+  **不**注入当前回合、不打断 live run；终态边界沿用既有
+  `finish_session_turn_and_claim_followup` → `claimed_successor` 路径派发。
+  `current_run` 保持原 steer 语义，且重复调用仍是幂等 replay。
+
+实现时的三处决策与偏差（按 AGENTS §10 记录替换关系，而非静默改写设计）：
+
+1. **重排集合 = 后继队列，而非“全部 queued 控件”。** 只接受
+   `kind = 'followup' AND status = 'pending'` 的行，与前端合同一致（W 文档 §5.2：只动
+   `status === "queued"` 且 `requested_delivery === "successor"` 的消息，`current_run`
+   的插话不进该交互）。设计 §4.2a 写的“`status = queued` 的控件”在此等价，因为
+   `create_message` 只写入 `requested_delivery = successor` 的 pending 行；
+   `intervention_requested`/`claimed_successor`/`applied_current_run`/`needs_attention`/
+   `revoked` 一律拒绝。
+2. **`expected_revision` 不实现，改为“列表必须精确覆盖当前队列”。** 设计 §4.2a 建议沿用
+   revision CAS，但 ProductStore 的会话没有 revision 字段，新增一个存储计数会与控件状态漂移
+   （R3 的 `last_outcome` 已经暴露过同类“双事实源”问题）。现在的并发控制是：
+   `ordered_ids` 必须与当前 pending 队列逐元素相等——少项/多项/未知 id/跨会话/已非 pending
+   → 409 `product_control_conflict`；重复项或超过队列上限 → 400 `product_invalid_input`。
+   于是 revoke/promote/新消息造成的任何队列变化都会让旧列表变成 409，等价于乐观并发失败；
+   两个纯重排之间的竞争是 last-writer-wins，响应返回权威顺序。错误码仍符合设计 §4.2a 的
+   “400/409 明确错误码”。
+3. **`successor` 提升仍要求回合 live。** `promote_message` 保留既有的“会话 running + 存在活跃
+   turn claim”前置条件：`successor` 的语义是“相对当前回合的终态边界”，离开 live 回合就没有
+   可解释的队首，此时返回 409 `product_control_rejected`。idle 会话的 pending 队列由启动恢复的
+   drain 负责；重排端点本身不要求 live 回合（它是纯队列操作）。
+
+**重启存活（§4.2c）的验证切分**（诚实记录覆盖面，避免把 skip/近似当成真门）：
+
+- `tests/api.rs::product_queue_order_survives_a_reopen_and_keeps_one_claim_per_session`：
+  live 回合 + 3 条重排后的 queued → 用同一 state 目录再开一个 API state → 断言
+  `queue_order` 0/1/2 与 id 的映射、`seq` 未变，且恢复把被中断的后继如实标记为
+  `needs_attention`（`reason = "API process stopped during follow-up delivery"`）而不重复派发。
+  测试进程内两个 state 同时存活，因此这条覆盖“顺序持久 + 中断恢复如实上报”，不是真正的冷启动。
+- store 层 `an_idle_session_queue_is_listed_for_recovery_and_drained_in_its_reordered_order`：
+  idle 会话 + 重排队列 → `list_idle_sessions_with_pending_followups` 报告该会话（重启后
+  `recover_pending_followup_drains` 枚举的正是这个查询）→ `claim_next_followup_turn`
+  （drain 的 claim）按新序返回队首，后续边界继续按新序。API 的
+  `recover_pending_followup_drains` 是 `pub(crate)`、集成测试无法直接调用，所以“按新序 drain”
+  在 store 边界验证；“迁移幂等”由 schema 单测覆盖（`cargo test -p rove-api --lib
+  product::store::schema`）。
+- `delivery = successor` 的边界时序与期间 revoke 有效性：
+  `tests/api.rs::product_successor_promotion_never_steers_the_live_run_and_survives_revoke`。
+- 重排合法性矩阵（正常/缺项/多项/跨会话/重复/未知 id/旧列表 409）：
+  `tests/api.rs::product_queue_reorder_is_validated_atomic_and_drives_the_next_turns`
+  与 store 单测 `a_reorder_list_that_does_not_cover_the_queue_is_rejected_without_moving_anything`。
+
+**未做（显式交接）**：Web 队列仍是“撤销 + 重建”的相邻交换
+（`apps/web/shell/ProductApp.tsx` 的 `handleMoveQueuedMessage`）。改用本端点、
+以及“立即发送（`successor`，不打断当前回合）/ 插话（`current_run`）”两个动作的 UX
+归前端工作流，已在 W 文档 §16 降级表与前端文档登记；§4.3 的 Web e2e 门因此不在本条 PR 内执行。
+
+R4 未触碰：`ProductMessageStatus` 状态机、`seq` 写入路径、transcript 投影、CLI/TUI。
 
 ---
 

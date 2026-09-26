@@ -39,7 +39,12 @@ native-first tool-call recovery, ignore-aware deterministic repository
 retrieval, Artifact-backed result history, Provider onboarding, and one durable
 conversation-message lifecycle across Runtime, ProductStore/API/SSE, Web, and
 TUI. ProductStore schema v14 adds durable Review rows/findings and preserves the
-parallel-v12 reconciliation. Review captures an immutable Git target snapshot,
+parallel-v12 reconciliation; v15 indexes session listing, v16 adds the
+`last_outcome`/`last_outcome_at` of the most recently finished turn (which is
+what lets the shell tell a successful turn from a session that never ran), and
+v17 adds the successor queue's `queue_order` so a client can atomically reorder
+pending messages or promote one to the head without interrupting the live turn.
+Review captures an immutable Git target snapshot,
 uses a read-only tool/environment profile, sanitizes findings, and projects the
 same result to API, CLI, and Web. Deterministic Review evidence passes; external
 and platform-specific release gates remain separately classified below.
@@ -149,8 +154,12 @@ The Web product line is tracked separately:
   Runtime canonical events now carry the six durable
   message delivery states (`queued`, `intervention_requested`,
   `applied_current_run`, `claimed_successor`, `needs_attention`, `revoked`).
-  The API ProductStore schema is at v14 and the Runtime state schema is at v3;
-  v13 reconciles both parallel v12 layouts before v14 adds Review tables, and both stores retain compatibility
+  The API ProductStore schema is at v17 and the Runtime state schema is at v3;
+  v13 reconciles both parallel v12 layouts before v14 adds Review tables, v15
+  indexes session listing, v16 records the outcome of the last finished turn
+  on a session, and v17 adds the successor queue's `queue_order` delivery
+  position (queue reads order by `COALESCE(queue_order, seq), seq`), and both
+  stores retain compatibility
   projections and idempotent/CAS migration paths.
   API routes, SSE/replay reflection, Web reducers/transcript, and the TUI all
   consume the shared message-domain vocabulary. Web unit/type/build, mocked

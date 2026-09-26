@@ -619,7 +619,7 @@ test.describe("real API product shell integration", () => {
             `/api/product/sessions/${parentSessionId}/forks` &&
           response.status() === 201,
       );
-      await page.getByRole("button", { name: "Fork", exact: true }).click();
+      await page.locator(".chat-pane__header").getByRole("button", { name: "复制会话" }).click();
       const forkResponse = await forkResponsePromise;
       const forkPayload = (await forkResponse.json()) as {
         session?: { id?: unknown };

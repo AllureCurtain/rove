@@ -63,6 +63,17 @@
   --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --motion-ease-in: cubic-bezier(0.4, 0, 1, 1);
   --motion-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  /* Loop periods and the two additional curves, added by the style-token
+     linter (F8): the linter rejects a literal duration or easing wherever one
+     of these tokens could be used instead, so a loop period belongs here too. */
+  --motion-duration-spin: 1s;
+  --motion-duration-pulse: 1.8s;
+  --motion-duration-activity-pulse: 1.6s;
+  --motion-duration-breathe: 900ms;
+  --motion-duration-slide: 240ms;
+  --motion-duration-collapse: 180ms;
+  --motion-ease-in-out: ease-in-out;
+  --motion-ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
   --sidebar-nav-width: 240px;
 
   --bg: var(--v2-bg);
@@ -162,11 +173,11 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   padding-inline: 11px;
   box-shadow: none;
   transition:
-    background-color 140ms ease,
-    border-color 140ms ease,
-    color 140ms ease,
-    opacity 140ms ease,
-    transform 140ms ease;
+    background-color var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 
 .product-app-frame[data-ui-version="v2"] button:active:not(:disabled) {
@@ -325,7 +336,7 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 .product-app-frame[data-ui-version="v2"] .status-dot[data-tone="working"] {
   background: var(--v2-signal);
   box-shadow: 0 0 0 3px var(--v2-signal-soft);
-  animation: product-v2-pulse 1.8s ease-in-out infinite;
+  animation: product-v2-pulse var(--motion-duration-pulse) var(--motion-ease-in-out) infinite;
 }
 
 .product-app-frame[data-ui-version="v2"] .product-body {
@@ -341,6 +352,13 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 
 .product-app-frame[data-ui-version="v2"] .product-sidebar {
   min-width: 0;
+  /* F9: the rail keeps a stable width and its own stacking order so it can slide
+     out over the conversation after the grid track snaps instead of animating.
+     The `max-width: 960px` drawer block is the same specificity and later, so it
+     still turns this rail into a fixed overlay there. */
+  position: relative;
+  z-index: 2;
+  width: var(--sidebar-nav-width);
   color: var(--v2-rail-ink);
   border-color: var(--v2-rail-border);
   background: var(--v2-rail);
@@ -688,7 +706,7 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   font-size: 12px;
   line-height: 1.5;
   pointer-events: auto;
-  animation: v2-toast-in 160ms ease-out;
+  animation: v2-toast-in var(--motion-duration-fast) var(--motion-ease-out);
 }
 
 .product-app-frame[data-ui-version="v2"] .toast--success {
@@ -1161,7 +1179,7 @@ html[data-reading-resizing="true"] * {
 .product-app-frame[data-ui-version="v2"] .transcript-item__meta > span[data-state="streaming"] {
   background: var(--v2-signal);
   box-shadow: 0 0 0 3px var(--v2-signal-soft);
-  animation: product-v2-pulse 1.8s ease-in-out infinite;
+  animation: product-v2-pulse var(--motion-duration-pulse) var(--motion-ease-in-out) infinite;
 }
 
 .product-app-frame[data-ui-version="v2"] .transcript-item__meta > span[data-state="error"],
@@ -3308,8 +3326,8 @@ html[data-reading-resizing="true"] * {
     box-shadow: var(--v2-shadow-md);
     transform: translateX(-102%);
     transition:
-      transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
-      visibility 0s linear 180ms;
+      transform var(--motion-duration-collapse) var(--motion-ease-emphasized),
+      visibility 0s linear var(--motion-duration-collapse);
   }
 
   .product-app-frame[data-ui-version="v2"] .product-sidebar[data-open="true"] {
@@ -3334,8 +3352,8 @@ html[data-reading-resizing="true"] * {
     box-shadow: var(--v2-shadow-md);
     transform: translateX(102%);
     transition:
-      transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
-      visibility 0s linear 180ms;
+      transform var(--motion-duration-collapse) var(--motion-ease-emphasized),
+      visibility 0s linear var(--motion-duration-collapse);
   }
 
   .product-app-frame[data-ui-version="v2"] .product-inspector[data-collapsed="true"] {
@@ -3791,7 +3809,13 @@ html[data-work-panel-resizing] * {
     var(--sidebar-nav-width)
     minmax(var(--pane-floor), 1fr)
     var(--work-panel-track, auto);
-  transition: grid-template-columns var(--motion-duration-normal) var(--motion-ease-out);
+  /* F9: no `grid-template-columns` transition. Animating the track re-lays-out
+     the conversation column on every frame — measured at 1280x720 with a 30-run
+     transcript, one collapse cost 15 layout passes and 22.5ms of layout plus
+     34.2ms of style recalculation, against 2 passes / 1.9ms / 5.7ms when the
+     track snaps (script 60.8 → 41.5ms, task time 186.4 → 81.2ms per 700ms
+     window). The rail keeps its own transform + opacity slide below, which is a
+     compositor-friendly replacement for pushing the conversation across. */
 }
 
 /* The handle is a real separator: it must not steal the rail's width budget.
@@ -3867,7 +3891,7 @@ body.is-resizing-column * {
   border-radius: 50%;
   border: 1.5px solid var(--v2-rail-signal);
   border-top-color: transparent;
-  animation: v2-session-spin 1s linear infinite;
+  animation: v2-session-spin var(--motion-duration-spin) linear infinite;
   contain: layout paint style;
   will-change: transform;
 }
@@ -3916,8 +3940,16 @@ body.is-resizing-column * {
   transform-origin: top right;
 }
 
-/* Left rail collapse: the placeholder width settles instantly, the panel
-   slides out over 240ms and its subtree stays mounted (inert + aria-hidden). */
+/* Left rail collapse: the track settles instantly (F9, no transition), the rail
+   slides out over 240ms on its own transform, and its subtree stays mounted
+   (inert + aria-hidden, set in `sidebar/WorkspaceTree.tsx`).
+
+   The rail therefore needs a stable width of its own: as a stretched grid item
+   in a track that snaps to 0 it would collapse to nothing in the same frame and
+   have nothing left to slide. Holding the width also keeps it painted over the
+   conversation while it leaves, so it needs the stacking order too. Both live in
+   the rail's base rule above: the `max-width: 960px` drawer is the same
+   specificity and comes later, so it still owns the rail there. */
 .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] {
   /* Same shared budget with the rail collapsed (design §5.0); `auto` here would
      make the panel track circular with the panel's 100% width. */
@@ -3930,14 +3962,14 @@ body.is-resizing-column * {
   transform: translateX(-102%);
   opacity: 0;
   pointer-events: none;
-  transition: transform 240ms var(--motion-ease-out),
-    opacity 240ms var(--motion-ease-out);
+  transition: transform var(--motion-duration-slide) var(--motion-ease-out),
+    opacity var(--motion-duration-slide) var(--motion-ease-out);
 }
 .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="false"] .product-sidebar {
   transform: translateX(0);
   opacity: 1;
-  transition: transform 240ms var(--motion-ease-out),
-    opacity 240ms var(--motion-ease-out);
+  transition: transform var(--motion-duration-slide) var(--motion-ease-out),
+    opacity var(--motion-duration-slide) var(--motion-ease-out);
 }
 .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] .sidebar-resize-handle {
   display: none;
@@ -3979,7 +4011,7 @@ body.is-resizing-column * {
 .product-app-frame[data-ui-version="v2"] .chat-composer__meta {
   display: grid;
   grid-template-columns: 0fr;
-  transition: grid-template-columns 180ms var(--motion-ease-out);
+  transition: grid-template-columns var(--motion-duration-collapse) var(--motion-ease-out);
 }
 .product-app-frame[data-ui-version="v2"] .chat-composer__meta > * {
   min-width: 0;
@@ -4307,7 +4339,7 @@ body.is-resizing-column * {
 .product-app-frame[data-ui-version="v2"] .activity-group__head svg[data-open] {
   margin-left: auto;
   transform: rotate(0deg);
-  transition: transform 160ms ease;
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 
 .product-app-frame[data-ui-version="v2"] .activity-group__head svg[data-open="true"] {
@@ -4349,7 +4381,7 @@ body.is-resizing-column * {
   margin-right: 6px;
   border-radius: 999px;
   background: var(--v2-rail-signal, var(--v2-ink-3));
-  animation: activity-phase-pulse 1.6s ease-in-out infinite;
+  animation: activity-phase-pulse var(--motion-duration-activity-pulse) var(--motion-ease-in-out) infinite;
 }
 
 @keyframes activity-phase-pulse {
@@ -4542,6 +4574,17 @@ body.is-resizing-column * {
   background: var(--v2-danger);
 }
 
+/* R3: the dot reports the last finished turn, so it needs all three outcomes.
+   `cancelled` reuses the rail's muted tone because the v2 palette has no
+   general-purpose neutral surface colour. */
+.product-app-frame[data-ui-version="v2"] .session-item__dot[data-tone="success"] {
+  background: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__dot[data-tone="neutral"] {
+  background: var(--v2-rail-muted);
+}
+
 .product-app-frame[data-ui-version="v2"] .session-item--editing {
   display: flex;
   flex-direction: column;
@@ -4574,7 +4617,7 @@ body.is-resizing-column * {
   border: 1px solid var(--v2-rail-signal, var(--v2-ink-3));
   border-radius: inherit;
   opacity: 0;
-  animation: settings-section-border-breathe 900ms ease-in-out 4;
+  animation: settings-section-border-breathe var(--motion-duration-breathe) var(--motion-ease-in-out) 4;
 }
 
 @keyframes settings-section-border-breathe {

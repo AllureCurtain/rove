@@ -21,17 +21,17 @@ use crate::product::{
     CreateProductSessionRequest, CreateProductWorkspaceRequest, M1BrowserMigrationPreflight,
     M1BrowserMigrationRequest, M1BrowserMigrationResponse, PreparedM1BrowserMigration,
     ProductControl, ProductControlId, ProductControlKind, ProductControlStatus, ProductErrorCode,
-    ProductFollowupTurnClaim, ProductFork, ProductMessage, ProductMessagePage,
-    ProductMessagePageQuery, ProductPreferences, ProductProviderProfile, ProductProviderProfileId,
-    ProductResumeHealth, ProductReview, ProductReviewFindingsQuery, ProductReviewFindingsResponse,
-    ProductReviewId, ProductSession, ProductSessionContext, ProductSessionId,
-    ProductSessionModelConfig, ProductSessionPage, ProductSessionPageQuery, ProductSessionRecovery,
-    ProductSessionRunBinding, ProductSessionRunModelView, ProductSessionStatus, ProductStore,
-    ProductStoreError, ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish,
-    ProductWorkspace, ProductWorkspaceId, RecoverProductSessionOwnership,
-    UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
-    UpdateProductSessionModelConfigRequest, UpdateProductSessionRequest,
-    VerifiedProductForkBoundary,
+    ProductFollowupTurnClaim, ProductFork, ProductMessage, ProductMessageDelivery,
+    ProductMessagePage, ProductMessagePageQuery, ProductPreferences, ProductProviderProfile,
+    ProductProviderProfileId, ProductResumeHealth, ProductReview, ProductReviewFindingsQuery,
+    ProductReviewFindingsResponse, ProductReviewId, ProductSession, ProductSessionContext,
+    ProductSessionId, ProductSessionModelConfig, ProductSessionOutcome, ProductSessionPage,
+    ProductSessionPageQuery, ProductSessionRecovery, ProductSessionRunBinding,
+    ProductSessionRunModelView, ProductSessionStatus, ProductStore, ProductStoreError,
+    ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace,
+    ProductWorkspaceId, RecoverProductSessionOwnership, UpdateProductPreferencesRequest,
+    UpdateProductProviderProfileRequest, UpdateProductSessionModelConfigRequest,
+    UpdateProductSessionRequest, VerifiedProductForkBoundary,
 };
 use rove_runtime::types::RunId;
 
@@ -379,13 +379,14 @@ impl ProductStore for SqliteProductStore {
         claim_id: &ProductTurnClaimId,
         run_id: Option<RunId>,
         status: ProductSessionStatus,
+        outcome: Option<ProductSessionOutcome>,
         reason: &str,
     ) -> Result<ProductTurnControlFinish, ProductStoreError> {
         let claim_id = claim_id.clone();
         let reason = reason.to_string();
         self.blocking(move |repository| {
             repository.finish_session_turn_and_abandon_pending_controls(
-                &claim_id, run_id, status, &reason,
+                &claim_id, run_id, status, outcome, &reason,
             )
         })
         .await
@@ -515,10 +516,24 @@ impl ProductStore for SqliteProductStore {
         &self,
         session_id: &ProductSessionId,
         message_id: &ProductControlId,
+        delivery: ProductMessageDelivery,
     ) -> Result<ProductMessage, ProductStoreError> {
         let session_id = session_id.clone();
         let message_id = message_id.clone();
-        self.blocking(move |repository| repository.promote_message(&session_id, &message_id))
+        self.blocking(move |repository| {
+            repository.promote_message(&session_id, &message_id, delivery)
+        })
+        .await
+    }
+
+    async fn reorder_messages(
+        &self,
+        session_id: &ProductSessionId,
+        ordered_ids: &[ProductControlId],
+    ) -> Result<Vec<ProductMessage>, ProductStoreError> {
+        let session_id = session_id.clone();
+        let ordered_ids = ordered_ids.to_vec();
+        self.blocking(move |repository| repository.reorder_messages(&session_id, &ordered_ids))
             .await
     }
 

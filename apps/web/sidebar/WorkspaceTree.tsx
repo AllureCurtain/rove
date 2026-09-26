@@ -33,8 +33,14 @@ import { useArmedDelete } from "../shell/use-armed-delete";
 import type { SessionRecord, WorkspaceKind, WorkspaceRecord } from "../state/product-types";
 import { SessionHoverCard } from "./SessionHoverCard";
 import { orderSessions, type SessionPin } from "./session-order";
-import { filterSessions, normalizeSearch } from "./session-search";
-import { formatDisplayPath, sessionStatusLabel, shortId } from "./session-labels";
+import { resolveSessionRows } from "./session-server-search";
+import { useServerSessionSearch } from "./use-server-session-search";
+import {
+  formatDisplayPath,
+  sessionResultMark,
+  sessionStatusLabel,
+  shortId,
+} from "./session-labels";
 import { useSessionHoverCard } from "./use-session-hover-card";
 import { useSessionPins } from "./use-session-pins";
 
@@ -75,6 +81,7 @@ export function WorkspaceTree({
   onOpenSettings,
   railCollapsed,
   onToggleCollapsed,
+  searchSessions,
 }: {
   workspaces: WorkspaceRecord[];
   sessionsByWorkspace: Record<string, SessionRecord[]>;
@@ -103,6 +110,11 @@ export function WorkspaceTree({
   /** Collapsed rail: the subtree stays mounted but inert and aria-hidden. */
   railCollapsed?: boolean;
   onToggleCollapsed?: () => void;
+  /**
+   * F11: the server's own session search for the active query. Optional — a
+   * caller that cannot reach the product API keeps the local substring filter.
+   */
+  searchSessions?: (workspaceId: string, query: string) => Promise<SessionRecord[]>;
 }) {
   const { t } = useCopy();
   const [openDialog, setOpenDialog] = useState(false);
@@ -163,20 +175,39 @@ export function WorkspaceTree({
     window.requestAnimationFrame(() => window.requestAnimationFrame(navigate));
   }
   const normalizedQuery = query.trim().toLocaleLowerCase();
+  const workspaceIds = useMemo(
+    () => workspaces.map((workspace) => workspace.id),
+    [workspaces],
+  );
+  const serverSearch = useServerSessionSearch({
+    query,
+    workspaceIds,
+    search: searchSessions,
+    enabled: Boolean(searchSessions),
+  });
   const visibleWorkspaces = workspaces.flatMap((workspace) => {
     const allSessions = applySessionOrder(
       sessionsByWorkspace[workspace.id] ?? [],
       pins,
       activeSessionId,
     );
-    const workspaceMatches = workspace.displayName.toLocaleLowerCase().includes(normalizedQuery);
-    // Session filtering goes through the tested projection: substring,
-    // case-insensitive, empty query restores everything immediately.
-    const sessions = normalizedQuery && !workspaceMatches
-      ? filterSessions(allSessions, normalizeSearch(query)).matches
-      : allSessions;
-    return normalizedQuery && !workspaceMatches && sessions.length === 0
-      ? [] : [{ workspace, allSessions, sessions }];
+    const workspaceMatches = normalizedQuery
+      ? workspace.displayName.toLocaleLowerCase().includes(normalizedQuery)
+      : false;
+    // F11: the server's rows win while it answered; with no answer the tested
+    // local projection decides (design §12's offline degradation).
+    const serverMatches = serverSearch.matchesByWorkspace?.[workspace.id];
+    const resolved = resolveSessionRows({
+      localSessions: allSessions,
+      serverMatches: serverMatches
+        ? applySessionOrder(serverMatches, pins, activeSessionId)
+        : null,
+      query,
+      workspaceMatches,
+    });
+    return resolved.visible
+      ? [{ workspace, allSessions, sessions: resolved.sessions }]
+      : [];
   });
 
   // Workspaces whose session list is currently mounted. A collapse keeps the
@@ -351,7 +382,11 @@ export function WorkspaceTree({
           placeholder={t("workspace.searchPlaceholder")}
         />
       </label>
-      <p id="workspace-search-scope" className="workspace-search-scope">{t("workspace.searchScope")}</p>
+      <p id="workspace-search-scope" className="workspace-search-scope" data-tone={serverSearch.unavailable ? "warning" : undefined}>
+        {serverSearch.unavailable
+          ? t("workspace.searchUnavailable")
+          : t("workspace.searchScope")}
+      </p>
       <div className="product-sidebar__scroll">
         {workspaces.length === 0 ? (
           <p className="sidebar-empty">{t("workspace.none")}</p>
@@ -698,10 +733,10 @@ function SessionBranch({
   const renameInputRef = useRef<HTMLInputElement>(null);
   const selected = session.id === paintedSessionId;
   const active = session.id === activeSessionId;
-  // W4.4: a failed run leaves a dot on the row until the session is opened.
-  // Success cannot be distinguished from "never ran" by the status field
-  // alone, so only failure carries a dot (danger tone, not an inbox).
-  const failedInBackground = session.status === "error" && !active;
+  // W4.4 + R3: the dot reports the last finished turn's outcome and clears once
+  // the session is opened. Before R3 the status field was the only source, so a
+  // successful turn and a never-run session both drew nothing.
+  const resultMark = sessionResultMark(session, active, t);
 
   useEffect(() => {
     if (renaming) {
@@ -835,12 +870,12 @@ function SessionBranch({
               <span className="session-item__warning" />
             ) : null}
           </span>
-          {failedInBackground ? (
+          {resultMark ? (
             <span
               className="session-item__dot"
-              data-tone="danger"
+              data-tone={resultMark.tone}
               role="status"
-              title={t("workspace.sessionErrorDot")}
+              title={resultMark.label}
             />
           ) : null}
         </button>

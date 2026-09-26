@@ -16,12 +16,12 @@ use crate::product::{
     M1MigrationIssueCode, M1PreferencesBaseline, M1ProviderProfileImport,
     M1ProviderSelectionImport, M1SafePreferencesImport, M1SessionImport, M1WorkspaceImport,
     PreparedM1BrowserMigration, ProductApprovalPreference, ProductControlKind,
-    ProductControlStatus, ProductErrorCode, ProductMessagePageQuery, ProductMessageStatus,
-    ProductProviderSelection, ProductProviderType, ProductReasoningPreference, ProductReviewId,
-    ProductReviewStatus, ProductSessionRecovery, ProductSessionStatus, ProductStore,
-    ProductThemePreference, ProductWorkspaceKind, UpdateProductPreferencesRequest,
-    UpdateProductSessionModelConfigRequest, VerifiedM1SessionRunBinding,
-    VerifiedProductForkBoundary,
+    ProductControlStatus, ProductErrorCode, ProductMessageDelivery, ProductMessagePageQuery,
+    ProductMessageStatus, ProductProviderSelection, ProductProviderType,
+    ProductReasoningPreference, ProductReviewId, ProductReviewStatus, ProductSessionOutcome,
+    ProductSessionRecovery, ProductSessionStatus, ProductStore, ProductThemePreference,
+    ProductWorkspaceKind, UpdateProductPreferencesRequest, UpdateProductSessionModelConfigRequest,
+    VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
 };
 
 use super::SqliteProductStore;
@@ -1887,9 +1887,15 @@ async fn unified_messages_are_fifo_idempotent_and_race_through_one_authority() {
         .unwrap();
     assert!(first.seq < second.seq);
 
-    let promoted = store.promote_message(&session.id, &first.id).await.unwrap();
+    let promoted = store
+        .promote_message(&session.id, &first.id, ProductMessageDelivery::CurrentRun)
+        .await
+        .unwrap();
     assert_eq!(promoted.status, ProductMessageStatus::InterventionRequested);
-    let promotion_replay = store.promote_message(&session.id, &first.id).await.unwrap();
+    let promotion_replay = store
+        .promote_message(&session.id, &first.id, ProductMessageDelivery::CurrentRun)
+        .await
+        .unwrap();
     assert_eq!(promotion_replay, promoted);
 
     let first_page = store
@@ -1939,7 +1945,7 @@ async fn unified_messages_are_fifo_idempotent_and_race_through_one_authority() {
         .expect("second message must retain FIFO successor delivery");
     assert_eq!(claimed.control.id, second.id);
     let promotion_lost = store
-        .promote_message(&session.id, &second.id)
+        .promote_message(&session.id, &second.id, ProductMessageDelivery::CurrentRun)
         .await
         .unwrap_err();
     assert_eq!(
@@ -1966,6 +1972,372 @@ async fn unified_messages_are_fifo_idempotent_and_race_through_one_authority() {
         .await
         .unwrap_err();
     assert_eq!(conflict.code, ProductErrorCode::ProductControlConflict);
+}
+
+#[tokio::test]
+async fn reordering_the_successor_queue_changes_the_claim_order_without_rewriting_seq() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    let mut messages = Vec::new();
+    for index in 0..3 {
+        let (message, _) = store
+            .create_message(
+                &session.id,
+                CreateProductMessageRequest {
+                    content: format!("message-{index}"),
+                    idempotency_key: None,
+                },
+            )
+            .await
+            .unwrap();
+        messages.push(message);
+    }
+    // Nothing has been moved, so every row keeps an unknown position and the
+    // queue is still creation-ordered.
+    assert!(messages.iter().all(|message| message.queue_order.is_none()));
+
+    let wanted = vec![
+        messages[2].id.clone(),
+        messages[0].id.clone(),
+        messages[1].id.clone(),
+    ];
+    let reordered = store.reorder_messages(&session.id, &wanted).await.unwrap();
+    assert_eq!(
+        reordered
+            .iter()
+            .map(|message| message.id.clone())
+            .collect::<Vec<_>>(),
+        wanted
+    );
+    // Positions are rewritten densely from zero; the ledger sequence is not.
+    assert_eq!(
+        reordered
+            .iter()
+            .map(|message| message.queue_order)
+            .collect::<Vec<_>>(),
+        vec![Some(0), Some(1), Some(2)]
+    );
+    for message in &reordered {
+        let original = messages
+            .iter()
+            .find(|candidate| candidate.id == message.id)
+            .unwrap();
+        assert_eq!(message.seq, original.seq);
+    }
+    // The transcript/ledger projection still pages in creation order.
+    let page = store
+        .list_messages(
+            &session.id,
+            ProductMessagePageQuery {
+                after_seq: Some(0),
+                before_seq: None,
+                limit: 10,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        page.messages
+            .iter()
+            .map(|message| message.id.clone())
+            .collect::<Vec<_>>(),
+        messages
+            .iter()
+            .map(|message| message.id.clone())
+            .collect::<Vec<_>>()
+    );
+
+    // Replaying the same order is idempotent.
+    let replay = store.reorder_messages(&session.id, &wanted).await.unwrap();
+    assert_eq!(replay, reordered);
+
+    // The terminal boundary claims the head of the *reordered* queue, and the
+    // following boundaries continue down that order.
+    let first_claim = store
+        .finish_session_turn_and_claim_followup(&claim.claim_id)
+        .await
+        .unwrap()
+        .expect("a queued successor must be claimed at the turn boundary");
+    assert_eq!(first_claim.control.id, messages[2].id);
+    let second_claim = store
+        .finish_session_turn_and_claim_followup(&first_claim.turn.claim_id)
+        .await
+        .unwrap()
+        .expect("the reordered queue still has a successor");
+    assert_eq!(second_claim.control.id, messages[0].id);
+    let third_claim = store
+        .finish_session_turn_and_claim_followup(&second_claim.turn.claim_id)
+        .await
+        .unwrap()
+        .expect("the last queued successor must be claimed");
+    assert_eq!(third_claim.control.id, messages[1].id);
+}
+
+#[tokio::test]
+async fn a_reorder_list_that_does_not_cover_the_queue_is_rejected_without_moving_anything() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+    store.claim_session_turn(&session.id).await.unwrap();
+    let mut messages = Vec::new();
+    for index in 0..3 {
+        let (message, _) = store
+            .create_message(
+                &session.id,
+                CreateProductMessageRequest {
+                    content: format!("message-{index}"),
+                    idempotency_key: None,
+                },
+            )
+            .await
+            .unwrap();
+        messages.push(message);
+    }
+    let (other_workspace, other_session) = create_workspace_and_session(&store, &temp).await;
+    let _ = other_workspace;
+    let (foreign, _) = store
+        .create_message(
+            &other_session.id,
+            CreateProductMessageRequest {
+                content: "other session".to_string(),
+                idempotency_key: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // A short list, an unknown id, a foreign id, and a repeat are all refused.
+    let short = store
+        .reorder_messages(&session.id, &[messages[0].id.clone()])
+        .await
+        .unwrap_err();
+    assert_eq!(short.code, ProductErrorCode::ProductControlConflict);
+    let unknown = store
+        .reorder_messages(
+            &session.id,
+            &[
+                messages[0].id.clone(),
+                messages[1].id.clone(),
+                foreign.id.clone(),
+            ],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(unknown.code, ProductErrorCode::ProductControlConflict);
+    let repeated = store
+        .reorder_messages(
+            &session.id,
+            &[
+                messages[0].id.clone(),
+                messages[0].id.clone(),
+                messages[1].id.clone(),
+            ],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(repeated.code, ProductErrorCode::ProductInvalidInput);
+
+    // A revoked message leaves the queue, so the previously valid list becomes
+    // stale. That staleness is the concurrency control for promote/revoke.
+    store
+        .revoke_message(&session.id, &messages[2].id)
+        .await
+        .unwrap();
+    let stale = store
+        .reorder_messages(
+            &session.id,
+            &[
+                messages[2].id.clone(),
+                messages[0].id.clone(),
+                messages[1].id.clone(),
+            ],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(stale.code, ProductErrorCode::ProductControlConflict);
+
+    // Nothing above moved: the two remaining messages are still unordered.
+    let queue = store
+        .reorder_messages(
+            &session.id,
+            &[messages[0].id.clone(), messages[1].id.clone()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(queue.len(), 2);
+    assert_eq!(queue[0].id, messages[0].id);
+}
+
+#[tokio::test]
+async fn an_idle_session_queue_is_listed_for_recovery_and_drained_in_its_reordered_order() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+
+    // No turn claim exists: this is the state an API process leaves behind when
+    // it stops between claiming a successor and starting its run, which is the
+    // window `recover_pending_followup_drains` handles on the next start.
+    let mut messages = Vec::new();
+    for index in 0..3 {
+        let (message, _) = store
+            .create_message(
+                &session.id,
+                CreateProductMessageRequest {
+                    content: format!("message-{index}"),
+                    idempotency_key: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(message.status, ProductMessageStatus::Queued);
+        messages.push(message);
+    }
+    let reordered = store
+        .reorder_messages(
+            &session.id,
+            &[
+                messages[2].id.clone(),
+                messages[0].id.clone(),
+                messages[1].id.clone(),
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        reordered
+            .iter()
+            .map(|message| message.queue_order)
+            .collect::<Vec<_>>(),
+        vec![Some(0), Some(1), Some(2)]
+    );
+
+    // The startup selector sees the idle session, so a restarted API drains it.
+    let idle = store
+        .list_idle_sessions_with_pending_followups()
+        .await
+        .unwrap();
+    assert_eq!(
+        idle,
+        vec![session.id.clone()],
+        "an idle session with pending successors must be recovered"
+    );
+
+    // The drain's claim follows the persisted order, not creation order.
+    let claimed = store
+        .claim_next_followup_turn(&session.id)
+        .await
+        .unwrap()
+        .expect("a pending successor must be claimed");
+    assert_eq!(claimed.control.id, messages[2].id);
+    let second = store
+        .finish_session_turn_and_claim_followup(&claimed.turn.claim_id)
+        .await
+        .unwrap()
+        .expect("the reordered queue still has a successor");
+    assert_eq!(second.control.id, messages[0].id);
+    let third = store
+        .finish_session_turn_and_claim_followup(&second.turn.claim_id)
+        .await
+        .unwrap()
+        .expect("the reordered queue still has a successor");
+    assert_eq!(third.control.id, messages[1].id);
+    assert!(
+        store
+            .finish_session_turn_and_claim_followup(&third.turn.claim_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "the queue must be empty once every reordered successor is claimed"
+    );
+}
+
+#[tokio::test]
+async fn promoting_a_successor_moves_it_to_the_queue_head_without_steering() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    let mut messages = Vec::new();
+    for index in 0..3 {
+        let (message, _) = store
+            .create_message(
+                &session.id,
+                CreateProductMessageRequest {
+                    content: format!("message-{index}"),
+                    idempotency_key: None,
+                },
+            )
+            .await
+            .unwrap();
+        messages.push(message);
+    }
+
+    let promoted = store
+        .promote_message(
+            &session.id,
+            &messages[2].id,
+            ProductMessageDelivery::Successor,
+        )
+        .await
+        .unwrap();
+    // The message stays a queue member: no steer kind, no run binding, and it
+    // must not be reported as an intervention.
+    assert_eq!(
+        promoted.requested_delivery,
+        ProductMessageDelivery::Successor
+    );
+    assert_eq!(promoted.status, ProductMessageStatus::Queued);
+    assert!(promoted.actual_delivery.is_none());
+    // Ahead of every still-unmoved row, whose effective position is its `seq`.
+    assert!(promoted.queue_order.unwrap() < messages[0].seq);
+
+    let first_claim = store
+        .finish_session_turn_and_claim_followup(&claim.claim_id)
+        .await
+        .unwrap()
+        .expect("the promoted message must be claimed first");
+    assert_eq!(first_claim.control.id, messages[2].id);
+
+    // Promoting another message later still lands ahead of the remaining queue,
+    // so the most recent promotion wins the head.
+    let second_promotion = store
+        .promote_message(
+            &session.id,
+            &messages[1].id,
+            ProductMessageDelivery::Successor,
+        )
+        .await
+        .unwrap();
+    let replay = store
+        .promote_message(
+            &session.id,
+            &messages[1].id,
+            ProductMessageDelivery::Successor,
+        )
+        .await
+        .unwrap();
+    assert!(replay.queue_order.unwrap() < second_promotion.queue_order.unwrap());
+    let next_claim = store
+        .finish_session_turn_and_claim_followup(&first_claim.turn.claim_id)
+        .await
+        .unwrap()
+        .expect("the promoted message must be claimed next");
+    assert_eq!(next_claim.control.id, messages[1].id);
+
+    // `current_run` promotion keeps its own shape and never writes a position.
+    let steer = store
+        .promote_message(
+            &session.id,
+            &messages[0].id,
+            ProductMessageDelivery::CurrentRun,
+        )
+        .await
+        .unwrap();
+    assert_eq!(steer.requested_delivery, ProductMessageDelivery::CurrentRun);
+    assert_eq!(steer.status, ProductMessageStatus::InterventionRequested);
+    assert!(steer.queue_order.is_none());
 }
 
 #[tokio::test]
@@ -2378,6 +2750,7 @@ async fn nonfinal_turn_drops_steers_and_abandons_followups_atomically() {
             &claim.claim_id,
             Some(RunId::new()),
             ProductSessionStatus::NeedsAttention,
+            Some(ProductSessionOutcome::Cancelled),
             "run cancelled",
         )
         .await
@@ -2612,6 +2985,7 @@ async fn abandoned_followup_requires_explicit_confirmation_before_redrain() {
             &claim.claim_id,
             Some(RunId::new()),
             ProductSessionStatus::NeedsAttention,
+            Some(ProductSessionOutcome::Failed),
             "tool effect is uncertain",
         )
         .await
@@ -3487,4 +3861,129 @@ fn grouping_records_takes_session_fields_from_the_newest_run() {
         crate::product::ownership::to_store_input(Vec::new()).is_none(),
         "an empty group has nothing to recover"
     );
+}
+
+#[tokio::test]
+async fn finishing_a_turn_records_the_session_outcome_in_the_same_transaction() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (workspace, session) = create_workspace_and_session(&store, &temp).await;
+
+    // A session that has never finished a turn must not claim one: `None` is
+    // what keeps "just completed" distinguishable from "never started".
+    let fresh = store
+        .get_session_context(&session.id)
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(fresh.last_outcome, None);
+    assert_eq!(fresh.last_outcome_at, None);
+
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    store
+        .finish_session_turn_and_claim_followup(&claim.claim_id)
+        .await
+        .unwrap();
+    let succeeded = store
+        .get_session_context(&session.id)
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(succeeded.status, ProductSessionStatus::Idle);
+    assert_eq!(succeeded.last_outcome, Some(ProductSessionOutcome::Success));
+    assert!(succeeded.last_outcome_at.is_some());
+
+    // The list projection reads the row through a different SELECT list, so a
+    // column added to one query and not the other would surface here.
+    let listed = store.list_all_sessions(&workspace.id).await.unwrap();
+    let listed = listed
+        .iter()
+        .find(|candidate| candidate.id == session.id)
+        .expect("the session is listed");
+    assert_eq!(listed.last_outcome, Some(ProductSessionOutcome::Success));
+    assert_eq!(listed.last_outcome_at, succeeded.last_outcome_at);
+
+    for (expected, reason) in [
+        (ProductSessionOutcome::Cancelled, "run cancelled"),
+        (ProductSessionOutcome::Failed, "run failed"),
+    ] {
+        let (_, other) = create_workspace_and_session(&store, &temp).await;
+        let claim = store.claim_session_turn(&other.id).await.unwrap();
+        store
+            .finish_session_turn_and_abandon_pending_controls(
+                &claim.claim_id,
+                None,
+                ProductSessionStatus::Idle,
+                Some(expected),
+                reason,
+            )
+            .await
+            .unwrap();
+        let finished = store.get_session_context(&other.id).await.unwrap().session;
+        assert_eq!(finished.last_outcome, Some(expected), "{reason}");
+        assert!(finished.last_outcome_at.is_some(), "{reason}");
+    }
+
+    // The outcome round-trips through the persisted column rather than living
+    // only in the in-process projection.
+    drop(store);
+    let reopened = open_store(&temp);
+    let reloaded = reopened
+        .get_session_context(&session.id)
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(reloaded.last_outcome, Some(ProductSessionOutcome::Success));
+    assert_eq!(reloaded.last_outcome_at, succeeded.last_outcome_at);
+}
+
+#[tokio::test]
+async fn an_attempt_without_an_outcome_leaves_the_last_result_alone() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    store
+        .finish_session_turn_and_abandon_pending_controls(
+            &claim.claim_id,
+            None,
+            ProductSessionStatus::Idle,
+            Some(ProductSessionOutcome::Cancelled),
+            "run cancelled",
+        )
+        .await
+        .unwrap();
+    let cancelled = store
+        .get_session_context(&session.id)
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(
+        cancelled.last_outcome,
+        Some(ProductSessionOutcome::Cancelled)
+    );
+
+    // A retry that is rejected before it becomes a turn restores the previous
+    // status; it must not rewrite what the last real turn did.
+    let rejected = store.claim_session_turn(&session.id).await.unwrap();
+    store
+        .finish_session_turn_and_abandon_pending_controls(
+            &rejected.claim_id,
+            None,
+            ProductSessionStatus::Idle,
+            None,
+            "workspace validation",
+        )
+        .await
+        .unwrap();
+
+    let after = store
+        .get_session_context(&session.id)
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(after.status, ProductSessionStatus::Idle);
+    assert_eq!(after.last_outcome, Some(ProductSessionOutcome::Cancelled));
+    assert_eq!(after.last_outcome_at, cancelled.last_outcome_at);
 }

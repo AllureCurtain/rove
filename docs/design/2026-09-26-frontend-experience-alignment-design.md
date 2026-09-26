@@ -30,11 +30,11 @@
 | F4 | 会话 hover 卡片 | P1 | 无 | Implemented |
 | F5 | Toast 通知层与后台失败可见性 | P1 | 无（收件箱部分依赖 R5） | Implemented（toast 层与后台失败；收件箱待 R5） |
 | F6 | smart-stop 发送快照（含粘贴 chips） | P1 | 无 | Implemented（部分中止文案分支待 R2b） |
-| F7 | 杂项清理（/dev 文案、mock 页标注、降级语义如实标注） | P1 | 无 | Proposed |
-| F8 | 样式 token linter 与 CI 接入 | P1 | 无 | Proposed |
-| F9 | 侧栏折叠动效合成器友好化 | P2 | 无 | Proposed |
-| F10 | 偏好小项（per-model reasoning 记忆、会话自动标题） | P2 | 无 | Proposed |
-| F11 | 服务端会话搜索 `q` 接线 | P2 | 无 | Proposed |
+| F7 | 杂项清理（/dev 文案、mock 页标注、降级语义如实标注） | P1 | 无 | Implemented |
+| F8 | 样式 token linter 与 CI 接入 | P1 | 无 | Implemented（本地门；按 §9.1 不接入 CI） |
+| F9 | 侧栏折叠动效合成器友好化 | P2 | 无 | Implemented（轨道一步到位 + 侧栏滑出；视觉偏差见 §10.4） |
+| F10 | 偏好小项（per-model reasoning 记忆、会话自动标题） | P2 | 无 | Implemented（自动标题的前提修正见 §11.3） |
+| F11 | 服务端会话搜索 `q` 接线 | P2 | 无 | Implemented（前提复核与差异记录见 §12.1） |
 | F12 | 决策点（默认不做）：发送键 morph/涟漪、phrase reveal、跨引擎/视觉回归、系统通知 | — | — | 不做（除非用户拍板） |
 | F13 | 附件/图片上传 UI | — | **阻塞于运行时文档 R8** | 不在本轮 |
 
@@ -416,6 +416,25 @@ chips 在发送瞬间折叠丢失。
 
 验证：`pnpm typecheck && pnpm test && pnpm build`；`/dev` 相关 e2e 更新。
 
+### 8.1 实现记录（2026-09-26）
+
+1. `/dev/workbench` 横幅删掉"Benchmark lives under Settings → Advanced"（基准运行器
+   已不在产品 Settings 里，`advanced` 只是渲染 General 的别名），只留 dev 路由警示
+   "Development route only."。
+2. `app/dev/product-ui-v2/` 仍是 notFound 门控，并在最顶部加了一条醒目的
+   "Design mock, not product."（`role="note"`）徽标。它占了 `.preview` 网格的第一行，
+   因此 `product-ui-v2.module.css` 的行模板改为 `auto 52px minmax(0, 1fr)`——移动端
+   媒体查询里还有一份两行的旧模板，第一次跑 e2e 就被抓出来（product bar 被撑成
+   1fr 并盖住了 "Open run evidence"），两处一起改。`product-ui-v2.spec.ts` 里原本
+   `getByRole("note")` 唯一的断言改为按文案定位，并新增徽标断言。
+3. 消息级 fork 按钮保持如实的"复制会话"（`chat/Transcript.tsx`，fork 锚定最后一个
+   终态 run 的 `last_event_seq`，由服务端派生），消息级编辑重发仍等运行时文档 R6。
+4. `shell/use-sidebar-width.ts` 里那段拖动测量的注释保留原样（是有效文档）。
+5. 超出本节编号的一处清理（§0 F7 的"杂项"）：会话头的 fork 按钮原本硬编码英文
+   `Fork`，与消息级按钮是同一个服务端操作，现改用同一个既有文案键
+   `chat.forkSession`；`toast.spec.ts` 与 `real-api.spec.ts` 的定位符随之改为在
+   `.chat-pane__header` 内按该名字查找。
+
 ---
 
 ## 9. F8 样式 token linter 与 CI 接入
@@ -446,6 +465,55 @@ token 体系目前全靠 review 自觉。新增 `scripts/check-web-style-tokens.
 - 对现存三份 CSS 跑一遍：产出存量违规清单，**逐条豁免或修正**后脚本必须全绿
   （不允许"脚本带着存量红跑"）。
 
+### 9.4 实现记录（2026-09-26）
+
+`scripts/check-web-style-tokens.mjs`（含 `node --test` 自测
+`scripts/check-web-style-tokens.test.mjs`，14 个用例）；`apps/web/package.json` 增
+`lint:style-tokens`（先跑自测再扫）；`apps/web/README.md` 的 Verification 一节说明
+规则、豁免与"只是本地门、不接入 CI"。
+
+首次跑出的存量违规 29 条，逐条处理如下。
+
+修正（v2，product-v2.css；动效值不变，只是改为引用 token）：
+
+| 位置 | 原值 | 现用 |
+|---|---|---|
+| button 基础 transition（5 个属性） | `140ms ease` | `--motion-duration-fast` + `--motion-ease-standard` |
+| status-dot / streaming 点脉冲 ×2 | `1.8s ease-in-out` | `--motion-duration-pulse` + `--motion-ease-in-out` |
+| toast 进场 | `160ms ease-out` | `--motion-duration-fast` + `--motion-ease-out` |
+| 移动抽屉 sidebar / inspector ×2 | `180ms cubic-bezier(0.16, 1, 0.3, 1)` | `--motion-duration-collapse` + `--motion-ease-emphasized` |
+| session spinner | `1s linear` | `--motion-duration-spin` + `linear` |
+| 侧栏滑入 / 滑出 ×2 | `240ms` | `--motion-duration-slide` |
+| composer meta 折叠 | `180ms` | `--motion-duration-collapse` |
+| activity 折叠箭头 | `160ms ease` | `--motion-duration-fast` + `--motion-ease-standard` |
+| activity 阶段点脉冲 | `1.6s ease-in-out` | `--motion-duration-activity-pulse` + `--motion-ease-in-out` |
+| Settings 区块边框呼吸 | `900ms ease-in-out 4` | `--motion-duration-breathe` + `--motion-ease-in-out` |
+
+新增 6 个 duration token（spin/pulse/activity-pulse/breathe/slide/collapse）与 2 个
+ease token（in-out/emphasized），都放在既有 motion token 块里：循环周期也是动效
+语义，应该由 token 层拥有。除 button 的 `140ms ease` → `150ms` 与
+`--motion-ease-standard`（设计 token 里最近的既有值，肉眼无差别）外，其余数值与
+曲线不变。
+
+豁免（v1，product.css；v1 是冻结皮肤，F1–F5 都刻意不给它加新样式，因此不给 v1
+引入 motion token 层，改为逐条带理由豁免）：
+
+| 位置 | 值 | 理由 |
+|---|---|---|
+| `.inspector-skeleton` shimmer | `1.35s linear` | v1 皮肤自带的骨架屏周期，v1 冻结 |
+| `.tab-button` / 侧栏项 / 记忆面板项 ×3 | `160ms ease` | v1 皮肤自带的交互时长与曲线，v1 冻结 |
+
+`prefers-reduced-motion` 块内的 `0.01ms !important`（v1/v2/v3 各一处）按规则 3 自动
+豁免，不是例外清单的一部分。脚本输出的豁免清单是 4 条，即上表。
+
+规则细节（与 9.1 的三条一致，实现时明确下来的部分）：简写里每个逗号段的第一个
+时间值是 duration、第二个是 delay（delay 允许字面量，且 `0s`/`0` 允许）；comma 与
+空白切分都尊重括号，因此 `cubic-bezier(0.2, 0, 0, 1)`、`steps(2, end)`、
+`var(--x, 1ms)` 都是单个 token；`@keyframes` 体内的
+`animation-timing-function` 是逐帧曲线、不是组件动效，不扫；豁免注释放声明自身
+任一行或紧邻上一行都算，无理由的豁免与"豁免了不存在违规"的豁免本身报错，避免
+豁免清单腐化。
+
 ---
 
 ## 10. F9 侧栏折叠动效合成器友好化
@@ -459,6 +527,48 @@ token 体系目前全靠 review 自觉。新增 `scripts/check-web-style-tokens.
      `inert`/`aria-hidden` 门控。视觉从"连续推挤"变为"侧栏滑出、内容即切"——
      作为记录在案的偏差接受。
   3. 测量显示成本可忽略 → 不改，把数据写进实施记录即可（"不在未复现时就改"的纪律）。
+
+### 10.4 实现记录（2026-09-26）
+
+**测量**。复刻 §8.1C 的方法（CDP `Performance.getMetrics`，同一台机器、`next dev`、
+1280×720、30-run transcript 的长会话），对**同一次折叠/展开动作**取 6 次平均，扣掉等长空转窗口
+（空转窗口 Script/Layout/Recalc 均为 0，故净值≈原值；一次交互占用 700ms 窗口）：
+
+| 每次折叠/展开 | ScriptDuration | LayoutDuration | LayoutCount | RecalcStyleDuration | RecalcStyleCount | TaskDuration |
+|---|---|---|---|---|---|---|
+| 轨道动画（改前） | 55.0 ms | 18.9 ms | 15.2 | 33.4 ms | 24.5 | 160.4 ms |
+| 轨道一步到位（改后） | 44.9 ms | **1.8 ms** | **2** | **6.0 ms** | 13.3 | 75.8 ms |
+
+即：布局次数 15.2 → 2（−87%），布局耗时 18.9 → 1.8 ms（−90%），样式重算 33.4 → 6.0 ms。
+长任务计数两种形态都是 0（单帧未超 50ms），但逐帧 reflow 的成本真实存在且与设计 §1.11 的
+判断一致，因此按步骤 2 落地。
+
+**改动**（`apps/web/styles/product-v2.css`）：
+
+- 删除 `.product-body:not([data-settings="true"])` 上的
+  `transition: grid-template-columns ...`（两处对应注释写明测量值与原因）；
+- 侧栏基础规则补 `position: relative; z-index: 2; width: var(--sidebar-nav-width)`：轨道在
+  一帧内变成 0 后，拉伸的 grid item 会在同一帧被压成 0 宽而"没有东西可滑"，固定宽度让它保持
+  240px 并从对话区上方滑出（折叠态已是 `pointer-events: none`，滑出过程不抢点击）；
+  这三条写在**基础规则**里而不是新规则里，是因为 `max-width: 960px` 抽屉块与它同特异性且在后，
+  这样 ≤960px 仍然由抽屉接管（已在 820px 视口实测：`position: fixed`、320px、`z-index: 42`）。
+
+**偏差（记录在案）**：视觉从"连续推挤"变为"轨道一步到位、侧栏滑出、内容即切"。折叠瞬间对话列
+即占满整行，侧栏在这 240ms 内从其上方滑走（240ms `transform + opacity`，`--motion-duration-slide`）。
+`inert`/`aria-hidden` 门控**无需补**——设计原文要求补齐的那一项已在
+`apps/web/sidebar/WorkspaceTree.tsx:268-270` 存在（`data-collapsed` + `aria-hidden` +
+`inert`），实施时逐条核对并已写进 e2e 断言。
+
+**回归**：`apps/web/tests/e2e/layout.spec.ts` 新增
+"the rail's collapse snaps the track and slides the rail itself"：断言
+`.product-body` 的 `transition-property` 不含 `grid-template-columns`、侧栏自身保留
+`transform` 过渡、折叠后对话列 `x≈0`、侧栏仍是 240px 且 `z-index: 2`、折叠态
+`aria-hidden="true"` + `inert`、重开后对话列从 240px 起、侧栏最终回到 `x≈0`。同一文件里
+原有的"折叠侧栏不占列"断言改为对 `main.x` 断言，并对侧栏自身位置用有界轮询等到滑出结束
+（滑出是真实动画，瞬时采样不再是稳定读数——这不是放宽断言，而是把"不占列"与"已滑走"分开测）。
+
+**未做**：手动 Performance 面板长任务截图仍未做（与 F3 同一遗留项）；本项的长任务计数为 0，
+因此这里没有"长任务"证据可提供。
 
 ---
 
@@ -475,6 +585,52 @@ token 体系目前全靠 review 自觉。新增 `scripts/check-web-style-tokens.
 
 验证：两项各自 vitest + 一条 e2e。
 
+### 11.3 实现记录（2026-09-26）
+
+**F10.1 per-model reasoning 记忆**。新增 `apps/web/product-v2/reasoning-memory.ts`：
+`rove.ui-reasoning-by-model` 是一个 model id → reasoning 的 localStorage 映射，纯函数
+（`parseReasoningByModel` / `rememberReasoningInMap` / `reasoningForModel`）与存储 I/O
+（`readReasoningByModel` / `rememberReasoning`）分离，后者吞掉被禁用或写满的 storage——
+这是便利偏好，不该让一次保存失败。映射有界（`REASONING_BY_MODEL_LIMIT = 50`，最旧的先走），
+并且逐条校验：非字符串、未知 reasoning 值、空 model id、非对象 JSON 全部丢弃，手改过的
+localStorage 不可能把非法值送进请求。
+
+接线在 `QuickModelControl`：选 reasoning 时按**当前输入框里的 model id** 记忆；换模型
+（输入框直接改，或切 profile 带出其 default model）时先查记忆，命中就带回该模型的
+上次选择，未命中才走原有回退规则（仍在本就支持 reasoning 的 provider 上就保留当前值，
+切到不支持的服务则回退 `default`）。服务端 model-config 合同未改，CAS 冲突恢复路径
+（`onModelConfigChange` 失败后的既有处理）未改。datalist 里输入但 provider 未上报的
+model 仍然禁用 reasoning 选择——这一条是既有能力判定（`quickModelReasoning`），本项不动。
+
+证据：`apps/web/product-v2/reasoning-memory.test.ts`（7 例：隔离、覆盖、有界、脏数据、
+storage 不可用）；`apps/web/tests/e2e/session-preferences.spec.ts`
+"the reasoning effort follows the model it was chosen for"（两个 openai-responses profile，
+各自记住 high/low，来回切换两次都能带回）。
+
+**F10.2 会话自动标题——设计前提修正**。设计原文按"尚未实现"描述，实际上
+`state/use-session-continuity.ts` 已经有一版：标题严格等于 `"New session"` 时**发送前**写入，
+截断用 `slice(0, 42)`（UTF-16 码元）。因此本项落地的是**参数修正**，并逐条记录：
+
+| 项 | 原有 | 现在 |
+|---|---|---|
+| 截断 | 42 个 UTF-16 码元（`slice`，可能劈开代理对） | 48 个码点（`Array.from`），未超长时不加省略号 |
+| 时机 | 发送请求**之前**（被拒绝的消息也会命名会话） | 服务端接受该消息**之后** |
+| 未命名判定 | 仅等于字面量 `"New session"` | 空标题也算未命名；`DEFAULT_SESSION_TITLE` 单点定义并注明与 `apps/api/.../validation.rs` 同源 |
+| 手动命名优先 | 依赖发送前的瞬时快照 | 写入前**重新读一次 catalog**：请求在途期间发生的重命名优先；另外本页对该会话只自动命名一次（避免"服务端标题回执到达前的第二条消息"改写首条消息的标题） |
+
+新增 `apps/web/state/session-auto-title.ts`（`DEFAULT_SESSION_TITLE` /
+`hasDefaultSessionTitle` / `autoSessionTitle` / `AUTO_TITLE_MAX_CODE_POINTS = 48`），
+`use-session-continuity.ts` 的 `send` 在 `accepted` 之后调用一次；原 `truncateTitle` 删除。
+
+证据：`apps/web/state/session-auto-title.test.ts`（7 例：占位标题/空标题、空白折叠、
+48 码点截断、恰好 48 不加省略号、emoji 不被劈开、空消息返回 null）；
+`apps/web/tests/e2e/session-preferences.spec.ts`
+"the first message names a session the user never named"（新会话首条消息 → 服务端标题与
+头部 `<h1>` 都变成截断值；已有标题的会话发送后标题不变）。
+
+**仍然记录的偏差**："从未手动命名"只能近似为"标题仍等于默认模板串"（有人把会话改名回
+`New session` 就会被再次自动命名）；服务端摘要标题仍是运行时文档 R10 的登记项，本项不做。
+
 ---
 
 ## 12. F11 服务端会话搜索 `q` 接线（P2）
@@ -486,6 +642,40 @@ token 体系目前全靠 review 自觉。新增 `scripts/check-web-style-tokens.
   该工作区列表；本地子串保留为无网降级。差异记录：服务端 LIKE 只做 ASCII 大小写
   折叠，英文与本地 `toLocaleLowerCase` 有别；服务端结果为权威。
 - P2 的原因：在 R5（目录 SSE）与真实大目录出现之前收益有限；不做也不会错。
+
+### 12.1 实现记录（2026-09-26）
+
+**前提复核**：`state/server-product-state.ts:66-88` 的 `listWorkspaceSessions` 本来就会
+逐页翻到游标结束（上限 `MAX_SESSION_PAGES_PER_WORKSPACE = 64` 页），所以"目录已把会话
+拉全"在当前代码里成立——本地子串与服务端 `q` 在正常情况下同解。本项因此不是修 bug，而是
+按设计解除"目录全量加载"假设，并保留本地过滤作为无网降级。
+
+落地：
+
+- `sidebar/session-server-search.ts`：纯逻辑。`SESSION_SERVER_SEARCH_LIMIT = 200`；
+  `serverSearchQuery` 去空白并把空查询判为"无需询问"；`resolveSessionRows` 是唯一裁决点
+  ——空查询恢复全部已加载行；工作区名命中时该工作区不过滤（保持原行为）；**服务端答了就
+  以服务端行为准**（包括"服务端答 0 条"也算无匹配，不再回退本地）；没有服务端答案
+  （未询问/在途/失败）才用既有的 `filterSessions` 本地子串。
+- `sidebar/use-server-session-search.ts`：输入非空后沿用既有 `SESSION_SEARCH_DEBOUNCE_MS`
+  （180ms），对每个工作区并发 `listSessions({ q, limit: 200, includeArchived: false })`；
+  序列失效复用 `session-search.ts` 已有的 `nextSearchToken`/`isCurrentSearch`（latest-wins），
+  慢响应不会覆盖新查询；任一请求失败即清空服务端结果并置 `unavailable`。工作区 id 用
+  连接串做依赖键，避免父组件每次渲染的新数组触发重查。
+- 接线：`use-server-product-state.ts` 暴露 `searchSessions`（`fromProductSession` 映射），
+  `ProductApp` 传给 `WorkspaceTree` 的可选 `searchSessions` prop；未传时行为与之前完全一致。
+  侧栏搜索说明文案改为反映真实范围（`workspace.searchScope`），失败时改用
+  `workspace.searchUnavailable` 明说"服务端检索不可用，已改为只过滤已加载的名称"。
+
+**差异记录（按设计）**：服务端 `LIKE` 只折叠 ASCII 大小写，本地用 `toLocaleLowerCase`；
+非 ASCII 标题两者可能不同，此时**服务端结果为权威**（`resolveSessionRows` 的取舍）。
+另记录：本次只取一页（`limit: 200`），不翻页；服务端返回的会话不写入目录缓存，只用于本次
+渲染，因此目录的权威性不变。
+
+证据：`apps/web/sidebar/session-server-search.test.ts`（6 例，覆盖空查询、工作区名命中、
+无答案降级、服务端行为准、服务端空答案不回退）；`apps/web/tests/e2e/session-server-search.spec.ts`
+两例——"只有服务端知道的会话出现在搜索里"（mock 的 `searchOnlySessions` 模拟超出目录页
+上限的会话，并断言请求带 `q=checklist&limit=200`）、"服务端检索失败时本地过滤接手"。
 
 ---
 
@@ -571,3 +761,12 @@ P2 项（F9/F11/F12 若拍板）各自独立小 PR，不搭车。
 - F2 的到达时间失真误用（重放批次判定错了会把假时长给用户——宁可不显示）。
 - F3 的 memo 被不稳定 props 打破后无感退化（渲染计数单测是唯一防线，不能删）。
 - F5 的 toast 噪音化（首批判：只做后台/跨会话事件，不做行内提示的复制弹窗）。
+
+## 19. 运行时合同联动登记
+
+本节只登记“运行时侧已提供、前端侧待接线”的能力，条目本身仍按 §16 的 PR 拆分另案实施。
+每行落地时必须更新本节状态与 §17 的对应证据。
+
+| 日期 | 运行时条目 | 前端待接线 | 状态 |
+|---|---|---|---|
+| 2026-09-26 | R4：`POST /product/sessions/{session_id}/messages/reorder`（原子重排）+ `POST .../messages/{message_id}/promote` 的 `delivery: "successor"`（提升为队首，等到当前回合终态边界才派发，不打断 live run） | 把 W3 的“撤销 + 重建”相邻交换换成一次 `reorder` 调用（`ordered_ids` 必须是当前 `status === "queued"` 且 `requested_delivery === "successor"` 的完整集合，少/多/重复/跨会话都会 400/409，见 R4 设计 §4.4）；队列按 `queue_order ?? seq` 排序；发送区给出“立即发送（successor，不打断）/ 插话（current_run）”两个动作并明示文案 | 未接线（运行时侧已实现） |

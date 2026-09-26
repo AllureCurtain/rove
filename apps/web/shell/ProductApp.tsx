@@ -73,6 +73,7 @@ import {
 } from "../settings/sections";
 import { createSettingsPlatformClient } from "../settings/settings-platform-client";
 import { EmptyState } from "../sidebar/EmptyState";
+import { sessionSubtitle } from "../sidebar/session-labels";
 import { WorkspaceTree } from "../sidebar/WorkspaceTree";
 import {
   findSession,
@@ -949,7 +950,11 @@ function ServerProductApp({ uiVersion, draftStore }: {
         id: `session:${session.id}`,
         groupKey: "sessions",
         title: session.title,
-        subtitle: workspaceNames.get(session.workspaceId) ?? "",
+        subtitle: sessionSubtitle(
+          session,
+          workspaceNames.get(session.workspaceId) ?? "",
+          t,
+        ),
         order: index,
         action: {
           kind: "open-session",
@@ -1193,6 +1198,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
             onToggleCollapsed={() =>
               navCollapsed ? expandRail() : setNavCollapsed(true)
             }
+            searchSessions={server.searchSessions}
           />
           {/* Hidden on narrow layouts by CSS; the drawer has no width to drag. */}
           {!mobileLayout && !navCollapsed ? (
@@ -1263,7 +1269,11 @@ function ServerProductApp({ uiVersion, draftStore }: {
                     onClick={() => void handleForkSession()}
                     disabled={!forkAvailable}
                   >
-                    Fork
+                    {/*
+                      The same server-derived operation as a message row's fork
+                      button, so it says the same words (design F7 item 3).
+                    */}
+                    {t("chat.forkSession")}
                   </button>
                   <button
                     ref={inspectorButtonRef}

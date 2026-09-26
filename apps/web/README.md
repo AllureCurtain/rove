@@ -18,7 +18,8 @@ Primary surface: the **product shell** (Workspace → Session → Run) against l
   a validated server acknowledgement
 - Complete nine-section Settings shell with provider CRUD, approval defaults,
   workspace/session and Memory management, runtime health, keyboard shortcuts,
-  and **Advanced / Developer** (Benchmark only here)
+  and an **Advanced** entry that is a route-compatibility alias for General:
+  diagnostics, migration, and benchmark entry points are not in the product UI
 - Light default + dark toggle via product design tokens
 - Responsive 390px/320px chat and Settings layouts, bounded mobile Inspector,
   visible focus, modal focus containment/restoration, live status semantics,
@@ -113,8 +114,11 @@ pnpm dev
 
 ## Advanced / Developer only
 
-- **Benchmark**: Settings → Advanced / Developer → Benchmark runner
-- **Legacy workbench scaffold**: `/dev/workbench` (bounded advanced escape hatch)
+- **Benchmarks**: not in the product UI. Run the `rove-bench` CLI; the shell and
+  its mocked suites assert that no Benchmark runner is exposed in Settings
+  (`tests/e2e/shell.spec.ts`, `tests/e2e/settings.spec.ts`).
+- **Legacy workbench scaffold**: `/dev/workbench` (bounded advanced escape hatch,
+  no longer pointing at a Settings section)
 
 Neither is primary product navigation.
 
@@ -133,7 +137,17 @@ pnpm test
 pnpm typecheck
 pnpm build
 pnpm test:e2e
+pnpm lint:style-tokens
 ```
+
+`pnpm lint:style-tokens` runs `scripts/check-web-style-tokens.mjs` (with its own
+self-tests) over `styles/*.css` and `styles/v3/`. It rejects motion that bypasses
+the token layer: transition and animation durations must be
+`var(--motion-duration-*)`, and timing functions must be `var(--motion-ease-*)`,
+`linear`, or `steps(...)`. Declarations inside `@media (prefers-reduced-motion)`
+are exempt, and anything else can be exempted one declaration at a time with a
+reasoned `/* style-token: allow <reason> */`, which the script prints so the
+exemptions stay visible in review. It is a local linter, not a CI gate.
 
 Focused product smoke (mock API):
 
@@ -146,7 +160,7 @@ Focused product smoke (mock API):
 - providers test/list models without raw keys
 - theme toggle
 - inspector empty → ready after run
-- Advanced-only benchmark
+- `/settings/advanced` resolving to General with no benchmark entry point
 - all nine Settings sections, revision-conflict rollback, provider update,
   approval/step job requests, catalog and Memory mutations, shortcuts, and
   mobile bounds

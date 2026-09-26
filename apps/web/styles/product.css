@@ -1117,6 +1117,7 @@ textarea:focus {
       color-mix(in srgb, var(--surface-strong) 40%, transparent)
     );
   background-size: 200% 100%;
+  /* style-token: allow v1 skin ships this skeleton shimmer period and v1 is frozen */
   animation: inspector-shimmer 1.35s linear infinite;
 }
 
@@ -1639,6 +1640,7 @@ textarea:focus {
   font-size: 0.875rem;
   box-shadow: none;
   cursor: pointer;
+  /* style-token: allow v1 skin ships 160ms/ease interaction timing and v1 is frozen */
   transition: color 160ms ease, border-color 160ms ease;
 }
 
@@ -1763,6 +1765,7 @@ textarea:focus {
   background: var(--surface-strong);
   text-align: left;
   cursor: pointer;
+  /* style-token: allow v1 skin ships 160ms/ease interaction timing and v1 is frozen */
   transition: border-color 160ms ease, box-shadow 160ms ease;
   box-shadow: none;
   color: var(--text);
@@ -2026,6 +2029,7 @@ textarea:focus {
   box-shadow: none;
   color: var(--text);
   min-height: auto;
+  /* style-token: allow v1 skin ships 160ms/ease interaction timing and v1 is frozen */
   transition: border-color 160ms ease;
 }
 
