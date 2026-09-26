@@ -2438,6 +2438,35 @@ async fn api_exposes_openapi_json_for_all_routes() {
         "legacy create-job callers must not be required to send product_session_id"
     );
 
+    let product_session_schema = schemas
+        .get("ProductSession")
+        .expect("ProductSession schema");
+    assert!(
+        product_session_schema["properties"]
+            .get("last_outcome")
+            .is_some(),
+        "ProductSession should publish the additive last_outcome field"
+    );
+    assert!(
+        product_session_schema["properties"]
+            .get("last_outcome_at")
+            .is_some(),
+        "ProductSession should publish the additive last_outcome_at field"
+    );
+    assert!(
+        !product_session_schema["required"]
+            .as_array()
+            .is_some_and(|required| {
+                required.iter().any(|field| {
+                    matches!(
+                        field.as_str(),
+                        Some("last_outcome") | Some("last_outcome_at")
+                    )
+                })
+            }),
+        "a session that never ran must not be required to carry an outcome"
+    );
+
     let preference_schema = schemas
         .get("ProductPreferences")
         .expect("ProductPreferences schema");
