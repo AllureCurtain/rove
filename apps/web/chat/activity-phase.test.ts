@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { activityPhaseKey, IDLE_PHASE, reduceActivityPhase } from "./activity-phase";
+import {
+  activityEventForStreamEvent,
+  activityPhaseKey,
+  IDLE_PHASE,
+  reduceActivityPhase,
+} from "./activity-phase";
 
 describe("reduceActivityPhase", () => {
   it("moves from sending to waiting once the run starts", () => {
@@ -32,5 +37,20 @@ describe("reduceActivityPhase", () => {
     const first = reduceActivityPhase(IDLE_PHASE, { type: "tool_call_started", name: "read" });
     const second = reduceActivityPhase(first, { type: "tool_call_started", name: "read" });
     expect(activityPhaseKey(first)).toBe(activityPhaseKey(second));
+  });
+
+  it("returns to waiting when the runtime schedules a retry", () => {
+    const activity = activityEventForStreamEvent({
+      type: "provider_retry",
+      attempt: 2,
+      max_attempts: 4,
+      delay_ms: 2_000,
+      reason: "transient:request_failed",
+      phase: "model_call",
+    });
+    expect(activity).toEqual({ type: "model_status", status: "retrying" });
+    expect(
+      reduceActivityPhase({ kind: "tool", name: "read" }, activity!).kind,
+    ).toBe("waiting-model");
   });
 });

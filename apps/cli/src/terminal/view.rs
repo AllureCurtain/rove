@@ -1208,6 +1208,22 @@ impl From<&StreamEvent> for RunViewUpdate {
                 status: status.clone(),
                 message: message.clone(),
             },
+            StreamEvent::ProviderRetry {
+                attempt,
+                max_attempts,
+                delay_ms,
+                reason,
+                ..
+            } => Self::ModelStatus {
+                status: "recovery".to_string(),
+                message: format!(
+                    "Model call failed ({}); retrying attempt {}/{} in {:.1}s.",
+                    reason.replace('_', " "),
+                    attempt,
+                    max_attempts,
+                    *delay_ms as f64 / 1000.0
+                ),
+            },
             StreamEvent::LlmMessage {
                 full,
                 usage,

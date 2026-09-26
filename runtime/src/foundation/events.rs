@@ -111,6 +111,21 @@ pub enum StreamEvent {
     /// A safe runtime progress note. This must not contain hidden reasoning text.
     ModelStatus { status: String, message: String },
 
+    /// A model call is being retried under the run loop's recovery budget.
+    ///
+    /// `attempt` is the 1-based index of the attempt that is about to run, so
+    /// the first retry is attempt 2, and `max_attempts` is that failure class'
+    /// total budget including the first call. `reason` is a whitelisted summary
+    /// (`rate_limited` or `transient:<error code>`) and never carries provider
+    /// payloads, messages, or secrets.
+    ProviderRetry {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        reason: String,
+        phase: String,
+    },
+
     /// The LLM finished producing a complete message.
     LlmMessage {
         full: String,
@@ -659,6 +674,7 @@ impl StreamEvent {
             Self::ExecutionDegraded { .. } => "execution_degraded",
             Self::LlmChunk { .. } => "llm_chunk",
             Self::ModelStatus { .. } => "model_status",
+            Self::ProviderRetry { .. } => "provider_retry",
             Self::LlmMessage { .. } => "llm_message",
             Self::ToolCallStarted { .. } => "tool_call_started",
             Self::ToolCallApprovalNeeded { .. } => "tool_call_approval_needed",
