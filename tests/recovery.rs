@@ -406,6 +406,42 @@ async fn retry_notices_never_carry_provider_payloads() {
 }
 
 #[tokio::test]
+async fn a_non_retryable_failure_is_terminal_on_its_first_attempt() {
+    // Auth, context-length, and invalid-configuration failures have no retry
+    // class. The budget must not treat them as a class whose allowance is spent
+    // on the first call, and no notice may be emitted for them.
+    let policy = ProviderRetryPolicy {
+        rate_limit_max_attempts: 4,
+        transient_max_attempts: 4,
+        ..fast_policy()
+    };
+    let engine = engine_with_turns(
+        vec![
+            FakeTurn::Fail(ModelError::AuthFailed),
+            FakeTurn::Fail(ModelError::ContextLengthExceeded { used: 9, max: 8 }),
+            FakeTurn::Text("must never be reached".to_string()),
+        ],
+        policy,
+    );
+
+    let events = collect(&engine, "answer the request").await;
+
+    assert!(
+        retries(&events).is_empty(),
+        "a failure with no retry class must not schedule a retry: {:?}",
+        retries(&events)
+    );
+    assert!(
+        !saw_text(&events, "must never be reached"),
+        "the turn must end on the first non-retryable failure"
+    );
+    assert!(
+        terminated_with(&events, TerminationReason::Error),
+        "a non-retryable failure must keep the immediate failure contract"
+    );
+}
+
+#[tokio::test]
 async fn planned_step_turns_spend_the_same_budget() {
     let policy = ProviderRetryPolicy {
         transient_max_attempts: 2,

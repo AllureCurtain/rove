@@ -2751,6 +2751,87 @@ fn the_run_identity_header_takes_no_event_sequence() {
 }
 
 #[tokio::test]
+async fn a_scheduled_retry_reaches_the_durable_trace_and_the_event_index() {
+    // The retry notice is a canonical event, so it must survive the same
+    // persistence path as every other loop event rather than existing only on
+    // the live stream. This is the durability half of the R2c contract.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = StateStore::new(&workspace.state_dir);
+    let run_id = RunId::new();
+    let run = state_store
+        .start_run(SessionId::new(), JobId::new(), run_id)
+        .unwrap();
+    let model = Box::new(rove_models::fake::FakeModelClient::with_turns(
+        "unscripted fallback response".to_string(),
+        vec![
+            rove_models::fake::FakeTurn::Fail(ModelError::RequestFailed(
+                "first attempt failed".to_string(),
+            )),
+            rove_models::fake::FakeTurn::Text("recovered after one retry".to_string()),
+        ],
+    ));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::new(
+        model,
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig::new(5, false).with_provider_retry(ProviderRetryPolicy {
+            transient_max_attempts: 2,
+            ..fast_retry_policy()
+        }),
+    );
+
+    let reason = run_oneshot(
+        &engine,
+        "answer after a retry".to_string(),
+        run,
+        None,
+        &state_store,
+    )
+    .await;
+    assert_eq!(reason, TerminationReason::Final);
+
+    let trace = std::fs::read_to_string(state_store.run_store.run_dir(&run_id).join("trace.jsonl"))
+        .unwrap();
+    let notices: Vec<(u32, u32, u64, String)> =
+        rove_runtime::state::trace_reader::read_trace_content(&trace)
+            .entries
+            .into_iter()
+            .filter_map(|entry| match entry.entry {
+                rove_runtime::foundation::TraceEntry::Ui(StreamEvent::ProviderRetry {
+                    attempt,
+                    max_attempts,
+                    delay_ms,
+                    reason,
+                    ..
+                }) => Some((attempt, max_attempts, delay_ms, reason)),
+                _ => None,
+            })
+            .collect();
+    assert_eq!(
+        notices,
+        vec![(2, 2, 1, "transient:request_failed".to_string())],
+        "the scheduled retry must be durable in trace.jsonl"
+    );
+
+    let indexed = state_store.index.event_records(run_id).unwrap();
+    assert_eq!(
+        indexed
+            .iter()
+            .filter(|record| record.event_name == "provider_retry")
+            .count(),
+        1,
+        "the retry notice must be in the SQLite event index: {:?}",
+        indexed
+            .iter()
+            .map(|record| record.event_name.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
 async fn oneshot_persists_final_output_as_task_summary() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
