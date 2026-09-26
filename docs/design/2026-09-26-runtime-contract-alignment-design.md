@@ -40,7 +40,7 @@
 | 编号 | 条目 | 优先级 | 主要触碰面 | 状态 |
 |---|---|---|---|---|
 | R1 | transcript 游标分页（F.4 闭环） | P0 | `apps/api` + `apps/web` 接线 | Implemented（见 §1.7） |
-| R2 | 回合失败恢复家族（a 静默回合 / b 中止保留 / c 重试预算+事件） | P0 | `core`/`runtime`/`models`/`apps/api`/事件合同 | Proposed |
+| R2 | 回合失败恢复家族（a 静默回合 / b 中止保留 / c 重试预算+事件） | P0 | `core`/`runtime`/`models`/`apps/api`/事件合同 | R2c Implemented（见 §2.4）；R2a/R2b Proposed |
 | R3 | 会话 `last_outcome` 字段 | P1 | ProductStore 迁移 016 + contracts + web | Proposed |
 | R4 | 队列协议扩展（原子重排 / send-now 边界语义 / 重启存活验证） | P1 | `apps/api` + 迁移 017 | Proposed |
 | R5 | 产品级目录 SSE `/product/events` | P1 | `apps/api` + 迁移 018 + web | Proposed |
@@ -340,6 +340,76 @@ UI 只做投影。本条与前端文档 F12 的"重试倒计时"解禁联动。
 - 退避 sleep 期间 cancel → 立即终止、无悬挂；
 - `reason` 字段断言不含 secrets/payload；
 - 配置关闭（max_attempts=1）→ 行为与现状一致。
+
+### 2.4 R2c 实施记录
+
+R2c 独立成一个 PR（对应 §11 的 PR-2，branch `feature/runtime-align-r2c`）；R2a/R2b 是
+另一个 PR（PR-3），因此本节只记录重试预算的落地事实。
+
+落地位置与形状：
+
+- 预算本体是 runtime 私有的纯策略：`runtime/src/engine/recovery.rs`
+  （`ProviderRetryPolicy`、`RetryClass`、`retry_class`、`retry_after_ms`），
+  默认值就是 §2.3 写的 6/4/2000ms/30000ms，`ProviderRetryPolicy::disabled()`
+  （两个 class 的 `max_attempts = 1`）等价于重试出现前的行为。
+- 消费点在 `runtime/src/engine/run_loop.rs` 的 `run_kernel_model_turn`
+  外围重试循环；`LoopContext` 增 `provider_retry`，`EngineConfig` 增同名字段
+  （`with_provider_retry` + `Default`），因此未规划（React）与规划（planned
+  step）两条宿主路径共用同一预算（`run_loop.rs` 与 `step_runner.rs` 两个
+  `model_turn` 实现都传它）。
+- 事件：`StreamEvent::ProviderRetry { attempt, max_attempts, delay_ms, reason, phase }`
+  进 `runtime/src/foundation/events.rs`（`event_name() = "provider_retry"`）。
+  它经 `yield_traced!` 进 run loop 事件流，于是 trace 持久化、API SSE/OpenAPI
+  （`JobStreamEvent` 的 `event` 是 opaque `Object`）、CLI/TUI 状态行、Web 类型/严格
+  解析/投影全部自动或显式覆盖，没有私有通道。
+
+落地时确认并解决的设计歧义：
+
+1. **`max_attempts` 的语义**：写"总尝试次数（含首次）"，因此 attempt 从 1 开始、
+   首次重试是 `attempt = 2`；`1` 即关闭。`attempt`/`max_attempts` 事件字段按此发出，
+   所以 UI 可以直接显示 "attempt 2/4" 而不必自己 +1。
+2. **重试不吃 model-turn 预算**：重试在同一个 kernel 模型回合内部完成，kernel 只看到
+   一次模型回合，因此不消耗 `budgets.max_model_turns`，也不推进 plan 的 step attempt。
+   上界由重试预算自身（最多 5 次额外尝试/class）与可选 `max_wall_time_ms` 决定。
+   这是刻意选择：重试是"同一次调用"，把它记成新回合会让规划/修复预算被瞬时错误吃掉。
+3. **配置分层**：`RuntimeConfig` 增 `recovery.retry.*`（`RecoveryConfig` /
+   `RecoveryRetryConfig`，字段全为 `Option`，语义与 `execution` 组一致：未设字段保留
+   runtime 默认）。`jitter` **不进配置**：它只用于打散重试，留在 runtime 侧可以让
+   bootstrap 配置类型保持 `Eq`（无浮点）。`backoff_base_ms > backoff_max_ms` 时以
+   ceiling 为准；`*_max_attempts = 0` 收敛为 1，而不是变成"永不重试之外的行为"。
+4. **"无输出才重试"的判定面**：判定用落账事件 `StreamEvent::LlmChunk`，即
+   `ModelEvent::TextDelta` 在 `RunMode::Normal` 下的投影（`model_turn.rs` 的
+   `durable_model_event`）。tool-use delta、usage、状态事件都不算"已产生输出"：
+   工具尚未派发，重试不会重复副作用。Review 模式下文本被 redact、不产生 `LlmChunk`，
+   因此 review 回合即使已流出文本仍可重试——与"不重复用户可见文本"的理由一致。
+5. **`reason` 白名单**：`rate_limited` 或 `transient:<error_code>`
+   （`request_failed` / `stream_interrupted`）；`delay_ms` 已承载 retry-after 的事实，
+   因此 reason 不重复它，更不携带 provider 文本。`tests/recovery.rs` 用带
+   `sk-live-...` 的错误消息断言事件 JSON 里不出现任何 payload 片段。
+6. **既有 fixture 的适配**：默认预算是开启的，因此两个原本用"可重试错误"驱动**其它**
+   机制的 e2e fixture 需要显式说明新语义：
+   `StepFailureModelClient`（planned-step 修复路径）现在让首次尝试与其唯一一次重试
+   都失败（`transient_max_attempts = 2`），修复路径原样可达；
+   压缩失败 fixture 换成毫秒级退避免得让合同测试等 14 秒。两者的重试仍真实发生，
+   精确延迟/分账断言在 `tests/recovery.rs`。
+
+验证：
+
+- `tests/recovery.rs`（8 个用例，全部走 fake provider，无 key/无网）：retry-after 照用、
+  瞬时退避 1→2→4 与耗尽后终止、分账独立、`LlmChunk` 之后不重试、退避期 cancel 立即终止、
+  关闭预算即恢复现状、reason 无 payload、planned step 走同一预算。
+- `runtime/src/engine/run_loop.rs` 单测：重试时 `SteerApplied` 只发一次（`applied` 标记在
+  重试循环之外）、已有输出时以 provider 原错误结束。
+- `runtime/src/engine/recovery.rs` 单测：默认值、分账上界、退避曲线与 ceiling、
+  retry-after 优先且不被 jitter 改写、jitter 只削不涨、白名单 reason。
+- bootstrap 单测：未配置=默认、TOML round-trip、部分覆盖、关闭可达、base>ceiling 收敛。
+- Web：`product-api-types.test.ts`（严格解析接受/拒绝）、`rove-types.test.ts`
+  （名字列表顺序）、`rove-state.test.ts`（状态行与 trace 标签）、
+  `activity-phase.test.ts`（重试回到 waiting-model）。
+
+非目标（本轮明确不做）：R2c 不实现静默回合恢复（R2a）与中止保留（R2b）；
+不在 routing 包装层再加预算（预算在 run loop，天然覆盖直连 provider）；
+不做 provider 级别的幂等键或请求重放去重（模型调用无副作用）。
 
 ---
 
@@ -676,7 +746,7 @@ R2a/R2b 共享 fake provider 脚本化扩展（PR-2 先建）；R6 依赖 R1 的
 | R1 | fmt/clippy/test ✅ | api 3 组（无参兼容、65-run 翻页拼接、边界矩阵+OpenAPI 参数）✅；页内超预算改为 `PageWalk` 单测 ✅（端到端重放未做，见 §1.7 第 4 条） | mock 300-run 翻页拼接 + 锚定 `transcript-pagination.spec.ts` ✅ | implementation-guide / implementation-status / acceptance-matrix ✅（§1.7 第 5 条的更正） |
 | R2a | 同上 + fake 脚本化 | 恢复/不循环/关配置/审批照常 | 等待行显示 | react-loop |
 | R2b | 同上 | salvage 两分支/幂等/空文本 | "(已中止)"标记 | react-loop |
-| R2c | 同上 | 分账/首事件前/流中断不重试/退避取消 | 重试状态行 | provider-smoke |
+| R2c | 同上 ✅ | 分账/首事件前/流中断不重试/退避取消 ✅（`tests/recovery.rs` 8 例 + `run_loop` 2 例 + `recovery` 6 例 + bootstrap 5 例） | 重试状态行 ✅（`rove-state`/`activity-phase`/严格解析） | provider-smoke / react-loop ✅（§2.4） |
 | R3 | 迁移单测 | 终态字段/序列化 | 成功点 e2e | subsystems |
 | R4 | 迁移单测 | 重排矩阵/边界派发/重启存活 | 队列 e2e | subsystems |
 | R5 | 迁移单测 | 订阅/续传/清理 | mock SSE e2e | subsystems |
@@ -688,7 +758,8 @@ R2a/R2b 共享 fake provider 脚本化扩展（PR-2 先建）；R6 依赖 R1 的
 
 - R2b 的 1500ms 收尾窗口与取消 UX 的交互（用户感知"取消变慢"）：窗口只在
   有非空累积文本时存在；UI 取消反馈即时（终态迁移不变）。
-- R2c 退避期间 run 占用 job：预算与上限必须可配且默认保守；provider-smoke 补
+- R2c 退避期间 run 占用 job：预算与上限必须可配且默认保守（已落地：分账 6/4、
+  2s→30s、退避 sleep 受 cancel 保护）；provider-smoke 补
   长退避不阻塞其他会话的说明（每 run 独立 token）。
 - R5 新表的写入放大（每次状态迁移一条）：滚动清理 + 摘要行极小；集成测试覆盖
   清理不丢续传游标。

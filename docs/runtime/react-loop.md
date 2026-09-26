@@ -138,6 +138,24 @@ attempt, while a new turn that continues a session starts from zero. Carrying
 usage across turns would progressively starve a long session until no further
 work could run.
 
+Model-call retries are configured separately from execution budgets, under
+`[runtime.recovery.retry]`. Every field is optional and an unset field keeps the
+runtime default, so an existing config behaves exactly as before:
+
+```toml
+[runtime.recovery.retry]
+rate_limit_max_attempts = 6   # total attempts for a throttled call, first included
+transient_max_attempts = 4    # total attempts for a transport failure
+backoff_base_ms = 2000        # first wait; doubles per retry
+backoff_max_ms = 30000        # ceiling, and the clamp for a provider retry-after
+```
+
+`1` in both attempt fields disables retry for that class; `0` is clamped to `1`
+rather than becoming a second way to express "never". A configured base above the
+ceiling keeps the ceiling authoritative. Jitter is intentionally not
+configurable: it only spreads retries out. See "Model-call retry budget" below
+for the retry contract itself.
+
 `ExecutionStrategySelected`, `ExecutionBudgetUpdated`, and `ExecutionDegraded`
 are canonical events. A degradation record is always explicit: a fallback never
 changes permissions, never erases recorded evidence, and carries a safe summary
@@ -316,3 +334,47 @@ each host at the existing context-manager boundary. Authoritative bounded
 tool-schema validation, registration-time descriptor pinning, pre-dispatch
 provider capability checks, Runtime-owned capability snapshot binding, the single
 shared Agent kernel, and the independent lifecycle Finalizer are implemented.
+
+## Model-call retry budget
+
+A model call that fails before producing any output is retried by the run loop,
+not by the provider or routing layer. The budget lives in
+`runtime/src/engine/recovery.rs` (`ProviderRetryPolicy`) and is spent inside
+`run_kernel_model_turn`, so it covers the React host and the planned-step host
+alike and also covers a directly assembled provider that
+`RoutingModelClient` never wraps.
+
+- **Independent budgets.** Rate limiting and transient failures
+  (`RequestFailed`, `StreamInterrupted`) each have their own attempt budget:
+  six total attempts for throttling, four for transport failures, first call
+  included. A throttled provider therefore cannot consume the transport budget.
+  `max_attempts = 1` disables retry for that class, and both at `1` restore the
+  pre-budget behavior exactly.
+- **Backoff.** The first retry waits `backoff_base_ms` (default 2s) and each
+  further retry doubles it, capped at `backoff_max_ms` (default 30s) with a
+  small jitter that only shaves the delay. A provider `RateLimited { retry_after_ms }`
+  is used as given, clamped to the ceiling and never jittered: the provider
+  asked for that wait.
+- **Visibility.** Every scheduled retry emits
+  `StreamEvent::ProviderRetry { attempt, max_attempts, delay_ms, reason, phase }`
+  before sleeping. `attempt` is 1-based, so the first retry is `attempt = 2`, and
+  `reason` is a whitelist (`rate_limited` or `transient:<error_code>`). Provider
+  messages, headers, and bodies never reach the event, the trace, or the report.
+  CLI/TUI and the Web project these facts; they do not invent a policy.
+- **Cancellation.** The wait is cancellable and biased: cancelling during a
+  backoff ends the turn immediately as cancelled instead of leaving a pending
+  sleep or issuing one more request.
+- **Budget accounting.** A retry is the same model call, so it does not consume
+  `budgets.max_model_turns` and does not advance a plan step attempt. The bound
+  is the retry budget itself, plus `max_wall_time_ms` when configured. An
+  accepted steer is announced once per model call, not once per attempt.
+- **No retry after output.** A retry is only allowed while the turn has not yet
+  produced a `LlmChunk`. Once text has streamed, a failure is terminal for the
+  turn: regenerating would duplicate text the user can already see. The same
+  rule means a partly streamed tool call is safe to retry, because no tool has
+  been dispatched yet, and that a Review-mode turn (whose text is redacted and
+  never becomes `LlmChunk`) stays retryable.
+- **Exhaustion.** When the budget for the failure's class is spent, the
+  provider's own `ModelError` reaches the kernel unchanged and the run
+  terminates as before (`TerminationReason::Error`); a recoverable planned-step
+  failure then still enters the existing repair/replan path.
