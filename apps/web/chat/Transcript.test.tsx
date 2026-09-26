@@ -78,12 +78,80 @@ describe("Transcript", () => {
       />,
     );
 
-    expect(html.indexOf("Before tool")).toBeLessThan(html.indexOf("read_file"));
-    expect(html.indexOf("read_file")).toBeLessThan(html.indexOf("输入已提交"));
-    expect(html.indexOf("输入已提交")).toBeLessThan(html.indexOf("After input"));
+    // Consecutive tools and inputs fold into one activity between the answers.
+    const activityIndex = html.indexOf("工具调用 × 1");
+    expect(html.indexOf("Before tool")).toBeLessThan(activityIndex);
+    expect(activityIndex).toBeLessThan(html.indexOf("After input"));
     expect(html).toContain('data-run-ordinal="1"');
+    // The folded body stays out of the server-rendered DOM: settled tool and
+    // input details only appear once the reader opens the activity.
+    expect(html).not.toContain("read_file");
+    expect(html).not.toContain("Which format?");
     expect(html).not.toContain("Type your answer");
     expect(html).not.toContain('name="answer"');
+  });
+
+  it("keeps a pending approval outside the folded activity body", () => {
+    const timeline: TranscriptRunGroup[] = [
+      {
+        id: "run:run-1",
+        runId: "run-1",
+        runOrdinal: 1,
+        inherited: false,
+        sourceSessionId: null,
+        items: [
+          {
+            kind: "tool",
+            entry: entry("tool", "run:run-1:tool:call-1", 1),
+            tool: {
+              id: "call-1",
+              timelineId: "run:run-1:tool:call-1",
+              name: "write_file",
+              status: "waiting",
+              details: "needs approval",
+              pendingApproval: {
+                call_id: "call-1",
+                name: "write_file",
+                args: { path: "a.txt" },
+                reason: "needs approval",
+              },
+            },
+          },
+          {
+            kind: "tool",
+            entry: entry("tool", "run:run-1:tool:call-2", 2),
+            tool: {
+              id: "call-2",
+              timelineId: "run:run-1:tool:call-2",
+              name: "read_file",
+              status: "done",
+              details: "complete",
+            },
+          },
+        ],
+      },
+    ];
+
+    const html = renderTranscript(
+      <Transcript
+        timeline={timeline}
+        approvalBusy={null}
+        inputBusy={null}
+        restoreState={{ status: "complete", sessionId: "session-1" }}
+        onRetryRestore={vi.fn()}
+        onStartNewSession={vi.fn()}
+        onApproval={vi.fn()}
+        onInputSubmit={vi.fn()}
+      />,
+    );
+
+    // The approval card is rendered before the fold body — and even when the
+    // body is collapsed it stays in the DOM: a blocked run must keep its
+    // interaction reachable.
+    expect(html).toContain("write_file");
+    expect(html.indexOf("approval-card")).toBeLessThan(
+      html.indexOf("activity-group__body"),
+    );
   });
 
   it("labels inherited fork history as read-only", () => {
