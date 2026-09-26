@@ -15,7 +15,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use futures::{Stream, StreamExt};
+use futures::Stream;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 use utoipa::IntoParams;
@@ -1511,21 +1511,21 @@ pub(crate) struct ProductEventsQuery {
 /// The `Last-Event-ID` header value for the product stream.
 ///
 /// The job stream's parser accepts `u64`; product `seq` is an `i64` column, so
-/// this mirrors its behavior (absent = no cursor, unparsable = 400) while
-/// clamping an out-of-range value to "no event is newer than this".
+/// this mirrors its behavior (absent = no cursor, unparsable = 400) on the
+/// product `seq` domain. Range checking stays with the query cursor so both
+/// cursor sources answer with the same typed error.
 fn parse_last_product_event_id(headers: &HeaderMap) -> Result<Option<i64>, ApiError> {
     let Some(raw) = headers.get("last-event-id") else {
         return Ok(None);
     };
-    let raw = raw
-        .to_str()
-        .map_err(|_| ApiError::bad_request("Last-Event-ID must be a valid integer"))?;
-    let value = raw
-        .parse::<i64>()
-        .map_err(|_| ApiError::bad_request("Last-Event-ID must be a valid integer"))?;
-    if value < 0 {
-        return Err(ApiError::bad_request("Last-Event-ID must not be negative"));
-    }
+    let invalid = || {
+        ApiError::bad_request_with_code(
+            ProductErrorCode::ProductInvalidInput.as_str(),
+            "Last-Event-ID must be a valid integer",
+        )
+    };
+    let raw = raw.to_str().map_err(|_| invalid())?;
+    let value = raw.parse::<i64>().map_err(|_| invalid())?;
     Ok(Some(value))
 }
 
@@ -1587,8 +1587,19 @@ fn product_event_stream(
     futures::stream::unfold(state, |mut state| async move {
         loop {
             if let Some(event) = state.pending.pop_front() {
-                state.cursor = event.seq;
-                return Some((product_event_frame(&event), state));
+                match product_event_frame(&event) {
+                    Ok(frame) => {
+                        state.cursor = event.seq;
+                        return Some((Ok(frame), state));
+                    }
+                    Err(error) => {
+                        // Dropping one frame would silently punch a hole in the
+                        // sequence the client resumes from, so end the stream
+                        // and let the client reconnect with its cursor.
+                        tracing::error!(%error, "product event frame could not be serialized");
+                        return None;
+                    }
+                }
             }
             match state
                 .store
@@ -1600,7 +1611,18 @@ fn product_event_stream(
                 }
                 Ok(_) => {
                     tokio::select! {
-                        _ = state.notify.recv() => {}
+                        received = state.notify.recv() => {
+                            // A lag still means "something was committed": fall
+                            // through and re-read. A closed channel means no
+                            // notification can ever arrive, so waking on the
+                            // poll alone is the only honest behaviour left.
+                            if matches!(
+                                received,
+                                Err(tokio::sync::broadcast::error::RecvError::Closed)
+                            ) {
+                                return None;
+                            }
+                        }
                         _ = state.poll.tick() => {}
                         _ = state.shutdown.cancelled() => return None,
                     }
@@ -1616,8 +1638,6 @@ fn product_event_stream(
             }
         }
     })
-    .filter_map(|frame| futures::future::ready(frame.ok()))
-    .map(Ok)
 }
 
 #[utoipa::path(

@@ -13465,6 +13465,22 @@ async fn product_events_stream_delivers_catalog_facts_and_resumes_without_gaps()
     let error: serde_json::Value = decode_json(negative).await;
     assert_eq!(error["code"], "product_invalid_input");
 
+    // The header is the other cursor source, so it answers the same way.
+    let unparsable = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/events")
+                .header("last-event-id", "not-a-seq")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unparsable.status(), StatusCode::BAD_REQUEST);
+    let error: serde_json::Value = decode_json(unparsable).await;
+    assert_eq!(error["code"], "product_invalid_input");
+
     // The stream ends with the server, so an open connection cannot outlive it.
     let shutdown = CancellationToken::new();
     let shutdown_app = router(ApiState::with_shutdown(
