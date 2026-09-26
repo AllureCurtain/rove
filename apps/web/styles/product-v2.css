@@ -1159,8 +1159,8 @@ html[data-reading-resizing="true"] * {
 }
 
 .product-app-frame[data-ui-version="v2"] .tool-card__head {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   width: 100%;
@@ -1458,18 +1458,6 @@ html[data-reading-resizing="true"] * {
   text-wrap: balance;
 }
 
-.product-app-frame[data-ui-version="v2"] .rich-text h1 {
-  font-size: calc(18px * var(--font-scale, 1));
-}
-
-.product-app-frame[data-ui-version="v2"] .rich-text h2 {
-  font-size: calc(16px * var(--font-scale, 1));
-}
-
-.product-app-frame[data-ui-version="v2"] .rich-text h3,
-.product-app-frame[data-ui-version="v2"] .rich-text h4 {
-  font-size: calc(14px * var(--font-scale, 1));
-}
 
 .product-app-frame[data-ui-version="v2"] .rich-text p,
 .product-app-frame[data-ui-version="v2"] .rich-text ul,
@@ -4079,6 +4067,7 @@ body.is-resizing-column * {
 .product-app-frame[data-ui-version="v2"] .modal-card {
   overscroll-behavior: contain;
 }
+
 
 .product-app-frame[data-ui-version="v2"] .tool-card__chip {
   border-radius: var(--v2-radius-pill, 999px);

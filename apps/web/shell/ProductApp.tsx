@@ -11,6 +11,17 @@ import {
 } from "react";
 
 import { Composer } from "../chat/Composer";
+import type {
+  ComposerCommand,
+  ComposerFileSuggestion,
+} from "../chat/Composer";
+import {
+  contextUsage as computeContextUsage,
+  latestUsage,
+  type ContextUsage,
+} from "../chat/context-usage";
+import { lastRestorableUserMessage, shouldRestoreOnStop } from "../chat/smart-stop";
+import { COMPOSER_FILE_SOURCE_LIMIT } from "../chat/Composer";
 import { CopyProvider, useCopy } from "../copy/CopyProvider";
 import { Transcript } from "../chat/Transcript";
 import { RunInspector } from "../inspector/RunInspector";
@@ -43,6 +54,7 @@ import { routePrefetchTargets } from "./route-prefetch";
 import { useIdleRoutePrefetch } from "./use-idle-route-prefetch";
 import { SettingsShell } from "../settings/SettingsShell";
 import { matchKeyboardShortcut } from "../settings/keyboard-settings-model";
+import { useKeybindingOverrides } from "../settings/use-keybinding-overrides";
 import {
   KEYBOARD_SHORTCUTS,
   type KeyboardShortcutActionId,
@@ -73,9 +85,18 @@ import { TopBar } from "./TopBar";
 import { UiSkinProvider, useUiSkin, type UiSkin } from "./ui-skin";
 import { SidebarResizeHandle } from "./SidebarResizeHandle";
 import { useSidebarWidth } from "./use-sidebar-width";
+import { useFontScalePreference } from "../settings/use-font-scale";
 
 export type ProductUiVersion = "v1" | "v2";
 export type { UiSkin };
+
+/**
+ * The collapsed work panel track, aligned with the 40px the v2 skin gives
+ * `.product-inspector[data-collapsed="true"]` (the undefined
+ * `--work-panel-collapsed-width` variable it replaced always fell back to
+ * this same number).
+ */
+const WORK_PANEL_COLLAPSED_WIDTH_PX = 40;
 
 /** Strip Windows long-path prefixes so roots read as ordinary paths. */
 function formatDisplayPath(path: string): string {
@@ -105,11 +126,13 @@ function ProductFrame({ uiVersion, draftStore }: {
   draftStore: ComposerDraftStore;
 }) {
   const { skin } = useUiSkin();
+  const { fontScale } = useFontScalePreference();
   return (
     <div
       className="product-app-frame"
       data-ui-version={uiVersion}
       data-skin={skin}
+      style={{ "--font-scale": String(fontScale) } as CSSProperties}
     >
       <M1MigrationGate>
         <ServerProductApp uiVersion={uiVersion} draftStore={draftStore} />
@@ -151,6 +174,11 @@ function ServerProductApp({ uiVersion, draftStore }: {
   // Focus target for the narrow-screen "select session, close rail" flow.
   const sessionTitleRef = useRef<HTMLHeadingElement>(null);
   const panelRef = useRef(panel);
+  // Shortcut overrides are a local preference; the listener reads them through
+  // a ref so editing a binding never re-installs the global key handler.
+  const keybindingOverrides = useKeybindingOverrides();
+  const keybindingOverridesRef = useRef(keybindingOverrides);
+  keybindingOverridesRef.current = keybindingOverrides;
   const inspectorCollapsed = panel.collapsed;
   const [mobileLayout, setMobileLayout] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
@@ -358,6 +386,54 @@ function ServerProductApp({ uiVersion, draftStore }: {
         : "idle";
   const busy = continuity.runState.busy;
   const sessionUsage = useSessionUsage(activeSession?.id ?? null, busy);
+  // Context window for the composer usage ring: the latest run's model view
+  // publishes it; an unknown window means the ring degrades to a bare count.
+  const [contextWindow, setContextWindow] = useState<number | null>(null);
+  const activeSessionId = activeSession?.id ?? null;
+  useEffect(() => {
+    if (!activeSessionId) {
+      setContextWindow(null);
+      return;
+    }
+    let cancelled = false;
+    server.productClient
+      .listSessionRunModels(activeSessionId)
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+        setContextWindow(response.runs.at(-1)?.context_window ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setContextWindow(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId, server.productClient]);
+  const composerContextUsage = useMemo<ContextUsage | null>(() => {
+    const source = latestUsage(
+      continuity.runState.messages,
+      (message) => Boolean(message.usage),
+    );
+    const usage = source?.usage;
+    if (!usage) {
+      return null;
+    }
+    return computeContextUsage({
+      promptTokens: usage.prompt_tokens,
+      completionTokens: usage.completion_tokens,
+      cachedTokens: usage.cached_tokens,
+      window: contextWindow,
+    });
+  }, [continuity.runState.messages, contextWindow]);
+  // W3: a queued message has been loaded into the composer for replacement.
+  // The next send revokes the original first; a failed revoke keeps both.
+  const [editingQueuedMessageId, setEditingQueuedMessageId] = useState<string | null>(null);
+  // W5: the outcome of the last smart stop, shown once above the transcript.
+  const [stopNotice, setStopNotice] = useState<string | null>(null);
   const awaitingInitialRestore =
     routing.route.kind === "session" &&
     activeSession?.id === routing.route.sessionId &&
@@ -496,6 +572,165 @@ function ServerProductApp({ uiVersion, draftStore }: {
     }
   }
 
+  function writeComposerDraft(text: string) {
+    if (!activeWorkspace || !activeSession) {
+      return;
+    }
+    draftStore.setText(
+      { workspaceId: activeWorkspace.id, productSessionId: activeSession.id },
+      text,
+    );
+  }
+
+  function handleEditQueuedMessage(messageId: string, content: string) {
+    writeComposerDraft(content);
+    setEditingQueuedMessageId(messageId);
+    composerRef.current?.focus();
+  }
+
+  /**
+   * Adjacent swap through "revoke both, recreate in the new order": the ledger
+   * assigns seq by creation, so creation order is the queue order. Anything
+   * that fails mid-sequence is backfilled into the composer, never dropped.
+   */
+  async function handleMoveQueuedMessage(messageId: string, direction: "up" | "down") {
+    const queue = continuity.messages
+      .filter(
+        (message) =>
+          message.status === "queued" && message.requested_delivery === "successor",
+      )
+      .sort((left, right) => left.seq - right.seq);
+    const index = queue.findIndex((message) => message.id === messageId);
+    const neighborIndex = direction === "up" ? index - 1 : index + 1;
+    if (index < 0 || neighborIndex < 0 || neighborIndex >= queue.length) {
+      return;
+    }
+    const earlier = index < neighborIndex ? queue[index]! : queue[neighborIndex]!;
+    const later = index < neighborIndex ? queue[neighborIndex]! : queue[index]!;
+    try {
+      await continuity.revokeMessage(earlier.id);
+      await continuity.revokeMessage(later.id);
+    } catch {
+      // Nothing was recreated; the ledger keeps whatever revocation landed.
+      return;
+    }
+    for (const replacement of [later, earlier]) {
+      const accepted = await continuity.send(replacement.content);
+      if (!accepted) {
+        writeComposerDraft(replacement.content);
+        setStopNotice(t("chat.queuedMoveFailed"));
+        return;
+      }
+    }
+  }
+
+  async function handleSendWithQueueEdit(message: string): Promise<boolean> {
+    if (editingQueuedMessageId) {
+      const originalId = editingQueuedMessageId;
+      try {
+        await continuity.revokeMessage(originalId);
+      } catch {
+        // The original stays queued and the draft stays in the composer.
+        return false;
+      }
+      setEditingQueuedMessageId(null);
+    }
+    return continuity.send(message);
+  }
+
+  /**
+   * W5: stopping restores the message only when the model produced nothing
+   * after it. The draft is written before the revoke runs, so a failed revoke
+   * leaves the text in the composer and the message in the transcript.
+   */
+  async function handleCancelRun() {
+    setStopNotice(null);
+    const items = selectTranscriptTimeline(continuity.runState).flatMap(
+      (group) => group.items,
+    );
+    const restorable = lastRestorableUserMessage(items);
+    if (restorable?.kind === "message") {
+      writeComposerDraft(restorable.message.content);
+      try {
+        await continuity.revokeMessage(restorable.message.id);
+        setStopNotice(t("chat.smartStopRestored"));
+      } catch {
+        setStopNotice(t("chat.smartStopRevokeFailed"));
+      }
+    }
+    await continuity.cancel();
+  }
+
+  function handleEditTranscriptMessage(content: string) {
+    writeComposerDraft(content);
+    composerRef.current?.focus();
+  }
+
+  function handleRetryMessage(content: string) {
+    void continuity.send(content);
+  }
+
+  async function findComposerFiles(
+    query: string,
+  ): Promise<ComposerFileSuggestion[]> {
+    if (!activeWorkspace) {
+      return [];
+    }
+    const response = await server.productClient.listWorkspaceFiles(
+      activeWorkspace.id,
+      { prefix: query, limit: COMPOSER_FILE_SOURCE_LIMIT },
+    );
+    return response.entries
+      .slice(0, COMPOSER_FILE_SOURCE_LIMIT)
+      .map((entry) => ({
+        path: entry.path,
+        directory: entry.kind === "directory",
+      }));
+  }
+
+  /**
+   * The composer's slash menu shares the command palette's actions instead of
+   * growing a second registry: shortcuts that make sense while typing, the
+   * settings sections, and the theme toggle.
+   */
+  const composerCommands = useMemo<ComposerCommand[]>(() => {
+    const commands: ComposerCommand[] = [];
+    if (activeWorkspace && !server.catalogMutationBusy) {
+      commands.push({
+        id: "new-session",
+        label: t("commandPalette.actionNewSession"),
+        run: () => void handleNewSession(activeWorkspace.id),
+      });
+    }
+    if (activeWorkspace && activeSession) {
+      commands.push({
+        id: "toggle-inspector",
+        label: t("commandPalette.actionToggleInspector"),
+        run: () => panel.toggle(),
+      });
+    }
+    commands.push({
+      id: "open-settings",
+      label: t("commandPalette.actionOpenSettings"),
+      run: () => routing.openSettings("general"),
+    });
+    for (const section of VISIBLE_SETTINGS_SECTIONS) {
+      commands.push({
+        id: `settings:${section.id}`,
+        label: t(SETTINGS_SECTION_COPY_KEYS[section.id]),
+        run: () => routing.openSettings(section.id),
+      });
+    }
+    commands.push({
+      id: "toggle-theme",
+      label: t("commandPalette.actionToggleTheme"),
+      run: () => server.changeTheme(server.theme === "dark" ? "light" : "dark"),
+    });
+    return commands;
+    // The handler closures read live state; the label list is what is memoized.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeWorkspace?.id, activeSession?.id, server.catalogMutationBusy, server.theme, t]);
+
   async function removeWorkspaceAndLeaveIfActive(workspaceId: string) {
     const navigationIntent = routing.captureNavigationIntent();
     if (
@@ -542,7 +777,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
 
   useEffect(() => {
     function handleShortcut(event: KeyboardEvent) {
-      const shortcut = matchKeyboardShortcut(event);
+      const shortcut = matchKeyboardShortcut(event, keybindingOverridesRef.current);
       if (!shortcut) {
         return;
       }
@@ -557,6 +792,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
     activeSession,
     activeWorkspace,
     composerDisabled,
+    keybindingOverridesRef,
     routing,
     server.catalogMutationBusy,
     panel,
@@ -831,8 +1067,8 @@ function ServerProductApp({ uiVersion, draftStore }: {
               // the cap from the rail's *expanded* width here instead would let
               // CSS and JS disagree whenever the rail is collapsed.
               "--work-panel-track": inspectorCollapsed
-                ? "minmax(0, var(--work-panel-collapsed-width, 40px))"
-                : `min(${panelLayout.panelWidth}px, calc(100% - var(--pane-floor)))`,
+                ? `minmax(0, ${WORK_PANEL_COLLAPSED_WIDTH_PX}px)`
+                : `min(var(--work-panel-preview, ${panelLayout.panelWidth}px), calc(100% - var(--pane-floor)))`,
             } as CSSProperties
           }
         >
@@ -869,6 +1105,15 @@ function ServerProductApp({ uiVersion, draftStore }: {
             onRemoveWorkspace={(workspaceId) =>
               void handleRemoveWorkspace(workspaceId)
             }
+            onRenameSession={async (sessionId, title) => {
+              try {
+                await server.updateSessionTitle(sessionId, title);
+                return true;
+              } catch {
+                // The row restores its previous title and shows the error.
+                return false;
+              }
+            }}
             mobileOpen={mobileLayout && workspaceOpen}
             peekOpen={mobileLayout && workspacePeek}
             onOverlayPointerEnter={mobileLayout ? cancelPeekClose : undefined}
@@ -970,6 +1215,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
                       : t("common.close")}
                   </button>
                 </div>
+                {stopNotice ? <p className="shell-alert" role="status">{stopNotice}</p> : null}
                 <Transcript
                   timeline={selectTranscriptTimeline(continuity.runState)}
                   messages={continuity.messages}
@@ -995,6 +1241,14 @@ function ServerProductApp({ uiVersion, draftStore }: {
                   onInputSubmit={continuity.answer}
                   onPromoteMessage={(messageId) => void continuity.promoteMessage(messageId)}
                   onRevokeMessage={(messageId) => void continuity.revokeMessage(messageId)}
+                  onEditQueuedMessage={handleEditQueuedMessage}
+                  onMoveQueuedMessage={(messageId, direction) =>
+                    void handleMoveQueuedMessage(messageId, direction)
+                  }
+                  onRetryMessage={handleRetryMessage}
+                  onEditMessage={handleEditTranscriptMessage}
+                  onForkSession={() => void handleForkSession()}
+                  forkAvailable={forkAvailable}
                 />
                 <Composer
                   draftBinding={{
@@ -1010,11 +1264,16 @@ function ServerProductApp({ uiVersion, draftStore }: {
                   modelConfig={server.sessionModelConfig}
                   modelConfigSaving={server.sessionModelConfigMutationBusy}
                   textareaRef={composerRef}
-                  onSend={continuity.send}
-                  onCancel={() => void continuity.cancel()}
+                  onSend={handleSendWithQueueEdit}
+                  onCancel={() => void handleCancelRun()}
                   onLoadProviderModels={server.productClient.listProviderModels}
                   onModelConfigChange={server.changeSessionModelConfig}
                   controlError={continuity.controlError}
+                  activityPhase={continuity.activityPhase}
+                  contextUsage={composerContextUsage}
+                  commands={composerCommands}
+                  findFiles={findComposerFiles}
+                  queuedEditNotice={editingQueuedMessageId ? t("chat.queuedEditing") : null}
                   reviewAvailable={activeWorkspace.kind === "repo"}
                   reviewBusy={reviews.creating}
                   reviewError={reviews.error}
