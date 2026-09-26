@@ -40,7 +40,7 @@
 | 编号 | 条目 | 优先级 | 主要触碰面 | 状态 |
 |---|---|---|---|---|
 | R1 | transcript 游标分页（F.4 闭环） | P0 | `apps/api` + `apps/web` 接线 | Implemented（见 §1.7） |
-| R2 | 回合失败恢复家族（a 静默回合 / b 中止保留 / c 重试预算+事件） | P0 | `core`/`runtime`/`models`/`apps/api`/事件合同 | R2c Implemented（见 §2.4）；R2b Implemented（见 §2.5）；R2a Proposed |
+| R2 | 回合失败恢复家族（a 静默回合 / b 中止保留 / c 重试预算+事件） | P0 | `core`/`runtime`/`models`/`apps/api`/事件合同 | R2c Implemented（见 §2.4）；R2b Implemented（见 §2.6）；R2a Proposed |
 | R3 | 会话 `last_outcome` 字段 | P1 | ProductStore 迁移 016 + contracts + web | Proposed |
 | R4 | 队列协议扩展（原子重排 / send-now 边界语义 / 重启存活验证） | P1 | `apps/api` + 迁移 017 | Proposed |
 | R5 | 产品级目录 SSE `/product/events` | P1 | `apps/api` + 迁移 018 + web | Proposed |
@@ -411,7 +411,10 @@ R2c 独立成一个 PR（对应 §11 的 PR-2，branch `feature/runtime-align-r2
 不在 routing 包装层再加预算（预算在 run loop，天然覆盖直连 provider）；
 不做 provider 级别的幂等键或请求重放去重（模型调用无副作用）。
 
-### 2.5 R2b 实施记录
+### 2.6 R2b 实施记录
+
+> 编号说明：R2a 的实施记录是 §2.5，在 `feature/runtime-align-r2a`（PR #76）上落地；
+> 它与本节都从 §2.4 之后接续，哪个先合入，另一个的编号都不变。
 
 R2b 仍然独立成一个 PR（§11 的 PR-3 只落 R2b；R2a 保持 Proposed，不在本次 diff 内）。
 本节记录 §2.2 的落地事实与两处刻意偏离。
@@ -819,7 +822,7 @@ rove 当前最大的功能缺口（composer 只有粘贴文本 chip，`chat/comp
 |---|---|---|
 | PR-1 | R1（API 游标 + OpenAPI + 合同测试 + Web 接线） | 一个 PR 闭环 F.4（服务端+消费端），避免"半接线"状态过夜 |
 | PR-2 | R2c（ProviderRetry 事件 + run loop 预算 + fake 扩展 + Web 等待行） | 事件合同变更横切，独立成 PR |
-| PR-3 | R2a + R2b（静默恢复 + 中止保留，共享 fake 脚本化扩展与恢复配置组） | R2b 已单独落地（§2.5），R2a 仍待做 |
+| PR-3 | R2a + R2b（静默恢复 + 中止保留，共享 fake 脚本化扩展与恢复配置组） | R2b 已单独落地（§2.6），R2a 仍待做 |
 | PR-4 | R3（迁移 016 + contracts + Web 成功点） | |
 | PR-5 | R4（迁移 017 + 重排/边界派发 + 存活验证） | |
 | PR-6 | R5（迁移 018 + 端点 + Web 接入与轮询降级） | 与 F5 toast 联动 |
@@ -847,7 +850,7 @@ R2a/R2b 共享 fake provider 脚本化扩展（PR-2 先建）；R6 依赖 R1 的
 ## 13. 风险登记
 
 - R2b 的 1500ms 收尾窗口与取消 UX 的交互（用户感知"取消变慢"）：窗口只在
-  有非空累积文本时存在；UI 取消反馈即时（终态迁移不变）。已落地（§2.5）：
+  有非空累积文本时存在；UI 取消反馈即时（终态迁移不变）。已落地（§2.6）：
   `tests/abort_salvage.rs::the_salvage_window_is_bounded` 钉住窗口上界，
   空文本取消仍立即结束，重复取消不会重开窗口。
 - R2c 退避期间 run 占用 job：预算与上限必须可配且默认保守（已落地：分账 6/4、

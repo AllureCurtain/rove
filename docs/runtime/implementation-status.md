@@ -74,7 +74,7 @@ This matrix compares the runtime hardening target with the current implementatio
 > no-text case, the untouched tool path, and a legacy trace line with no field.
 > The implementation record, including the two deliberate deviations (the
 > smart-stop notice branch stays reserved, and the Web marker is a byline suffix
-> rather than inline text), is design §2.5; the frontend linkage is §7.5 of
+> rather than inline text), is design §2.6; the frontend linkage is §7.5 of
 > [`2026-09-26-frontend-experience-alignment-design.md`](../design/2026-09-26-frontend-experience-alignment-design.md).
 >
 > Product UI content convergence note (feature branch, not yet on `main`):
