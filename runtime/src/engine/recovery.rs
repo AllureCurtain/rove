@@ -109,12 +109,13 @@ impl ProviderRetryPolicy {
     /// A safe retry reason: the failure class and its typed error code only.
     ///
     /// Provider messages, request bodies, and headers never reach this string,
-    /// so it is safe for the event stream, the trace, and the report.
-    pub fn reason(&self, error: &ModelError) -> String {
-        match retry_class(error) {
-            Some(RetryClass::RateLimited) => "rate_limited".to_string(),
-            Some(RetryClass::Transient) => format!("transient:{}", error.error_code()),
-            None => "not_retryable".to_string(),
+    /// so it is safe for the event stream, the trace, and the report. The class
+    /// is a parameter rather than re-derived here, so the string set stays
+    /// total over the retryable classes and cannot describe an unretried error.
+    pub fn reason(class: RetryClass, error: &ModelError) -> String {
+        match class {
+            RetryClass::RateLimited => "rate_limited".to_string(),
+            RetryClass::Transient => format!("transient:{}", error.error_code()),
         }
     }
 
@@ -241,26 +242,32 @@ mod tests {
 
     #[test]
     fn reasons_are_whitelisted_and_never_carry_provider_text() {
-        let policy = deterministic();
         assert_eq!(
-            policy.reason(&ModelError::RateLimited {
-                retry_after_ms: 900
-            }),
+            ProviderRetryPolicy::reason(
+                RetryClass::RateLimited,
+                &ModelError::RateLimited {
+                    retry_after_ms: 900
+                }
+            ),
             "rate_limited"
         );
         assert_eq!(
-            policy.reason(&ModelError::RequestFailed(
-                "api key sk-secret leaked".to_string()
-            )),
+            ProviderRetryPolicy::reason(
+                RetryClass::Transient,
+                &ModelError::RequestFailed("api key sk-secret leaked".to_string())
+            ),
             "transient:request_failed"
         );
         assert_eq!(
-            policy.reason(&ModelError::StreamInterrupted(
-                "connection reset by peer".to_string()
-            )),
+            ProviderRetryPolicy::reason(
+                RetryClass::Transient,
+                &ModelError::StreamInterrupted("connection reset by peer".to_string())
+            ),
             "transient:stream_interrupted"
         );
-        assert_eq!(policy.reason(&ModelError::AuthFailed), "not_retryable");
+        // An error with no retry class cannot reach a reason at all: it has no
+        // budget to charge and is terminal on its first attempt.
+        assert_eq!(retry_class(&ModelError::AuthFailed), None);
     }
 
     #[test]

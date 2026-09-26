@@ -847,7 +847,7 @@ fn plan_retry(
     }
     let attempt = spent + 1;
     let delay_ms = policy.delay_ms(attempt, retry_after_ms(error));
-    let reason = policy.reason(error);
+    let reason = ProviderRetryPolicy::reason(class, error);
     match class {
         RetryClass::RateLimited => *rate_limit_attempts = attempt,
         RetryClass::Transient => *transient_attempts = attempt,
@@ -880,7 +880,11 @@ pub(crate) fn run_kernel_model_turn<'a>(
         // The retry inputs are kept only when a retry is possible at all, so a
         // deployment that disabled the budget pays nothing for it. The first
         // attempt uses the request as given; a retry re-sends the identical
-        // request rather than re-deriving it from a mutated turn.
+        // request rather than re-deriving it from a mutated turn. That copy is
+        // unavoidable while the budget is enabled: the turn stream owns its
+        // inputs, so the only way to repeat the same request is to have kept an
+        // unmodified one. An enabled-but-never-failing call therefore pays one
+        // clone of the bounded message view and tool schemas per model turn.
         let retry_inputs = retry_policy
             .is_enabled()
             .then(|| (messages.clone(), tool_schemas.clone()));
