@@ -22,8 +22,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use rove_api::{
     ApiState, CreateJobResponse, JobStateResponse, MAX_M1_BROWSER_MIGRATION_BODY_BYTES,
-    MAX_PRODUCT_TEXT_BYTES, ProductSessionId, ProductWorkspaceId, WorkspaceActivationState, router,
-    serve_listener,
+    MAX_PRODUCT_EVENTS_RETAINED, MAX_PRODUCT_TEXT_BYTES, ProductSessionId, ProductWorkspaceId,
+    WorkspaceActivationState, router, serve_listener,
 };
 use rove_app_bootstrap::{
     AppConfig, AppConfigOverrides, ProjectActivationState, ProjectTrustDecision,
@@ -13191,4 +13191,309 @@ async fn product_session_authorizations_reject_unknown_session_and_bound_limit()
     let empty: serde_json::Value = decode_json(empty).await;
     assert_eq!(empty["authorizations"].as_array().unwrap().len(), 0);
     assert_eq!(empty["truncated"], false);
+}
+
+/// One parsed product event frame: `id:` cursor, `event:` name, `data:` body.
+struct ProductEventFrame {
+    seq: i64,
+    event: String,
+    data: serde_json::Value,
+}
+
+fn parse_product_event_frame(raw: &str) -> ProductEventFrame {
+    let mut seq = None;
+    let mut event = None;
+    let mut data = None;
+    for line in raw.lines() {
+        if let Some(value) = line.strip_prefix("id:") {
+            seq = value.trim().parse::<i64>().ok();
+        } else if let Some(value) = line.strip_prefix("event:") {
+            event = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data = serde_json::from_str(value.trim()).ok();
+        }
+    }
+    ProductEventFrame {
+        seq: seq.unwrap_or_else(|| panic!("frame without an id: {raw}")),
+        event: event.unwrap_or_else(|| panic!("frame without an event: {raw}")),
+        data: data.unwrap_or_else(|| panic!("frame without a JSON data body: {raw}")),
+    }
+}
+
+/// Read `wanted` frames from the long-lived product event stream.
+///
+/// The stream never closes on its own, so every read is bounded by a deadline:
+/// a stalled stream has to fail the test rather than hang it.
+async fn read_product_event_frames(
+    body: &mut axum::body::BodyDataStream,
+    wanted: usize,
+) -> Vec<ProductEventFrame> {
+    use futures::StreamExt;
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    let mut buffer = String::new();
+    let mut frames: Vec<ProductEventFrame> = Vec::new();
+    while frames.len() < wanted {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let chunk = tokio::time::timeout(remaining, body.next())
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "product event stream delivered {} of {wanted} frames before the deadline",
+                    frames.len()
+                )
+            })
+            .expect("the product event stream must stay open")
+            .expect("the product event stream must not fail");
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(end) = buffer.find("\n\n") {
+            let raw = buffer[..end].to_string();
+            buffer.drain(..end + 2);
+            if !raw.trim().is_empty() {
+                frames.push(parse_product_event_frame(&raw));
+            }
+        }
+    }
+    frames
+}
+
+#[tokio::test]
+async fn product_events_stream_delivers_catalog_facts_and_resumes_without_gaps() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+
+    // Subscribe with no cursor first: this is the fresh-tab case, and the stream
+    // must follow from now rather than answer with a replay window.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
+    let mut body = response.into_body().into_data_stream();
+
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap().to_string();
+    let session = create_product_session(
+        &app,
+        &workspace_id,
+        "Directory stream session with user text",
+    )
+    .await;
+    let session_id = session["id"].as_str().unwrap().to_string();
+
+    let frames = read_product_event_frames(&mut body, 2).await;
+    assert_eq!(frames[0].event, "workspace.created");
+    assert_eq!(frames[1].event, "session.created");
+    assert!(
+        frames[0].seq < frames[1].seq,
+        "the stream must deliver facts in durable order"
+    );
+    for frame in &frames {
+        assert_eq!(frame.data["v"], 1, "frames carry the protocol version");
+        assert_eq!(frame.data["type"], frame.event);
+        assert_eq!(frame.data["seq"].as_i64(), Some(frame.seq));
+    }
+    assert_eq!(
+        frames[0].data["workspace_id"].as_str(),
+        Some(workspace_id.as_str())
+    );
+    assert_eq!(
+        frames[1].data["session_id"].as_str(),
+        Some(session_id.as_str())
+    );
+    assert!(
+        frames[1].data["workspace_id"].as_str() == Some(workspace_id.as_str()),
+        "a created session reports the workspace it belongs to"
+    );
+    // The directory stream is readable by every API-token holder, so no user
+    // text may reach it — not the session title either.
+    let raw = serde_json::to_string(
+        &frames
+            .iter()
+            .map(|frame| frame.data.clone())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    assert!(
+        !raw.contains("user text"),
+        "user text must never enter the directory stream: {raw}"
+    );
+
+    let resume_from = frames.last().unwrap().seq;
+
+    // Disconnect the client, then keep mutating: those facts must be waiting.
+    drop(body);
+    let renamed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/product/sessions/{session_id}"))
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "title": "Renamed while disconnected" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(renamed.status(), StatusCode::OK);
+    let queued = post_json(
+        &app,
+        &format!("/product/sessions/{session_id}/messages"),
+        serde_json::json!({ "content": "queued after the disconnect" }),
+    )
+    .await;
+    assert_eq!(queued.status(), StatusCode::CREATED);
+
+    let resumed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/events")
+                .header("last-event-id", resume_from.to_string())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resumed.status(), StatusCode::OK);
+    let mut resumed_body = resumed.into_body().into_data_stream();
+    let replay = read_product_event_frames(&mut resumed_body, 2).await;
+    assert_eq!(
+        replay.iter().map(|frame| frame.seq).collect::<Vec<_>>(),
+        vec![resume_from + 1, resume_from + 2],
+        "resuming must deliver every missed fact exactly once"
+    );
+    assert_eq!(replay[0].event, "session.updated");
+    assert_eq!(replay[1].event, "control.queued");
+    let summary = replay[1].data["summary"].as_str().expect("queued summary");
+    assert!(summary.contains("\"status\":\"queued\""));
+    assert!(
+        !summary.contains("queued after the disconnect"),
+        "a queue event carries state, never the message body"
+    );
+    drop(resumed_body);
+
+    // An explicit cursor that predates the retained window cannot be served
+    // silently, so it must fail closed with a typed conflict.
+    let seeded =
+        rusqlite::Connection::open(server.path().join("api-state/product.sqlite")).unwrap();
+    let transaction = seeded.unchecked_transaction().unwrap();
+    for offset in 0..(MAX_PRODUCT_EVENTS_RETAINED + 8) {
+        transaction
+            .execute(
+                "INSERT INTO product_events(kind, created_at) VALUES ('session.updated', ?1)",
+                [format!("seeded-{offset}")],
+            )
+            .unwrap();
+    }
+    transaction.commit().unwrap();
+    drop(seeded);
+    // One ordinary mutation is what trims the log back to its window.
+    let created = create_product_session(&app, &workspace_id, "Trim trigger").await;
+    assert!(created["id"].is_string());
+
+    let expired = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/events?after=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(expired.status(), StatusCode::CONFLICT);
+    let error: serde_json::Value = decode_json(expired).await;
+    assert_eq!(error["code"], "product_events_expired");
+
+    // A client with no cursor is not resuming anything, so it still connects and
+    // follows live even though the old window is gone.
+    let followed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(followed.status(), StatusCode::OK);
+    let mut followed_body = followed.into_body().into_data_stream();
+    let created = create_product_session(&app, &workspace_id, "After the trim").await;
+    let session_id = created["id"].as_str().unwrap().to_string();
+    let live = read_product_event_frames(&mut followed_body, 1).await;
+    assert_eq!(live[0].event, "session.created");
+    assert_eq!(
+        live[0].data["session_id"].as_str(),
+        Some(session_id.as_str())
+    );
+
+    // A negative cursor is invalid input, not an expired one.
+    let negative = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/events?after=-5")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(negative.status(), StatusCode::BAD_REQUEST);
+    let error: serde_json::Value = decode_json(negative).await;
+    assert_eq!(error["code"], "product_invalid_input");
+
+    // The stream ends with the server, so an open connection cannot outlive it.
+    let shutdown = CancellationToken::new();
+    let shutdown_app = router(ApiState::with_shutdown(
+        Workspace::detect(server.path()).unwrap(),
+        test_config(),
+        shutdown.clone(),
+    ));
+    let response = shutdown_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body().into_data_stream();
+    shutdown.cancel();
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        use futures::StreamExt;
+        while let Some(chunk) = body.next().await {
+            chunk.expect("the shutting-down stream must not fail");
+        }
+    })
+    .await;
+    assert!(
+        ended.is_ok(),
+        "a cancelled server must close the product event stream"
+    );
 }
