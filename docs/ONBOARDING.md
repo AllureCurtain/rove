@@ -72,6 +72,8 @@ Read in this order:
 7. [implementation status](runtime/implementation-status.md) — implemented
    versus remaining work.
 8. [root `AGENTS.md`](../AGENTS.md) — repository working rules.
+9. [root `CONTRIBUTING.md`](../CONTRIBUTING.md) — the branch, worktree,
+   commit, PR, and review workflow.
 
 Read [`MEMORY_DOCTRINE.md`](../MEMORY_DOCTRINE.md) before changing context,
 compaction, session summary, durable memory, or recall.
@@ -612,6 +614,11 @@ A skipped external smoke is not evidence that the external integration works.
 
 ## 18. Common change workflows
 
+Every workflow below happens in a worktree on a feature branch and lands
+through a pull request — see
+[`CONTRIBUTING.md`](../CONTRIBUTING.md) for the branch, commit, PR, and
+review rules.
+
 ### 18.1 Fix a core/runtime bug
 
 1. Reproduce with a focused test.
@@ -811,7 +818,8 @@ unrelated changes at handoff.
 
 ## 22. First contribution checklist
 
-- [ ] I read `AGENTS.md` and the relevant current runtime docs.
+- [ ] I read `CONTRIBUTING.md`, `AGENTS.md`, and the relevant current runtime docs.
+- [ ] I worked in a worktree on a feature branch and am landing through a PR.
 - [ ] I inspected the dirty tree.
 - [ ] I reproduced or defined the requested behavior.
 - [ ] I added/updated focused tests for implementation work.
@@ -821,6 +829,7 @@ unrelated changes at handoff.
 - [ ] I marked future designs as proposed.
 - [ ] I checked generated artifacts and secrets.
 - [ ] I can explain what was not tested and why.
+- [ ] I filled in the pull request template, including scope and non-goals.
 
 ## 23. Handoff template
 

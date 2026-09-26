@@ -439,6 +439,7 @@ design is not evidence that the runtime supports it.
 
 | Read this | For |
 |---|---|
+| [Contributor guide](CONTRIBUTING.md) | Branch, worktree, commit, PR, and review workflow |
 | [Maintainer onboarding](docs/ONBOARDING.md) | Repository map, source-of-truth order, development workflow, and verification |
 | [Runtime documentation](docs/runtime/README.md) | Current implementation map and supported behavior |
 | [Architecture](docs/runtime/architecture.md) | Package ownership and cross-surface boundaries |
