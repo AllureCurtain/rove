@@ -1280,8 +1280,10 @@ pub(crate) async fn start_product_review_runtime(
     config.state.sqlite_path = state_root.join("state.sqlite");
     config.state.allow_external_paths = true;
     // A Review run retries under the same configured budget as any other run,
-    // and runs the same silent-turn recovery policy. A Review turn's model text
-    // is always redacted rather than absent, so the detection never fires.
+    // and runs the same silent-turn recovery policy. Review mode replaces model
+    // text with a redaction marker instead of removing it, so a Review turn that
+    // produced a message is never read as silent; a turn that produced no
+    // message at all is recovered like any other.
     let provider_retry = config.runtime.recovery.retry_policy();
     let silent_turn_recovery = config.runtime.recovery.silent_turn_policy();
     let record = new_job_record(NewJobRecord {

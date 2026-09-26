@@ -480,8 +480,8 @@ mod tests {
         spoke.record_model_message("an answer");
         assert!(!spoke.observe("", "do the task").is_silent());
         assert!(!evidence.observe("an answer", "do the task").is_silent());
-        // A redacted Review-mode message counts as text, so Review runs are
-        // never silent.
+        // A redacted Review-mode message counts as text, so a Review turn that
+        // produced a message is not read as silent.
         let mut redacted = SilentTurnEvidence::default();
         redacted.record_model_message("[review model output omitted]");
         assert!(!redacted.observe("", "review this").is_silent());

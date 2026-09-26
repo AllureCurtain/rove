@@ -330,8 +330,10 @@ fn assemble_review_model(
     )?;
     let requested_fake = requested_model.is_some_and(|model| matches!(model, "fake" | "fake-raw"));
     // A Review run retries under the same configured budget as any other run,
-    // and runs the same silent-turn recovery policy. A Review turn's model text
-    // is always redacted rather than absent, so the detection never fires.
+    // and runs the same silent-turn recovery policy. Review mode replaces model
+    // text with a redaction marker instead of removing it, so a Review turn that
+    // produced a message is never read as silent; a turn that produced no
+    // message at all is recovered like any other.
     let provider_retry = config.runtime.recovery.retry_policy();
     let silent_turn_recovery = config.runtime.recovery.silent_turn_policy();
     let catalog_service = ProviderCatalogService::discover();
