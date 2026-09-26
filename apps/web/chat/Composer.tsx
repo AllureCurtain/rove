@@ -153,6 +153,25 @@ export function Composer({
     // Attachments belong to one session's draft; they never follow a switch.
   }, [draftBinding?.productSessionId, draftBinding?.workspaceId]);
 
+  // A smart stop can restore the send as it was, chips included (design F6).
+  // The store carries the chips because the sent message has them folded into
+  // its text, and un-folding that would be guesswork. A text-only restore means
+  // the chips that were in the composer no longer match it, so they go away.
+  const lastRestore = draft.lastRestore;
+  useEffect(() => {
+    if (lastRestore === null) {
+      return;
+    }
+    const chips = lastRestore.source === "snapshot" ? lastRestore.chips : [];
+    setAttachments(chips.map((chip) => ({ id: createAttachmentId(), text: chip.text })));
+    setPasteNotice(
+      chips.length > 0 ? t("chat.smartStopRestoredPastes", { n: chips.length }) : null,
+    );
+    // The store hands over a fresh object per restore; the copy function is
+    // stable and must not re-fire this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastRestore]);
+
   const canSubmit =
     Boolean(message.trim()) &&
     !submitting &&
@@ -160,6 +179,9 @@ export function Composer({
 
   async function submitDraft() {
     if (!canSubmit) return;
+    // Capture the chips before the send clears them: an accepted send keeps
+    // them as this draft's restore snapshot.
+    const sentChips = attachments.map((attachment) => ({ text: attachment.text }));
     await draft.submit(async (sent) => {
       const accepted = await onSend(composeMessageWithAttachments(sent, attachments));
       if (accepted) {
@@ -167,7 +189,7 @@ export function Composer({
         setPasteNotice(null);
       }
       return accepted;
-    });
+    }, sentChips);
   }
 
   function handleSubmit(event: FormEvent) {
