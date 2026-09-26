@@ -30,7 +30,7 @@
 | F4 | 会话 hover 卡片 | P1 | 无 | Implemented |
 | F5 | Toast 通知层与后台失败可见性 | P1 | 无（收件箱部分依赖 R5） | Implemented（toast 层与后台失败；收件箱待 R5） |
 | F6 | smart-stop 发送快照（含粘贴 chips） | P1 | 无 | Implemented（部分中止文案分支待 R2b） |
-| F7 | 杂项清理（/dev 文案、mock 页标注、降级语义如实标注） | P1 | 无 | Proposed |
+| F7 | 杂项清理（/dev 文案、mock 页标注、降级语义如实标注） | P1 | 无 | Implemented |
 | F8 | 样式 token linter 与 CI 接入 | P1 | 无 | Proposed |
 | F9 | 侧栏折叠动效合成器友好化 | P2 | 无 | Proposed |
 | F10 | 偏好小项（per-model reasoning 记忆、会话自动标题） | P2 | 无 | Proposed |
@@ -415,6 +415,25 @@ chips 在发送瞬间折叠丢失。
 4. `use-sidebar-width.ts:140-148` 的注释记录的测量结论保留原样（是有效文档）。
 
 验证：`pnpm typecheck && pnpm test && pnpm build`；`/dev` 相关 e2e 更新。
+
+### 8.1 实现记录（2026-09-26）
+
+1. `/dev/workbench` 横幅删掉"Benchmark lives under Settings → Advanced"（基准运行器
+   已不在产品 Settings 里，`advanced` 只是渲染 General 的别名），只留 dev 路由警示
+   "Development route only."。
+2. `app/dev/product-ui-v2/` 仍是 notFound 门控，并在最顶部加了一条醒目的
+   "Design mock, not product."（`role="note"`）徽标。它占了 `.preview` 网格的第一行，
+   因此 `product-ui-v2.module.css` 的行模板改为 `auto 52px minmax(0, 1fr)`——移动端
+   媒体查询里还有一份两行的旧模板，第一次跑 e2e 就被抓出来（product bar 被撑成
+   1fr 并盖住了 "Open run evidence"），两处一起改。`product-ui-v2.spec.ts` 里原本
+   `getByRole("note")` 唯一的断言改为按文案定位，并新增徽标断言。
+3. 消息级 fork 按钮保持如实的"复制会话"（`chat/Transcript.tsx`，fork 锚定最后一个
+   终态 run 的 `last_event_seq`，由服务端派生），消息级编辑重发仍等运行时文档 R6。
+4. `shell/use-sidebar-width.ts` 里那段拖动测量的注释保留原样（是有效文档）。
+5. 超出本节编号的一处清理（§0 F7 的"杂项"）：会话头的 fork 按钮原本硬编码英文
+   `Fork`，与消息级按钮是同一个服务端操作，现改用同一个既有文案键
+   `chat.forkSession`；`toast.spec.ts` 与 `real-api.spec.ts` 的定位符随之改为在
+   `.chat-pane__header` 内按该名字查找。
 
 ---
 
