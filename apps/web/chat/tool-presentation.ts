@@ -1,5 +1,6 @@
 import type { ToolMutationOperation } from "../lib/rove-types";
 import type { ToolCallView } from "../lib/rove-state";
+import { exactDurationLabel } from "./tool-timing";
 
 /**
  * Typed presentation of one tool call.
@@ -172,11 +173,13 @@ function blocksFor(tool: ToolCallView): ToolBlock[] {
 
 function fieldRows(tool: ToolCallView): { label: string; value: string }[] {
   const metadata = tool.metadata;
-  if (!metadata) {
-    return [];
-  }
   const rows: { label: string; value: string }[] = [];
-  if (metadata.diff_summary) {
+  // The exact published duration, next to the badge that rounds it.
+  const durationMs = tool.protocolMetadata?.duration_ms;
+  if (typeof durationMs === "number") {
+    rows.push({ label: "duration", value: exactDurationLabel(durationMs) });
+  }
+  if (metadata?.diff_summary) {
     for (const summary of metadata.diff_summary) {
       rows.push({ label: "summary", value: summary });
     }

@@ -98,6 +98,8 @@ export function toWorkbenchStreamEvent(event: ProductStreamEvent): StreamEvent {
           output: event.result.output,
           mutations: event.result.mutations,
           metadata: event.result.metadata,
+          // The envelope carries the runtime's own measurement of the call.
+          envelope: event.result.envelope,
         },
       };
     case "tool_call_failed":
