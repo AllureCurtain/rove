@@ -34,8 +34,12 @@ Included:
   ProductStore v14 reconciles the v13 parallel-v12 layouts and adds durable
   Review rows/findings. Focused Runtime/API/TUI,
   Web unit/type/build, mocked browser, and five live local fake-provider cases
-  pass. This is F.1-F.3 evidence; F.4 older-history pagination/windowing and
-  F.5 complete TUI restart recovery remain open. Windows ConPTY/PTY and
+  pass. This is F.1-F.3 evidence, plus the R1 transcript cursor that now serves
+  bounded older-history pages to the Web reader (see
+  [`implementation-guide.md`](implementation-guide.md) and
+  [`acceptance-matrix.md`](acceptance-matrix.md)). F.5 complete TUI restart
+  recovery remains open, and long-session windowing beyond the two-layer mount
+  window is not claimed. Windows ConPTY/PTY and
   external-provider gates remain unverified.
 - Final TUI real-use slice F4/T7 is met on the Windows release CLI path with the
   locked SiliconFlow `openai` profile and `deepseek-ai/DeepSeek-V3.2`: three

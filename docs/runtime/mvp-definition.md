@@ -66,7 +66,9 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
   ProductStore/API/SSE, Web, and TUI with FIFO queueing, promotion/revoke CAS,
   safe-boundary application, successor claims, needs-attention recovery, and six
   durable delivery states. Legacy Steer/Follow-up routes remain compatibility
-  wrappers. F.4 older-history pagination/windowing and F.5 complete TUI restart
+  wrappers. F.4's server-side older-history pagination and the Web prepend path
+  are implemented through the transcript cursor; long-session windowing beyond
+  the two-layer mount window and F.5 complete TUI restart
   recovery remain outside the implemented MVP boundary.
 - One Runtime-neutral Core Agent kernel shared by embedded, unplanned, and planned-step execution, with Runtime-owned context, tool safety, and durable events.
 - Local state under `.rove/` with trace, task state, report, and SQLite index.

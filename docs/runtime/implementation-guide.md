@@ -13,6 +13,14 @@ This guide is for maintainers who need to understand, debug, or extend the curre
 > Deterministic checks and five live local fake-provider browser cases pass;
 > the external-provider browser gate was not run.
 
+> Transcript cursor note (2026-09-26): the transcript endpoint now serves
+> bounded older-history cursor pages (`before_ordinal`, `limit_runs`) with the
+> additive `next_before_ordinal`/`has_more` page shape, and the default shell
+> loads older history from them. This closes F.4's older-history pagination for
+> the Web reader; the parameterless response keeps its previous shape. See §5
+> (API route table and transcript contract), §6 (Web read path), and
+> [`acceptance-matrix.md`](acceptance-matrix.md).
+
 The root manifest is a modular resolver-3 Cargo Workspace whose default
 member is `apps/cli`, with independent packages `rove-models`, `rove-core`,
 `rove-runtime`, `rove-app-bootstrap`, `rove-cli`, `rove-api`, `rove-bench`, and

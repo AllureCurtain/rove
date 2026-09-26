@@ -129,6 +129,7 @@ DeepSeek Harness 仍处于 developer preview（官方声明存在破坏性变更
 以下缺口已在基线核验中确认，随本轮对应 workstream 一并完成，不单独立项：
 
 - F.4 服务端 transcript 分页（归 Web 控制与观察 workstream）：`ProductTranscriptResponse` 增加有界 cursor/上一页语义与按需 prepend，前端恢复从单次 `getTranscript` 改为可续拉；补充加载旧历史与滚动锚定的行为测试。
+  > 实施记录（2026-09-26）：已由[运行时与产品合同对齐](../design/2026-09-26-runtime-contract-alignment-design.md) R1 完成——`GET /product/sessions/{session_id}/transcript` 接受 `before_ordinal`/`limit_runs` 并返回 additive `next_before_ordinal`/`has_more`；Web 首屏取一页，`load older history` prepend 更旧页并复用 `prependHeightRef` 锚定，失败保留游标并显示有界错误。证据：`tests/api.rs` 的翻页/边界用例、`reader.rs` 的 `PageWalk` 单测、`apps/web/tests/e2e/transcript-pagination.spec.ts`（mock 300 runs）。本条不再遗留。
 - F.5 TUI 进程重启恢复（归入口与命令 workstream）：TUI 启动时扫描会话队列，排空可领取的 FIFO successor，并对已 `claimed_successor` 但没有对应 run 的消息与 runtime run index 对账。
 
 ## 实施顺序与 Worktree 划分
