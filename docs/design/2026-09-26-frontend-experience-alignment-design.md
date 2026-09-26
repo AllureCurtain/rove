@@ -24,7 +24,7 @@
 
 | 编号 | 条目 | 优先级 | 依赖 | 状态 |
 |---|---|---|---|---|
-| F1 | 会话切换的每会话 UI 状态快照（滚动/跟随/窗口/披露） | P0 | 无 | Proposed |
+| F1 | 会话切换的每会话 UI 状态快照（滚动/跟随/窗口/披露） | P0 | 无 | Implemented |
 | F2 | 工具与活动耗时呈现（徽标 + 活动组 elapsed） | P0 | 无 | Proposed |
 | F3 | 流式 markdown 的分块 memo 化 | P0 | 无 | Proposed |
 | F4 | 会话 hover 卡片 | P1 | 无 | Proposed |

@@ -48,12 +48,27 @@ import {
 } from "./transcript-window";
 import { useFollowScroll } from "./use-follow-scroll";
 import {
+  captureActiveSessionView,
+  registerSessionViewCapture,
+  restoreSessionView,
+  sessionViewSnapshots,
+  transcriptFingerprint,
+} from "./session-view-snapshot";
+import {
   describeTranscriptPartialReason,
   type TranscriptRestoreState,
 } from "../state/transcript-projection";
 
 /** Sub-pixel slack before the transcript counts as scrolling. */
 const TRANSCRIPT_OVERFLOW_SLACK_PX = 4;
+
+/**
+ * Restoring a viewport waits for the content it was measured against to be laid
+ * out — select, then paint — and keeps re-writing until the position sticks:
+ * a write into a still-collapsing scroller is silently clamped, which would
+ * leave the reader at the top of the transcript.
+ */
+const SESSION_VIEW_RESTORE_TIMEOUT_MS = 400;
 
 export function Transcript({
   timeline,
@@ -228,7 +243,44 @@ export function Transcript({
     followNow,
     recordScrollPosition,
     jumpToMarker,
+    readFollowState,
+    restoreFollowState,
+    settleRestoredFollow,
   } = useFollowScroll();
+  // The session whose data this transcript currently holds. An empty restore
+  // state means there is nothing to snapshot or reinstate.
+  const viewSessionId = restoreState.status === "idle" ? null : restoreState.sessionId;
+  const currentViewSessionRef = useRef(viewSessionId);
+  currentViewSessionRef.current = viewSessionId;
+  const timelineFingerprint = useMemo(() => transcriptFingerprint(timeline), [timeline]);
+  const fingerprintRef = useRef(timelineFingerprint);
+  fingerprintRef.current = timelineFingerprint;
+  // The data layer captures right before it resets the transcript, because only
+  // it knows a session is about to be replaced. The reader's view is read
+  // through a ref so the registered callback never closes over a stale render.
+  const captureViewRef = useRef<() => void>(() => {});
+  captureViewRef.current = () => {
+    // Only a session that actually rendered something has a view worth keeping,
+    // and a reset timeline is what a capture after the switch would see.
+    if (viewSessionId === null || timeline.length === 0) {
+      return;
+    }
+    const follow = readFollowState();
+    sessionViewSnapshots.record(
+      viewSessionId,
+      {
+        scrollTop: follow.scrollTop,
+        followPinned: follow.pinned,
+        window: transcriptWindow,
+        disclosure,
+      },
+      timelineFingerprint,
+    );
+  };
+  useEffect(() => {
+    registerSessionViewCapture(() => captureViewRef.current());
+    return () => registerSessionViewCapture(null);
+  }, []);
   const prependHeightRef = useRef<number | null>(null);
   const anchorRef = useRef<{ element: HTMLElement; offset: number } | null>(null);
   const holdAnchor = useCallback(
@@ -358,10 +410,83 @@ export function Transcript({
   }, [followNow, recordScrollPosition, transcriptRef]);
 
   useEffect(() => {
-    // A session switch starts at its newest turn; the window itself is reset
-    // by the timeline-length effect when the shorter timeline arrives.
+    // A session switch starts at its newest turn — unless the reader's own view
+    // of that session is about to be reinstated by the snapshot effect below.
+    if (viewSessionId !== null && sessionViewSnapshots.peek(viewSessionId)) {
+      return;
+    }
     pinToLatest();
-  }, [pinToLatest, restoreState.status === "idle" ? "idle" : restoreState.sessionId]);
+  }, [pinToLatest, viewSessionId]);
+
+  // Reinstating a per-session view happens once the restored data is in place.
+  // A snapshot is consumed at most once, and the session is re-checked when the
+  // position is finally written, so a capture can never land in the session that
+  // replaced it.
+  useEffect(() => {
+    if (
+      restoreState.status === "idle" ||
+      restoreState.status === "loading" ||
+      restoreState.status === "error"
+    ) {
+      return;
+    }
+    const sessionId = restoreState.sessionId;
+    const snapshot = sessionViewSnapshots.take(sessionId);
+    if (!snapshot) {
+      return;
+    }
+    const restored = restoreSessionView(snapshot, fingerprintRef.current);
+    setDisclosure(restored.disclosure);
+    if (restored.stale || restored.window === null || restored.scrollTop === null) {
+      // The session advanced while it was in the background: its newest turn is
+      // the only honest place to land.
+      pinToLatest();
+      return;
+    }
+    setTranscriptWindow(restored.window);
+    restoreFollowState({
+      pinned: restored.followPinned,
+      scrollTop: restored.scrollTop,
+    });
+    const targetTop = restored.scrollTop;
+    const startedAt = performance.now();
+    let firstFrame = 0;
+    let frame = 0;
+    const settle = () => {
+      const element = transcriptRef.current;
+      if (!element || currentViewSessionRef.current !== sessionId) {
+        return;
+      }
+      // `scrollTop =` is animated while the stylesheet asks for smooth scrolling,
+      // so the restored position has to be a move rather than a journey.
+      element.scrollTo({ top: targetTop, behavior: "instant" });
+      // A write that did not land was clamped: the content it was measured
+      // against is still arriving. Keep asking until it sticks or the ceiling
+      // passes, so the reader's position wins over a late layout.
+      const landed = Math.abs(element.scrollTop - targetTop) <= 1;
+      if (!landed && performance.now() - startedAt < SESSION_VIEW_RESTORE_TIMEOUT_MS) {
+        frame = requestAnimationFrame(settle);
+        return;
+      }
+      settleRestoredFollow();
+    };
+    // Select-then-paint: the content has to be laid out before a position inside
+    // it means anything, and writing into a collapsing scroller is clamped.
+    firstFrame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(settle);
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(frame);
+    };
+  }, [
+    pinToLatest,
+    restoreFollowState,
+    restoreState.status,
+    settleRestoredFollow,
+    transcriptRef,
+    viewSessionId,
+  ]);
 
   function loadOlderRuns() {
     const transcript = transcriptRef.current;

@@ -20,6 +20,7 @@ import {
   type ActivityEvent,
   type ActivityPhase,
 } from "../chat/activity-phase";
+import { captureActiveSessionView } from "../chat/session-view-snapshot";
 import type {
   ProductControl,
   ProductControlKind,
@@ -399,6 +400,10 @@ export function useSessionContinuity({
   const focusSession = useCallback(
     (workspaceId: string, sessionId: string) => {
       if (restoredSessionRef.current !== sessionId) {
+        // A route change (deep link, back/forward) replaces the transcript
+        // without the prepare step, so the view of the session on screen is
+        // captured here — it is still intact at this point.
+        captureActiveSessionView();
         void restoreSession(workspaceId, sessionId);
       }
     },
@@ -407,6 +412,7 @@ export function useSessionContinuity({
 
   const prepareSession = useCallback(
     (sessionId: string) => {
+      captureActiveSessionView();
       ++transcriptGenerationRef.current;
       closeFocusedObservation();
       focusedSessionRef.current = sessionId;
@@ -419,6 +425,7 @@ export function useSessionContinuity({
   );
 
   const leaveSession = useCallback(() => {
+    captureActiveSessionView();
     ++transcriptGenerationRef.current;
     closeFocusedObservation();
     focusedSessionRef.current = null;

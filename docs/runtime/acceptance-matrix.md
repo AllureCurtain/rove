@@ -184,3 +184,15 @@ Both write `PRODUCT_ACCEPTANCE_REPORT.json`. A check never passes without a real
 exit code, anything unrun carries a reason, and the verdict is `PASS` only with
 zero failures and zero unrun required checks. See
 [integration-testing.md](integration-testing.md) for the report contract.
+
+## Web Frontend Alignment (F1-F8)
+
+The frontend alignment round implements
+[2026-09-26-frontend-experience-alignment-design.md](../design/2026-09-26-frontend-experience-alignment-design.md)
+inside `apps/web` without touching `apps/api` or `runtime/` contracts. Each row
+records the state of one item; rows are added as the items land.
+
+| Item | Current status | Test evidence surface |
+|---|---|---|
+| F1 Per-session view snapshot | Implemented: leaving a session captures its viewport, follow state, mount window and disclosure map in a bounded per-session store, and returning reinstates them; a session whose run set advanced in the background keeps the disclosure but lands on its newest turn | `apps/web/chat/session-view-snapshot.test.ts`; `apps/web/tests/e2e/session-view-snapshot.spec.ts` |
+

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   FOLLOW_SCROLL_BEHAVIOR,
+  TRANSCRIPT_REPIN_THRESHOLD_PX,
   TRANSCRIPT_SCROLL_ROUNDING_TOLERANCE_PX,
   bottomScrollTop,
   isRecentScrollGesture,
@@ -37,6 +38,12 @@ export function useFollowScroll(): {
   releaseFollow: () => void;
   /** Scroll a marked turn into view and stay released until the reader returns. */
   jumpToMarker: (messageId: string) => void;
+  /** Read the explicit follow state, for a per-session view snapshot. */
+  readFollowState: () => { pinned: boolean; scrollTop: number };
+  /** Reinstate a captured follow state; the caller writes the position back. */
+  restoreFollowState: (state: { pinned: boolean; scrollTop: number }) => void;
+  /** Re-derive follow from where a restored position actually landed. */
+  settleRestoredFollow: () => void;
 } {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
@@ -119,6 +126,50 @@ export function useFollowScroll(): {
     pinnedRef.current = false;
     setShowJump(true);
   }, [cancelFollow]);
+
+  const readFollowState = useCallback(
+    () => ({ pinned: pinnedRef.current, scrollTop: lastScrollTopRef.current }),
+    [],
+  );
+
+  /**
+   * Restoring a snapshot is not a gesture: the refs are written first so the
+   * scroll event the restored position produces reads as no movement, and the
+   * jump control is derived from the captured state rather than carried over.
+   */
+  const restoreFollowState = useCallback(
+    (state: { pinned: boolean; scrollTop: number }) => {
+      cancelFollow();
+      pinnedRef.current = state.pinned;
+      lastScrollTopRef.current = state.scrollTop;
+      setShowJump(!state.pinned);
+    },
+    [cancelFollow],
+  );
+
+  /**
+   * The browser can clamp a restored position — the content it was measured
+   * against may not be laid out yet. Follow is then re-derived from where the
+   * scroller actually landed: a snapshot whose viewport is the bottom now has
+   * nothing left to return to.
+   */
+  const settleRestoredFollow = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) {
+      return;
+    }
+    const distanceFromBottom = Math.max(
+      0,
+      element.scrollHeight - element.clientHeight - element.scrollTop,
+    );
+    lastScrollTopRef.current = element.scrollTop;
+    if (distanceFromBottom < TRANSCRIPT_REPIN_THRESHOLD_PX) {
+      pinnedRef.current = true;
+      setShowJump(false);
+      return;
+    }
+    setShowJump(!pinnedRef.current);
+  }, []);
 
   /**
    * Marker navigation is a deliberate reading move, so follow is released and
@@ -208,5 +259,8 @@ export function useFollowScroll(): {
     recordScrollPosition,
     releaseFollow,
     jumpToMarker,
+    readFollowState,
+    restoreFollowState,
+    settleRestoredFollow,
   };
 }
