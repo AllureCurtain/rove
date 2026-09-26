@@ -11,6 +11,7 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:prod": "node scripts/run-e2e-prod.mjs",
+    "lint:style-tokens": "node --test ../../scripts/check-web-style-tokens.test.mjs && node ../../scripts/check-web-style-tokens.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

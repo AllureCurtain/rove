@@ -137,7 +137,17 @@ pnpm test
 pnpm typecheck
 pnpm build
 pnpm test:e2e
+pnpm lint:style-tokens
 ```
+
+`pnpm lint:style-tokens` runs `scripts/check-web-style-tokens.mjs` (with its own
+self-tests) over `styles/*.css` and `styles/v3/`. It rejects motion that bypasses
+the token layer: transition and animation durations must be
+`var(--motion-duration-*)`, and timing functions must be `var(--motion-ease-*)`,
+`linear`, or `steps(...)`. Declarations inside `@media (prefers-reduced-motion)`
+are exempt, and anything else can be exempted one declaration at a time with a
+reasoned `/* style-token: allow <reason> */`, which the script prints so the
+exemptions stay visible in review. It is a local linter, not a CI gate.
 
 Focused product smoke (mock API):
 

@@ -31,7 +31,7 @@
 | F5 | Toast 通知层与后台失败可见性 | P1 | 无（收件箱部分依赖 R5） | Implemented（toast 层与后台失败；收件箱待 R5） |
 | F6 | smart-stop 发送快照（含粘贴 chips） | P1 | 无 | Implemented（部分中止文案分支待 R2b） |
 | F7 | 杂项清理（/dev 文案、mock 页标注、降级语义如实标注） | P1 | 无 | Implemented |
-| F8 | 样式 token linter 与 CI 接入 | P1 | 无 | Proposed |
+| F8 | 样式 token linter 与 CI 接入 | P1 | 无 | Implemented（本地门；按 §9.1 不接入 CI） |
 | F9 | 侧栏折叠动效合成器友好化 | P2 | 无 | Proposed |
 | F10 | 偏好小项（per-model reasoning 记忆、会话自动标题） | P2 | 无 | Proposed |
 | F11 | 服务端会话搜索 `q` 接线 | P2 | 无 | Proposed |
@@ -464,6 +464,55 @@ token 体系目前全靠 review 自觉。新增 `scripts/check-web-style-tokens.
 
 - 对现存三份 CSS 跑一遍：产出存量违规清单，**逐条豁免或修正**后脚本必须全绿
   （不允许"脚本带着存量红跑"）。
+
+### 9.4 实现记录（2026-09-26）
+
+`scripts/check-web-style-tokens.mjs`（含 `node --test` 自测
+`scripts/check-web-style-tokens.test.mjs`，14 个用例）；`apps/web/package.json` 增
+`lint:style-tokens`（先跑自测再扫）；`apps/web/README.md` 的 Verification 一节说明
+规则、豁免与"只是本地门、不接入 CI"。
+
+首次跑出的存量违规 29 条，逐条处理如下。
+
+修正（v2，product-v2.css；动效值不变，只是改为引用 token）：
+
+| 位置 | 原值 | 现用 |
+|---|---|---|
+| button 基础 transition（5 个属性） | `140ms ease` | `--motion-duration-fast` + `--motion-ease-standard` |
+| status-dot / streaming 点脉冲 ×2 | `1.8s ease-in-out` | `--motion-duration-pulse` + `--motion-ease-in-out` |
+| toast 进场 | `160ms ease-out` | `--motion-duration-fast` + `--motion-ease-out` |
+| 移动抽屉 sidebar / inspector ×2 | `180ms cubic-bezier(0.16, 1, 0.3, 1)` | `--motion-duration-collapse` + `--motion-ease-emphasized` |
+| session spinner | `1s linear` | `--motion-duration-spin` + `linear` |
+| 侧栏滑入 / 滑出 ×2 | `240ms` | `--motion-duration-slide` |
+| composer meta 折叠 | `180ms` | `--motion-duration-collapse` |
+| activity 折叠箭头 | `160ms ease` | `--motion-duration-fast` + `--motion-ease-standard` |
+| activity 阶段点脉冲 | `1.6s ease-in-out` | `--motion-duration-activity-pulse` + `--motion-ease-in-out` |
+| Settings 区块边框呼吸 | `900ms ease-in-out 4` | `--motion-duration-breathe` + `--motion-ease-in-out` |
+
+新增 6 个 duration token（spin/pulse/activity-pulse/breathe/slide/collapse）与 2 个
+ease token（in-out/emphasized），都放在既有 motion token 块里：循环周期也是动效
+语义，应该由 token 层拥有。除 button 的 `140ms ease` → `150ms` 与
+`--motion-ease-standard`（设计 token 里最近的既有值，肉眼无差别）外，其余数值与
+曲线不变。
+
+豁免（v1，product.css；v1 是冻结皮肤，F1–F5 都刻意不给它加新样式，因此不给 v1
+引入 motion token 层，改为逐条带理由豁免）：
+
+| 位置 | 值 | 理由 |
+|---|---|---|
+| `.inspector-skeleton` shimmer | `1.35s linear` | v1 皮肤自带的骨架屏周期，v1 冻结 |
+| `.tab-button` / 侧栏项 / 记忆面板项 ×3 | `160ms ease` | v1 皮肤自带的交互时长与曲线，v1 冻结 |
+
+`prefers-reduced-motion` 块内的 `0.01ms !important`（v1/v2/v3 各一处）按规则 3 自动
+豁免，不是例外清单的一部分。脚本输出的豁免清单是 4 条，即上表。
+
+规则细节（与 9.1 的三条一致，实现时明确下来的部分）：简写里每个逗号段的第一个
+时间值是 duration、第二个是 delay（delay 允许字面量，且 `0s`/`0` 允许）；comma 与
+空白切分都尊重括号，因此 `cubic-bezier(0.2, 0, 0, 1)`、`steps(2, end)`、
+`var(--x, 1ms)` 都是单个 token；`@keyframes` 体内的
+`animation-timing-function` 是逐帧曲线、不是组件动效，不扫；豁免注释放声明自身
+任一行或紧邻上一行都算，无理由的豁免与"豁免了不存在违规"的豁免本身报错，避免
+豁免清单腐化。
 
 ---
 
