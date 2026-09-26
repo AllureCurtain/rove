@@ -30,6 +30,7 @@ import {
   selectionFromPreferences,
   toPreferencesRequest,
 } from "./server-product-state";
+import { SESSION_SERVER_SEARCH_LIMIT } from "../sidebar/session-server-search";
 import type {
   ActiveProviderSelection,
   ProviderProfileInput,
@@ -963,8 +964,26 @@ export function useServerProductState() {
     [persistPreferences, productClient, profiles],
   );
 
+  /**
+   * F11: the server's own session search for the sidebar's active query. One
+   * page is enough: the design asks for the server's answer, not its whole
+   * history, and the local catalog keeps the rest.
+   */
+  const searchSessions = useCallback(
+    async (workspaceId: string, query: string) => {
+      const response = await productClient.listSessions(workspaceId, {
+        q: query,
+        limit: SESSION_SERVER_SEARCH_LIMIT,
+        includeArchived: false,
+      });
+      return response.sessions.map(fromProductSession);
+    },
+    [productClient],
+  );
+
   return {
     productClient,
+    searchSessions,
     bootState,
     reload: loadInitialState,
     catalog,

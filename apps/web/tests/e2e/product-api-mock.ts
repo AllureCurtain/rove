@@ -133,6 +133,14 @@ export interface MockProductApiOptions {
   migrationFailures?: number;
   migrationIssues?: M1MigrationIssue[];
   trustStatuses?: Record<string, ProductTrustStatus>;
+  /**
+   * F11: sessions the search endpoint knows but the plain list never returns.
+   * They stand in for a directory larger than the catalog's page ceiling, which
+   * is exactly the case where a local substring filter is not the whole answer.
+   */
+  searchOnlySessions?: MockSession[];
+  /** Failures for `GET /product/sessions` when it carries a `q`. */
+  sessionSearchFailures?: number;
 }
 
 export interface MockProductApiState {
@@ -192,6 +200,13 @@ export interface MockProductApiState {
    * shell notices.
    */
   sessionListReads: number;
+  /**
+   * F11: every `GET /product/sessions` that carried a `q`, in order, with the
+   * limit the client asked for. Proves the sidebar asked the server at all.
+   */
+  sessionSearchRequests: Array<{ q: string; limit: string | null }>;
+  searchOnlySessions: MockSession[];
+  remainingSessionSearchFailures: number;
   trustStatuses: Record<string, ProductTrustStatus>;
   trustRequests: Array<{
     method: "GET" | "PUT";
@@ -302,6 +317,9 @@ export async function installMockProductApi(
     remainingMigrationFailures: options.migrationFailures ?? 0,
     initialStateReadRequests: 0,
     sessionListReads: 0,
+    sessionSearchRequests: [],
+    searchOnlySessions: structuredClone(options.searchOnlySessions ?? []),
+    remainingSessionSearchFailures: options.sessionSearchFailures ?? 0,
     trustStatuses: structuredClone(options.trustStatuses ?? {}),
     trustRequests: [],
   };
@@ -697,22 +715,47 @@ export async function installMockProductApi(
     if (path === "/product/sessions" && method === "GET") {
       const workspaceId = url.searchParams.get("workspace_id");
       state.sessionListReads += 1;
-      return json(route, {
-        sessions: state.sessions
-          .filter((session) => session.workspace_id === workspaceId)
-          .map((session) => {
-            const delayed = delayedSessionVisibility.get(session.id);
-            if (!delayed || delayed.remainingReads <= 0) {
-              return session;
-            }
-            delayed.remainingReads -= 1;
-            state.delayedJobBindingReads += 1;
-            if (delayed.remainingReads === 0) {
-              delayedSessionVisibility.delete(session.id);
-            }
-            return delayed.session;
-          }),
+      const q = url.searchParams.get("q");
+      if (!q) {
+        return json(route, {
+          sessions: state.sessions
+            .filter((session) => session.workspace_id === workspaceId)
+            .map((session) => {
+              const delayed = delayedSessionVisibility.get(session.id);
+              if (!delayed || delayed.remainingReads <= 0) {
+                return session;
+              }
+              delayed.remainingReads -= 1;
+              state.delayedJobBindingReads += 1;
+              if (delayed.remainingReads === 0) {
+                delayedSessionVisibility.delete(session.id);
+              }
+              return delayed.session;
+            }),
+        });
+      }
+      // F11: the server's own search. The fold is deliberately ASCII-only to
+      // mirror the SQL `LIKE` the real endpoint uses, which is where it differs
+      // from the client's `toLocaleLowerCase`.
+      state.sessionSearchRequests.push({
+        q,
+        limit: url.searchParams.get("limit"),
       });
+      if (state.remainingSessionSearchFailures > 0) {
+        state.remainingSessionSearchFailures -= 1;
+        return json(
+          route,
+          { code: "product_unavailable", error: "session search is unavailable" },
+          503,
+        );
+      }
+      const folded = q.toLowerCase();
+      const limit = Number(url.searchParams.get("limit") ?? "200");
+      const matched = [...state.sessions, ...state.searchOnlySessions]
+        .filter((session) => session.workspace_id === workspaceId)
+        .filter((session) => session.title.toLowerCase().includes(folded))
+        .slice(0, Number.isFinite(limit) ? limit : 200);
+      return json(route, { sessions: matched });
     }
     const forkMatch = path.match(/^\/product\/sessions\/([^/]+)\/forks$/u);
     if (forkMatch && method === "POST") {
