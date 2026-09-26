@@ -111,7 +111,7 @@ export interface MockProductApiOptions {
   mcpProbeTools?: ProductMcpToolDescriptor[];
   activeWorkspaceId?: string;
   activeSessionId?: string;
-  mode?: "completed" | "approval" | "running_tool";
+  mode?: MockJobMode;
   transcriptDelayMs?: Record<string, number>;
   transcriptFailures?: Record<string, number>;
   sessionModelConfigFailures?: number;
@@ -197,13 +197,20 @@ export interface MockProductApiState {
   }>;
 }
 
+type MockJobMode =
+  | "completed"
+  | "approval"
+  | "running_tool"
+  /** The model is still working: the run is live and has produced nothing yet. */
+  | "waiting_model";
+
 interface MockJob {
   jobId: string;
   runId: string;
   resumedFromRunId: string | null;
   sessionId: string;
   message: string;
-  mode: "completed" | "approval" | "running_tool";
+  mode: MockJobMode;
   status: "running" | "done" | "cancelled";
   events: Array<{ seq: number; event: Record<string, unknown> }>;
 }
@@ -373,7 +380,9 @@ export async function installMockProductApi(
         ? approvalEvents(jobId, runId, body.message)
         : mode === "running_tool"
           ? runningToolEvents(jobId, runId, body.message)
-          : completedEvents(jobId, runId, body.message, output);
+          : mode === "waiting_model"
+            ? waitingModelEvents(jobId, runId, body.message)
+            : completedEvents(jobId, runId, body.message, output);
     const job: MockJob = {
       jobId,
       runId,
@@ -2249,6 +2258,19 @@ function runningToolEvents(jobId: string, runId: string, message: string) {
         name: "shell",
         args: { command: "cargo test --workspace" },
       },
+    },
+  ];
+}
+
+/**
+ * A run that is still waiting on the model: it started and has produced nothing
+ * yet, so a stop has something to put back (design F6's smart-stop gate).
+ */
+function waitingModelEvents(jobId: string, runId: string, message: string) {
+  return [
+    {
+      seq: 1,
+      event: { type: "run_started", job_id: jobId, run_id: runId, user_message: message },
     },
   ];
 }

@@ -29,7 +29,7 @@
 | F3 | 流式 markdown 的分块 memo 化 | P0 | 无 | Implemented |
 | F4 | 会话 hover 卡片 | P1 | 无 | Implemented |
 | F5 | Toast 通知层与后台失败可见性 | P1 | 无（收件箱部分依赖 R5） | Implemented（toast 层与后台失败；收件箱待 R5） |
-| F6 | smart-stop 发送快照（含粘贴 chips） | P1 | 无 | Proposed |
+| F6 | smart-stop 发送快照（含粘贴 chips） | P1 | 无 | Implemented（部分中止文案分支待 R2b） |
 | F7 | 杂项清理（/dev 文案、mock 页标注、降级语义如实标注） | P1 | 无 | Proposed |
 | F8 | 样式 token linter 与 CI 接入 | P1 | 无 | Proposed |
 | F9 | 侧栏折叠动效合成器友好化 | P2 | 无 | Proposed |
@@ -378,6 +378,26 @@ chips 在发送瞬间折叠丢失。
 
 - vitest：draft-store 快照写入/终态清除/降级路径。
 - e2e（mock）：带粘贴 chip 发送 → 立即取消 → composer 恢复出文本 + chip。
+
+### 7.4 实现记录（2026-09-26）
+
+- 快照放在既有 draft 记录里（同一 Map、同一生命周期，仍然只在内存里）：`lastSend`
+  由 `submit` 在**发送被接受**时写入，内容是**键入的原文 + 当时的 chips**，不是折叠后的
+  消息文本——折叠不可逆，这正是要留快照的原因。
+- `restoreLastSend()` 一次消费：成功恢复文本与 chips 后清空快照并记录恢复来源
+  （`lastRestore.source = "snapshot"`）；没有快照时返回 `"none"`，调用方退回原来的
+  折叠文本路径（`restore()`，来源记为 `"text"`，并清掉 composer 里已经和文本对不上的
+  chips）。两条路径各有自己的提示文案，UI 不会假装是另一条。
+- 清除时机复用 `reconcileTerminal`：`useSessionContinuity` 新增 `onTurnTerminal`
+  回调，在它决定这一轮已终结、要刷新会话的同一处触发。停止路径先消费快照，所以
+  "被取消的回合"不会因此丢东西；这里的 `clearLastSend` 只会丢掉真正过期的快照。
+- 部分中止（模型已产出部分内容）的文案分支按 §7.2 预留：`PARTIAL_ABORT_MARKER`
+  常量为 `undefined`（运行时 R2b 尚未发出该标记），`isPartialAbort()` 只在标记为真
+  **且**该轮已产出内容时才为真，因此当前行为与改动前一致；单测把这两个条件都钉住，
+  标记落地时只需改这一个常量。
+- 终态清除无法用浏览器用例区分（发送本身就会覆盖快照），因此由 store 单测覆盖；
+  e2e 覆盖的是设计门要求的 chip 恢复，以及"没有快照时退回折叠文本"这条降级路径
+  （刷新页面即丢掉内存草稿，正好构造出该状态）。
 
 ---
 
