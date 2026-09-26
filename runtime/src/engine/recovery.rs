@@ -16,10 +16,24 @@
 //!
 //! Every wait is cancellable, and nothing here reads or reports provider
 //! payloads: [`ProviderRetryPolicy::reason`] is a fixed whitelist.
+//!
+//! Silent-turn recovery lives here too. It answers a different failure: the
+//! provider succeeded and the run terminated with a final answer, but that
+//! answer had no visible text. [`SilentTurnEvidence`] records the two facts a
+//! run observes while it runs, [`SilentTurnObservation`] adds the two facts
+//! only known at termination, and [`SilentTurnRecoveryPolicy`] caps how many
+//! extra turns the run loop may spend on it.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::execution::{ExecutionDegradation, ExecutionPhase};
 use rove_models::ModelError;
+
+/// The fixed conversation nudge injected before a silent-turn recovery turn.
+///
+/// It is a compile-time constant, so no user, workspace, or provider text can
+/// reach it, and it is safe for the event stream, the trace, and the report.
+pub const SILENT_TURN_NUDGE: &str = "Your previous turn produced no visible response. Continue: either finish the task or summarize the progress you have so far.";
 
 /// Failure classes that carry an independent attempt budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,6 +167,132 @@ pub fn retry_after_ms(error: &ModelError) -> Option<u64> {
     }
 }
 
+/// Runtime-owned silent-turn recovery budget.
+///
+/// The default is enabled with the single extra turn the design budgets for,
+/// so recovery can never become a loop. `max_attempts == 0` disables it and
+/// restores the behavior that existed before silent-turn recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SilentTurnRecoveryPolicy {
+    /// Extra model turns a single run may spend recovering a silent turn.
+    pub max_attempts: u32,
+}
+
+impl Default for SilentTurnRecoveryPolicy {
+    fn default() -> Self {
+        Self { max_attempts: 1 }
+    }
+}
+
+impl SilentTurnRecoveryPolicy {
+    /// A policy that never spends a recovery turn.
+    pub fn disabled() -> Self {
+        Self { max_attempts: 0 }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.max_attempts > 0
+    }
+
+    /// Whether one more recovery turn may be spent after `attempts_used`.
+    pub fn allows(&self, attempts_used: u32) -> bool {
+        attempts_used < self.max_attempts
+    }
+
+    /// The canonical `model_status` value announced before a recovery turn.
+    pub const STATUS: &'static str = "recovering_silent_turn";
+
+    /// The `execution_degraded` code recorded for a recovery turn.
+    pub const DEGRADATION_CODE: &'static str = "silent_turn_recovery";
+
+    /// The safe summary recorded with that degradation. Fixed text: the fact
+    /// that a run was silent is not user data, and the nudge itself is already
+    /// on the status event.
+    pub const DEGRADATION_SUMMARY: &'static str =
+        "The run ended without a visible response; one recovery turn was started.";
+
+    /// One degradation fact for a spent recovery turn, following the identity
+    /// and timestamp conventions of the other `ExecutionDegraded` producers.
+    pub fn degradation(&self) -> ExecutionDegradation {
+        ExecutionDegradation {
+            degradation_id: ulid::Ulid::new().to_string(),
+            phase: ExecutionPhase::Run,
+            code: Self::DEGRADATION_CODE.to_string(),
+            safe_summary: Self::DEGRADATION_SUMMARY.to_string(),
+            occurred_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+}
+
+/// The facts a run observes while it is still running.
+///
+/// Both are read from the canonical events the run emits rather than inferred
+/// from state, so "silent" means exactly what the event stream says: no
+/// `ToolCallStarted` happened and no `LlmMessage` carried text.
+#[derive(Debug, Default)]
+pub struct SilentTurnEvidence {
+    tool_call_started: bool,
+    model_text_seen: bool,
+}
+
+impl SilentTurnEvidence {
+    /// Record one canonical `ToolCallStarted`.
+    pub fn record_tool_call_started(&mut self) {
+        self.tool_call_started = true;
+    }
+
+    /// Record one canonical `LlmMessage`'s full text.
+    pub fn record_model_message(&mut self, full: &str) {
+        if !full.trim().is_empty() {
+            self.model_text_seen = true;
+        }
+    }
+
+    /// Finish the observation with the facts only known at termination.
+    ///
+    /// `final_output` is the answer the run terminated with; `user_message` is
+    /// the input that triggered the run. `final_output_empty` treats
+    /// whitespace-only text as empty, so a provider that emits spaces does not
+    /// count as a visible response.
+    pub fn observe(&self, final_output: &str, user_message: &str) -> SilentTurnObservation {
+        SilentTurnObservation {
+            tool_call_started: self.tool_call_started,
+            model_text_seen: self.model_text_seen,
+            final_output_empty: final_output.trim().is_empty(),
+            user_message_present: !user_message.trim().is_empty(),
+        }
+    }
+}
+
+/// The complete detection input for one run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SilentTurnObservation {
+    /// A tool call actually started during the run.
+    pub tool_call_started: bool,
+    /// A model message carried non-empty text during the run.
+    pub model_text_seen: bool,
+    /// The run's final answer had no visible text.
+    pub final_output_empty: bool,
+    /// The run was triggered by a real user message.
+    pub user_message_present: bool,
+}
+
+impl SilentTurnObservation {
+    /// A run is silent only when **all** of these hold:
+    ///
+    /// 1. it produced no visible text — neither a model message nor the final
+    ///    answer carried any;
+    /// 2. no tool call started, because a run that did tool work already made
+    ///    progress the user can inspect;
+    /// 3. it answered a real user message rather than a runtime-injected turn.
+    pub fn is_silent(&self) -> bool {
+        !self.model_text_seen
+            && self.final_output_empty
+            && !self.tool_call_started
+            && self.user_message_present
+    }
+}
+
 /// A cheap `[0, 1)` sample, so jitter needs no RNG dependency and no seeded
 /// state. Only used to spread retries out, never for anything security-related.
 fn pseudo_random_unit() -> f64 {
@@ -169,7 +309,10 @@ fn pseudo_random_unit() -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProviderRetryPolicy, RetryClass, retry_after_ms, retry_class};
+    use super::{
+        ProviderRetryPolicy, RetryClass, SILENT_TURN_NUDGE, SilentTurnEvidence,
+        SilentTurnRecoveryPolicy, retry_after_ms, retry_class,
+    };
     use rove_models::ModelError;
 
     fn deterministic() -> ProviderRetryPolicy {
@@ -294,5 +437,61 @@ mod tests {
             Some(42)
         );
         assert_eq!(retry_after_ms(&ModelError::AuthFailed), None);
+    }
+
+    #[test]
+    fn silent_turn_recovery_is_enabled_once_by_default() {
+        let policy = SilentTurnRecoveryPolicy::default();
+        assert!(policy.is_enabled());
+        assert_eq!(policy.max_attempts, 1);
+        assert!(policy.allows(0), "the first recovery turn is available");
+        assert!(
+            !policy.allows(1),
+            "the default budget is a hard cap, not a loop"
+        );
+        assert!(!SilentTurnRecoveryPolicy::disabled().is_enabled());
+        assert!(!SilentTurnRecoveryPolicy::disabled().allows(0));
+    }
+
+    #[test]
+    fn a_degradation_fact_is_identified_and_safely_summarized() {
+        let record = SilentTurnRecoveryPolicy::default().degradation();
+        assert_eq!(record.code, SilentTurnRecoveryPolicy::DEGRADATION_CODE);
+        assert_eq!(record.code, "silent_turn_recovery");
+        assert_eq!(record.phase, crate::execution::ExecutionPhase::Run);
+        assert!(!record.degradation_id.is_empty());
+        assert!(record.occurred_at.ends_with('Z') || record.occurred_at.contains('+'));
+        // The nudge is a fixed constant with no user data in it, and the
+        // summary must not smuggle any in either.
+        assert!(SILENT_TURN_NUDGE.contains("no visible response"));
+        assert!(!record.safe_summary.contains(SILENT_TURN_NUDGE));
+    }
+
+    #[test]
+    fn silence_requires_every_rule_to_hold() {
+        let evidence = SilentTurnEvidence::default();
+        let silent = evidence.observe("", "do the task");
+        assert!(silent.is_silent(), "a bare empty final answer is silent");
+
+        // Rule 1: whitespace-only text is still no visible response, but any
+        // real model or final text is one.
+        assert!(evidence.observe("  \n ", "do the task").is_silent());
+        let mut spoke = SilentTurnEvidence::default();
+        spoke.record_model_message("an answer");
+        assert!(!spoke.observe("", "do the task").is_silent());
+        assert!(!evidence.observe("an answer", "do the task").is_silent());
+        // A redacted Review-mode message counts as text, so Review runs are
+        // never silent.
+        let mut redacted = SilentTurnEvidence::default();
+        redacted.record_model_message("[review model output omitted]");
+        assert!(!redacted.observe("", "review this").is_silent());
+
+        // Rule 2: a run that used tools is not silent, whatever it answered.
+        let mut worked = SilentTurnEvidence::default();
+        worked.record_tool_call_started();
+        assert!(!worked.observe("", "do the task").is_silent());
+
+        // Rule 3: a runtime-injected turn is not a real user message.
+        assert!(!evidence.observe("", "   ").is_silent());
     }
 }
