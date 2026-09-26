@@ -48,6 +48,14 @@ import {
 } from "./transcript-window";
 import { useFollowScroll } from "./use-follow-scroll";
 import {
+  activityTiming,
+  durationBadgeLabel,
+  elapsedSeconds,
+  inputArrivalKey,
+  toolArrivalKey,
+  toolArrivals,
+} from "./tool-timing";
+import {
   captureActiveSessionView,
   registerSessionViewCapture,
   restoreSessionView,
@@ -833,6 +841,34 @@ function ActivityGroup({
   const settledInputs = entry.inputs.filter((input) => input.status !== "waiting");
   const foldable = bodyTools.length + settledInputs.length > 0;
   const bodyId = `activity-body-${entry.id}`.replace(/[^A-Za-z0-9_-]/gu, "-");
+  // The head's elapsed value is measured from when this client first saw each
+  // item's events, so it is unavailable (and hidden) for anything restored or
+  // replayed. It ticks while the activity runs and freezes once it settles.
+  const arrivalKeys = [
+    ...entry.tools.map((tool) => toolArrivalKey(tool.id)),
+    ...entry.inputs.map((input) => inputArrivalKey(input.id)),
+  ];
+  const [elapsedNow, setElapsedNow] = useState<number | null>(null);
+  useEffect(() => {
+    if (!inFlight) {
+      setElapsedNow(null);
+      return;
+    }
+    setElapsedNow(performance.now());
+    const timer = window.setInterval(() => setElapsedNow(performance.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [inFlight]);
+  const timing = activityTiming(arrivalKeys, {
+    active: inFlight,
+    now: elapsedNow ?? 0,
+    arrivals: toolArrivals,
+  });
+  const elapsedLabel =
+    timing.liveMs !== null
+      ? t("chat.activityElapsed", { n: elapsedSeconds(timing.liveMs) })
+      : timing.frozenMs !== null
+        ? t("chat.activityElapsedFrozen", { n: elapsedSeconds(timing.frozenMs) })
+        : null;
 
   const renderTool = (tool: ToolCallView) =>
     isBlockingTool(tool) ? (
@@ -910,6 +946,9 @@ function ActivityGroup({
                         settledInputs.length,
                     })}
                   </span>
+                ) : null}
+                {elapsedLabel ? (
+                  <span className="activity-group__elapsed">{elapsedLabel}</span>
                 ) : null}
                 <ChevronDownIcon data-open={open} />
               </button>
@@ -995,6 +1034,9 @@ function ToolCard({ tool }: { tool: ToolCallView }) {
   const detailId = `tool-detail-${tool.timelineId ?? tool.id}`.replace(/[^A-Za-z0-9_-]/gu, "-");
   // Body blocks are built only while open, so a collapsed card stays cheap.
   const presentation = buildToolPresentation(tool, open);
+  // The runtime's own measurement of an MCP call. A live arrival span is not a
+  // substitute here: it also covers queueing on this client.
+  const durationBadge = durationBadgeLabel(tool.protocolMetadata?.duration_ms);
   return (
     <article className="tool-card" data-status={tool.status}>
       <button
@@ -1014,6 +1056,9 @@ function ToolCard({ tool }: { tool: ToolCallView }) {
             {toolChipLabel(chip.label, t)}
           </span>
         ))}
+        {durationBadge ? (
+          <span className="tool-card__duration">{durationBadge}</span>
+        ) : null}
         <ChevronDownIcon data-open={open} />
       </button>
       {open ? (
@@ -1045,6 +1090,14 @@ function toolChipLabel(label: string, t: (path: string) => string): string {
     default:
       return label;
   }
+}
+
+/**
+ * Fact labels are mostly data (diff summaries). Only the labels the shell
+ * itself introduces are translated.
+ */
+function toolFactLabel(label: string, t: (path: string) => string): string {
+  return label === "duration" ? t("chat.toolDuration") : label;
 }
 
 function ToolBlockView({ block }: { block: ToolBlock }) {
@@ -1095,7 +1148,7 @@ function ToolBlockView({ block }: { block: ToolBlock }) {
         <section>
           <dl className="tool-facts">
             {block.rows.map((row, index) => (
-              <div key={index}><dt>{row.label}</dt><dd>{row.value}</dd></div>
+              <div key={index}><dt>{toolFactLabel(row.label, t)}</dt><dd>{row.value}</dd></div>
             ))}
           </dl>
         </section>

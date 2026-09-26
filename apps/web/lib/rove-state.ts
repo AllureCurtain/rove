@@ -14,6 +14,7 @@ import type {
   ToolExecutionMetadata,
   ToolError,
   ToolMutation,
+  ToolProtocolMetadata,
   ToolResultOutcome,
   Usage,
   JobStateResponse,
@@ -49,6 +50,8 @@ export interface ToolCallView {
   error?: ToolError;
   mutations?: ToolMutation[];
   metadata?: ToolExecutionViewMetadata;
+  /** Runtime-published protocol identity and timing, when the call has one. */
+  protocolMetadata?: ToolProtocolMetadata;
   reason?: string;
   pendingApproval?: PendingApproval;
   /** Durable artifacts this call produced, in the order they were stored. */
@@ -1086,6 +1089,7 @@ function applyStreamEvent(
           output: event.result.output,
           mutations: event.result.mutations,
           metadata: normalizeToolExecutionMetadata(event.result.metadata),
+          protocolMetadata: event.result.envelope?.protocol_metadata,
           // The envelope's own artifacts are authoritative for the completed
           // call. Per-artifact events may arrive first; both converge here.
           artifacts: event.result.envelope?.artifacts,

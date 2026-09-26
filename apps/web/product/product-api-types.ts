@@ -35,6 +35,7 @@ import {
   type ToolMutation,
   type ToolMutationOperation,
   type ToolOutputEnvelope,
+  type ToolProtocolMetadata,
   type Usage,
 } from "../lib/rove-types";
 
@@ -3419,6 +3420,39 @@ function parseToolArtifactRef(value: unknown, path: string): ToolArtifactRef {
   return artifact;
 }
 
+/**
+ * Protocol identity and timing a tool result may carry. Only the fields the
+ * shell renders are kept; an unrecognized key is dropped rather than forwarded.
+ */
+function parseToolProtocolMetadata(
+  value: unknown,
+  path: string,
+): ToolProtocolMetadata {
+  const record = expectRecord(value, path);
+  const metadata: ToolProtocolMetadata = {};
+  for (const key of [
+    "protocol",
+    "server_config_id",
+    "protocol_version",
+    "remote_tool_name",
+  ] as const) {
+    const candidate = record[key];
+    if (candidate !== undefined && candidate !== null) {
+      metadata[key] = expectString(candidate, `${path}.${key}`, {
+        maxBytes: 512,
+        noControlCharacters: true,
+      });
+    }
+  }
+  for (const key of ["attempt_count", "duration_ms"] as const) {
+    const candidate = record[key];
+    if (candidate !== undefined && candidate !== null) {
+      metadata[key] = expectInteger(candidate, `${path}.${key}`, { min: 0 });
+    }
+  }
+  return metadata;
+}
+
 function parseToolOutputEnvelope(
   value: unknown,
   path: string,
@@ -3441,10 +3475,17 @@ function parseToolOutputEnvelope(
       parseToolArtifactRef,
     );
   }
-  // Content blocks, structured content, protocol metadata, effects, and
-  // diagnostics are passed through as validated-shape records rather than
-  // re-modelled here: the server is the authority on their contents, and the
-  // UI reads them through narrow accessors.
+  // Content blocks, structured content, effects, and diagnostics are passed
+  // through as validated-shape records rather than re-modelled here: the server
+  // is the authority on their contents, and the UI reads them through narrow
+  // accessors. Protocol metadata is narrowed to the fields the shell reads, so
+  // an unrecognized key cannot reach a component.
+  if (record.protocol_metadata !== undefined && record.protocol_metadata !== null) {
+    envelope.protocol_metadata = parseToolProtocolMetadata(
+      record.protocol_metadata,
+      `${path}.protocol_metadata`,
+    );
+  }
   if (record.content_blocks !== undefined && record.content_blocks !== null) {
     envelope.content_blocks = expectArray(
       record.content_blocks,

@@ -195,4 +195,5 @@ records the state of one item; rows are added as the items land.
 | Item | Current status | Test evidence surface |
 |---|---|---|
 | F1 Per-session view snapshot | Implemented: leaving a session captures its viewport, follow state, mount window and disclosure map in a bounded per-session store, and returning reinstates them; a session whose run set advanced in the background keeps the disclosure but lands on its newest turn | `apps/web/chat/session-view-snapshot.test.ts`; `apps/web/tests/e2e/session-view-snapshot.spec.ts` |
+| F2 Tool and activity durations | Implemented: an activity head ticks while it is in flight and freezes at its last live arrival, durations below one second are not shown, and an activity whose items were restored or replayed shows no measured value at all; a tool card badges the runtime-published `duration_ms` at or above one second and states the exact value when expanded | `apps/web/chat/tool-timing.test.ts`; `apps/web/tests/e2e/tool-timing.spec.ts` |
 

@@ -21,6 +21,7 @@ import {
   type ActivityPhase,
 } from "../chat/activity-phase";
 import { captureActiveSessionView } from "../chat/session-view-snapshot";
+import { recordArrivalsForAction } from "../chat/tool-timing";
 import type {
   ProductControl,
   ProductControlKind,
@@ -106,6 +107,10 @@ export function useSessionContinuity({
       if (phaseEvent) {
         trackActivityPhase(phaseEvent);
       }
+      // Canonical events carry no timestamps, so an activity duration can only
+      // be measured from when its events actually arrived here. Replays are
+      // ignored inside the tracker rather than guessed at on the render path.
+      recordArrivalsForAction(action, performance.now());
     },
     [baseDispatch],
   );
