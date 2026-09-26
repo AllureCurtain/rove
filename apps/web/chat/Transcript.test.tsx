@@ -325,6 +325,71 @@ describe("Transcript", () => {
     expect(failed).toContain("load-older-history");
     expect(failed).toContain("重试");
   });
+
+  it("marks a salvaged assistant message as aborted beside its text", () => {
+    const timeline: TranscriptRunGroup[] = [
+      {
+        id: "run:run-1",
+        runId: "run-1",
+        runOrdinal: 1,
+        inherited: false,
+        sourceSessionId: null,
+        items: [
+          {
+            kind: "message",
+            entry: entry("message", "message-1", 1),
+            message: {
+              id: "message-1",
+              role: "assistant",
+              content: "partial worth keeping",
+              status: "final",
+              aborted: true,
+            },
+          },
+          {
+            kind: "message",
+            entry: entry("message", "message-2", 2),
+            message: {
+              id: "message-2",
+              role: "assistant",
+              content: "a complete answer",
+              status: "final",
+            },
+          },
+        ],
+      },
+    ];
+
+    const html = renderTranscript(
+      <Transcript
+        timeline={timeline}
+        approvalBusy={null}
+        inputBusy={null}
+        restoreState={{ status: "complete", sessionId: "session-1" }}
+        onRetryRestore={vi.fn()}
+        onStartNewSession={vi.fn()}
+        onApproval={vi.fn()}
+        onInputSubmit={vi.fn()}
+      />,
+    );
+
+    // R2b: the salvaged text stays exactly as the model produced it, and the
+    // marker is an additive suffix that says the turn was cut short.
+    const abortedBubble = html.slice(
+      html.indexOf('data-message-id="message-1"'),
+      html.indexOf('data-message-id="message-2"'),
+    );
+    const completeBubble = html.slice(
+      html.indexOf('data-message-id="message-2"'),
+    );
+    expect(abortedBubble).toContain("partial worth keeping");
+    expect(abortedBubble).toContain("(已中止)");
+    // Only the salvaged message carries it, and a complete one never does.
+    expect(completeBubble).toContain("a complete answer");
+    expect(completeBubble).not.toContain("(已中止)");
+    expect(html.match(/\(已中止\)/g)).toHaveLength(1);
+    expect(html).not.toContain("正在回复");
+  });
 });
 
 function singleRunTimeline(): TranscriptRunGroup[] {
