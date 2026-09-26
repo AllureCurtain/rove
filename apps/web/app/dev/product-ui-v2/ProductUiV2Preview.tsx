@@ -166,6 +166,15 @@ export function ProductUiV2Preview() {
       <a className={styles.skipLink} href="#v2-main">
         Skip to main content
       </a>
+      {/*
+        F7: the page is behind the dev gate today, but a future gate change must
+        not let it read as the product. The badge stays above everything.
+      */}
+      <p className={styles.mockBanner} role="note">
+        <strong>Design mock, not product.</strong> This preview is inert, keeps
+        nothing, and performs no real action. The product shell is{" "}
+        <a href="/">/</a>.
+      </p>
       <ProductBar
         inactive={overlayOpen}
         theme={theme}
