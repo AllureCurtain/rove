@@ -21,6 +21,12 @@ import {
   type ProductProviderModelsResponse,
   type ProductReasoningPreference,
 } from "../product/product-api-types";
+import {
+  readReasoningByModel,
+  reasoningForModel,
+  rememberReasoning,
+  type ReasoningByModel,
+} from "./reasoning-memory";
 
 type ModelInventoryState =
   | { profileId: string; status: "loading" }
@@ -100,6 +106,40 @@ export function QuickModelControl({
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const inventoryRequestRef = useRef(0);
+  /**
+   * F10.1: the per-model reasoning memory. Read lazily on the first selection so
+   * the first client render never depends on browser storage, then kept here
+   * instead of re-parsing localStorage on every keystroke.
+   */
+  const reasoningMemoryRef = useRef<ReasoningByModel | null>(null);
+
+  function reasoningMemory(): ReasoningByModel {
+    if (reasoningMemoryRef.current === null) {
+      reasoningMemoryRef.current = readReasoningByModel();
+    }
+    return reasoningMemoryRef.current;
+  }
+
+  /**
+   * Select `nextModel` and bring back the reasoning effort last chosen for it.
+   * `fallback` is the previous rule for models with no memory: keep the current
+   * effort while staying on a reasoning-capable provider, and drop to the
+   * provider default when the selected profile has no such controls.
+   */
+  function selectModel(nextModel: string, fallback?: ProductReasoningPreference) {
+    setModel(nextModel);
+    const remembered = reasoningForModel(reasoningMemory(), nextModel);
+    if (remembered) {
+      setReasoning(remembered);
+    } else if (fallback) {
+      setReasoning(fallback);
+    }
+  }
+
+  function selectReasoning(nextReasoning: ProductReasoningPreference) {
+    setReasoning(nextReasoning);
+    reasoningMemoryRef.current = rememberReasoning(model, nextReasoning);
+  }
 
   useEffect(() => {
     if (saving) {
@@ -265,12 +305,16 @@ export function QuickModelControl({
                 const nextProfileId = event.target.value;
                 const nextProfile = profiles.find((profile) => profile.id === nextProfileId);
                 setProfileId(nextProfileId);
+                // F10.1: the next profile's default model may already have a
+                // remembered effort; without one the old rule stands (a provider
+                // without reasoning controls drops back to the default).
+                const fallback =
+                  nextProfile?.providerType === "openai-responses" ? reasoning : "default";
                 if (nextProfile?.defaultModel) {
-                  setModel(nextProfile.defaultModel);
+                  selectModel(nextProfile.defaultModel, fallback);
+                } else {
+                  setReasoning(fallback);
                 }
-                setReasoning(
-                  nextProfile?.providerType === "openai-responses" ? reasoning : "default",
-                );
                 setResult("idle");
               }}
             >
@@ -288,7 +332,7 @@ export function QuickModelControl({
               list={modelListId}
               disabled={saving}
               onChange={(event) => {
-                setModel(event.target.value);
+                selectModel(event.target.value);
                 setResult("idle");
               }}
               onKeyDown={(event) => {
@@ -337,7 +381,7 @@ export function QuickModelControl({
               value={reasoning}
               disabled={saving || !reasoningAvailable}
               onChange={(event) => {
-                setReasoning(event.target.value as ProductReasoningPreference);
+                selectReasoning(event.target.value as ProductReasoningPreference);
                 setResult("idle");
               }}
             >
