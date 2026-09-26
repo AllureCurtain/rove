@@ -33,7 +33,7 @@
 | F7 | 杂项清理（/dev 文案、mock 页标注、降级语义如实标注） | P1 | 无 | Implemented |
 | F8 | 样式 token linter 与 CI 接入 | P1 | 无 | Implemented（本地门；按 §9.1 不接入 CI） |
 | F9 | 侧栏折叠动效合成器友好化 | P2 | 无 | Implemented（轨道一步到位 + 侧栏滑出；视觉偏差见 §10.4） |
-| F10 | 偏好小项（per-model reasoning 记忆、会话自动标题） | P2 | 无 | Proposed |
+| F10 | 偏好小项（per-model reasoning 记忆、会话自动标题） | P2 | 无 | Implemented（自动标题的前提修正见 §11.3） |
 | F11 | 服务端会话搜索 `q` 接线 | P2 | 无 | Proposed |
 | F12 | 决策点（默认不做）：发送键 morph/涟漪、phrase reveal、跨引擎/视觉回归、系统通知 | — | — | 不做（除非用户拍板） |
 | F13 | 附件/图片上传 UI | — | **阻塞于运行时文档 R8** | 不在本轮 |
@@ -584,6 +584,52 @@ ease token（in-out/emphasized），都放在既有 motion token 块里：循环
    "标题仍等于默认模板串"近似——记录该偏差；服务端摘要标题在运行时文档 R10 登记。
 
 验证：两项各自 vitest + 一条 e2e。
+
+### 11.3 实现记录（2026-09-26）
+
+**F10.1 per-model reasoning 记忆**。新增 `apps/web/product-v2/reasoning-memory.ts`：
+`rove.ui-reasoning-by-model` 是一个 model id → reasoning 的 localStorage 映射，纯函数
+（`parseReasoningByModel` / `rememberReasoningInMap` / `reasoningForModel`）与存储 I/O
+（`readReasoningByModel` / `rememberReasoning`）分离，后者吞掉被禁用或写满的 storage——
+这是便利偏好，不该让一次保存失败。映射有界（`REASONING_BY_MODEL_LIMIT = 50`，最旧的先走），
+并且逐条校验：非字符串、未知 reasoning 值、空 model id、非对象 JSON 全部丢弃，手改过的
+localStorage 不可能把非法值送进请求。
+
+接线在 `QuickModelControl`：选 reasoning 时按**当前输入框里的 model id** 记忆；换模型
+（输入框直接改，或切 profile 带出其 default model）时先查记忆，命中就带回该模型的
+上次选择，未命中才走原有回退规则（仍在本就支持 reasoning 的 provider 上就保留当前值，
+切到不支持的服务则回退 `default`）。服务端 model-config 合同未改，CAS 冲突恢复路径
+（`onModelConfigChange` 失败后的既有处理）未改。datalist 里输入但 provider 未上报的
+model 仍然禁用 reasoning 选择——这一条是既有能力判定（`quickModelReasoning`），本项不动。
+
+证据：`apps/web/product-v2/reasoning-memory.test.ts`（7 例：隔离、覆盖、有界、脏数据、
+storage 不可用）；`apps/web/tests/e2e/session-preferences.spec.ts`
+"the reasoning effort follows the model it was chosen for"（两个 openai-responses profile，
+各自记住 high/low，来回切换两次都能带回）。
+
+**F10.2 会话自动标题——设计前提修正**。设计原文按"尚未实现"描述，实际上
+`state/use-session-continuity.ts` 已经有一版：标题严格等于 `"New session"` 时**发送前**写入，
+截断用 `slice(0, 42)`（UTF-16 码元）。因此本项落地的是**参数修正**，并逐条记录：
+
+| 项 | 原有 | 现在 |
+|---|---|---|
+| 截断 | 42 个 UTF-16 码元（`slice`，可能劈开代理对） | 48 个码点（`Array.from`），未超长时不加省略号 |
+| 时机 | 发送请求**之前**（被拒绝的消息也会命名会话） | 服务端接受该消息**之后** |
+| 未命名判定 | 仅等于字面量 `"New session"` | 空标题也算未命名；`DEFAULT_SESSION_TITLE` 单点定义并注明与 `apps/api/.../validation.rs` 同源 |
+| 手动命名优先 | 依赖发送前的瞬时快照 | 写入前**重新读一次 catalog**：请求在途期间发生的重命名优先；另外本页对该会话只自动命名一次（避免"服务端标题回执到达前的第二条消息"改写首条消息的标题） |
+
+新增 `apps/web/state/session-auto-title.ts`（`DEFAULT_SESSION_TITLE` /
+`hasDefaultSessionTitle` / `autoSessionTitle` / `AUTO_TITLE_MAX_CODE_POINTS = 48`），
+`use-session-continuity.ts` 的 `send` 在 `accepted` 之后调用一次；原 `truncateTitle` 删除。
+
+证据：`apps/web/state/session-auto-title.test.ts`（7 例：占位标题/空标题、空白折叠、
+48 码点截断、恰好 48 不加省略号、emoji 不被劈开、空消息返回 null）；
+`apps/web/tests/e2e/session-preferences.spec.ts`
+"the first message names a session the user never named"（新会话首条消息 → 服务端标题与
+头部 `<h1>` 都变成截断值；已有标题的会话发送后标题不变）。
+
+**仍然记录的偏差**："从未手动命名"只能近似为"标题仍等于默认模板串"（有人把会话改名回
+`New session` 就会被再次自动命名）；服务端摘要标题仍是运行时文档 R10 的登记项，本项不做。
 
 ---
 

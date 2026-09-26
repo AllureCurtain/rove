@@ -56,6 +56,7 @@ import {
 import {
   assertProviderSelectionIsSatisfiable,
 } from "./turn-request";
+import { autoSessionTitle, hasDefaultSessionTitle } from "./session-auto-title";
 import { hasAdvancedRuntimeBinding } from "./server-product-state";
 
 interface ObservedRunBinding {
@@ -163,6 +164,12 @@ export function useSessionContinuity({
   const controlsGenerationRef = useRef(0);
   const messagesGenerationRef = useRef(0);
   const messageRequestsRef = useRef(new Map<string, string>());
+  /**
+   * F10.2: sessions this page has already auto-titled. The catalog check below
+   * is the real guard; this only stops a second message, sent before the
+   * server's title write came back, from replacing the first message's title.
+   */
+  const autoTitledSessionsRef = useRef(new Set<string>());
   const controlRequestsRef = useRef(
     new Map<
       string,
@@ -919,10 +926,10 @@ export function useSessionContinuity({
         idempotencyKey = createControlIdempotencyKey();
         messageRequestsRef.current.set(requestKey, idempotencyKey);
       }
-      const title = session.title === "New session" ? truncateTitle(trimmed) : session.title;
-      if (session.title === "New session") {
-        void updateSessionTitle(session.id, title).catch(() => undefined);
-      }
+      // F10.2: a session the user never named takes its first message as its
+      // title. The value is computed here and written only once the server has
+      // accepted the message, so a rejected send never names a session.
+      const autoTitle = autoSessionTitle(trimmed);
       let accepted: ProductMessage | null = null;
       let lastError: unknown;
       trackActivityPhase({ type: "send" });
@@ -964,7 +971,23 @@ export function useSessionContinuity({
 
       messageRequestsRef.current.delete(requestKey);
       upsertMessage(accepted);
-      markSession(session.id, { title });
+      if (autoTitle !== null) {
+        // Read the title again rather than trusting the snapshot this call
+        // started with: a rename that landed while the message was in flight
+        // must win, and it is exactly this check — "still the default template"
+        // — that stands in for "never manually named" (design F10.2 records the
+        // approximation). The write is fire-and-forget: the title is a
+        // convenience, and the next catalog read is authoritative.
+        const namedNow = findSession(catalogRef.current, session.id);
+        if (
+          !autoTitledSessionsRef.current.has(session.id) &&
+          hasDefaultSessionTitle(namedNow?.title ?? session.title)
+        ) {
+          autoTitledSessionsRef.current.add(session.id);
+          void updateSessionTitle(session.id, autoTitle).catch(() => undefined);
+          markSession(session.id, { title: autoTitle });
+        }
+      }
       dispatch({ type: "set_status", statusText: messageStatusLabel(accepted.status) });
       setConnection("ok");
       void refreshMessages(session.id);
@@ -1283,9 +1306,4 @@ const AMBIGUOUS_START_RECONCILIATION_DELAYS_MS = [
 
 function waitForReconciliationDelay(delayMs: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, delayMs));
-}
-
-function truncateTitle(message: string): string {
-  const compact = message.replace(/\s+/g, " ").trim();
-  return compact.length <= 42 ? compact : `${compact.slice(0, 42)}...`;
 }
