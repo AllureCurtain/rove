@@ -32,7 +32,17 @@ export type ActivityEvent =
   | { type: "finalization_started" }
   | { type: "execution_degraded"; summary: string };
 
-const KNOWN_MODEL_STATUSES = new Set(["queued", "running", "retrying", "waiting"]);
+const KNOWN_MODEL_STATUSES = new Set([
+  "queued",
+  "running",
+  "retrying",
+  "waiting",
+  // The run produced no visible response and the runtime is spending its one
+  // recovery turn. It is still a wait on the model, so the composer keeps
+  // announcing the model phase; the runtime's own message is what the status
+  // line shows (`lib/rove-state.ts`).
+  "recovering_silent_turn",
+]);
 
 export const IDLE_PHASE: ActivityPhase = { kind: "idle" };
 
