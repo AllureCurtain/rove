@@ -191,7 +191,7 @@ test("a successful fork is announced", async ({ page }) => {
   });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  await page.getByRole("button", { name: "Fork", exact: true }).click();
+  await page.locator(".chat-pane__header").getByRole("button", { name: "复制会话" }).click();
 
   const toast = page.locator(TOAST);
   await expect(toast).toHaveCount(1);
@@ -224,7 +224,7 @@ test("reduced motion shows toasts without the slide", async ({ page }) => {
   });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  await page.getByRole("button", { name: "Fork", exact: true }).click();
+  await page.locator(".chat-pane__header").getByRole("button", { name: "复制会话" }).click();
 
   const toast = page.locator(TOAST);
   await expect(toast).toHaveCount(1);
