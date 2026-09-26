@@ -44,11 +44,15 @@ export function lastRestorableUserMessage(
 /**
  * The runtime's partial-abort marker, as of runtime document R2b.
  *
- * R2b registers an explicit `aborted` fact on the terminal run when a stop cut
- * a turn short after the model had already produced content. The runtime does
- * not emit it yet, so it stays `undefined` and the branch below is never taken:
- * a stop that produced work keeps behaving exactly as it does today. Setting
- * this to the marker once the runtime sends it is the whole switch.
+ * R2b now emits the fact: a stop that cut a turn short after the model had
+ * already produced content ends with an `llm_message` event carrying
+ * `aborted: true`, and the transcript renders it as a `(aborted)` suffix beside
+ * the partial text. This smart-stop branch is a different question — whether to
+ * show a stop notice *instead of* restoring the message — and the stop handler
+ * runs while the salvage window is still open, before that terminal message
+ * exists. Deriving it from the settled run is the registered F6 follow-up, so
+ * the marker stays `undefined` and the branch below is never taken: a stop that
+ * produced work keeps behaving exactly as it does today.
  */
 export const PARTIAL_ABORT_MARKER: boolean | undefined = undefined;
 

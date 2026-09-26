@@ -28,6 +28,12 @@ export interface ChatMessage {
   usage?: Usage;
   promptBuild?: PromptBuildMetadata;
   promptCompaction?: PromptCompactionState;
+  /**
+   * R2b abort salvage: the runtime kept this assistant text from a cancelled
+   * turn instead of dropping it. The run is still cancelled; the marker only
+   * says the message is a partial. Absent means a complete response.
+   */
+  aborted?: boolean;
 }
 
 export type ToolExecutionViewMetadata = Omit<
@@ -1003,6 +1009,7 @@ function applyStreamEvent(
           usage: event.usage,
           promptBuild: state.promptBuild,
           promptCompaction: state.promptCompaction,
+          aborted: event.aborted === true,
         },
       );
       return {
@@ -1606,6 +1613,8 @@ function finalizeAssistantMessage(
     usage: Usage;
     promptBuild: PromptBuildMetadata | null;
     promptCompaction: PromptCompactionState | null;
+    /** True when the runtime salvaged this text from a cancelled turn. */
+    aborted: boolean;
   },
 ): MessageProjection {
   const last = messages[messages.length - 1];
@@ -1620,6 +1629,7 @@ function finalizeAssistantMessage(
           usage: evidence.usage,
           promptBuild: evidence.promptBuild ?? undefined,
           promptCompaction: evidence.promptCompaction ?? undefined,
+          aborted: evidence.aborted || undefined,
         },
       ],
       messageId: last.id,
@@ -1633,9 +1643,17 @@ function finalizeAssistantMessage(
   ) {
     // Duplicate completion for a message already finalized by a later segment
     // (possible on overlapping restore ranges). Omitted facts stay absent so
-    // the replay cannot stamp a misleading zero-usage read onto it.
+    // the replay cannot stamp a misleading zero-usage read onto it. The salvage
+    // marker is the one exception: a replayed aborted fact must not be lost.
+    if (last.aborted === true || !evidence.aborted) {
+      return {
+        messages,
+        messageId: last.id,
+        created: false,
+      };
+    }
     return {
-      messages,
+      messages: [...messages.slice(0, -1), { ...last, aborted: true }],
       messageId: last.id,
       created: false,
     };
@@ -1652,6 +1670,7 @@ function finalizeAssistantMessage(
         usage: evidence.usage,
         promptBuild: evidence.promptBuild ?? undefined,
         promptCompaction: evidence.promptCompaction ?? undefined,
+        aborted: evidence.aborted || undefined,
       },
     ],
     messageId,
