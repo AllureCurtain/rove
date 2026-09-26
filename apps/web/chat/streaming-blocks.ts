@@ -10,6 +10,21 @@ export type MarkdownSegment =
   | { kind: "prose"; text: string }
   | { kind: "code"; text: string };
 
+/**
+ * What one parsed segment depends on.
+ *
+ * The segment kind decides how the text was *split*, not how it renders: both
+ * kinds go through the same markdown renderer. Text equality is therefore the
+ * whole comparison, and keeping it exact is what lets a growing message reuse
+ * every finished block.
+ */
+export function markdownSegmentPropsEqual(
+  previous: { text: string },
+  next: { text: string },
+): boolean {
+  return previous.text === next.text;
+}
+
 const FENCE = /^(`{3,}|~{3,})/;
 
 export function segmentMarkdown(markdown: string): MarkdownSegment[] {
