@@ -34,7 +34,7 @@
 | F8 | 样式 token linter 与 CI 接入 | P1 | 无 | Implemented（本地门；按 §9.1 不接入 CI） |
 | F9 | 侧栏折叠动效合成器友好化 | P2 | 无 | Implemented（轨道一步到位 + 侧栏滑出；视觉偏差见 §10.4） |
 | F10 | 偏好小项（per-model reasoning 记忆、会话自动标题） | P2 | 无 | Implemented（自动标题的前提修正见 §11.3） |
-| F11 | 服务端会话搜索 `q` 接线 | P2 | 无 | Proposed |
+| F11 | 服务端会话搜索 `q` 接线 | P2 | 无 | Implemented（前提复核与差异记录见 §12.1） |
 | F12 | 决策点（默认不做）：发送键 morph/涟漪、phrase reveal、跨引擎/视觉回归、系统通知 | — | — | 不做（除非用户拍板） |
 | F13 | 附件/图片上传 UI | — | **阻塞于运行时文档 R8** | 不在本轮 |
 
@@ -642,6 +642,40 @@ storage 不可用）；`apps/web/tests/e2e/session-preferences.spec.ts`
   该工作区列表；本地子串保留为无网降级。差异记录：服务端 LIKE 只做 ASCII 大小写
   折叠，英文与本地 `toLocaleLowerCase` 有别；服务端结果为权威。
 - P2 的原因：在 R5（目录 SSE）与真实大目录出现之前收益有限；不做也不会错。
+
+### 12.1 实现记录（2026-09-26）
+
+**前提复核**：`state/server-product-state.ts:66-88` 的 `listWorkspaceSessions` 本来就会
+逐页翻到游标结束（上限 `MAX_SESSION_PAGES_PER_WORKSPACE = 64` 页），所以"目录已把会话
+拉全"在当前代码里成立——本地子串与服务端 `q` 在正常情况下同解。本项因此不是修 bug，而是
+按设计解除"目录全量加载"假设，并保留本地过滤作为无网降级。
+
+落地：
+
+- `sidebar/session-server-search.ts`：纯逻辑。`SESSION_SERVER_SEARCH_LIMIT = 200`；
+  `serverSearchQuery` 去空白并把空查询判为"无需询问"；`resolveSessionRows` 是唯一裁决点
+  ——空查询恢复全部已加载行；工作区名命中时该工作区不过滤（保持原行为）；**服务端答了就
+  以服务端行为准**（包括"服务端答 0 条"也算无匹配，不再回退本地）；没有服务端答案
+  （未询问/在途/失败）才用既有的 `filterSessions` 本地子串。
+- `sidebar/use-server-session-search.ts`：输入非空后沿用既有 `SESSION_SEARCH_DEBOUNCE_MS`
+  （180ms），对每个工作区并发 `listSessions({ q, limit: 200, includeArchived: false })`；
+  序列失效复用 `session-search.ts` 已有的 `nextSearchToken`/`isCurrentSearch`（latest-wins），
+  慢响应不会覆盖新查询；任一请求失败即清空服务端结果并置 `unavailable`。工作区 id 用
+  连接串做依赖键，避免父组件每次渲染的新数组触发重查。
+- 接线：`use-server-product-state.ts` 暴露 `searchSessions`（`fromProductSession` 映射），
+  `ProductApp` 传给 `WorkspaceTree` 的可选 `searchSessions` prop；未传时行为与之前完全一致。
+  侧栏搜索说明文案改为反映真实范围（`workspace.searchScope`），失败时改用
+  `workspace.searchUnavailable` 明说"服务端检索不可用，已改为只过滤已加载的名称"。
+
+**差异记录（按设计）**：服务端 `LIKE` 只折叠 ASCII 大小写，本地用 `toLocaleLowerCase`；
+非 ASCII 标题两者可能不同，此时**服务端结果为权威**（`resolveSessionRows` 的取舍）。
+另记录：本次只取一页（`limit: 200`），不翻页；服务端返回的会话不写入目录缓存，只用于本次
+渲染，因此目录的权威性不变。
+
+证据：`apps/web/sidebar/session-server-search.test.ts`（6 例，覆盖空查询、工作区名命中、
+无答案降级、服务端行为准、服务端空答案不回退）；`apps/web/tests/e2e/session-server-search.spec.ts`
+两例——"只有服务端知道的会话出现在搜索里"（mock 的 `searchOnlySessions` 模拟超出目录页
+上限的会话，并断言请求带 `q=checklist&limit=200`）、"服务端检索失败时本地过滤接手"。
 
 ---
 

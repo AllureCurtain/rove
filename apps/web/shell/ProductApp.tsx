@@ -1198,6 +1198,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
             onToggleCollapsed={() =>
               navCollapsed ? expandRail() : setNavCollapsed(true)
             }
+            searchSessions={server.searchSessions}
           />
           {/* Hidden on narrow layouts by CSS; the drawer has no width to drag. */}
           {!mobileLayout && !navCollapsed ? (
