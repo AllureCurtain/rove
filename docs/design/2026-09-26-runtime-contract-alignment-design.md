@@ -47,7 +47,7 @@
 | R5 | 产品级目录 SSE `/product/events` | P1 | `apps/api` + 迁移 018 + web | Proposed |
 | R6 | 消息级编辑重发 = fork-at-message | P2 | `apps/api` fork 合同扩展 | Proposed |
 | R7 | 会话内容搜索（FTS5，先单会话） | P2 | ProductStore + 端点 | Proposed |
-| R8 | 附件/图片上传协议（骨架） | P2 | 存储/端点/消息合同/provider 层 | Proposed（骨架先行，实施前需独立评审） |
+| R8 | 附件/图片上传协议（骨架） | P2 | 存储/端点/消息合同/provider 层 | Proposed（骨架先行；实施计划与威胁模型已出，**尚未动工**，见 §8.5） |
 | R9 | 压缩两层审计 + `/compact` HTTP 端点 | P2 | `runtime` + `apps/api` | Proposed（先审计后实施） |
 | R10 | 登记不在本轮的方向 | — | — | 不做 |
 
@@ -714,6 +714,33 @@ rove 当前最大的功能缺口（composer 只有粘贴文本 chip，`chat/comp
 
 以届时实施计划为准；本节验收线 = 威胁模型文档 + 合同测试 + 上传/下载/引用/
 清理四条集成用例存在。
+
+### 8.5 实施记录（2026-09-26）
+
+§8.1 的门槛前半已满足，**后半未开始**：本次只出文档，没有任何产品代码。
+
+1. **产出**：独立实施计划
+   [`2026-09-26-attachments-implementation-plan.md`](../plans/2026-09-26-attachments-implementation-plan.md)
+   与独立威胁模型
+   [`2026-09-26-attachments-threat-model.md`](2026-09-26-attachments-threat-model.md)
+   （同分支、docs-only）。§8.2/§8.3 原文未被改写，仍是合同上限。
+2. **未动工（逐项为否）**：无端点、无表/列、无迁移、`ProductMessage` 无附件字段、
+   `models/` 无 image content part 与能力位、`apps/web` 无上传接线、无 Desktop 拖拽处理。
+   §8.2 的骨架不代表运行时已支持任何附件行为。
+3. **迁移号定案：R8 取 020**。现状 `CURRENT_SCHEMA_VERSION = 17`
+   （`apps/api/src/product/store/schema.rs:9`），016 为 R3、017 为 R4（均已落地），
+   018 归 R5、019 归 R7（§0.1、§7.2），故 §8.2 "019/020 视 R7 是否同批"确定为 020。
+4. **实施计划对本节的两处有意偏离**（评审应先看这两条，证据与理由见计划 §7.1、§13）：
+   - 文本类附件不做"以路径引用交给工具读取"：运行时所有读取都以解析后的 workspace 为界
+     （`runtime/src/environment.rs:64`），而附件根按 §8.2 在 workspace 之外，
+     故改为按 attachment_id 的有界读端口（路径永不进入 provider/prompt）；
+   - 大小上限按类型拆分（栅格 16 MiB、其余 20 MiB）：现有栅格上限是 16 MiB
+     （`apps/api/src/product/files.rs:29`），统一按 20 MiB 会让 16–20 MiB 的图片被接受却
+     无法渲染。计划 §12 Q1 将其列为待决策项。
+5. **另发现的文档缺口**：§12 验收矩阵没有 R8 行（本节冻结，本次不回填；
+   PR-1 落地时补）。
+6. **下一步**：按 `CONTRIBUTING.md` §6，本条属安全敏感/跨包边界变更，
+   两个文档需**独立盲审**通过后才可动工；实施按计划 §10 的 PR-1…PR-5 顺序。
 
 ---
 
