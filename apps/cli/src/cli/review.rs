@@ -9,7 +9,7 @@ use rove_app_bootstrap::{
     try_build_model_client,
 };
 use rove_models::fake::{FakeModelClient, FakeTurn};
-use rove_runtime::engine::ProviderRetryPolicy;
+use rove_runtime::engine::{ProviderRetryPolicy, SilentTurnRecoveryPolicy};
 use rove_runtime::review::{
     ReviewConclusion, ReviewResult, ReviewRuntimeEvidence, ReviewStats, ReviewTargetSpec,
     ReviewTargetSummary, ReviewUnchecked, apply_runtime_outcome, capture_target,
@@ -83,7 +83,7 @@ pub async fn run(
     state_store.index.initialize()?;
     let run = state_store.start_run(session_id, job_id, run_id)?;
 
-    let (model, run_model_snapshot, provider_retry) =
+    let (model, run_model_snapshot, provider_retry, silent_turn_recovery) =
         match assemble_review_model(&workspace, model.as_deref()) {
             Ok(assembly) => assembly,
             Err(error) => {
@@ -111,6 +111,7 @@ pub async fn run(
             state_root: Some(&state_root),
             run_model_snapshot: Some(run_model_snapshot),
             provider_retry,
+            silent_turn_recovery,
             max_steps: max_steps.unwrap_or(8),
         },
     ) {
@@ -312,6 +313,7 @@ fn assemble_review_model(
     Box<dyn rove_models::ModelClient>,
     RunModelSnapshot,
     ProviderRetryPolicy,
+    SilentTurnRecoveryPolicy,
 )> {
     let config = AppConfig::load(
         &workspace.root,
@@ -327,8 +329,11 @@ fn assemble_review_model(
         },
     )?;
     let requested_fake = requested_model.is_some_and(|model| matches!(model, "fake" | "fake-raw"));
-    // A Review run retries under the same configured budget as any other run.
+    // A Review run retries under the same configured budget as any other run,
+    // and runs the same silent-turn recovery policy. A Review turn's model text
+    // is always redacted rather than absent, so the detection never fires.
     let provider_retry = config.runtime.recovery.retry_policy();
+    let silent_turn_recovery = config.runtime.recovery.silent_turn_policy();
     let catalog_service = ProviderCatalogService::discover();
     let catalog = catalog_service.load()?;
     let programmatic_fake = requested_fake
@@ -353,6 +358,7 @@ fn assemble_review_model(
                 safe_config_digest: rove_runtime::context::stable_hash("programmatic-fake"),
             },
             provider_retry,
+            silent_turn_recovery,
         ));
     }
 
@@ -379,7 +385,7 @@ fn assemble_review_model(
             anyhow::anyhow!("provider_unavailable: Review model is unavailable: {error}")
         })?
     };
-    Ok((model, snapshot, provider_retry))
+    Ok((model, snapshot, provider_retry, silent_turn_recovery))
 }
 
 fn review_fake_model() -> FakeModelClient {
