@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_stream::stream;
 use futures::StreamExt;
@@ -18,6 +19,7 @@ use crate::context::ContextManager;
 use crate::engine::control::{
     AcceptedSteer, SteerLifecycle, SteerMessage, steer_accepted_event, steer_applied_event,
 };
+use crate::engine::recovery::{ProviderRetryPolicy, RetryClass, retry_after_ms, retry_class};
 use crate::environment::ExecutionEnvironment;
 use crate::events::StreamEvent;
 use crate::execution::{
@@ -47,7 +49,7 @@ use rove_core::{
     KernelLimits, KernelModelTurnItem, KernelState, KernelTermination, KernelToolAction,
     KernelToolTurnItem, ToolRegistry, run_agent_kernel,
 };
-use rove_models::{ModelClient, ModelToolSchema};
+use rove_models::{ModelClient, ModelError, ModelToolSchema};
 
 /// Shared receiver for in-flight steer messages. Wrapped in Arc<AsyncMutex> so
 /// it can be cloned into LoopContext and polled at each safe point without
@@ -66,6 +68,8 @@ pub(crate) struct LoopContext<'a> {
     pub session_id: SessionId,
     pub max_steps: u32,
     pub execution_policy: ExecutionPolicy,
+    /// Model-call retry budget applied at the model-turn boundary.
+    pub provider_retry: ProviderRetryPolicy,
     pub finalizer: &'a Finalizer,
     pub approval_policy: ApprovalPolicy,
     pub approval_decision: ApprovalDecision,
@@ -711,7 +715,10 @@ impl AgentKernelHost for UnplannedKernelHost<'_> {
             cancel_token,
             accepted,
             self.ctx.steer_lifecycle.clone(),
-            self.ctx.run_mode,
+            ModelTurnOptions {
+                run_mode: self.ctx.run_mode,
+                retry_policy: self.ctx.provider_retry.clone(),
+            },
         )
     }
 
@@ -802,6 +809,52 @@ impl AgentKernelHost for UnplannedKernelHost<'_> {
     fn finish_output(&mut self, _state: &KernelState) -> Self::Output {}
 }
 
+/// Per-model-call options the host resolves before the call.
+///
+/// Grouping them keeps the model-turn signature stable as recovery behavior
+/// grows, and states explicitly that a retry reuses the same options instead of
+/// re-deriving them from a mutated turn.
+#[derive(Debug, Clone)]
+pub(crate) struct ModelTurnOptions {
+    pub run_mode: RunMode,
+    pub retry_policy: ProviderRetryPolicy,
+}
+
+/// Decide whether a failed attempt may be retried, charging its class budget.
+///
+/// Returns the retry notice facts `(delay_ms, reason, attempt, max_attempts)`
+/// and advances the matching counter, or `None` when the failure is terminal for
+/// this model call. `attempt` is 1-based and counts the first call, so the first
+/// retry is attempt 2.
+fn plan_retry(
+    error: &ModelError,
+    output_started: bool,
+    policy: &ProviderRetryPolicy,
+    rate_limit_attempts: &mut u32,
+    transient_attempts: &mut u32,
+) -> Option<(u64, String, u32, u32)> {
+    if output_started {
+        return None;
+    }
+    let class = retry_class(error)?;
+    let spent = match class {
+        RetryClass::RateLimited => *rate_limit_attempts,
+        RetryClass::Transient => *transient_attempts,
+    };
+    let max_attempts = policy.max_attempts(class);
+    if spent >= max_attempts {
+        return None;
+    }
+    let attempt = spent + 1;
+    let delay_ms = policy.delay_ms(attempt, retry_after_ms(error));
+    let reason = policy.reason(error);
+    match class {
+        RetryClass::RateLimited => *rate_limit_attempts = attempt,
+        RetryClass::Transient => *transient_attempts = attempt,
+    }
+    Some((delay_ms, reason, attempt, max_attempts))
+}
+
 pub(crate) fn run_kernel_model_turn<'a>(
     model: &'a dyn ModelClient,
     tool_schemas: Vec<ModelToolSchema>,
@@ -809,42 +862,302 @@ pub(crate) fn run_kernel_model_turn<'a>(
     cancel_token: CancellationToken,
     accepted_steer_ids: Vec<AcceptedSteer>,
     steer_lifecycle: Option<SteerLifecycle>,
-    run_mode: RunMode,
+    options: ModelTurnOptions,
 ) -> BoxStream<'a, KernelModelTurnItem<StreamEvent>> {
     Box::pin(stream! {
-        let mut inner = run_model_turn(
-            model,
-            messages,
-            tool_schemas,
-            cancel_token,
-            run_mode,
-        );
+        let ModelTurnOptions { run_mode, retry_policy } = options;
+        // Steer application is a per-call fact: the retried attempt is the same
+        // model call, so an accepted steer is announced exactly once.
         let mut applied = false;
-        while let Some(item) = inner.next().await {
-            if !applied {
-                for accepted in &accepted_steer_ids {
-                    if let Some(lifecycle) = steer_lifecycle.as_ref() {
-                        lifecycle.applied(&accepted.id).await;
+        // A retry is only safe while the turn has produced nothing the user can
+        // see. Once a chunk is streamed, a failure ends the turn instead of
+        // re-generating text that may already be on screen.
+        let mut output_started = false;
+        // Attempts already spent, per independent budget. The first call counts
+        // as attempt 1, so both start at 1.
+        let mut rate_limit_attempts: u32 = 1;
+        let mut transient_attempts: u32 = 1;
+        // The retry inputs are kept only when a retry is possible at all, so a
+        // deployment that disabled the budget pays nothing for it. The first
+        // attempt uses the request as given; a retry re-sends the identical
+        // request rather than re-deriving it from a mutated turn.
+        let retry_inputs = retry_policy
+            .is_enabled()
+            .then(|| (messages.clone(), tool_schemas.clone()));
+        let mut next_messages = Some(messages);
+        let mut next_tool_schemas = Some(tool_schemas);
+
+        loop {
+            let (attempt_messages, attempt_schemas) =
+                match (next_messages.take(), next_tool_schemas.take()) {
+                    (Some(messages), Some(schemas)) => (messages, schemas),
+                    _ => {
+                        let (messages, schemas) = retry_inputs
+                            .as_ref()
+                            .expect("a retry keeps its request inputs while the budget is enabled");
+                        (messages.clone(), schemas.clone())
                     }
-                    yield KernelModelTurnItem::Event(steer_applied_event(accepted));
+                };
+
+            let mut inner = run_model_turn(
+                model,
+                attempt_messages,
+                attempt_schemas,
+                cancel_token.clone(),
+                run_mode,
+            );
+            // Set when this attempt schedules another one instead of ending.
+            let mut retry: Option<(u64, String, u32, u32)> = None;
+
+            while let Some(item) = inner.next().await {
+                if !applied {
+                    for accepted in &accepted_steer_ids {
+                        if let Some(lifecycle) = steer_lifecycle.as_ref() {
+                            lifecycle.applied(&accepted.id).await;
+                        }
+                        yield KernelModelTurnItem::Event(steer_applied_event(accepted));
+                    }
+                    applied = true;
                 }
-                applied = true;
+                match item {
+                    ModelTurnItem::Event(event) => {
+                        if matches!(event, StreamEvent::LlmChunk { .. }) {
+                            output_started = true;
+                        }
+                        yield KernelModelTurnItem::Event(event);
+                    }
+                    ModelTurnItem::Finished(turn) => {
+                        yield KernelModelTurnItem::Finished(turn);
+                        return;
+                    }
+                    ModelTurnItem::Cancelled => {
+                        yield KernelModelTurnItem::Cancelled;
+                        return;
+                    }
+                    ModelTurnItem::Failed(error) => {
+                        if let Some(planned) = plan_retry(
+                            &error,
+                            output_started,
+                            &retry_policy,
+                            &mut rate_limit_attempts,
+                            &mut transient_attempts,
+                        ) {
+                            retry = Some(planned);
+                            break;
+                        }
+                        yield KernelModelTurnItem::Failed(error);
+                        return;
+                    }
+                }
             }
-            match item {
-                ModelTurnItem::Event(event) => yield KernelModelTurnItem::Event(event),
-                ModelTurnItem::Finished(turn) => {
-                    yield KernelModelTurnItem::Finished(turn);
-                    return;
+
+            let Some((delay_ms, reason, attempt, max_attempts)) = retry else {
+                // The inner stream ended without a terminal item, which the
+                // model-turn contract does not allow. Ending the turn here keeps
+                // the pre-budget behavior for that case.
+                return;
+            };
+
+            yield KernelModelTurnItem::Event(StreamEvent::ProviderRetry {
+                attempt,
+                max_attempts,
+                delay_ms,
+                reason,
+                phase: "model_call".to_string(),
+            });
+            if delay_ms > 0 {
+                // The wait is cancellable: cancelling during a backoff ends the
+                // turn immediately instead of leaving a pending sleep behind.
+                tokio::select! {
+                    biased;
+                    _ = cancel_token.cancelled() => {
+                        yield KernelModelTurnItem::Cancelled;
+                        return;
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
                 }
-                ModelTurnItem::Cancelled => {
-                    yield KernelModelTurnItem::Cancelled;
-                    return;
-                }
-                ModelTurnItem::Failed(error) => {
-                    yield KernelModelTurnItem::Failed(error);
-                    return;
-                }
+            }
+            if cancel_token.is_cancelled() {
+                yield KernelModelTurnItem::Cancelled;
+                return;
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use rove_models::{FakeModelClient, FakeTurn, ModelError};
+
+    use super::*;
+
+    fn retry_immediately() -> ProviderRetryPolicy {
+        ProviderRetryPolicy {
+            backoff_base_ms: 1,
+            backoff_max_ms: 1,
+            jitter_ratio: 0.0,
+            ..ProviderRetryPolicy::default()
+        }
+    }
+
+    /// An accepted steer belongs to the model call, not to one attempt, so a
+    /// retry must announce it exactly once instead of replaying it.
+    #[tokio::test]
+    async fn a_retried_model_turn_announces_an_accepted_steer_once() {
+        let model = FakeModelClient::with_turns(
+            "fallback".to_string(),
+            vec![
+                FakeTurn::Fail(ModelError::RequestFailed("reset".to_string())),
+                FakeTurn::Text("recovered".to_string()),
+            ],
+        );
+        let accepted = vec![AcceptedSteer {
+            id: "steer-1".to_string(),
+            unified_message: false,
+        }];
+        let mut stream = run_kernel_model_turn(
+            &model,
+            Vec::new(),
+            vec![crate::types::Message::user("answer the request")],
+            CancellationToken::new(),
+            accepted,
+            None,
+            ModelTurnOptions {
+                run_mode: RunMode::Normal,
+                retry_policy: retry_immediately(),
+            },
+        );
+
+        let mut applied = 0;
+        let mut retries = 0;
+        let mut finished = 0;
+        while let Some(item) = stream.next().await {
+            match item {
+                KernelModelTurnItem::Event(StreamEvent::SteerApplied { .. }) => applied += 1,
+                KernelModelTurnItem::Event(StreamEvent::ProviderRetry { .. }) => retries += 1,
+                KernelModelTurnItem::Finished(_) => finished += 1,
+                _ => {}
+            }
+        }
+
+        assert_eq!(applied, 1, "a retry must not replay the accepted steer");
+        assert_eq!(retries, 1, "one failed attempt means one retry notice");
+        assert_eq!(finished, 1, "the recovered attempt must finish the turn");
+    }
+
+    /// The budget is spent per class and never after output exists, so a
+    /// streaming turn ends the moment its first failure is terminal.
+    #[tokio::test]
+    async fn output_before_failure_ends_the_turn_with_the_provider_error() {
+        let model = FakeModelClient::with_turns(
+            "fallback".to_string(),
+            vec![FakeTurn::TextThenFail {
+                text: "partial".to_string(),
+                error: ModelError::StreamInterrupted("closed".to_string()),
+            }],
+        );
+        let mut stream = run_kernel_model_turn(
+            &model,
+            Vec::new(),
+            vec![crate::types::Message::user("answer the request")],
+            CancellationToken::new(),
+            Vec::new(),
+            None,
+            ModelTurnOptions {
+                run_mode: RunMode::Normal,
+                retry_policy: retry_immediately(),
+            },
+        );
+
+        let mut retries = 0;
+        let mut failure = None;
+        while let Some(item) = stream.next().await {
+            match item {
+                KernelModelTurnItem::Event(StreamEvent::ProviderRetry { .. }) => retries += 1,
+                KernelModelTurnItem::Failed(error) => failure = Some(error),
+                _ => {}
+            }
+        }
+
+        assert_eq!(retries, 0, "a failure after output must not retry");
+        assert!(
+            matches!(failure, Some(ModelError::StreamInterrupted(_))),
+            "the provider's own error must be the one the caller sees"
+        );
+    }
+
+    /// Charging is per class and per model call: exhausting one class must not
+    /// spend another, and output before the failure ends the call outright.
+    #[test]
+    fn retry_planning_charges_only_the_failing_class() {
+        let policy = ProviderRetryPolicy {
+            rate_limit_max_attempts: 2,
+            transient_max_attempts: 2,
+            backoff_base_ms: 10,
+            // Above the provider's retry-after so the honoured value is visible
+            // here; the ceiling clamp has its own policy test.
+            backoff_max_ms: 1_000,
+            jitter_ratio: 0.0,
+        };
+        let mut rate_limit = 1;
+        let mut transient = 1;
+        let transient_error = ModelError::RequestFailed("reset".to_string());
+        let rate_limited = ModelError::RateLimited {
+            retry_after_ms: 250,
+        };
+
+        let first = plan_retry(
+            &transient_error,
+            false,
+            &policy,
+            &mut rate_limit,
+            &mut transient,
+        )
+        .expect("the first transient failure earns a retry");
+        assert_eq!(
+            (first.0, first.1, first.2, first.3),
+            (10, "transient:request_failed".to_string(), 2, 2)
+        );
+        assert_eq!(
+            (rate_limit, transient),
+            (1, 2),
+            "only the failing class is charged"
+        );
+
+        assert!(
+            plan_retry(
+                &transient_error,
+                false,
+                &policy,
+                &mut rate_limit,
+                &mut transient
+            )
+            .is_none(),
+            "the transient budget is now spent"
+        );
+        let rate = plan_retry(
+            &rate_limited,
+            false,
+            &policy,
+            &mut rate_limit,
+            &mut transient,
+        )
+        .expect("the rate-limit budget is untouched");
+        assert_eq!(
+            (rate.0, rate.1, rate.2, rate.3),
+            (250, "rate_limited".to_string(), 2, 2),
+            "a provider retry-after is used as given"
+        );
+        assert!(
+            plan_retry(
+                &transient_error,
+                true,
+                &policy,
+                &mut rate_limit,
+                &mut transient
+            )
+            .is_none(),
+            "output before the failure makes the same failure terminal"
+        );
+    }
 }

@@ -19,6 +19,12 @@ pub enum FakeTurn {
     },
     /// Emit a batch of native tool-use calls in one assistant turn.
     ToolBatch(Vec<(String, String, serde_json::Value)>),
+    /// Fail before producing any output, so a caller can exercise a retry
+    /// budget deterministically and offline.
+    Fail(ModelError),
+    /// Emit some text and then fail, so a caller can prove that a turn which
+    /// already produced output is not retried.
+    TextThenFail { text: String, error: ModelError },
 }
 
 /// Deterministic local model for smoke tests and demos.
@@ -104,6 +110,14 @@ fn turn_events(turn: FakeTurn) -> Vec<Result<ModelEvent, ModelError>> {
             events.push(Ok(ModelEvent::Done));
             events
         }
+        FakeTurn::Fail(error) => vec![Err(error)],
+        FakeTurn::TextThenFail { text, error } => vec![
+            Ok(ModelEvent::TextDelta { text }),
+            Ok(ModelEvent::Usage {
+                usage: Usage::default(),
+            }),
+            Err(error),
+        ],
     }
 }
 

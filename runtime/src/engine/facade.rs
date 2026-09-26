@@ -21,6 +21,7 @@ use crate::compaction::{
 };
 use crate::context::{ContextManager, durable_memory_message, session_summary_message};
 use crate::engine::control::{RunControlHandle, SteerLifecycle, control_channel};
+use crate::engine::recovery::ProviderRetryPolicy;
 use crate::environment::{ExecutionEnvironment, local_environment};
 use crate::events::StreamEvent;
 use crate::execution::{ExecutionPolicy, ExecutionStrategy};
@@ -118,6 +119,9 @@ pub struct EngineConfig {
     /// the `max_steps` / `plan_enabled` sugar is used only for compatibility
     /// projections. When absent the policy is derived from that sugar.
     pub execution_policy: Option<ExecutionPolicy>,
+    /// Model-call retry budget applied at each model-turn boundary.
+    /// [`ProviderRetryPolicy::disabled`] restores the pre-recovery behavior.
+    pub provider_retry: ProviderRetryPolicy,
 }
 
 /// Invocation-scoped authority used when constructing an Engine for a
@@ -140,6 +144,7 @@ impl EngineConfig {
             max_steps,
             plan_enabled,
             execution_policy: None,
+            provider_retry: ProviderRetryPolicy::default(),
         }
     }
 
@@ -147,6 +152,14 @@ impl EngineConfig {
     /// sugar fields.
     pub fn with_execution_policy(mut self, policy: ExecutionPolicy) -> Self {
         self.execution_policy = Some(policy);
+        self
+    }
+
+    /// Attach a model-call retry budget.
+    ///
+    /// Without this the engine uses [`ProviderRetryPolicy::default`].
+    pub fn with_provider_retry(mut self, policy: ProviderRetryPolicy) -> Self {
+        self.provider_retry = policy;
         self
     }
 
@@ -167,6 +180,7 @@ impl Default for EngineConfig {
             max_steps: 20,
             plan_enabled: false,
             execution_policy: None,
+            provider_retry: ProviderRetryPolicy::default(),
         }
     }
 }
@@ -1050,6 +1064,7 @@ impl Engine {
                     session_id,
                     max_steps: self.config.max_steps,
                     execution_policy: execution_policy.clone(),
+                    provider_retry: self.config.provider_retry.clone(),
                     finalizer: &run_finalizer,
                     agent_profile: Some(Arc::new(resolved_agent.profile.clone())),
                     agent_planner_summary: Some(resolved_agent.prompt.planner_summary.clone()),
