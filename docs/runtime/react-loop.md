@@ -393,3 +393,58 @@ the Planner, Replanner, Evaluator, Finalizer, and model compaction call
   provider's own `ModelError` reaches the kernel unchanged and the run
   terminates as before (`TerminationReason::Error`); a recoverable planned-step
   failure then still enters the existing repair/replan path.
+
+## Cancellation and abort salvage
+
+Cancelling a run ends it as `Cancelled`. What happens to the model turn that was
+in flight at that moment is the abort-salvage contract (runtime document R2b),
+implemented in `runtime/src/engine/model_turn.rs` and shared by the React host
+and the planned-step host because both call the same `run_kernel_model_turn`.
+
+- **The window is a runtime decision.** `ABORT_SALVAGE_WINDOW` is a private
+  constant of 1500 ms. It is not configuration: it bounds how long a stop may
+  take to become terminal, which is a contract, not a deployment preference.
+  `rove-core` knows no window at all — a cancelled turn only hands back its
+  in-memory outcome, `CancelledTurn { partial, usage }`, where `partial` is the
+  text it accumulated and `usage` is what the provider actually reported (or the
+  type's default when it reported none).
+- **Only text starts a window.** The entry condition is text the turn already
+  published as `LlmChunk` — the same "has produced output" fact the retry budget
+  uses. A stop with no published text ends the turn immediately and persists
+  nothing, which is what the Web smart-stop branch reads as "the model produced
+  nothing". A Review-mode turn never publishes `LlmChunk`, so it never salvages.
+- **Two outcomes, one terminal state.** If the in-flight request finishes inside
+  the window with a complete message, that message is persisted with
+  `aborted = false`. If the window expires, the accumulated text is persisted
+  with `aborted = true` and the request is cancelled. The run ends as
+  `Cancelled` either way — "the user stopped this" and "this text is complete"
+  are independent facts and neither overwrites the other.
+- **One event writes both surfaces.** The persisted result is a single canonical
+  `StreamEvent::LlmMessage { full, usage, tool_calls: [], assistant_turn, aborted }`.
+  The recorder projects it into resumable history (`task_state.json`) and into
+  the trace, and API SSE / Web consume the same event, so no private channel and
+  no half-written state exists. Deltas that arrive inside the window are counted
+  but not republished: the stream was already stopped for every consumer.
+- **The marker is additive.** `aborted` is a `#[serde(default)]` boolean on
+  `LlmMessage`, so older traces and older clients read it as `false` (complete),
+  the variant name and `llm_message` event name are unchanged, and the OpenAPI
+  projection is untouched because `JobStreamEvent.event` is an opaque object.
+  The resumable-history projection drops the marker on purpose: it is a
+  presentation fact, not recoverable state. Review-mode persistence passes it
+  through instead, so redaction cannot silently drop a field.
+- **Text only, tools untouched.** Salvage never dispatches a tool, never starts a
+  model call, and never changes an approval. A cancel during a tool call keeps
+  its existing behavior (the tool turn's biased cancel select ends it before or
+  during execution exactly as before). A salvaged message is text-only with
+  `stop_reason = Cancelled` and no tool calls, so resume cannot discover an
+  executable tool from it.
+- **Idempotent and resumable.** A second cancel cannot reopen the window or write
+  a second message or event. The salvaged text is ordinary assistant history: on
+  resume it is visible once and is never replayed.
+- **Embedded hosts.** `rove-core`'s in-memory Agent loop has no durable history to
+  salvage into, so it reports the cancelled outcome and persists nothing. The
+  window lives with persistence, in the runtime.
+- **Clients.** The Web marks such a message with an `(aborted)` / `(已中止)`
+  suffix beside its text and restores the marker with the run's canonical events.
+  The smart-stop notice branch stays reserved and unused (see the frontend
+  document §7.5).

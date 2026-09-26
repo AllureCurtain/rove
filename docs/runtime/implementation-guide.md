@@ -1025,6 +1025,20 @@ wire protocol version does not change. The budget itself, the no-retry-after-out
 rule, and the `[runtime.recovery.retry]` keys are documented in
 `docs/runtime/react-loop.md`.
 
+`llm_message` carries the assistant text of a model turn with its `usage` and
+`tool_calls`. Its additive `aborted` boolean says whether that text is a partial
+salvaged from a cancelled turn (`true`) or a complete model response (`false`).
+It is `#[serde(default)]`, so a frame or trace line written before the field
+existed reads as a complete message, and the API projection is unchanged because
+`JobStreamEvent.event` is an opaque object in the OpenAPI document. The run still
+ends as `run_completed` with a cancelled reason, so a consumer must not treat
+`aborted` as a terminal state. Both sides of the salvage window, the empty-text
+case, repeated cancellation, and the legacy trace line are pinned by
+`tests/abort_salvage.rs`; the SSE frame itself by
+`sse_frame_carries_the_aborted_marker_on_llm_message` in `apps/api/src/lib.rs`.
+The policy and its 1500 ms bound live in `runtime/src/engine/model_turn.rs` and
+are documented in `docs/runtime/react-loop.md`.
+
 Adding a new event requires checking:
 
 - CLI rendering in `apps/cli/src/cli/oneshot.rs`
