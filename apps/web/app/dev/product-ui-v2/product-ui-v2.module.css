@@ -75,7 +75,8 @@
   inset: 0;
   z-index: 0;
   display: grid;
-  grid-template-rows: 52px minmax(0, 1fr);
+  /* The first row is the "design mock, not product" badge (F7). */
+  grid-template-rows: auto 52px minmax(0, 1fr);
   min-width: 0;
   min-height: 100dvh;
   overflow: hidden;
@@ -137,6 +138,26 @@
 .skipLink:focus-visible {
   outline: 2px solid var(--v2-focus);
   outline-offset: 2px;
+}
+
+/* F7: the mock page must be unmistakable, even if the dev gate ever changes. */
+.mockBanner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--v2-warning);
+  background: var(--v2-warning-soft);
+  color: var(--v2-warning);
+  font-size: 12px;
+  text-align: center;
+}
+
+.mockBanner a {
+  color: inherit;
+  text-decoration: underline;
 }
 
 .preview code,
@@ -2001,7 +2022,8 @@
 
 @media (max-width: 760px) {
   .preview {
-    grid-template-rows: 52px minmax(0, 1fr);
+    /* The badge row stays: it is the point of the banner (F7). */
+    grid-template-rows: auto 52px minmax(0, 1fr);
   }
 
   .productBar {

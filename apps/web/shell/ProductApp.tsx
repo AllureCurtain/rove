@@ -1268,7 +1268,11 @@ function ServerProductApp({ uiVersion, draftStore }: {
                     onClick={() => void handleForkSession()}
                     disabled={!forkAvailable}
                   >
-                    Fork
+                    {/*
+                      The same server-derived operation as a message row's fork
+                      button, so it says the same words (design F7 item 3).
+                    */}
+                    {t("chat.forkSession")}
                   </button>
                   <button
                     ref={inspectorButtonRef}

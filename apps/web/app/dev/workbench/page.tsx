@@ -5,7 +5,8 @@ import { RoveWorkbench } from "../../../components/rove-workbench";
 /**
  * Advanced/Developer migration scaffold for the old workbench.
  * Not a primary product entry — default `/` is the product shell.
- * Prefer Settings → Advanced for Benchmark; this route is escape-hatch only.
+ * Escape-hatch route only: the benchmark runner is not a product Settings
+ * section, so this banner points nowhere else.
  */
 export default function WorkbenchDevPage() {
   return (
@@ -23,7 +24,7 @@ export default function WorkbenchDevPage() {
         <a href="/" style={{ color: "var(--accent, #3a5f7a)" }}>
           /
         </a>
-        . Benchmark lives under Settings → Advanced.
+        . Development route only.
       </div>
       <RoveWorkbench />
     </div>
