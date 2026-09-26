@@ -46,7 +46,12 @@ export interface MockSession {
   };
   created_at: string;
   updated_at: string;
+  parent_session_id?: string;
+  fork_point_run_id?: string;
+  fork_point_seq?: number;
 }
+
+export type MockSessionStatus = MockSession["status"];
 
 export interface MockTranscript {
   product_session_id: string;
@@ -178,6 +183,12 @@ export interface MockProductApiState {
   migrationRequestBodies: string[];
   remainingMigrationFailures: number;
   initialStateReadRequests: number;
+  /**
+   * Reads of the product session list, including background status polling.
+   * Tests also mutate `sessions[i].status` directly: the next poll is what the
+   * shell notices.
+   */
+  sessionListReads: number;
   trustStatuses: Record<string, ProductTrustStatus>;
   trustRequests: Array<{
     method: "GET" | "PUT";
@@ -280,6 +291,7 @@ export async function installMockProductApi(
     migrationRequestBodies: [],
     remainingMigrationFailures: options.migrationFailures ?? 0,
     initialStateReadRequests: 0,
+    sessionListReads: 0,
     trustStatuses: structuredClone(options.trustStatuses ?? {}),
     trustRequests: [],
   };
@@ -287,6 +299,7 @@ export async function installMockProductApi(
   const delayedSessionVisibility = new Map<string, DelayedSessionVisibility>();
   let workspaceCounter = state.workspaces.length;
   let sessionCounter = state.sessions.length;
+  let forkCounter = 0;
   let messageCounter = 0;
   let providerProfileCounter = state.providerProfiles.length;
   let migrationReceiptCounter = 0;
@@ -671,6 +684,7 @@ export async function installMockProductApi(
     }
     if (path === "/product/sessions" && method === "GET") {
       const workspaceId = url.searchParams.get("workspace_id");
+      state.sessionListReads += 1;
       return json(route, {
         sessions: state.sessions
           .filter((session) => session.workspace_id === workspaceId)
@@ -687,6 +701,51 @@ export async function installMockProductApi(
             return delayed.session;
           }),
       });
+    }
+    const forkMatch = path.match(/^\/product\/sessions\/([^/]+)\/forks$/u);
+    if (forkMatch && method === "POST") {
+      const parentId = decodeURIComponent(forkMatch[1]!);
+      const parent = state.sessions.find((session) => session.id === parentId);
+      if (!parent?.runtime_binding) {
+        return json(
+          route,
+          { code: "product_conflict", error: "session cannot be forked" },
+          409,
+        );
+      }
+      const body = request.postDataJSON() as {
+        fork_at_run_id?: string;
+        idempotency_key?: string;
+      };
+      forkCounter += 1;
+      const childId = `session-fork-${forkCounter}`;
+      const child: MockSession = {
+        ...createMockSession(childId, parent.workspace_id, `Fork of ${parent.title}`),
+        parent_session_id: parentId,
+        fork_point_run_id: body.fork_at_run_id ?? parent.runtime_binding.latest_run_id,
+        fork_point_seq: 1,
+      };
+      state.sessions.unshift(child);
+      return json(
+        route,
+        {
+          fork: {
+            id: `fork-${forkCounter}`,
+            parent_product_session_id: parentId,
+            child_product_session_id: childId,
+            parent_workspace_id: parent.workspace_id,
+            parent_title: parent.title,
+            source_runtime_session_id: parent.runtime_binding.runtime_session_id,
+            source_runtime_job_id: parent.runtime_binding.latest_job_id,
+            source_runtime_run_id: parent.runtime_binding.latest_run_id,
+            fork_at_event_seq: 1,
+            idempotency_key: body.idempotency_key ?? `fork-key-${forkCounter}`,
+            created_at: NOW,
+          },
+          session: child,
+        },
+        201,
+      );
     }
     if (path === "/product/sessions" && method === "POST") {
       state.sessionCreateRequests += 1;

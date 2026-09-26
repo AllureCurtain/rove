@@ -566,6 +566,15 @@ const zhCN = {
     routeBody: "会话路由无效或已被移除。",
     code: "代码：{{code}}",
   },
+  toast: {
+    regionLabel: "通知",
+    dismiss: "关闭通知",
+    sessionFailed: "会话「{{title}}」执行失败。",
+    forkCreated: "已创建分支会话「{{title}}」。",
+    providerTestPassed: "「{{profile}}」连接成功。",
+    providerTestIncomplete: "「{{profile}}」已连接，但未找到默认模型。",
+    providerTestFailed: "「{{profile}}」连接失败：{{error}}",
+  },
   boot: {
     loading: "正在启动产品界面…",
     checking: "正在连接本地服务…",

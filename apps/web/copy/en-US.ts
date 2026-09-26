@@ -586,6 +586,15 @@ const enUS: CopyDictionary = {
     routeBody: "The session route is invalid or no longer exists.",
     code: "code: {{code}}",
   },
+  toast: {
+    regionLabel: "Notifications",
+    dismiss: "Dismiss notification",
+    sessionFailed: "Session \"{{title}}\" failed.",
+    forkCreated: "Created the forked session \"{{title}}\".",
+    providerTestPassed: "\"{{profile}}\" connected.",
+    providerTestIncomplete: "\"{{profile}}\" connected, but no default model was found.",
+    providerTestFailed: "\"{{profile}}\" failed to connect: {{error}}",
+  },
   boot: {
     loading: "Starting the product shell…",
     checking: "Connecting to the local service…",
