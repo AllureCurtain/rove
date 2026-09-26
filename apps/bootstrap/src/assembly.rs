@@ -4,7 +4,7 @@ use rove_core::ToolRegistry;
 use rove_models::ModelClient;
 use rove_runtime::agents::{AgentActivationConfig, AgentSelector};
 use rove_runtime::context::{ContextBudget, ContextManager};
-use rove_runtime::engine::{Engine, EngineConfig, EngineEnvironmentOptions};
+use rove_runtime::engine::{Engine, EngineConfig, EngineEnvironmentOptions, ProviderRetryPolicy};
 use rove_runtime::environment::{
     ExecutionEnvironment, LocalExecutionEnvironment, local_environment,
 };
@@ -115,6 +115,9 @@ pub fn build_engine_with_registry(
             // Configured dimensions overlay the deterministic projection, so an
             // unconfigured deployment keeps its existing behavior exactly.
             execution_policy: Some(execution_policy),
+            // Recovery is a runtime behavior: configured retry dimensions
+            // overlay the runtime default policy.
+            provider_retry: options.config.runtime.recovery.retry_policy(),
         },
         options.workspace.clone(),
         EngineEnvironmentOptions {
@@ -181,6 +184,7 @@ pub fn build_review_engine(
                 max_steps.clamp(1, 256),
                 false,
             )),
+            provider_retry: ProviderRetryPolicy::default(),
         },
         review_workspace.clone(),
         EngineEnvironmentOptions {
