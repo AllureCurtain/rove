@@ -17,10 +17,11 @@ use crate::product::{
     M1BrowserMigrationPreflight, M1BrowserMigrationResponse, M1MigrationDisposition,
     M1MigrationIssue, M1MigrationIssueCode, M1PreferencesBaseline, M1ProviderProfileIdMapping,
     M1SessionIdMapping, M1WorkspaceIdMapping, MAX_PENDING_MESSAGES_PER_SESSION,
-    MAX_PRODUCT_FORK_INHERITED_RUNS, MAX_PRODUCT_MAX_STEPS, MAX_PRODUCT_MESSAGE_PAGE_LIMIT,
-    MAX_PRODUCT_PROVIDER_PROFILES, MAX_PRODUCT_SESSIONS, MAX_PRODUCT_TEXT_BYTES,
-    MAX_PRODUCT_WORKSPACES, PreparedM1BrowserMigration, ProductApprovalPreference, ProductControl,
-    ProductControlId, ProductControlKind, ProductControlStatus, ProductErrorCode,
+    MAX_PRODUCT_EVENT_PAGE, MAX_PRODUCT_EVENTS_RETAINED, MAX_PRODUCT_FORK_INHERITED_RUNS,
+    MAX_PRODUCT_MAX_STEPS, MAX_PRODUCT_MESSAGE_PAGE_LIMIT, MAX_PRODUCT_PROVIDER_PROFILES,
+    MAX_PRODUCT_SESSIONS, MAX_PRODUCT_TEXT_BYTES, MAX_PRODUCT_WORKSPACES,
+    PreparedM1BrowserMigration, ProductApprovalPreference, ProductControl, ProductControlId,
+    ProductControlKind, ProductControlStatus, ProductErrorCode, ProductEvent, ProductEventKind,
     ProductFollowupTurnClaim, ProductFork, ProductForkContext, ProductForkId,
     ProductForkInheritedRun, ProductMessage, ProductMessageDelivery, ProductMessagePage,
     ProductMessagePageQuery, ProductMessageStatus, ProductMigrationReceiptId, ProductPreferences,
@@ -191,12 +192,10 @@ impl ProductRepository {
                         params![session_id.to_string(), control_id.to_string()],
                     )
                     .map_err(storage_error)?;
-                transaction
-                    .execute(
-                        "UPDATE product_sessions SET status = 'idle', updated_at = ?2 WHERE product_session_id = ?1",
-                        params![session_id.to_string(), now_rfc3339()],
-                    )
-                    .map_err(storage_error)?;
+                // A recovered session is a real transition (`running` -> `idle`
+                // or `needs_attention`), so it reaches the directory stream and
+                // a reconnecting client learns that the interrupted turn ended.
+                write_session_status(&transaction, &session_id, ProductSessionStatus::Idle, None)?;
             } else {
                 let steers = unapplied_steers_for_session(&transaction, &session_id)?;
                 let followups = unapplied_followups_for_session(&transaction, &session_id)?;
@@ -213,12 +212,12 @@ impl ProductRepository {
                     "API process stopped during follow-up delivery",
                     followups.len(),
                 )?;
-                transaction
-                    .execute(
-                        "UPDATE product_sessions SET status = 'needs_attention', updated_at = ?2 WHERE product_session_id = ?1",
-                        params![session_id.to_string(), now_rfc3339()],
-                    )
-                    .map_err(storage_error)?;
+                write_session_status(
+                    &transaction,
+                    &session_id,
+                    ProductSessionStatus::NeedsAttention,
+                    None,
+                )?;
             }
             let deleted = transaction
                 .execute(
@@ -303,6 +302,13 @@ impl ProductRepository {
                 )
                 .map_err(storage_error)?;
             let updated = get_workspace(&transaction, &existing.id)?;
+            record_product_event(
+                &transaction,
+                ProductEventKind::WorkspaceUpdated,
+                None,
+                Some(&updated.id),
+                None,
+            )?;
             transaction.commit().map_err(storage_error)?;
             return Ok(updated);
         }
@@ -335,6 +341,13 @@ impl ProductRepository {
             )
             .map_err(storage_error)?;
         let created = get_workspace(&transaction, &workspace_id)?;
+        record_product_event(
+            &transaction,
+            ProductEventKind::WorkspaceCreated,
+            None,
+            Some(&created.id),
+            None,
+        )?;
         transaction.commit().map_err(storage_error)?;
         Ok(created)
     }
@@ -389,6 +402,13 @@ impl ProductRepository {
         if deleted != 1 {
             return Err(not_found("product workspace was not found"));
         }
+        record_product_event(
+            &transaction,
+            ProductEventKind::WorkspaceDeleted,
+            None,
+            Some(workspace_id),
+            None,
+        )?;
         transaction.commit().map_err(storage_error)?;
         Ok(())
     }
@@ -515,6 +535,13 @@ impl ProductRepository {
             },
         )?;
         let session = get_session(&transaction, &session_id)?;
+        record_product_event(
+            &transaction,
+            ProductEventKind::SessionCreated,
+            Some(&session.id),
+            Some(&session.workspace_id),
+            None,
+        )?;
         transaction.commit().map_err(storage_error)?;
         Ok(session)
     }
@@ -562,6 +589,25 @@ impl ProductRepository {
             )
             .map_err(storage_error)?;
         let updated = get_session(&transaction, session_id)?;
+        // An update is one fact (the session row changed) plus, when the
+        // archive flag moved the status, a second one that the status watchers
+        // subscribe to. Neither replaces the other.
+        record_product_event(
+            &transaction,
+            ProductEventKind::SessionUpdated,
+            Some(&updated.id),
+            Some(&updated.workspace_id),
+            None,
+        )?;
+        if updated.status != current.status {
+            record_session_status_change(
+                &transaction,
+                &updated.id,
+                current.status,
+                updated.status,
+                None,
+            )?;
+        }
         transaction.commit().map_err(storage_error)?;
         Ok(updated)
     }
@@ -731,6 +777,13 @@ impl ProductRepository {
         if deleted != 1 {
             return Err(not_found("product session was not found"));
         }
+        record_product_event(
+            &transaction,
+            ProductEventKind::SessionDeleted,
+            Some(session_id),
+            None,
+            None,
+        )?;
         transaction.commit().map_err(storage_error)?;
         Ok(())
     }
@@ -1317,6 +1370,15 @@ impl ProductRepository {
             idempotency_key,
             created_at: now,
         };
+        // A fork creates a session, so it is a `session.created` fact like any
+        // other. A replayed fork short-circuits before this point.
+        record_product_event(
+            &transaction,
+            ProductEventKind::SessionCreated,
+            Some(&child.id),
+            Some(&child.workspace_id),
+            None,
+        )?;
         transaction.commit().map_err(storage_error)?;
         Ok((child, fork, false))
     }
@@ -1427,6 +1489,13 @@ impl ProductRepository {
                 "product session turn claim was not acquired",
             ));
         }
+        record_session_status_change(
+            &transaction,
+            session_id,
+            previous_status,
+            ProductSessionStatus::Running,
+            None,
+        )?;
         session.status = ProductSessionStatus::Running;
         session.updated_at = now;
         transaction.commit().map_err(storage_error)?;
@@ -1841,23 +1910,9 @@ impl ProductRepository {
                 "product session turn claim is missing or no longer active",
             ));
         }
-        let updated = transaction
-            .execute(
-                r#"
-                UPDATE product_sessions
-                SET status = ?2, updated_at = ?3
-                WHERE product_session_id = ?1
-                "#,
-                params![
-                    session_id.to_string(),
-                    session_status_to_db(status),
-                    now_rfc3339(),
-                ],
-            )
-            .map_err(storage_error)?;
-        if updated != 1 {
-            return Err(binding_corrupt("turn claim references a missing session"));
-        }
+        // The session is still `running` here in production flows, so this is
+        // the transition that closes the turn and belongs in the event log.
+        write_session_status(&transaction, &session_id, status, None)?;
         transaction.commit().map_err(storage_error)?;
         Ok(())
     }
@@ -1944,22 +1999,16 @@ impl ProductRepository {
                 ],
             )
             .map_err(storage_error)?;
-        let updated = transaction
-            .execute(
-                r#"
-                UPDATE product_sessions
-                SET status = 'running', last_outcome = 'success',
-                    last_outcome_at = ?2, updated_at = ?2
-                WHERE product_session_id = ?1
-                "#,
-                params![session_id.to_string(), now_rfc3339()],
-            )
-            .map_err(storage_error)?;
-        if updated != 1 {
-            return Err(binding_corrupt(
-                "product turn claim references a missing session",
-            ));
-        }
+        // The session stays `running` for the claimed successor, so this writes
+        // the finished turn's outcome without recording a status change: the
+        // directory stream's `session.status_changed` must not claim a
+        // transition that did not happen.
+        write_session_status(
+            &transaction,
+            &session_id,
+            ProductSessionStatus::Running,
+            Some(ProductSessionOutcome::Success),
+        )?;
         session.status = ProductSessionStatus::Running;
         session.updated_at = now;
         let control = get_control_in_transaction(&transaction, &session_id, &pending.id)?;
@@ -2291,6 +2340,13 @@ impl ProductRepository {
             None => write_preferences(&transaction, &preferences)?,
         }
         let updated = get_preferences(&transaction)?;
+        record_product_event(
+            &transaction,
+            ProductEventKind::PreferencesChanged,
+            None,
+            updated.active_workspace_id.as_ref(),
+            Some(serde_json::json!({ "revision": updated.revision }).to_string()),
+        )?;
         transaction.commit().map_err(storage_error)?;
         Ok(updated)
     }
@@ -2477,6 +2533,13 @@ impl ProductRepository {
             created_at: now,
             applied_at: None,
         };
+        record_product_event(
+            &transaction,
+            ProductEventKind::ControlQueued,
+            Some(session_id),
+            None,
+            Some(legacy_control_summary(&control)),
+        )?;
         transaction.commit().map_err(storage_error)?;
         Ok((control, false))
     }
@@ -2594,6 +2657,18 @@ impl ProductRepository {
             )
             .map_err(storage_error)?;
         let message = get_message_in_transaction(&transaction, session_id, &control_id)?;
+        // Only a queueable message is a directory fact. A message that landed
+        // `abandoned` because the session needs attention is already reported by
+        // the session status event that put it there.
+        if message.status == ProductMessageStatus::Queued {
+            record_product_event(
+                &transaction,
+                ProductEventKind::ControlQueued,
+                Some(session_id),
+                None,
+                Some(control_summary(&message)),
+            )?;
+        }
         transaction.commit().map_err(storage_error)?;
         Ok((message, false))
     }
@@ -2672,6 +2747,13 @@ impl ProductRepository {
             ));
         }
         let updated = get_message_in_transaction(&transaction, session_id, message_id)?;
+        record_product_event(
+            &transaction,
+            ProductEventKind::ControlPromoted,
+            Some(session_id),
+            None,
+            Some(control_summary(&updated)),
+        )?;
         transaction.commit().map_err(storage_error)?;
         Ok(updated)
     }
@@ -2772,6 +2854,62 @@ impl ProductRepository {
         Ok(reordered)
     }
 
+    /// Read the directory event log in `seq` order, excluding `after`.
+    ///
+    /// This is the catch-up source for `GET /product/events`: every product
+    /// mutation appended its own row in the same transaction that performed it,
+    /// so one `seq` cursor is enough to resume a stream without gaps or
+    /// duplicates. An unrecognized `kind` is skipped rather than failing the
+    /// page, because the file can be shared with a newer build.
+    pub(super) fn list_product_events(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> Result<Vec<ProductEvent>, ProductStoreError> {
+        let connection = self.database.connect()?;
+        let mut statement = connection
+            .prepare(
+                r#"
+                SELECT id, kind, session_id, workspace_id, summary, created_at
+                FROM product_events
+                WHERE id > ?1
+                ORDER BY id ASC
+                LIMIT ?2
+                "#,
+            )
+            .map_err(storage_error)?;
+        let bounded =
+            i64::try_from(limit.clamp(1, MAX_PRODUCT_EVENT_PAGE)).map_err(storage_error)?;
+        let rows = statement
+            .query_map(params![after, bounded], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?;
+        rows.into_iter()
+            .filter_map(|row| map_product_event_row(row).transpose())
+            .collect()
+    }
+
+    pub(super) fn latest_product_event_seq(&self) -> Result<i64, ProductStoreError> {
+        let connection = self.database.connect()?;
+        connection
+            .query_row(
+                "SELECT COALESCE(MAX(id), 0) FROM product_events",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)
+    }
+
     pub(super) fn revoke_message(
         &self,
         session_id: &ProductSessionId,
@@ -2814,6 +2952,13 @@ impl ProductRepository {
             ));
         }
         let updated = get_message_in_transaction(&transaction, session_id, message_id)?;
+        record_product_event(
+            &transaction,
+            ProductEventKind::ControlRevoked,
+            Some(session_id),
+            None,
+            Some(control_summary(&updated)),
+        )?;
         transaction.commit().map_err(storage_error)?;
         Ok(updated)
     }
@@ -3055,6 +3200,27 @@ impl ProductRepository {
                 row_to_control,
             )
             .map_err(storage_error)?;
+        // Only a re-queue or a revoke is a directory fact. `accepted`/`applied`
+        // are claim and delivery bookkeeping that the session status and the
+        // transcript already report, and `dropped`/`abandoned` describe work the
+        // session's own recovery state carries.
+        let directory_kind = match to {
+            ProductControlStatus::Pending => Some(ProductEventKind::ControlQueued),
+            ProductControlStatus::Revoked => Some(ProductEventKind::ControlRevoked),
+            ProductControlStatus::Accepted
+            | ProductControlStatus::Applied
+            | ProductControlStatus::Dropped
+            | ProductControlStatus::Abandoned => None,
+        };
+        if let Some(kind) = directory_kind {
+            record_product_event(
+                &transaction,
+                kind,
+                Some(session_id),
+                None,
+                Some(legacy_control_summary(&updated)),
+            )?;
+        }
         transaction.commit().map_err(storage_error)?;
         Ok(updated)
     }
@@ -3135,6 +3301,26 @@ impl ProductRepository {
             ));
         }
         let updated = get_control_in_transaction(&transaction, session_id, control_id)?;
+        // Confirming an abandoned follow-up is two directory facts: the message
+        // goes back into the queue, and the session it needs leaves its recovery
+        // status. The guarded UPDATE above keeps `running`/`archived` sessions
+        // out, so this records the transition the guard allowed.
+        record_product_event(
+            &transaction,
+            ProductEventKind::ControlQueued,
+            Some(session_id),
+            None,
+            Some(legacy_control_summary(&updated)),
+        )?;
+        if session.status != ProductSessionStatus::Idle {
+            record_session_status_change(
+                &transaction,
+                session_id,
+                session.status,
+                ProductSessionStatus::Idle,
+                None,
+            )?;
+        }
         transaction.commit().map_err(storage_error)?;
         Ok(updated)
     }
@@ -3330,6 +3516,13 @@ impl ProductRepository {
                 "product session follow-up turn claim was not acquired",
             ));
         }
+        record_session_status_change(
+            &transaction,
+            session_id,
+            session.status,
+            ProductSessionStatus::Running,
+            None,
+        )?;
         session.status = ProductSessionStatus::Running;
         session.updated_at = now_rfc3339();
         let control = transaction
@@ -3765,6 +3958,32 @@ fn release_turn_claim_with_status(
             "product session turn claim is missing or no longer active",
         ));
     }
+    write_session_status(transaction, session_id, status, outcome)
+}
+
+/// Write a session status (and optionally its outcome) and append the
+/// `session.status_changed` directory fact when the status actually changed.
+///
+/// This is the single write path for turn-boundary status transitions, so the
+/// directory stream and the stored row cannot disagree about what happened. A
+/// transition that keeps the status (for example claiming a queued successor
+/// while the session is already `running`) records nothing: the event says
+/// "this session's status changed", and reporting an unchanged status would
+/// make the stream's name a lie.
+fn write_session_status(
+    transaction: &Transaction<'_>,
+    session_id: &ProductSessionId,
+    status: ProductSessionStatus,
+    outcome: Option<ProductSessionOutcome>,
+) -> Result<(), ProductStoreError> {
+    let previous: Option<String> = transaction
+        .query_row(
+            "SELECT status FROM product_sessions WHERE product_session_id = ?1",
+            params![session_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(storage_error)?;
     let now = now_rfc3339();
     let updated = transaction
         .execute(
@@ -3786,9 +4005,164 @@ fn release_turn_claim_with_status(
         )
         .map_err(storage_error)?;
     if updated != 1 {
-        return Err(binding_corrupt("turn claim references a missing session"));
+        return Err(binding_corrupt(
+            "session status transition references a missing session",
+        ));
+    }
+    if let Some(previous) = previous {
+        record_session_status_change(
+            transaction,
+            session_id,
+            session_status_from_db(&previous)?,
+            status,
+            outcome,
+        )?;
     }
     Ok(())
+}
+
+/// Append `session.status_changed` when a guarded status write changed the
+/// status.
+///
+/// Callers that run their own conditional `UPDATE` (a claim that only fires from
+/// `idle`, an archive flag with a state guard) report the transition here so the
+/// event log stays a faithful record of what the guard allowed. An unchanged
+/// status records nothing: the kind's name is a promise about what happened.
+fn record_session_status_change(
+    transaction: &Transaction<'_>,
+    session_id: &ProductSessionId,
+    previous: ProductSessionStatus,
+    status: ProductSessionStatus,
+    outcome: Option<ProductSessionOutcome>,
+) -> Result<(), ProductStoreError> {
+    if previous == status {
+        return Ok(());
+    }
+    record_product_event(
+        transaction,
+        ProductEventKind::SessionStatusChanged,
+        Some(session_id),
+        None,
+        Some(session_status_summary(status, outcome)),
+    )
+}
+
+/// The bounded, secret-free summary of a product message lifecycle fact:
+/// delivery mode, queue position, ledger seq, and status only. The message body
+/// never enters the directory log.
+fn control_summary(message: &ProductMessage) -> String {
+    let mut summary = serde_json::json!({
+        "status": message.status,
+        "requested_delivery": message.requested_delivery,
+        "seq": message.seq,
+    });
+    if let Some(position) = message.queue_order {
+        summary["queue_order"] = serde_json::json!(position);
+    }
+    summary.to_string()
+}
+
+/// The bounded, secret-free summary of a legacy control fact. `kind` is what
+/// distinguishes a steer from a follow-up; the control body is never included.
+fn legacy_control_summary(control: &ProductControl) -> String {
+    serde_json::json!({
+        "kind": control.kind,
+        "status": control.status,
+        "seq": control.seq,
+    })
+    .to_string()
+}
+
+/// Append one product-level directory fact inside the caller's transaction and
+/// trim the log to its rolling retention bound.
+///
+/// Recording inside the transaction is what keeps the stream honest: an event
+/// exists exactly when the state change it describes committed, so a reader can
+/// never see a fact that was rolled back, and a stream reconnect cannot miss a
+/// committed fact. Trimming in the same statement keeps the table bounded
+/// without a background task.
+fn record_product_event(
+    transaction: &Transaction<'_>,
+    kind: ProductEventKind,
+    session_id: Option<&ProductSessionId>,
+    workspace_id: Option<&ProductWorkspaceId>,
+    summary: Option<String>,
+) -> Result<(), ProductStoreError> {
+    transaction
+        .execute(
+            r#"
+            INSERT INTO product_events(kind, session_id, workspace_id, summary, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+            params![
+                kind.as_str(),
+                session_id.map(ToString::to_string),
+                workspace_id.map(ToString::to_string),
+                summary,
+                now_rfc3339(),
+            ],
+        )
+        .map_err(storage_error)?;
+    transaction
+        .execute(
+            r#"
+            DELETE FROM product_events
+            WHERE id <= (SELECT MAX(id) FROM product_events) - ?1
+            "#,
+            params![MAX_PRODUCT_EVENTS_RETAINED],
+        )
+        .map_err(storage_error)?;
+    Ok(())
+}
+
+/// The bounded, secret-free summary of a session status transition. Only the
+/// status and the outcome this transition wrote are reported: message content,
+/// tool arguments, error details, and secrets stay out of the directory stream.
+fn session_status_summary(
+    status: ProductSessionStatus,
+    outcome: Option<ProductSessionOutcome>,
+) -> String {
+    let mut summary = serde_json::json!({ "status": status });
+    if let Some(outcome) = outcome {
+        summary["last_outcome"] = serde_json::json!(outcome);
+    }
+    summary.to_string()
+}
+
+/// Read the directory event log in `seq` order, excluding `after`.
+///
+/// An unrecognized `kind` is skipped instead of failing the page: the SQLite
+/// file can be shared with a newer build, and dropping one unknown fact is
+/// better than breaking every stream with a parse error. A malformed id cannot
+/// be skipped as quietly, because it means the row itself is corrupt.
+fn map_product_event_row(
+    row: (
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+    ),
+) -> Result<Option<ProductEvent>, ProductStoreError> {
+    let (seq, kind, session_id, workspace_id, summary, created_at) = row;
+    let Some(kind) = ProductEventKind::from_stored(&kind) else {
+        return Ok(None);
+    };
+    Ok(Some(ProductEvent {
+        seq,
+        kind,
+        session_id: session_id
+            .as_deref()
+            .map(|value| parse_product_id(value, "product event session id"))
+            .transpose()?,
+        workspace_id: workspace_id
+            .as_deref()
+            .map(|value| parse_product_id(value, "product event workspace id"))
+            .transpose()?,
+        summary,
+        created_at,
+    }))
 }
 
 fn release_followup_claim_with_status(
@@ -3812,26 +4186,7 @@ fn release_followup_claim_with_status(
             "follow-up turn claim is missing or no longer active",
         ));
     }
-    let updated = transaction
-        .execute(
-            r#"
-            UPDATE product_sessions
-            SET status = ?2, updated_at = ?3
-            WHERE product_session_id = ?1
-            "#,
-            params![
-                session_id.to_string(),
-                session_status_to_db(status),
-                now_rfc3339(),
-            ],
-        )
-        .map_err(storage_error)?;
-    if updated != 1 {
-        return Err(binding_corrupt(
-            "follow-up turn claim references a missing session",
-        ));
-    }
-    Ok(())
+    write_session_status(transaction, session_id, status, None)
 }
 
 fn transition_pending_controls(

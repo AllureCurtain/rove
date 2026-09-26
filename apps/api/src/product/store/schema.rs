@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::product::{ProductErrorCode, ProductStoreError};
 
-const CURRENT_SCHEMA_VERSION: i64 = 17;
+const CURRENT_SCHEMA_VERSION: i64 = 18;
 const MAX_BUSY_TIMEOUT_MS: u64 = 120_000;
 
 const MIGRATION_001: &str = r#"
@@ -352,6 +352,25 @@ const MIGRATION_016_COLUMNS: [(&str, &str); 2] = [
 /// needs no back-fill and no queue can be silently reshuffled by it.
 const MIGRATION_017_COLUMNS: [(&str, &str); 1] = [("queue_order", "INTEGER")];
 
+/// The product-level directory event log behind `GET /product/events`.
+///
+/// It is a rolling signal, not an audit log: rows are trimmed to the newest
+/// `MAX_PRODUCT_EVENTS_RETAINED` entries as they are appended, and `id` doubles
+/// as the SSE `id:` field so a reconnect can resume. Every column is a bounded,
+/// secret-free summary: message content, tool arguments, error details, and
+/// secrets are never stored here. The primary key already serves the only read
+/// pattern (`WHERE id > ? ORDER BY id`), so no second index is created.
+const MIGRATION_018: &str = r#"
+CREATE TABLE IF NOT EXISTS product_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    session_id TEXT NULL,
+    workspace_id TEXT NULL,
+    summary TEXT NULL,
+    created_at TEXT NOT NULL
+);
+"#;
+
 const MIGRATION_002: &str = r#"
 ALTER TABLE product_preferences
 ADD COLUMN revision INTEGER NOT NULL DEFAULT 0
@@ -680,6 +699,7 @@ fn apply_migrations(
     apply_migration_015(connection)?;
     apply_migration_016(connection)?;
     apply_migration_017(connection)?;
+    apply_migration_018(connection)?;
     Ok(())
 }
 
@@ -1253,6 +1273,29 @@ fn apply_migration_017(connection: &mut Connection) -> Result<(), ProductStoreEr
     Ok(())
 }
 
+fn apply_migration_018(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 18)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    // The statement is `IF NOT EXISTS`, so a compatibility fixture that already
+    // carries the table upgrades by recording the version only.
+    transaction
+        .execute_batch(MIGRATION_018)
+        .map_err(|_| database_error(true))?;
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![18, "product_events_log", super::repository::now_rfc3339()],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
 fn reconcile_productization_schema(
     transaction: &rusqlite::Transaction<'_>,
 ) -> Result<(), ProductStoreError> {
@@ -1700,6 +1743,10 @@ mod tests {
         // claiming to support reordering.
         assert!(migration_is_applied(connection, 17).unwrap());
         assert!(table_has_column(connection, "product_session_controls", "queue_order").unwrap());
+        // Migration 018 creates the directory event log, so a fresh store must
+        // record it and own the table even though no event was appended yet.
+        assert!(migration_is_applied(connection, 18).unwrap());
+        assert!(table_exists(connection, "product_events").unwrap());
     }
 
     #[test]
@@ -1895,6 +1942,39 @@ mod tests {
                 .unwrap(),
             Some(3),
             "an explicit position must survive a repeat migration pass"
+        );
+    }
+
+    #[test]
+    fn a_v17_store_gains_the_directory_event_log_without_synthesizing_events() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize_v11(&mut connection);
+        apply_migration_012(&mut connection).unwrap();
+        apply_migration_013(&mut connection).unwrap();
+        apply_migration_014(&mut connection).unwrap();
+        apply_migration_015(&mut connection).unwrap();
+        apply_migration_016(&mut connection).unwrap();
+        apply_migration_017(&mut connection).unwrap();
+        insert_v15_session(&connection);
+        assert!(!table_exists(&connection, "product_events").unwrap());
+
+        apply_migrations_isolated(&mut connection).unwrap();
+        // A second pass must not attempt to create the table twice.
+        apply_migrations_isolated(&mut connection).unwrap();
+
+        assert!(migration_is_applied(&connection, 18).unwrap());
+        assert!(table_exists(&connection, "product_events").unwrap());
+        // The upgrade creates an empty log. Emitting a synthetic "state
+        // recovered" fact for every existing session would make the directory
+        // stream report changes that never happened.
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM product_events", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0,
+            "an upgrade must not invent directory facts"
         );
     }
 

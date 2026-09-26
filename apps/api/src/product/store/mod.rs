@@ -21,7 +21,7 @@ use crate::product::{
     CreateProductSessionRequest, CreateProductWorkspaceRequest, M1BrowserMigrationPreflight,
     M1BrowserMigrationRequest, M1BrowserMigrationResponse, PreparedM1BrowserMigration,
     ProductControl, ProductControlId, ProductControlKind, ProductControlStatus, ProductErrorCode,
-    ProductFollowupTurnClaim, ProductFork, ProductMessage, ProductMessageDelivery,
+    ProductEvent, ProductFollowupTurnClaim, ProductFork, ProductMessage, ProductMessageDelivery,
     ProductMessagePage, ProductMessagePageQuery, ProductPreferences, ProductProviderProfile,
     ProductProviderProfileId, ProductResumeHealth, ProductReview, ProductReviewFindingsQuery,
     ProductReviewFindingsResponse, ProductReviewId, ProductSession, ProductSessionContext,
@@ -730,6 +730,20 @@ impl ProductStore for SqliteProductStore {
         let session_id = session_id.clone();
         let reason = reason.to_string();
         self.blocking(move |repository| repository.abandon_pending_followups(&session_id, &reason))
+            .await
+    }
+
+    async fn list_product_events(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> Result<Vec<ProductEvent>, ProductStoreError> {
+        self.blocking(move |repository| repository.list_product_events(after, limit))
+            .await
+    }
+
+    async fn latest_product_event_seq(&self) -> Result<i64, ProductStoreError> {
+        self.blocking(|repository| repository.latest_product_event_seq())
             .await
     }
 }

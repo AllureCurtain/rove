@@ -400,6 +400,111 @@ pub const MAX_PRODUCT_MESSAGE_PAGE_LIMIT: usize = 128;
 /// to reject an oversized list before it touches the queue.
 pub const MAX_PENDING_MESSAGES_PER_SESSION: i64 = 64;
 
+/// Product-level directory event kinds.
+///
+/// The serialized value is a dotted namespace (`domain.fact`) rather than the
+/// `snake_case` used by the other product enums, because the same value is the
+/// SSE `event:` name of `GET /product/events`, so it is part of the endpoint's
+/// wire contract rather than an internal label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+pub enum ProductEventKind {
+    #[serde(rename = "session.created")]
+    SessionCreated,
+    #[serde(rename = "session.updated")]
+    SessionUpdated,
+    #[serde(rename = "session.deleted")]
+    SessionDeleted,
+    #[serde(rename = "session.status_changed")]
+    SessionStatusChanged,
+    #[serde(rename = "workspace.created")]
+    WorkspaceCreated,
+    #[serde(rename = "workspace.updated")]
+    WorkspaceUpdated,
+    #[serde(rename = "workspace.deleted")]
+    WorkspaceDeleted,
+    #[serde(rename = "preferences.changed")]
+    PreferencesChanged,
+    #[serde(rename = "control.queued")]
+    ControlQueued,
+    #[serde(rename = "control.promoted")]
+    ControlPromoted,
+    #[serde(rename = "control.revoked")]
+    ControlRevoked,
+}
+
+impl ProductEventKind {
+    /// The durable/SSE name. Kept explicit instead of relying on `serde_json`
+    /// so the store and the stream cannot disagree about a stored value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProductEventKind::SessionCreated => "session.created",
+            ProductEventKind::SessionUpdated => "session.updated",
+            ProductEventKind::SessionDeleted => "session.deleted",
+            ProductEventKind::SessionStatusChanged => "session.status_changed",
+            ProductEventKind::WorkspaceCreated => "workspace.created",
+            ProductEventKind::WorkspaceUpdated => "workspace.updated",
+            ProductEventKind::WorkspaceDeleted => "workspace.deleted",
+            ProductEventKind::PreferencesChanged => "preferences.changed",
+            ProductEventKind::ControlQueued => "control.queued",
+            ProductEventKind::ControlPromoted => "control.promoted",
+            ProductEventKind::ControlRevoked => "control.revoked",
+        }
+    }
+
+    /// Parse a stored name. An unknown value is skipped by the reader rather
+    /// than failing the whole page, so a newer writer cannot break an older
+    /// reader that shares the same SQLite file.
+    pub fn from_stored(value: &str) -> Option<Self> {
+        Some(match value {
+            "session.created" => ProductEventKind::SessionCreated,
+            "session.updated" => ProductEventKind::SessionUpdated,
+            "session.deleted" => ProductEventKind::SessionDeleted,
+            "session.status_changed" => ProductEventKind::SessionStatusChanged,
+            "workspace.created" => ProductEventKind::WorkspaceCreated,
+            "workspace.updated" => ProductEventKind::WorkspaceUpdated,
+            "workspace.deleted" => ProductEventKind::WorkspaceDeleted,
+            "preferences.changed" => ProductEventKind::PreferencesChanged,
+            "control.queued" => ProductEventKind::ControlQueued,
+            "control.promoted" => ProductEventKind::ControlPromoted,
+            "control.revoked" => ProductEventKind::ControlRevoked,
+            _ => return None,
+        })
+    }
+}
+
+/// One product-level directory fact.
+///
+/// `seq` is the durable, strictly increasing event order and doubles as the SSE
+/// `id:` field, so a reconnecting client resumes exactly where it stopped.
+/// `summary` is a bounded, secret-free JSON object of status/outcome fields
+/// only: message content, tool arguments, error details, and secrets never
+/// appear there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProductEvent {
+    pub seq: i64,
+    /// Serialized as `type`, the canonical stream-event discriminator, so the
+    /// frame body uses the same field name as the job SSE envelope.
+    #[serde(rename = "type")]
+    pub kind: ProductEventKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<ProductSessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<ProductWorkspaceId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub created_at: String,
+}
+
+/// Rolling retention for the product event log. The stream is a live directory
+/// signal, not an audit log: the oldest rows are trimmed as new ones arrive, and
+/// a reconnect whose cursor was evicted is rejected with a typed
+/// `product_events_expired` instead of silently skipping facts, so the client
+/// re-reads the catalog and reconnects without a cursor.
+pub const MAX_PRODUCT_EVENTS_RETAINED: i64 = 10_000;
+
+/// Upper bound on one catch-up read of the product event log for one stream.
+pub const MAX_PRODUCT_EVENT_PAGE: usize = 512;
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductMessagesResponse {
     pub messages: Vec<ProductMessage>,
@@ -1959,6 +2064,7 @@ pub enum ProductErrorCode {
     MigrationIdempotencyConflict,
     ProductControlConflict,
     ProductControlRejected,
+    ProductEventsExpired,
     ProductForkConflict,
     ProductForkSourceInvalid,
     ProductSessionModelConfigConflict,
@@ -2000,6 +2106,7 @@ impl ProductErrorCode {
             Self::MigrationIdempotencyConflict => "migration_idempotency_conflict",
             Self::ProductControlConflict => "product_control_conflict",
             Self::ProductControlRejected => "product_control_rejected",
+            Self::ProductEventsExpired => "product_events_expired",
             Self::ProductForkConflict => "product_fork_conflict",
             Self::ProductForkSourceInvalid => "product_fork_source_invalid",
             Self::ProductSessionModelConfigConflict => "product_session_model_config_conflict",
@@ -2512,6 +2619,24 @@ pub trait ProductStore: Send + Sync {
         session_id: &ProductSessionId,
         reason: &str,
     ) -> Result<Vec<ProductControl>, ProductStoreError>;
+
+    /// Read the durable product event log in `seq` order, excluding `after`.
+    /// Every product mutation appends its own event inside the same transaction
+    /// that performs it, so this is the authoritative catch-up source for a
+    /// stream reconnect; `limit` bounds one page.
+    async fn list_product_events(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> Result<Vec<ProductEvent>, ProductStoreError>;
+
+    /// The newest retained event `seq`, or `0` when the log is empty.
+    ///
+    /// A subscriber that connects with no cursor starts here. The directory
+    /// stream carries deltas, so replaying an arbitrary slice of retained
+    /// history into a client that has never read the catalog would be noise
+    /// rather than information; that client reads the catalog and follows.
+    async fn latest_product_event_seq(&self) -> Result<i64, ProductStoreError>;
 }
 
 pub trait ProductRuntimeStateResolver: Send + Sync {

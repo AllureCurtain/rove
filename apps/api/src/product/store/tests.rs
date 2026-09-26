@@ -3987,3 +3987,225 @@ async fn an_attempt_without_an_outcome_leaves_the_last_result_alone() {
     assert_eq!(after.last_outcome, Some(ProductSessionOutcome::Cancelled));
     assert_eq!(after.last_outcome_at, cancelled.last_outcome_at);
 }
+
+/// Read the whole retained event log, page by page, exactly like a catching-up
+/// stream client does.
+async fn drain_product_events(store: &SqliteProductStore) -> Vec<crate::product::ProductEvent> {
+    let mut events = Vec::new();
+    let mut cursor = 0_i64;
+    loop {
+        let page = store
+            .list_product_events(cursor, crate::product::MAX_PRODUCT_EVENT_PAGE)
+            .await
+            .unwrap();
+        if page.is_empty() {
+            return events;
+        }
+        cursor = page.last().unwrap().seq;
+        let full_page = page.len() == crate::product::MAX_PRODUCT_EVENT_PAGE;
+        events.extend(page);
+        if !full_page {
+            return events;
+        }
+    }
+}
+
+#[tokio::test]
+async fn product_events_record_committed_directory_facts_without_user_text() {
+    use crate::product::ProductEventKind;
+
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (workspace, session) = create_workspace_and_session(&store, &temp).await;
+
+    // A queued message, an update, and a revoke: the three lifecycle shapes the
+    // directory stream has to carry.
+    let message = store
+        .create_message(
+            &session.id,
+            CreateProductMessageRequest {
+                content: "secret planning note".to_string(),
+                idempotency_key: None,
+            },
+        )
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(message.status, ProductMessageStatus::Queued);
+    store
+        .update_session(
+            &session.id,
+            crate::product::UpdateProductSessionRequest {
+                title: Some("Renamed secret session".to_string()),
+                archived: None,
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .revoke_message(&session.id, &message.id)
+        .await
+        .unwrap();
+
+    let events = drain_product_events(&store).await;
+    let kinds: Vec<ProductEventKind> = events.iter().map(|event| event.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            ProductEventKind::WorkspaceCreated,
+            ProductEventKind::SessionCreated,
+            ProductEventKind::ControlQueued,
+            ProductEventKind::SessionUpdated,
+            ProductEventKind::ControlRevoked,
+        ],
+        "each committed mutation appends exactly one fact in commit order"
+    );
+    assert!(
+        events.windows(2).all(|pair| pair[0].seq < pair[1].seq),
+        "seq is strictly increasing and doubles as the SSE cursor"
+    );
+
+    let workspace_created = &events[0];
+    assert_eq!(workspace_created.workspace_id.as_ref(), Some(&workspace.id));
+    assert!(workspace_created.session_id.is_none());
+
+    let session_created = &events[1];
+    assert_eq!(session_created.session_id.as_ref(), Some(&session.id));
+    assert_eq!(session_created.workspace_id.as_ref(), Some(&workspace.id));
+
+    let queued = &events[2];
+    assert_eq!(queued.session_id.as_ref(), Some(&session.id));
+    let summary = queued.summary.as_deref().expect("queued summary");
+    assert!(summary.contains("\"status\":\"queued\""));
+    assert!(summary.contains("\"requested_delivery\":\"successor\""));
+    assert!(summary.contains(&format!("\"seq\":{}", message.seq)));
+
+    // The directory stream is readable by every holder of the API token, so no
+    // user text may enter it — not the message body and not the session title.
+    for event in &events {
+        let summary = event.summary.clone().unwrap_or_default();
+        assert!(
+            !summary.contains("secret"),
+            "summary must not carry user text: {summary}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn product_events_cover_turn_boundaries_and_recovery() {
+    use crate::product::ProductEventKind;
+
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+
+    // Claiming a turn moves `idle` -> `running`, which is a session status fact.
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    let running = drain_product_events(&store).await;
+    let last = running.last().expect("running event");
+    assert_eq!(last.kind, ProductEventKind::SessionStatusChanged);
+    assert_eq!(last.session_id.as_ref(), Some(&session.id));
+    assert!(
+        last.summary
+            .as_deref()
+            .unwrap()
+            .contains("\"status\":\"running\"")
+    );
+
+    // Finishing the turn writes the outcome the status watchers subscribe to.
+    store
+        .finish_session_turn(&claim.claim_id, ProductSessionStatus::Idle)
+        .await
+        .unwrap();
+    let idle = drain_product_events(&store).await;
+    let last = idle.last().expect("idle event");
+    assert_eq!(last.kind, ProductEventKind::SessionStatusChanged);
+    assert!(
+        last.summary
+            .as_deref()
+            .unwrap()
+            .contains("\"status\":\"idle\"")
+    );
+
+    // A process that stopped mid-turn is recovered at store open. That rewrite
+    // is a real transition, so a reconnecting client must see it. A plain turn
+    // claim has no follow-up to requeue, so recovery is conservative.
+    store.claim_session_turn(&session.id).await.unwrap();
+    drop(store);
+    let reopened = open_store(&temp);
+    let recovered = drain_product_events(&reopened).await;
+    let last = recovered.last().expect("recovery event");
+    assert_eq!(last.kind, ProductEventKind::SessionStatusChanged);
+    assert!(
+        last.summary
+            .as_deref()
+            .unwrap()
+            .contains("\"status\":\"needs_attention\""),
+        "an interrupted turn requires an explicit recovery decision"
+    );
+}
+
+#[tokio::test]
+async fn product_event_log_keeps_only_its_rolling_retention_window() {
+    use crate::product::{MAX_PRODUCT_EVENTS_RETAINED, ProductEventKind};
+
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+
+    // Seed the log past its bound directly, then perform one ordinary mutation:
+    // the write path is what trims, so this also proves the trim rides along
+    // with normal traffic instead of needing a background task.
+    let database_path = temp.path().join("product.sqlite");
+    let connection = Connection::open(&database_path).unwrap();
+    let newest: i64 = connection
+        .query_row("SELECT MAX(id) FROM product_events", [], |row| row.get(0))
+        .unwrap();
+    {
+        let transaction = connection.unchecked_transaction().unwrap();
+        for offset in 1..=(MAX_PRODUCT_EVENTS_RETAINED + 64) {
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO product_events(kind, created_at)
+                    VALUES ('session.updated', ?1)
+                    "#,
+                    params![format!("seeded-{offset}")],
+                )
+                .unwrap();
+        }
+        transaction.commit().unwrap();
+    }
+    drop(connection);
+
+    store
+        .update_session(
+            &session.id,
+            crate::product::UpdateProductSessionRequest {
+                title: Some("after the trim".to_string()),
+                archived: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let events = drain_product_events(&store).await;
+    assert_eq!(
+        events.len() as i64,
+        MAX_PRODUCT_EVENTS_RETAINED,
+        "the write that crosses the bound trims the log back to its window"
+    );
+    let first = events.first().unwrap();
+    assert!(first.seq > newest);
+    assert!(first.created_at.starts_with("seeded-"));
+    assert_eq!(
+        events.last().unwrap().kind,
+        ProductEventKind::SessionUpdated
+    );
+
+    // A cursor that fell out of the window is detectable from the oldest
+    // retained row alone, which is what turns it into a typed 409 rather than
+    // a silently short stream.
+    let oldest = events.first().unwrap().seq;
+    assert!(oldest > 1);
+}
