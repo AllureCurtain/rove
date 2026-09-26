@@ -1,7 +1,8 @@
 # 运行时与产品合同对齐（下一轮）设计
 
 - 日期：2026-09-26
-- 状态：**Partially Implemented**。R1 已落地（§0.1 状态列与 §1.7）；其余条目仍未实现。
+- 状态：**Partially Implemented**。R1、R3 已落地（§0.1 状态列、§1.7、§3.4）；R2c 在同批 PR 中
+  待独立评审（§2.4）；其余条目仍未实现。
   每个条目落地时必须在同一变更中更新 `docs/runtime/` 对应现状文档与
   `docs/runtime/implementation-status.md`、`docs/runtime/acceptance-matrix.md`，
   并按 `CONTRIBUTING.md` 走 feature worktree + PR。
@@ -41,7 +42,7 @@
 |---|---|---|---|---|
 | R1 | transcript 游标分页（F.4 闭环） | P0 | `apps/api` + `apps/web` 接线 | Implemented（见 §1.7） |
 | R2 | 回合失败恢复家族（a 静默回合 / b 中止保留 / c 重试预算+事件） | P0 | `core`/`runtime`/`models`/`apps/api`/事件合同 | Proposed |
-| R3 | 会话 `last_outcome` 字段 | P1 | ProductStore 迁移 016 + contracts + web | Proposed |
+| R3 | 会话 `last_outcome` 字段 | P1 | ProductStore 迁移 016 + contracts + web | Implemented（见 §3.4） |
 | R4 | 队列协议扩展（原子重排 / send-now 边界语义 / 重启存活验证） | P1 | `apps/api` + 迁移 017 | Proposed |
 | R5 | 产品级目录 SSE `/product/events` | P1 | `apps/api` + 迁移 018 + web | Proposed |
 | R6 | 消息级编辑重发 = fork-at-message | P2 | `apps/api` fork 合同扩展 | Proposed |
@@ -375,6 +376,51 @@ UI 只做投影。本条与前端文档 F12 的"重试倒计时"解禁联动。
 
 - 不改 `ProductSessionStatus` 枚举本身（`NeedsAttention` 语义保留）；
 - 不做 per-run 历史结果表（那是 R6/未来评估器的事）。
+
+### 3.4 实施记录
+
+服务端、迁移与 Web 最小接线同批落地（branch `feature/runtime-align-r3`）。
+
+- 迁移 016：`apps/api/src/product/store/schema.rs`（`CURRENT_SCHEMA_VERSION = 16`、
+  `MIGRATION_016_COLUMNS` 两列声明、`apply_migration_016` 幂等 + 逐列 `table_has_column`
+  守卫）。旧库升级**不回填**：既有行 `last_outcome`/`last_outcome_at` 保持 NULL。
+- 合同：`apps/api/src/product/contracts.rs`（`ProductSessionOutcome`、
+  `ProductSession` 两个 additive optional 字段、trait 方法签名带
+  `Option<ProductSessionOutcome>`）；`store/repository.rs`（读写投影、
+  `release_turn_claim_with_status` 用 `COALESCE(?3, last_outcome)` 写入）。
+- 写入点：与终态迁移同一事务（`apps/api/src/lib.rs` 的
+  `finish_final_product_turn` / `finish_nonfinal_product_turn` /
+  `finish_product_turn_needs_attention` / `finish_failed_product_start`）。
+- Web：`product/product-api-types.ts`（`PRODUCT_SESSION_OUTCOMES` + 严格解析 + 半写失败关闭）、
+  `state/product-types.ts`（`SessionOutcome` + 映射）、`sidebar/session-labels.ts`
+  （三态结果点与副标题）、`sidebar/WorkspaceTree.tsx`、`shell/ProductApp.tsx`、
+  `copy/{zh-CN,en-US}.ts`、`styles/product-v2.css`。
+
+落地时确认并解决的设计歧义（以本文档为准的记录，不静默改写历史）：
+
+1. **§3.2 写的 "`Done → success`" 与实现的差距**：`Done` 是把回合交给
+   `finish_nonfinal_product_turn` 处理的终态之一，语义是"run 结束但没有最终答复"，
+   会话状态落到 `NeedsAttention`。因此实现里 `success` **只由带最终答复的路径写入**
+   （`finish_session_turn_and_claim_followup` 分支 (a) 与 pending-follow-up 分支 (b)）；
+   无答复的 `Done`/`NeedsAttention` 收尾记 `failed`，与 §3.2 的
+   "`Error|Interrupted → failed`" 一致。保留 §3.2 原文不改写，差距以本条为准。
+2. **未成为回合的启动尝试不写结果**：workspace 提示不匹配（且不是 provider 恢复失败）
+   与引擎组装失败两条路径会把状态**还原**为上一步的状态，因此它们传
+   `None`，由 `COALESCE` 保留上一次真实结果；只有被分类为失败的路径
+   （runtime resume/binding/start、provider resume、需关注的收尾）写 `failed`。
+   否则一次失败的启动会覆盖上一回合的真实结果（实现中由
+   `product_cancel_releases_the_single_turn_claim_before_continuation` 暴露）。
+3. **Web 侧点语义以 `last_outcome` 为准**：旧的 W4.4 规则只看
+   `status === "error"`，成功与"从未运行"都画不出东西。实现改为
+   `success`/`failed`/`cancelled` 三态点（绿/红/灰），并在载荷完全没有
+   `lastOutcome`（早于 v16 的 API）时回退到旧规则；打开该会话仍清除点。
+   命令面板 session 条目副标题追加结果词，使副标题可被结果词搜到。
+4. **半写载荷失败关闭**：`last_outcome` 与 `last_outcome_at` 由同一条 UPDATE 写入，
+   因此 Web 解析器拒绝只有其一的载荷（与 fork provenance 三字段的既有约定一致），
+   而不是猜哪一半可信。
+
+非目标（本轮明确不做）：不改 `ProductSessionStatus`；不新增 per-run 结果表；
+不回填历史行；TUI 不加结果点（本轮 Web 最小接线，TUI 归前端/后续条目）。
 
 ---
 
