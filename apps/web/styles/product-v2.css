@@ -4093,6 +4093,16 @@ body.is-resizing-column * {
   color: var(--v2-danger);
 }
 
+.product-app-frame[data-ui-version="v2"] .tool-card__duration {
+  border-radius: var(--v2-radius-pill, 999px);
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink-3);
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 .product-app-frame[data-ui-version="v2"] .tool-card__list {
   margin: 0;
   padding-left: 18px;
@@ -4150,6 +4160,13 @@ body.is-resizing-column * {
   font-size: 11px;
 }
 
+.product-app-frame[data-ui-version="v2"] .activity-group__elapsed {
+  margin-left: auto;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 .product-app-frame[data-ui-version="v2"] .activity-group__head svg[data-open] {
   margin-left: auto;
   transform: rotate(0deg);
@@ -4171,6 +4188,11 @@ body.is-resizing-column * {
 .product-app-frame[data-ui-version="v2"] .activity-group__hint + svg,
 .product-app-frame[data-ui-version="v2"] .activity-group__head > svg:last-child {
   margin-left: auto;
+}
+
+/* The elapsed value takes the free space, so the chevron sits next to it. */
+.product-app-frame[data-ui-version="v2"] .activity-group__elapsed + svg:last-child {
+  margin-left: 6px;
 }
 
 /* ─── Composer waiting line (activity phase, W4) ─── */
