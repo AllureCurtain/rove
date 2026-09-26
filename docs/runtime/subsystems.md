@@ -320,6 +320,19 @@ backoff waits obey cancellation; `docs/runtime/react-loop.md` documents the
 contract and `docs/runtime/provider-smoke.md` what a real-provider smoke
 observes.
 
+The same module owns the run loop's silent-turn recovery. When the React host
+ends as `Final` with no assistant text anywhere in the run, no `ToolCallStarted`,
+and a real user message, the runtime appends one fixed nudge to the model-visible
+conversation and spends at most one extra model turn
+(`[runtime.recovery] silent_turn_max_attempts`, default `1`, `0` disables). The
+recovery turn is ordinary — same budgets, tools, approvals, cancellation, and
+repair limits — and the run terminates as before if it stays silent. Both facts
+are canonical events: a `model_status` with status `recovering_silent_turn` whose
+message is the nudge, and an `execution_degraded` record with code
+`silent_turn_recovery` that materializes into the persisted execution-lifecycle
+degradations. Only the React host recovers; planned runs use their own step
+repair/replan path.
+
 ## Tool Orchestration
 
 `rove-core` owns `Tool`, `ToolOutput`, `ToolRegistry`, invocation-scoped

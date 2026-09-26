@@ -158,6 +158,19 @@ ceiling keeps the ceiling authoritative. Jitter is intentionally not
 configurable: it only spreads retries out. See "Model-call retry budget" below
 for the retry contract itself.
 
+A run that terminates without a visible answer is recovered separately, under
+`[runtime.recovery]`:
+
+```toml
+[runtime.recovery]
+silent_turn_max_attempts = 1   # extra turns spent on a run that answered nothing; 0 disables
+```
+
+Unset keeps the runtime default of `1`, so an unconfigured runtime recovers a
+silent turn where it previously ended. `0` disables silent-turn recovery and
+restores the pre-recovery behavior exactly. See "Silent-turn recovery" below for
+the detection rules and the single-attempt budget.
+
 `ExecutionStrategySelected`, `ExecutionBudgetUpdated`, and `ExecutionDegraded`
 are canonical events. A degradation record is always explicit: a fallback never
 changes permissions, never erases recorded evidence, and carries a safe summary
@@ -393,3 +406,78 @@ the Planner, Replanner, Evaluator, Finalizer, and model compaction call
   provider's own `ModelError` reaches the kernel unchanged and the run
   terminates as before (`TerminationReason::Error`); a recoverable planned-step
   failure then still enters the existing repair/replan path.
+
+## Silent-turn recovery
+
+A provider can succeed and still leave the user with nothing: the turn ends with
+an empty assistant message, no tool call, and no visible text. The run is
+technically `Final`, so nothing downstream raises an error — the user simply
+sees an empty answer. The run loop spends at most **one** extra model turn on
+that case, and only that case.
+
+**Detection.** A run is silent only when all three rules hold. The evidence is
+recorded from the canonical events the run actually emits, never inferred from
+state, and the decision itself is a pure function in
+`runtime/src/engine/recovery.rs` (`SilentTurnEvidence::observe` →
+`SilentTurnObservation::is_silent`):
+
+1. the run terminated as `KernelTermination::Final` and *no* `LlmMessage` carried
+   non-empty `full` text and the final output carried no text either;
+2. no `ToolCallStarted` was emitted anywhere in the run;
+3. the run was triggered by a real user message (`user_message` non-empty after
+   trimming).
+
+Rule 2 is why a run that used a tool is **never** silent: tool work is
+inspectable progress. A run that inspected a file and then answered nothing is a
+run that ended a task prematurely, not a run that never spoke, and replaying a
+nudge there would ask the model to redo work it already did. Rule 3 keeps the
+mechanism tied to answering a user; an internal or empty-input run is not
+recovered. A Review-mode turn is also never silent, because its model text is
+redacted into a non-empty placeholder rather than being absent — that falls out
+of rule 1 and needs no special case.
+
+**The recovery turn.** The runtime appends one fixed system message to the
+conversation it is about to send:
+
+> `Your previous turn produced no visible response. Continue: either finish the task or summarize the progress you have so far.`
+
+and runs an ordinary model turn. It is not a special mode: the same kernel
+keeps its counters, history, compaction state, working memory, and steer
+receiver, and the recovery turn observes the same execution budgets, tool
+dispatch, approval/input flow, cancellation, and repair limits as any other
+turn. If the recovery turn is silent too, the run terminates exactly as it did
+before recovery — no second attempt, no loop. The budget is one attempt per run,
+and `silent_turn_max_attempts = 0` disables it entirely.
+
+**Affordability.** Recovery is skipped when another model turn cannot be
+afforded, so a silent run that already spent its model-turn or token budget
+still terminates as `Final` with an empty answer rather than being converted into
+a `StepLimit`/`TokenLimit`. The context manager's own hard token limit is not
+pre-checked, so adding the nudge can in principle still stop the recovery turn
+as `TokenLimit`; the product status for that case is `Done` (`status_for_reason`),
+the same status a silent run reports today.
+
+**Visibility.** Both facts are canonical events, so they reach `trace.jsonl`,
+the SQLite event index, API SSE, and the Web like every other event:
+
+- `StreamEvent::ModelStatus { status: "recovering_silent_turn", message: <the
+  nudge> }` is emitted before the recovery turn. The status belongs to the same
+  safe progress surface as `thinking`, so the Web keeps announcing the model
+  phase and shows the runtime's own message as the status line.
+- `StreamEvent::ExecutionDegraded` carries one
+  `ExecutionDegradation { code: "silent_turn_recovery", phase: Run, .. }` record
+  with a fixed safe summary. A silent turn is a real degradation of the run's
+  usefulness and must be visible as one rather than silently repaired.
+  Materializing that record also puts it in the persisted
+  `ExecutionLifecycleState`, so resume and the report see it.
+
+The nudge is injected into the model-visible conversation only. Durable history
+(`SessionEntry`) has no system role and carries no system item, so the durable
+record of what happened is the status message, not a fabricated history entry.
+The recovery turn's own answer, and the tool calls and results it produces, are
+persisted normally through the existing assistant/tool paths.
+
+**Scope.** This is the React (`run_unplanned_loop`) host. A planned run
+coordinates its own step repair and replan path and ends through the
+deterministic Finalizer, so a step-scoped silent turn is not recovered here; that
+remains a non-goal of this change.

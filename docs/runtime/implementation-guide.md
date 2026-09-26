@@ -307,6 +307,7 @@ Common paths and defaults:
 | `runtime.recovery.retry.transient_max_attempts` | `4` |
 | `runtime.recovery.retry.backoff_base_ms` | `2000` |
 | `runtime.recovery.retry.backoff_max_ms` | `30000` |
+| `runtime.recovery.silent_turn_max_attempts` | `1` (`0` disables silent-turn recovery) |
 | `state.state_dir` | empty sentinel -> `<data_root>/workspaces/<storage_key>/` |
 | `state.sqlite_path` | empty sentinel -> `<data_root>/workspaces/<storage_key>/state.sqlite` |
 | `tool.mcp_config_path` | empty sentinel -> contract `mcp_servers.json` (legacy fallback before migration) |
@@ -980,6 +981,7 @@ Current event variants:
 - `llm_chunk`
 - `model_status`
 - `provider_retry`
+- `execution_degraded`
 - `llm_message`
 - `tool_call_started`
 - `tool_call_approval_needed`
@@ -1011,7 +1013,16 @@ its sequence.
 `model_status` is the safe progress surface for model-side work. It can say
 that the model is thinking, has selected a tool, or that the run is waiting for
 approval. It must not expose raw provider `ThinkingDelta` or hidden reasoning
-text.
+text. `recovering_silent_turn` is one of its values: the run produced no visible
+response and the runtime is spending its one recovery turn. Its `message` is the
+fixed runtime nudge, which is also the only place the nudge is durably recorded.
+
+`execution_degraded` records a run that kept working under a declared handicap.
+Its record carries a fixed safe summary, never the user's message or model
+output, and materializes into the persisted execution-lifecycle degradations
+that resume and the report read. `silent_turn_recovery` is one of its codes: the
+run ended without a visible answer, so the runtime spent its one recovery turn
+(`docs/runtime/react-loop.md`).
 
 `provider_retry` is the safe surface for model-call recovery. It carries
 `attempt`, `max_attempts`, `delay_ms`, a whitelisted `reason`
@@ -1293,6 +1304,11 @@ outer budget is spent inside `run_kernel_model_turn`, so it covers the React hos
 and the planned-step host — including a directly assembled provider that
 `RoutingModelClient` never wraps — and not the Planner, Replanner, Evaluator,
 Finalizer, or model compaction, which call `ModelClient::stream` directly.
+
+Silent-turn recovery composes with both without changing either. A recovery turn
+is an ordinary model call, so it passes through routing and the retry budget like
+any other; the recovery budget bounds *extra turns*, and a recovery turn that
+fails is handled by the same retry rules that apply to the turn it replaced.
 
 First-packet routing decisions are emitted through `tracing`: candidate start, skipped open circuit, committed first event, no content, timeout, error-before-commit, retry scheduling, and candidate exhaustion. These are observability records only; they do not add user-facing `StreamEvent` variants.
 

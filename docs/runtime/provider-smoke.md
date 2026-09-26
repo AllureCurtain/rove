@@ -340,6 +340,17 @@ The budget is exercised deterministically and offline by
 Fake provider through throttling, transport failures, output-before-failure,
 cancellation during backoff, and a disabled budget.
 
+A real provider can also succeed while producing no visible answer at all. The
+React host then spends at most one extra model turn with a fixed system nudge
+(`RuntimeConfig.recovery.silent_turn_max_attempts`, default `1`, `0` disables it)
+and announces it as a `model_status` with status `recovering_silent_turn` plus an
+`execution_degraded` fact with code `silent_turn_recovery`. A smoke that sees a
+`done` run complete without any assistant text is therefore provider evidence
+about that provider's empty responses, not a runtime gap — unless the recovery
+status is also absent from the trace, which would mean the run reported tool
+activity or had no user message. The contract and detection rules are in
+`docs/runtime/react-loop.md`; `tests/recovery.rs` covers them offline.
+
 ## Expected result
 
 Each enabled smoke runs two tiny checks: a direct final-answer request and one
