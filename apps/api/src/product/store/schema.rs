@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::product::{ProductErrorCode, ProductStoreError};
 
-const CURRENT_SCHEMA_VERSION: i64 = 16;
+const CURRENT_SCHEMA_VERSION: i64 = 17;
 const MAX_BUSY_TIMEOUT_MS: u64 = 120_000;
 
 const MIGRATION_001: &str = r#"
@@ -344,6 +344,14 @@ const MIGRATION_016_COLUMNS: [(&str, &str); 2] = [
     ("last_outcome_at", "TEXT"),
 ];
 
+/// `product_session_controls.queue_order` is the explicit successor-queue
+/// position. `seq` stays the append-only ledger order that paging and the
+/// transcript projection rely on, so a reorder must not rewrite it. A row with
+/// `queue_order IS NULL` predates migration 017 and keeps its creation order
+/// through the `COALESCE(queue_order, seq)` sort key, which means the upgrade
+/// needs no back-fill and no queue can be silently reshuffled by it.
+const MIGRATION_017_COLUMNS: [(&str, &str); 1] = [("queue_order", "INTEGER")];
+
 const MIGRATION_002: &str = r#"
 ALTER TABLE product_preferences
 ADD COLUMN revision INTEGER NOT NULL DEFAULT 0
@@ -671,6 +679,7 @@ fn apply_migrations(
     apply_migration_014(connection)?;
     apply_migration_015(connection)?;
     apply_migration_016(connection)?;
+    apply_migration_017(connection)?;
     Ok(())
 }
 
@@ -1208,6 +1217,42 @@ fn apply_migration_016(connection: &mut Connection) -> Result<(), ProductStoreEr
     Ok(())
 }
 
+fn apply_migration_017(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 17)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    // Guarded for the same reason as migrations 007, 015, and 016: a historical
+    // compatibility fixture can claim a version without containing every table
+    // that version implies, and an added column is pure additive state.
+    if table_exists(&transaction, "product_session_controls")? {
+        for (column, declaration) in MIGRATION_017_COLUMNS {
+            if !table_has_column(&transaction, "product_session_controls", column)? {
+                transaction
+                    .execute_batch(&format!(
+                        "ALTER TABLE product_session_controls ADD COLUMN {column} {declaration};"
+                    ))
+                    .map_err(|_| database_error(true))?;
+            }
+        }
+    }
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                17,
+                "product_message_queue_order",
+                super::repository::now_rfc3339()
+            ],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
 fn reconcile_productization_schema(
     transaction: &rusqlite::Transaction<'_>,
 ) -> Result<(), ProductStoreError> {
@@ -1650,6 +1695,11 @@ mod tests {
         for column in ["last_outcome", "last_outcome_at"] {
             assert!(table_has_column(connection, "product_sessions", column).unwrap());
         }
+        // Migration 017 is additive in the same way, and a store that recorded
+        // the version without the column would sort every queue by `seq` while
+        // claiming to support reordering.
+        assert!(migration_is_applied(connection, 17).unwrap());
+        assert!(table_has_column(connection, "product_session_controls", "queue_order").unwrap());
     }
 
     #[test]
@@ -1771,6 +1821,99 @@ mod tests {
                 .is_err(),
             "an outcome outside the three-value contract must be rejected"
         );
+    }
+
+    #[test]
+    fn a_v16_store_gains_the_queue_order_column_without_reordering_its_queue() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize_v11(&mut connection);
+        apply_migration_012(&mut connection).unwrap();
+        apply_migration_013(&mut connection).unwrap();
+        apply_migration_014(&mut connection).unwrap();
+        apply_migration_015(&mut connection).unwrap();
+        apply_migration_016(&mut connection).unwrap();
+        insert_v15_session(&connection);
+        insert_v16_message(&connection);
+        assert!(!table_has_column(&connection, "product_session_controls", "queue_order").unwrap());
+
+        apply_migrations_isolated(&mut connection).unwrap();
+
+        assert!(migration_is_applied(&connection, 17).unwrap());
+        assert!(table_has_column(&connection, "product_session_controls", "queue_order").unwrap());
+        // The existing row keeps an unknown position, which the read path turns
+        // back into its creation order. Back-filling a number would freeze
+        // today's order into the database and make the upgrade a reorder.
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT queue_order FROM product_session_controls WHERE control_id = 'message-1'",
+                    [],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_queue_order_column_already_present_still_upgrades_and_the_pass_is_idempotent() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize_v11(&mut connection);
+        apply_migration_012(&mut connection).unwrap();
+        apply_migration_013(&mut connection).unwrap();
+        apply_migration_014(&mut connection).unwrap();
+        apply_migration_015(&mut connection).unwrap();
+        apply_migration_016(&mut connection).unwrap();
+        insert_v15_session(&connection);
+        insert_v16_message(&connection);
+        // A compatibility fixture can carry part of a version, so the guard must
+        // add nothing that is already there and must not fail on it.
+        connection
+            .execute_batch("ALTER TABLE product_session_controls ADD COLUMN queue_order INTEGER;")
+            .unwrap();
+
+        apply_migrations_isolated(&mut connection).unwrap();
+        // A second pass over a current store is a no-op rather than an attempt
+        // to add the same column twice.
+        apply_migrations_isolated(&mut connection).unwrap();
+
+        assert!(migration_is_applied(&connection, 17).unwrap());
+        assert!(table_has_column(&connection, "product_session_controls", "queue_order").unwrap());
+        connection
+            .execute(
+                "UPDATE product_session_controls SET queue_order = 3 WHERE control_id = 'message-1'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT queue_order FROM product_session_controls WHERE control_id = 'message-1'",
+                    [],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .unwrap(),
+            Some(3),
+            "an explicit position must survive a repeat migration pass"
+        );
+    }
+
+    /// A minimal v16 successor message, used to prove migration 017 leaves the
+    /// existing queue untouched.
+    fn insert_v16_message(connection: &Connection) {
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO product_session_controls(
+                    control_id, product_session_id, kind, content, status, seq,
+                    created_at, message_contract_version, requested_delivery
+                ) VALUES (
+                    'message-1', 'session-1', 'followup', 'queued', 'pending', 1,
+                    '2026-09-26T00:00:00Z', 1, 'successor'
+                );
+                "#,
+            )
+            .unwrap();
     }
 
     /// A minimal v15 session row, used to prove additive migrations do not
