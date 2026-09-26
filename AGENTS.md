@@ -206,11 +206,14 @@ As of 2026-08-14:
   and one durable conversation-message lifecycle share the existing
   Runtime/Engine authorities. ProductStore schema v13 reconciles both parallel
   v12 productization layouts. Deterministic Rust/Web/TUI checks and five live
-  local fake-provider browser cases pass. F.4 remains partial because the Web
-  and TUI load only the latest bounded message page rather than supporting
-  stable older-history prepend/windowing. F.5 remains partial because TUI
-  restart recovery does not yet drain queued successors or reconcile a
-  claimed successor that has no run. Workstream G remains partial because
+  local fake-provider browser cases pass. F.4's Web transcript half is
+  implemented: the transcript endpoint serves bounded older-history cursor pages
+  (`before_ordinal`/`limit_runs` with additive `next_before_ordinal`/`has_more`)
+  and the default shell prepends older pages with a stable prepend anchor, so
+  the Web path no longer stops at the newest bounded page. Long-session
+  windowing beyond the two-layer mount window, the TUI equivalent, and F.5's
+  queued-successor draining and successor-claim reconciliation remain partial.
+  Workstream G remains partial because
   credentialed external Provider, real third-party/official filesystem MCP,
   Windows ConPTY, macOS/Linux packaging, signing, installed-Desktop, and broader
   stress/soak gates remain unverified.
@@ -245,9 +248,10 @@ The current productization implementation record is:
 
 - `docs/plans/2026-08-10-post-full-delivery-productization.md`
 
-Its workstreams A-E are implemented. F.1-F.3 are implemented while F.4/F.5 and
-G are partially complete. The dated 2026-08-09 documents it links are
-supporting audit evidence, not additional implementation plans.
+Its workstreams A-E are implemented. F.1-F.3 are implemented, F.4's Web
+transcript pagination is implemented, and the remaining F.4 windowing/TUI
+scope, F.5, and G are partially complete. The dated 2026-08-09 documents it
+links are supporting audit evidence, not additional implementation plans.
 
 The optional terminal-interface direction is documented separately in
 `docs/design/2026-07-16-grok-build-reference-and-tui-design.md`.
