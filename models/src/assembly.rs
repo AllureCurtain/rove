@@ -150,6 +150,15 @@ impl TurnAssembler {
         self.event_count
     }
 
+    /// Usage reported so far, before the turn necessarily has a terminal state.
+    ///
+    /// A cancelled turn never reaches [`TurnAssembler::finish`], so this is the
+    /// only honest read of what the provider actually reported: it is the last
+    /// `Usage` event seen, and the default when none arrived.
+    pub fn usage(&self) -> &Usage {
+        &self.usage
+    }
+
     fn start_call(&mut self, id: String, name: String) -> Result<(), ModelError> {
         bounded_id(&id, "wire call id")?;
         if name.trim().is_empty() {
