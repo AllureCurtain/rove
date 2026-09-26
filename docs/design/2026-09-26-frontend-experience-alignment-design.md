@@ -27,7 +27,7 @@
 | F1 | 会话切换的每会话 UI 状态快照（滚动/跟随/窗口/披露） | P0 | 无 | Implemented |
 | F2 | 工具与活动耗时呈现（徽标 + 活动组 elapsed） | P0 | 无 | Implemented |
 | F3 | 流式 markdown 的分块 memo 化 | P0 | 无 | Implemented |
-| F4 | 会话 hover 卡片 | P1 | 无 | Proposed |
+| F4 | 会话 hover 卡片 | P1 | 无 | Implemented |
 | F5 | Toast 通知层与后台失败可见性 | P1 | 无（收件箱部分依赖 R5） | Proposed |
 | F6 | smart-stop 发送快照（含粘贴 chips） | P1 | 无 | Proposed |
 | F7 | 杂项清理（/dev 文案、mock 页标注、降级语义如实标注） | P1 | 无 | Proposed |
@@ -290,6 +290,19 @@ PI-Desktop 的会话 hover 卡（320px portal：模型、工作区/分支、实�
 
 - vitest：显隐状态机（延迟显示、提前离开取消、粘性、Escape）。
 - e2e（mock）：hover 出卡片、内容正确、离开消失、键盘导航不触发。
+
+### 5.5 实现记录（2026-09-26）
+
+- 状态机与落位算法抽到 `sidebar/session-hover-card.ts`（`reduceSessionHoverCard`
+  与 `placeSessionHoverCard`），组件只做取材与渲染。
+- 模型行通过 `sidebar/session-model-summary.ts` 的进程内 store 懒加载：每会话一次
+  请求、结果（含失败）缓存、失败显示"—"不重试，缓存上限 64 条。
+- portal 目标是行所在的 `.product-app-frame`，而不是 `document.body`：v2 令牌与
+  scoped 规则都在该元素上，落到 body 会渲染成一张没有样式的卡。仍然 portal，
+  是为了躲开侧栏滚动容器的裁剪。
+- "粘性"按"Escape 关闭后，只要指针没离开该行就不再打开"实现；指针离开即关闭
+  （设计 5.2 的"移开即消失"）。
+- 卡片 `pointer-events: none`：不拦截行点击、菜单与拖拽；键盘不触发（无 focus 分支）。
 
 ---
 
