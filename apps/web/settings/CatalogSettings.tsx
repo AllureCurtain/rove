@@ -19,6 +19,7 @@ import {
 
 import { createProductApiClient } from "../product/product-client";
 import { useCopy } from "../copy/CopyProvider";
+import { formatUtcTimestamp } from "../lib/format-timestamp";
 import { downloadEvidenceFile } from "../product/evidence-export";
 import type { SessionRecord, WorkspaceRecord } from "../state/product-types";
 import {
@@ -109,14 +110,7 @@ function useGuardedItemActions(): GuardedActionState {
 }
 
 function formatTimestamp(value: string): string {
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) {
-    return value;
-  }
-  return new Date(timestamp)
-    .toISOString()
-    .replace("T", " ")
-    .replace(/\.\d{3}Z$/, " UTC");
+  return formatUtcTimestamp(value);
 }
 
 function workspaceKindLabel(kind: WorkspaceRecord["kind"]): string {

@@ -1,9 +1,10 @@
-﻿"use client";
+"use client";
 
 import { HamburgerMenuIcon } from "@radix-ui/react-icons";
 import type { CSSProperties } from "react";
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -20,7 +21,12 @@ import {
   latestUsage,
   type ContextUsage,
 } from "../chat/context-usage";
-import { lastRestorableUserMessage, shouldRestoreOnStop } from "../chat/smart-stop";
+import {
+  PARTIAL_ABORT_MARKER,
+  isPartialAbort,
+  lastRestorableUserMessage,
+  shouldRestoreOnStop,
+} from "../chat/smart-stop";
 import { COMPOSER_FILE_SOURCE_LIMIT } from "../chat/Composer";
 import { CopyProvider, useCopy } from "../copy/CopyProvider";
 import { Transcript } from "../chat/Transcript";
@@ -53,6 +59,8 @@ import {
 import { routePrefetchTargets } from "./route-prefetch";
 import { useIdleRoutePrefetch } from "./use-idle-route-prefetch";
 import { SettingsShell } from "../settings/SettingsShell";
+import { ToastProvider, useToast } from "./toast/ToastProvider";
+import { useBackgroundFailureToasts } from "./toast/use-background-failure-toasts";
 import { matchKeyboardShortcut } from "../settings/keyboard-settings-model";
 import { useKeybindingOverrides } from "../settings/use-keybinding-overrides";
 import {
@@ -115,7 +123,9 @@ export function ProductApp({
   return (
     <CopyProvider>
       <UiSkinProvider>
-        <ProductFrame uiVersion={uiVersion} draftStore={draftStore} />
+        <ToastProvider>
+          <ProductFrame uiVersion={uiVersion} draftStore={draftStore} />
+        </ToastProvider>
       </UiSkinProvider>
     </CopyProvider>
   );
@@ -146,7 +156,19 @@ function ServerProductApp({ uiVersion, draftStore }: {
   draftStore: ComposerDraftStore;
 }) {
   const { t } = useCopy();
+  const toast = useToast();
   const server = useServerProductState();
+  /**
+   * A turn that reached its terminal state cannot be restored by a later stop,
+   * so its send snapshot is dropped here — the same moment the terminal
+   * reconciliation refreshes the session (design F6).
+   */
+  const clearSendSnapshot = useCallback(
+    (sessionId: string, workspaceId: string) => {
+      draftStore.clearLastSend({ workspaceId, productSessionId: sessionId });
+    },
+    [draftStore],
+  );
   const settingsClient = useMemo(() => createSettingsPlatformClient(), []);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const workspaceButtonRef = useRef<HTMLButtonElement>(null);
@@ -342,6 +364,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
     refreshSessionStatuses: server.refreshSessionStatuses,
     updateSessionTitle: server.updateSessionTitle,
     setConnection: server.setConnection,
+    onTurnTerminal: clearSendSnapshot,
   });
   const reviews = useProductReviews({
     productClient: server.productClient,
@@ -364,6 +387,10 @@ function ServerProductApp({ uiVersion, draftStore }: {
     leaveSession: continuity.leaveSession,
   });
   const workspaces = sortedWorkspaces(server.catalog);
+  useBackgroundFailureToasts({
+    sessions: server.catalog.sessions,
+    activeSessionId: activeSession?.id ?? null,
+  });
   const sessionsByWorkspace = useMemo(() => {
     const map: Record<string, ReturnType<typeof sessionsForWorkspace>> = {};
     for (const workspace of server.catalog.workspaces) {
@@ -554,8 +581,15 @@ function ServerProductApp({ uiVersion, draftStore }: {
     const navigationIntent = routing.captureNavigationIntent();
     const child = await server.forkSession(activeSession.id);
     const activeNow = server.catalogRef.current.active;
+    if (child === null) {
+      // The reason is already on screen as a shell alert; do not say it twice.
+      return;
+    }
+    toast.notify({
+      kind: "success",
+      message: t("toast.forkCreated", { title: child.title }),
+    });
     if (
-      child &&
       routing.isNavigationIntentCurrent(navigationIntent) &&
       activeNow.workspaceId === activeBefore.workspaceId &&
       activeNow.sessionId === activeBefore.sessionId
@@ -572,14 +606,19 @@ function ServerProductApp({ uiVersion, draftStore }: {
     }
   }
 
-  function writeComposerDraft(text: string) {
+  function composerDraftIdentity() {
     if (!activeWorkspace || !activeSession) {
+      return null;
+    }
+    return { workspaceId: activeWorkspace.id, productSessionId: activeSession.id };
+  }
+
+  function writeComposerDraft(text: string) {
+    const identity = composerDraftIdentity();
+    if (identity === null) {
       return;
     }
-    draftStore.setText(
-      { workspaceId: activeWorkspace.id, productSessionId: activeSession.id },
-      text,
-    );
+    draftStore.setText(identity, text);
   }
 
   function handleEditQueuedMessage(messageId: string, content: string) {
@@ -642,6 +681,11 @@ function ServerProductApp({ uiVersion, draftStore }: {
    * W5: stopping restores the message only when the model produced nothing
    * after it. The draft is written before the revoke runs, so a failed revoke
    * leaves the text in the composer and the message in the transcript.
+   *
+   * F6: when the composer still holds the snapshot of that send, the draft comes
+   * back exactly as it was sent — text and paste chips. Only when there is no
+   * snapshot does this fall back to the folded text, and the notice says which
+   * of the two happened.
    */
   async function handleCancelRun() {
     setStopNotice(null);
@@ -650,13 +694,35 @@ function ServerProductApp({ uiVersion, draftStore }: {
     );
     const restorable = lastRestorableUserMessage(items);
     if (restorable?.kind === "message") {
-      writeComposerDraft(restorable.message.content);
+      const identity = composerDraftIdentity();
+      const source =
+        identity === null
+          ? "none"
+          : draftStore.restoreLastSend(identity);
+      if (source === "snapshot") {
+        setStopNotice(t("chat.smartStopRestoredSnapshot"));
+      } else {
+        // No snapshot: the folded text is all there is, and the restore says so
+        // (a text restore also drops any chip the composer was still holding).
+        if (identity !== null) {
+          draftStore.restore(identity, restorable.message.content);
+        }
+        setStopNotice(t("chat.smartStopRestored"));
+      }
       try {
         await continuity.revokeMessage(restorable.message.id);
-        setStopNotice(t("chat.smartStopRestored"));
       } catch {
         setStopNotice(t("chat.smartStopRevokeFailed"));
       }
+    } else if (
+      isPartialAbort({
+        aborted: PARTIAL_ABORT_MARKER,
+        producedWork: items.length > 0,
+      })
+    ) {
+      // Reserved for runtime R2b: a stop that cut a turn short after the model
+      // had produced content says so instead of looking like a finished turn.
+      setStopNotice(t("chat.smartStopPartialAbort"));
     }
     await continuity.cancel();
   }

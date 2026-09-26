@@ -73,6 +73,7 @@ export function useSessionContinuity({
   refreshSessionStatuses,
   updateSessionTitle,
   setConnection,
+  onTurnTerminal,
 }: {
   productClient: ProductApiClient;
   catalogRef: { current: ProductCatalog };
@@ -86,10 +87,21 @@ export function useSessionContinuity({
   refreshSessionStatuses: () => Promise<boolean>;
   updateSessionTitle: (sessionId: string, title: string) => Promise<void>;
   setConnection: (connection: "unknown" | "ok" | "error") => void;
+  /**
+   * The focused session's turn settled and no successor took over, at the same
+   * moment the terminal reconciliation refreshes it. The composer uses this to
+   * drop a send snapshot that a later stop could no longer legitimately restore
+   * (design F6).
+   */
+  onTurnTerminal?: (sessionId: string, workspaceId: string) => void;
 }) {
   const [restoreState, setRestoreState] = useState<TranscriptRestoreState>({
     status: "idle",
   });
+  const onTurnTerminalRef = useRef(onTurnTerminal);
+  useEffect(() => {
+    onTurnTerminalRef.current = onTurnTerminal;
+  }, [onTurnTerminal]);
   const [olderHistory, setOlderHistory] =
     useState<OlderHistoryState>(NO_OLDER_HISTORY);
   const [approvalBusyKey, setApprovalBusyKey] = useState<string | null>(null);
@@ -802,6 +814,7 @@ export function useSessionContinuity({
 
         if (currentSession) {
           restoredSessionRef.current = null;
+          onTurnTerminalRef.current?.(sessionId, currentSession.workspaceId);
           await restoreSession(currentSession.workspaceId, sessionId);
           return;
         }
@@ -814,6 +827,7 @@ export function useSessionContinuity({
         focusedSessionRef.current === sessionId
       ) {
         restoredSessionRef.current = null;
+        onTurnTerminalRef.current?.(sessionId, currentSession.workspaceId);
         await restoreSession(currentSession.workspaceId, sessionId);
       }
     },

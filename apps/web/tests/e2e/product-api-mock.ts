@@ -46,7 +46,12 @@ export interface MockSession {
   };
   created_at: string;
   updated_at: string;
+  parent_session_id?: string;
+  fork_point_run_id?: string;
+  fork_point_seq?: number;
 }
+
+export type MockSessionStatus = MockSession["status"];
 
 export interface MockTranscript {
   product_session_id: string;
@@ -106,10 +111,16 @@ export interface MockProductApiOptions {
   mcpProbeTools?: ProductMcpToolDescriptor[];
   activeWorkspaceId?: string;
   activeSessionId?: string;
-  mode?: "completed" | "approval" | "running_tool";
+  mode?: MockJobMode;
   transcriptDelayMs?: Record<string, number>;
   transcriptFailures?: Record<string, number>;
   sessionModelConfigFailures?: number;
+  /**
+   * Failures for `GET .../model-config`, per session id. The shell reads the
+   * active session's config on load, so a card-only failure has to be addressed
+   * to the session the test hovers.
+   */
+  sessionModelConfigReadFailures?: Record<string, number>;
   disconnectJobStartResponses?: number;
   jobBindingVisibilityDelayReads?: number;
   sessionCreateDelayMs?: number;
@@ -161,6 +172,9 @@ export interface MockProductApiState {
   transcriptFailures: Record<string, number>;
   sessionModelConfigUpdateRequests: number;
   remainingSessionModelConfigFailures: number;
+  /** Every `GET .../model-config`, in order, so a caller can be identified. */
+  sessionModelConfigReads: string[];
+  remainingSessionModelConfigReadFailures: Record<string, number>;
   disconnectedJobStartResponses: number;
   delayedJobBindingReads: number;
   sessionCreateRequests: number;
@@ -169,6 +183,12 @@ export interface MockProductApiState {
   migrationRequestBodies: string[];
   remainingMigrationFailures: number;
   initialStateReadRequests: number;
+  /**
+   * Reads of the product session list, including background status polling.
+   * Tests also mutate `sessions[i].status` directly: the next poll is what the
+   * shell notices.
+   */
+  sessionListReads: number;
   trustStatuses: Record<string, ProductTrustStatus>;
   trustRequests: Array<{
     method: "GET" | "PUT";
@@ -177,13 +197,20 @@ export interface MockProductApiState {
   }>;
 }
 
+type MockJobMode =
+  | "completed"
+  | "approval"
+  | "running_tool"
+  /** The model is still working: the run is live and has produced nothing yet. */
+  | "waiting_model";
+
 interface MockJob {
   jobId: string;
   runId: string;
   resumedFromRunId: string | null;
   sessionId: string;
   message: string;
-  mode: "completed" | "approval" | "running_tool";
+  mode: MockJobMode;
   status: "running" | "done" | "cancelled";
   events: Array<{ seq: number; event: Record<string, unknown> }>;
 }
@@ -259,6 +286,10 @@ export async function installMockProductApi(
     sessionModelConfigUpdateRequests: 0,
     remainingSessionModelConfigFailures:
       options.sessionModelConfigFailures ?? 0,
+    sessionModelConfigReads: [],
+    remainingSessionModelConfigReadFailures: {
+      ...(options.sessionModelConfigReadFailures ?? {}),
+    },
     disconnectedJobStartResponses: 0,
     delayedJobBindingReads: 0,
     sessionCreateRequests: 0,
@@ -267,6 +298,7 @@ export async function installMockProductApi(
     migrationRequestBodies: [],
     remainingMigrationFailures: options.migrationFailures ?? 0,
     initialStateReadRequests: 0,
+    sessionListReads: 0,
     trustStatuses: structuredClone(options.trustStatuses ?? {}),
     trustRequests: [],
   };
@@ -274,6 +306,7 @@ export async function installMockProductApi(
   const delayedSessionVisibility = new Map<string, DelayedSessionVisibility>();
   let workspaceCounter = state.workspaces.length;
   let sessionCounter = state.sessions.length;
+  let forkCounter = 0;
   let messageCounter = 0;
   let providerProfileCounter = state.providerProfiles.length;
   let migrationReceiptCounter = 0;
@@ -347,7 +380,9 @@ export async function installMockProductApi(
         ? approvalEvents(jobId, runId, body.message)
         : mode === "running_tool"
           ? runningToolEvents(jobId, runId, body.message)
-          : completedEvents(jobId, runId, body.message, output);
+          : mode === "waiting_model"
+            ? waitingModelEvents(jobId, runId, body.message)
+            : completedEvents(jobId, runId, body.message, output);
     const job: MockJob = {
       jobId,
       runId,
@@ -658,6 +693,7 @@ export async function installMockProductApi(
     }
     if (path === "/product/sessions" && method === "GET") {
       const workspaceId = url.searchParams.get("workspace_id");
+      state.sessionListReads += 1;
       return json(route, {
         sessions: state.sessions
           .filter((session) => session.workspace_id === workspaceId)
@@ -674,6 +710,51 @@ export async function installMockProductApi(
             return delayed.session;
           }),
       });
+    }
+    const forkMatch = path.match(/^\/product\/sessions\/([^/]+)\/forks$/u);
+    if (forkMatch && method === "POST") {
+      const parentId = decodeURIComponent(forkMatch[1]!);
+      const parent = state.sessions.find((session) => session.id === parentId);
+      if (!parent?.runtime_binding) {
+        return json(
+          route,
+          { code: "product_conflict", error: "session cannot be forked" },
+          409,
+        );
+      }
+      const body = request.postDataJSON() as {
+        fork_at_run_id?: string;
+        idempotency_key?: string;
+      };
+      forkCounter += 1;
+      const childId = `session-fork-${forkCounter}`;
+      const child: MockSession = {
+        ...createMockSession(childId, parent.workspace_id, `Fork of ${parent.title}`),
+        parent_session_id: parentId,
+        fork_point_run_id: body.fork_at_run_id ?? parent.runtime_binding.latest_run_id,
+        fork_point_seq: 1,
+      };
+      state.sessions.unshift(child);
+      return json(
+        route,
+        {
+          fork: {
+            id: `fork-${forkCounter}`,
+            parent_product_session_id: parentId,
+            child_product_session_id: childId,
+            parent_workspace_id: parent.workspace_id,
+            parent_title: parent.title,
+            source_runtime_session_id: parent.runtime_binding.runtime_session_id,
+            source_runtime_job_id: parent.runtime_binding.latest_job_id,
+            source_runtime_run_id: parent.runtime_binding.latest_run_id,
+            fork_at_event_seq: 1,
+            idempotency_key: body.idempotency_key ?? `fork-key-${forkCounter}`,
+            created_at: NOW,
+          },
+          session: child,
+        },
+        201,
+      );
     }
     if (path === "/product/sessions" && method === "POST") {
       state.sessionCreateRequests += 1;
@@ -939,6 +1020,18 @@ export async function installMockProductApi(
         );
       }
       if (method === "GET") {
+        state.sessionModelConfigReads.push(sessionId);
+        if ((state.remainingSessionModelConfigReadFailures[sessionId] ?? 0) > 0) {
+          state.remainingSessionModelConfigReadFailures[sessionId] -= 1;
+          return json(
+            route,
+            {
+              code: "product_storage_failure",
+              error: "session model settings unavailable",
+            },
+            503,
+          );
+        }
         return json(route, config);
       }
       if (method === "PUT") {
@@ -2165,6 +2258,19 @@ function runningToolEvents(jobId: string, runId: string, message: string) {
         name: "shell",
         args: { command: "cargo test --workspace" },
       },
+    },
+  ];
+}
+
+/**
+ * A run that is still waiting on the model: it started and has produced nothing
+ * yet, so a stop has something to put back (design F6's smart-stop gate).
+ */
+function waitingModelEvents(jobId: string, runId: string, message: string) {
+  return [
+    {
+      seq: 1,
+      event: { type: "run_started", job_id: jobId, run_id: runId, user_message: message },
     },
   ];
 }

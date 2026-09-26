@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { segmentMarkdown } from "./streaming-blocks";
+import { markdownSegmentPropsEqual, segmentMarkdown } from "./streaming-blocks";
 
 describe("segmentMarkdown", () => {
   it("keeps plain prose as one segment", () => {
@@ -34,5 +34,66 @@ describe("segmentMarkdown", () => {
 
   it("handles an empty string", () => {
     expect(segmentMarkdown("")).toEqual([{ kind: "prose", text: "" }]);
+  });
+});
+
+describe("streaming stability", () => {
+  /** The prefix of segments whose text a growing document must not disturb. */
+  function stablePrefix(before: string[], after: string[]): number {
+    let shared = 0;
+    while (shared < before.length && shared < after.length && before[shared] === after[shared]) {
+      shared += 1;
+    }
+    return shared;
+  }
+
+  it("leaves every finished segment byte-identical as deltas arrive", () => {
+    // Three blocks: prose, a closed fence, and a growing tail.
+    const document = [
+      "# Result",
+      "",
+      "First paragraph.",
+      "",
+      "```rust",
+      "fn main() {}",
+      "```",
+      "",
+      "Trailing paragraph that keeps growing",
+    ];
+    let previous = segmentMarkdown("");
+    let previousTexts: string[] = [];
+    for (let line = 0; line < document.length; line += 1) {
+      const markdown = document.slice(0, line + 1).join("\n");
+      const texts = segmentMarkdown(markdown).map((segment) => segment.text);
+      const shared = stablePrefix(previousTexts, texts);
+      // Only the tail may differ; everything before it is reused verbatim.
+      expect(shared).toBeGreaterThanOrEqual(Math.min(previousTexts.length, texts.length) - 1);
+      previous = segmentMarkdown(markdown);
+      previousTexts = previous.map((segment) => segment.text);
+    }
+    expect(previousTexts).toHaveLength(3);
+  });
+
+  it("rewrites only the block that a closing fence completes", () => {
+    const open = segmentMarkdown("intro\n\n```rust\nfn main() {}");
+    const closed = segmentMarkdown("intro\n\n```rust\nfn main() {}\n```\n\noutro");
+    const shared = stablePrefix(
+      open.map((segment) => segment.text),
+      closed.map((segment) => segment.text),
+    );
+    // "intro" survives; the second block changes from prose to code once.
+    expect(shared).toBe(1);
+  });
+});
+
+describe("markdownSegmentPropsEqual", () => {
+  it("reuses a segment whose text did not change", () => {
+    expect(
+      markdownSegmentPropsEqual({ text: "intro\n\nbody" }, { text: "intro\n\nbody" }),
+    ).toBe(true);
+  });
+
+  it("re-renders the segment that grew", () => {
+    expect(markdownSegmentPropsEqual({ text: "body" }, { text: "body and more" })).toBe(false);
   });
 });
