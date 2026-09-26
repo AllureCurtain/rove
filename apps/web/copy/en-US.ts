@@ -237,6 +237,10 @@ const enUS: CopyDictionary = {
     usageModeRemaining: "{{n}} left",
     usageCache: "Cache hit {{percent}}%",
     smartStopRestored: "Stopped. Your message is back in the composer.",
+    smartStopRestoredSnapshot:
+      "Stopped. The draft as you sent it, pasted content included, is back in the composer.",
+    smartStopPartialAbort:
+      "Stopped. This turn had already produced output, so it stays in the conversation.",
     smartStopRevokeFailed: "Could not revoke the message. The draft is back in the composer.",
     queuedEdit: "Edit",
     queuedMoveUp: "Move up one",
@@ -253,6 +257,7 @@ const enUS: CopyDictionary = {
     messageCopy: "Copy",
     messageCopied: "Copied",
     pasteChip: "Pasted content ({{count}} characters)",
+    smartStopRestoredPastes: "Restored {{n}} pasted attachment(s) from before that send.",
     pasteExpand: "View full text",
     pasteRejectedTooMany: "At most {{n}} pasted attachments per draft. This one was not accepted.",
     pasteRejectedTooLarge: "Pasted attachments exceed the {{n}} KB cap. This one was not accepted.",
