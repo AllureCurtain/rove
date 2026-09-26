@@ -2467,6 +2467,46 @@ async fn api_exposes_openapi_json_for_all_routes() {
         "a session that never ran must not be required to carry an outcome"
     );
 
+    let product_message_schema = schemas
+        .get("ProductMessage")
+        .expect("ProductMessage schema");
+    assert!(
+        product_message_schema["properties"]
+            .get("queue_order")
+            .is_some(),
+        "ProductMessage should publish the additive queue_order position"
+    );
+    assert!(
+        !product_message_schema["required"]
+            .as_array()
+            .is_some_and(|required| {
+                required
+                    .iter()
+                    .any(|field| field.as_str() == Some("queue_order"))
+            }),
+        "a message that was never moved must not be required to carry a position"
+    );
+    for schema in [
+        "PromoteProductMessageRequest",
+        "ReorderProductMessagesRequest",
+        "ProductQueueResponse",
+    ] {
+        assert!(
+            schemas.contains_key(schema),
+            "the queue protocol must publish {schema}"
+        );
+    }
+    let reorder_responses =
+        spec["paths"]["/product/sessions/{session_id}/messages/reorder"]["post"]["responses"]
+            .as_object()
+            .expect("reorder responses");
+    for status in ["200", "400", "404", "409"] {
+        assert!(
+            reorder_responses.contains_key(status),
+            "reorder must document its {status} outcome"
+        );
+    }
+
     let preference_schema = schemas
         .get("ProductPreferences")
         .expect("ProductPreferences schema");
@@ -4232,6 +4272,600 @@ async fn product_followup_after_final_is_server_owned_and_starts_one_successor()
     )
     .unwrap();
     assert!(first_trace.contains("\"type\":\"followup_queued\""));
+}
+
+/// Read the unified message page for a session. The route serves the ledger in
+/// `seq` order, so `queue_order` is what tests assert queue position from.
+async fn list_product_messages(
+    app: &axum::Router,
+    product_session_id: &str,
+) -> Vec<serde_json::Value> {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/product/sessions/{product_session_id}/messages?limit=128"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = decode_json(response).await;
+    body["messages"].as_array().unwrap().clone()
+}
+
+/// The session's successor queue in delivery order. A row with no
+/// `queue_order` is delivered by its ledger sequence, just like the store's
+/// `COALESCE(queue_order, seq)` ordering.
+fn queued_message_ids(messages: &[serde_json::Value]) -> Vec<String> {
+    let mut queued: Vec<&serde_json::Value> = messages
+        .iter()
+        .filter(|message| message["status"] == "queued")
+        .collect();
+    queued.sort_by_key(|message| {
+        (
+            message["queue_order"]
+                .as_i64()
+                .unwrap_or_else(|| message["seq"].as_i64().unwrap()),
+            message["seq"].as_i64().unwrap(),
+        )
+    });
+    queued
+        .into_iter()
+        .map(|message| message["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+async fn queue_message(
+    app: &axum::Router,
+    product_session_id: &str,
+    content: &str,
+    key: &str,
+) -> serde_json::Value {
+    let response = post_json(
+        app,
+        &format!("/product/sessions/{product_session_id}/messages"),
+        serde_json::json!({ "content": content, "idempotency_key": key }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let message: serde_json::Value = decode_json(response).await;
+    assert_eq!(message["status"], "queued");
+    message
+}
+
+#[tokio::test]
+async fn product_queue_reorder_is_validated_atomic_and_drives_the_next_turns() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Queue reorder").await;
+    let session_id = session["id"].as_str().unwrap();
+    configure_product_session_model(&app, session_id, "fake-raw", 2).await;
+
+    // Hold the turn open so the messages below queue behind a live run.
+    let active = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": serde_json::json!({
+                "tool": "request_input",
+                "args": { "prompt": "hold the turn open" }
+            })
+            .to_string(),
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    assert_eq!(active.status(), StatusCode::OK);
+    let active: CreateJobResponse = decode_json(active).await;
+    let pending = wait_for_pending_input(app.clone(), active.job_id.to_string()).await;
+    let input_id = pending.pending_inputs.first().unwrap().input_id;
+
+    let first = queue_message(&app, session_id, "first queued", "queue-1").await;
+    let second = queue_message(&app, session_id, "second queued", "queue-2").await;
+    let third = queue_message(&app, session_id, "third queued", "queue-3").await;
+    // Nothing has moved yet, so no row carries a rewritten queue position and
+    // the queue is still creation-ordered.
+    assert!(
+        list_product_messages(&app, session_id)
+            .await
+            .iter()
+            .all(|message| message.get("queue_order").is_none()),
+        "an untouched queue position must be omitted from the projection"
+    );
+
+    let reorder_uri = format!("/product/sessions/{session_id}/messages/reorder");
+    let wanted = serde_json::json!([third["id"], first["id"], second["id"]]);
+    let reordered = post_json(
+        &app,
+        &reorder_uri,
+        serde_json::json!({ "ordered_ids": wanted }),
+    )
+    .await;
+    assert_eq!(reordered.status(), StatusCode::OK);
+    let reordered: serde_json::Value = decode_json(reordered).await;
+    let positions: Vec<i64> = reordered["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["queue_order"].as_i64().unwrap())
+        .collect();
+    assert_eq!(
+        reordered["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            third["id"].as_str().unwrap(),
+            first["id"].as_str().unwrap(),
+            second["id"].as_str().unwrap()
+        ]
+    );
+    assert_eq!(positions, vec![0, 1, 2]);
+    assert_eq!(
+        queued_message_ids(&list_product_messages(&app, session_id).await),
+        vec![
+            third["id"].as_str().unwrap().to_string(),
+            first["id"].as_str().unwrap().to_string(),
+            second["id"].as_str().unwrap().to_string()
+        ],
+        "the durable projection must read back in the requested order"
+    );
+
+    // A list that does not exactly cover the queue is refused, and the refusal
+    // leaves the accepted order untouched.
+    let short = post_json(
+        &app,
+        &reorder_uri,
+        serde_json::json!({ "ordered_ids": [third["id"]] }),
+    )
+    .await;
+    assert_eq!(short.status(), StatusCode::CONFLICT);
+    let short: serde_json::Value = decode_json(short).await;
+    assert_eq!(short["code"], "product_control_conflict");
+    let duplicated = post_json(
+        &app,
+        &reorder_uri,
+        serde_json::json!({ "ordered_ids": [third["id"], third["id"], first["id"]] }),
+    )
+    .await;
+    assert_eq!(duplicated.status(), StatusCode::BAD_REQUEST);
+    let duplicated: serde_json::Value = decode_json(duplicated).await;
+    assert_eq!(duplicated["code"], "product_invalid_input");
+    let unknown = post_json(
+        &app,
+        &reorder_uri,
+        serde_json::json!({ "ordered_ids": ["01JZZZZZZZZZZZZZZZZZZZZZZZ", first["id"], second["id"]] }),
+    )
+    .await;
+    assert_eq!(unknown.status(), StatusCode::CONFLICT);
+    // A message from another session of the same workspace is not part of this
+    // session's queue, so it is refused exactly like an unknown id.
+    let sibling = create_product_session(&app, workspace_id, "Sibling session").await;
+    let sibling_id = sibling["id"].as_str().unwrap();
+    let foreign = queue_message(&app, sibling_id, "foreign queued", "foreign-1").await;
+    let cross_session = post_json(
+        &app,
+        &reorder_uri,
+        serde_json::json!({ "ordered_ids": [foreign["id"], first["id"], second["id"]] }),
+    )
+    .await;
+    assert_eq!(cross_session.status(), StatusCode::CONFLICT);
+    let cross_session: serde_json::Value = decode_json(cross_session).await;
+    assert_eq!(cross_session["code"], "product_control_conflict");
+    // A row that has left the queue makes a previously valid list stale. That
+    // staleness is what serializes reorder against revoke/promote.
+    let revoke = post_json(
+        &app,
+        &format!(
+            "/product/sessions/{session_id}/messages/{}/revoke",
+            third["id"].as_str().unwrap()
+        ),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(revoke.status(), StatusCode::OK);
+    let stale = post_json(
+        &app,
+        &reorder_uri,
+        serde_json::json!({ "ordered_ids": wanted }),
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    let stale: serde_json::Value = decode_json(stale).await;
+    assert_eq!(stale["code"], "product_control_conflict");
+    assert_eq!(
+        queued_message_ids(&list_product_messages(&app, session_id).await),
+        vec![
+            first["id"].as_str().unwrap().to_string(),
+            second["id"].as_str().unwrap().to_string()
+        ],
+        "a refused reorder must not move anything"
+    );
+
+    // Finish the held turn: the boundary claims the queue head, which is now
+    // the first queued message because the rewrite to the head was revoked.
+    let answer = post_json(
+        &app,
+        &format!("/jobs/{}/inputs/{input_id}", active.job_id),
+        serde_json::json!({ "answer": "the first turn is complete" }),
+    )
+    .await;
+    assert_eq!(answer.status(), StatusCode::OK);
+    let applied =
+        wait_for_product_control_status(&app, session_id, first["id"].as_str().unwrap(), "applied")
+            .await;
+    assert_ne!(
+        applied["run_id"].as_str().unwrap(),
+        active.run_id.to_string()
+    );
+    let applied_message = list_product_messages(&app, session_id)
+        .await
+        .into_iter()
+        .find(|message| message["id"] == first["id"])
+        .unwrap();
+    assert_eq!(applied_message["status"], "claimed_successor");
+    assert_eq!(
+        applied_message["queue_order"], 1,
+        "the claimed successor keeps the position it was moved to"
+    );
+
+    // The next boundary continues down the same order, so the second successor
+    // resumes from the first successor's run rather than from the answered turn.
+    let second_applied = wait_for_product_control_status(
+        &app,
+        session_id,
+        second["id"].as_str().unwrap(),
+        "applied",
+    )
+    .await;
+    assert_ne!(
+        second_applied["run_id"].as_str().unwrap(),
+        applied["run_id"].as_str().unwrap()
+    );
+    let finished = wait_for_product_session_status(&app, workspace_id, session_id, "idle").await;
+    assert_eq!(
+        finished["runtime_binding"]["ordinal"], 3,
+        "two queued successors must produce exactly two more runs"
+    );
+    assert_eq!(
+        finished["runtime_binding"]["latest_run_id"],
+        second_applied["run_id"].as_str().unwrap()
+    );
+    let last_successor = wait_for_done(
+        app.clone(),
+        finished["runtime_binding"]["latest_job_id"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+    )
+    .await;
+    assert_eq!(
+        last_successor.resumed_from_run_id,
+        Some(applied["run_id"].as_str().unwrap().parse().unwrap())
+    );
+    // Each dispatch carries the content of the control it claimed, in the run
+    // order the queue asked for.
+    let dispatched = dispatched_user_messages(&app, session_id).await;
+    assert!(
+        dispatched.contains(&(
+            applied["run_id"].as_str().unwrap().to_string(),
+            "first queued".to_string()
+        )),
+        "dispatched: {dispatched:?}"
+    );
+    assert!(
+        dispatched.contains(&(
+            second_applied["run_id"].as_str().unwrap().to_string(),
+            "second queued".to_string()
+        )),
+        "dispatched: {dispatched:?}"
+    );
+}
+
+/// The user message each settled run was dispatched with, read from the
+/// session-scoped canonical transcript. This is the run-scoped view a client
+/// uses, and unlike the global run index it is durable for a product session.
+async fn dispatched_user_messages(
+    app: &axum::Router,
+    product_session_id: &str,
+) -> Vec<(String, String)> {
+    let response = get_response(
+        app,
+        &format!("/product/sessions/{product_session_id}/transcript"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = decode_json(response).await;
+    body["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|segment| {
+            let run_id = segment["binding"]["runtime_run_id"].as_str()?.to_string();
+            let user_message = segment["events"]
+                .as_array()?
+                .iter()
+                .find(|stored| stored["event"]["type"] == "run_started")
+                .and_then(|stored| stored["event"]["user_message"].as_str())
+                .unwrap_or_default()
+                .to_string();
+            Some((run_id, user_message))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn product_successor_promotion_never_steers_the_live_run_and_survives_revoke() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Successor promotion").await;
+    let session_id = session["id"].as_str().unwrap();
+    configure_product_session_model(&app, session_id, "fake-raw", 2).await;
+
+    let active = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": serde_json::json!({
+                "tool": "request_input",
+                "args": { "prompt": "keep running" }
+            })
+            .to_string(),
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    assert_eq!(active.status(), StatusCode::OK);
+    let active: CreateJobResponse = decode_json(active).await;
+    let pending = wait_for_pending_input(app.clone(), active.job_id.to_string()).await;
+    let input_id = pending.pending_inputs.first().unwrap().input_id;
+
+    let first = queue_message(&app, session_id, "first queued", "promote-1").await;
+    let second = queue_message(&app, session_id, "second queued", "promote-2").await;
+
+    // Ask for the later message next. It must move to the queue head without
+    // becoming a steer for the run that is still waiting for input.
+    let promoted = post_json(
+        &app,
+        &format!(
+            "/product/sessions/{session_id}/messages/{}/promote",
+            second["id"].as_str().unwrap()
+        ),
+        serde_json::json!({ "delivery": "successor" }),
+    )
+    .await;
+    assert_eq!(promoted.status(), StatusCode::OK);
+    let promoted: serde_json::Value = decode_json(promoted).await;
+    assert_eq!(promoted["status"], "queued");
+    assert_eq!(promoted["requested_delivery"], "successor");
+    assert!(
+        promoted.get("actual_delivery").is_none(),
+        "a successor promotion is not a delivery: {promoted}"
+    );
+    assert_eq!(promoted["queue_order"], 0);
+    assert_eq!(
+        queued_message_ids(&list_product_messages(&app, session_id).await),
+        vec![
+            second["id"].as_str().unwrap().to_string(),
+            first["id"].as_str().unwrap().to_string()
+        ]
+    );
+
+    let still_waiting = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jobs/{}/state", active.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let still_waiting: JobStateResponse = decode_json(still_waiting).await;
+    assert_eq!(still_waiting.status, RunStatus::Running);
+    assert!(
+        !still_waiting.pending_inputs.is_empty(),
+        "the live turn must still be waiting for the user's answer"
+    );
+    assert!(
+        !still_waiting.events.iter().any(|stored| matches!(
+            &stored.event,
+            StreamEvent::MessageInterventionRequested { id }
+                if id == second["id"].as_str().unwrap()
+        )),
+        "a successor promotion must not steer the live run"
+    );
+
+    // Revoking during the wait still works, and the revoked row is skipped by
+    // the boundary drain.
+    let revoke = post_json(
+        &app,
+        &format!(
+            "/product/sessions/{session_id}/messages/{}/revoke",
+            first["id"].as_str().unwrap()
+        ),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(revoke.status(), StatusCode::OK);
+    let revoke: serde_json::Value = decode_json(revoke).await;
+    assert_eq!(revoke["status"], "revoked");
+
+    let answer = post_json(
+        &app,
+        &format!("/jobs/{}/inputs/{input_id}", active.job_id),
+        serde_json::json!({ "answer": "the first turn is complete" }),
+    )
+    .await;
+    assert_eq!(answer.status(), StatusCode::OK);
+
+    let applied = wait_for_product_control_status(
+        &app,
+        session_id,
+        second["id"].as_str().unwrap(),
+        "applied",
+    )
+    .await;
+    let successor_run = applied["run_id"].as_str().unwrap().to_string();
+    let idle = wait_for_product_session_status(&app, workspace_id, session_id, "idle").await;
+    assert_eq!(idle["runtime_binding"]["latest_run_id"], successor_run);
+    let successor = wait_for_done(
+        app.clone(),
+        idle["runtime_binding"]["latest_job_id"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+    )
+    .await;
+    assert!(successor.events.iter().any(|stored| matches!(
+        &stored.event,
+        StreamEvent::LlmMessage { full, .. } if full == "second queued"
+    )));
+    assert!(
+        !successor.events.iter().any(|stored| matches!(
+            &stored.event,
+            StreamEvent::LlmMessage { full, .. } if full == "first queued"
+        )),
+        "a revoked successor must never become a turn"
+    );
+    let revoked =
+        wait_for_product_control_status(&app, session_id, first["id"].as_str().unwrap(), "revoked")
+            .await;
+    assert!(revoked.get("run_id").is_none() || revoked["run_id"].is_null());
+}
+
+#[tokio::test]
+async fn product_queue_order_survives_a_reopen_and_keeps_one_claim_per_session() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config.clone(),
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Queue survives restart").await;
+    let session_id = session["id"].as_str().unwrap();
+    configure_product_session_model(&app, session_id, "fake-raw", 2).await;
+
+    let active = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": serde_json::json!({
+                "tool": "request_input",
+                "args": { "prompt": "survive a reopen" }
+            })
+            .to_string(),
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    assert_eq!(active.status(), StatusCode::OK);
+    let active: CreateJobResponse = decode_json(active).await;
+    let pending = wait_for_pending_input(app.clone(), active.job_id.to_string()).await;
+    assert!(
+        !pending.pending_inputs.is_empty(),
+        "the durable turn must be waiting for input before it is interrupted"
+    );
+
+    let first = queue_message(&app, session_id, "queued first", "reopen-1").await;
+    let second = queue_message(&app, session_id, "queued second", "reopen-2").await;
+    let third = queue_message(&app, session_id, "queued third", "reopen-3").await;
+    let reorder = post_json(
+        &app,
+        &format!("/product/sessions/{session_id}/messages/reorder"),
+        serde_json::json!({ "ordered_ids": [third["id"], first["id"], second["id"]] }),
+    )
+    .await;
+    assert_eq!(reorder.status(), StatusCode::OK);
+
+    // A second API state over the same state directory is what the process
+    // restart gate can express in-process: it reopens the store, replays the
+    // schema migrations, and runs startup recovery, which is the code path the
+    // design asks about. The first state's supervisors stay alive in-test, so
+    // this proves durable order plus the honest interrupted-delivery recovery
+    // rather than a cold process start; the drain order after a restart is
+    // covered by the store-level recovery test.
+    let reopened = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let reopened_messages = list_product_messages(&reopened, session_id).await;
+    // The move survives the reopen: the persisted positions still describe the
+    // requested delivery order, and `seq` still describes creation order.
+    let mut reopened_order: Vec<(i64, String)> = reopened_messages
+        .iter()
+        .map(|message| {
+            (
+                message["queue_order"].as_i64().unwrap(),
+                message["id"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    reopened_order.sort();
+    assert_eq!(
+        reopened_order,
+        vec![
+            (0, third["id"].as_str().unwrap().to_string()),
+            (1, first["id"].as_str().unwrap().to_string()),
+            (2, second["id"].as_str().unwrap().to_string()),
+        ],
+        "reopened messages: {reopened_messages:?}"
+    );
+    assert_eq!(
+        reopened_messages
+            .iter()
+            .map(|message| message["seq"].as_i64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    // The interrupted run's fate is unknown, so its undelivered successors are
+    // reported instead of being silently replayed or dropped.
+    for message in &reopened_messages {
+        assert_eq!(message["status"], "needs_attention");
+        assert_eq!(
+            message["reason"], "API process stopped during follow-up delivery",
+            "an interrupted delivery must say why it stopped"
+        );
+    }
+    let reopened_session = get_product_session(&reopened, workspace_id, session_id).await;
+    assert_eq!(reopened_session["status"], "needs_attention");
+    assert_eq!(
+        reopened_session["runtime_binding"]["latest_run_id"],
+        active.run_id.to_string(),
+        "recovery must keep the last bound run and must not dispatch a new one"
+    );
+    let controls = list_product_controls(&reopened, session_id).await;
+    assert_eq!(
+        controls.len(),
+        3,
+        "a restart must not replay queued messages: {controls:?}"
+    );
 }
 
 #[tokio::test]
