@@ -20,6 +20,18 @@ This matrix compares the runtime hardening target with the current implementatio
 > `local-full` live-API suite to five passing cases; the external-provider
 > browser gate has not been run.
 >
+> ProductStore session outcome note (2026-09-26): schema v16 adds nullable
+> `last_outcome` / `last_outcome_at` to `product_sessions` (R3 of
+> [`2026-09-26-runtime-contract-alignment-design.md`](../design/2026-09-26-runtime-contract-alignment-design.md)).
+> The transaction that closes a turn writes both columns in one statement, so the
+> outcome and its timestamp can never disagree. A session that has never finished
+> a turn keeps both `NULL` — the migration does not backfill — and the API omits
+> both JSON fields together. An attempt that is undone before it becomes a turn
+> (workspace-hint mismatch, engine-assembly failure) writes neither, so a failed
+> start cannot overwrite the last real result. The shell reads the field as a
+> three-state session dot and as a command-palette subtitle word; the implementation
+> record, including the two resolved ambiguities, is design §3.4.
+>
 > Product UI content convergence note (feature branch, not yet on `main`):
 > `feature/ui-content-convergence` implements the A-line content/i18n plan and
 > dual visual skins in

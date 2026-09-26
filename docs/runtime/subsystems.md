@@ -276,10 +276,12 @@ Fallback can be configured as:
 Web consumes the API projection rather than maintaining a separate backend.
 API/Web create, update, and delete operations mutate the user catalog with
 `expected_revision` CAS and expose `catalog_revision`; stale/busy writes are
-HTTP 409. ProductStore schema v14 persists stable legacy-to-catalog mappings,
-session selections, immutable secret-free run model facts, and the unified
-message compatibility projection, not duplicate endpoint or credential
-authority. Its reconciliation migration accepts either parallel v12 layout.
+HTTP 409. ProductStore schema v16 persists stable legacy-to-catalog mappings,
+session selections, immutable secret-free run model facts, the unified
+message compatibility projection, and, since v16, the
+`last_outcome`/`last_outcome_at` of the most recently finished turn, not duplicate
+endpoint or credential authority. Its reconciliation migration accepts either
+parallel v12 layout.
 
 CLI keeps state, health, tools, and execution environment as stable services,
 but constructs a fresh `RunAssembly` at every turn. The assembly resolves the

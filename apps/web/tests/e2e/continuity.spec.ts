@@ -569,6 +569,34 @@ test("a delayed session restore cannot overwrite a faster session switch", async
   await expect(page.getByRole("heading", { name: "Session B" })).toBeVisible();
 });
 
+test("the sidebar marks the last finished outcome of another session", async ({
+  page,
+}) => {
+  // R3: both sessions are idle, so before the outcome field the row could not
+  // tell a finished successful turn from a session that never ran.
+  const workspace = createMockWorkspace();
+  const succeeded = createMockSession("session-1", workspace.id, "Finished well", "success");
+  const cancelled = createMockSession("session-2", workspace.id, "Stopped early", "cancelled");
+  const neverRan = createMockSession("session-3", workspace.id, "Never ran");
+  await installMockProductApi(page, {
+    workspaces: [workspace],
+    sessions: [succeeded, cancelled, neverRan],
+    activeWorkspaceId: workspace.id,
+    activeSessionId: "session-3",
+  });
+
+  await page.goto(`/w/${workspace.id}/s/session-3`);
+
+  const successDot = page.locator('.session-item__dot[data-tone="success"]');
+  const neutralDot = page.locator('.session-item__dot[data-tone="neutral"]');
+  await expect(successDot).toHaveCount(1);
+  await expect(neutralDot).toHaveCount(1);
+  await expect(successDot).toHaveAttribute("title", "最近一次运行成功");
+  await expect(neutralDot).toHaveAttribute("title", "最近一次运行已取消");
+  // The session that never ran carries no mark, and the selected row never does.
+  await expect(page.locator(".session-item__dot")).toHaveCount(2);
+});
+
 test("a background attention badge survives a new session without an EventSource", async ({
   page,
 }) => {

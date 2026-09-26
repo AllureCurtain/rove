@@ -670,7 +670,7 @@ Routes:
 | `POST /providers/models` | List models for a validated per-request provider profile |
 | `POST /providers/test` | Validate provider connectivity/model presence without returning secrets |
 | `GET/POST /product/workspaces`, `DELETE /product/workspaces/{workspace_id}` | List, create, or remove product workspace catalog entries without deleting workspace files |
-| `GET/POST /product/sessions`, `PATCH/DELETE /product/sessions/{session_id}` | List, create, rename/archive, or remove server-owned product sessions |
+| `GET/POST /product/sessions`, `PATCH/DELETE /product/sessions/{session_id}` | List, create, rename/archive, or remove server-owned product sessions; the projection carries the additive `last_outcome`/`last_outcome_at` of the most recently finished turn when there is one |
 | `GET /product/sessions/{session_id}/transcript` | Project ordered canonical run events with complete/partial status and typed reasons; optional bounded older-history cursor paging via `before_ordinal` and `limit_runs` |
 | `GET/POST /product/provider-profiles`, `PUT/DELETE /product/provider-profiles/{profile_id}` | Manage secret-reference-only provider profiles |
 | `GET/PUT /product/preferences` | Read or update the bounded safe product preference set |
@@ -1555,11 +1555,16 @@ Web Complete C0 adds a separate API-global SQLite database at
 - schema versions, durable M1 migration preparations, and migration
   receipts/mappings/issues.
 
-The current ProductStore schema is v14. Migration v13 reconciles two parallel
+The current ProductStore schema is v16. Migration v13 reconciles two parallel
 v12 productization layouts: user-catalog mapping plus secret-free model identity
 fields, and unified-message lifecycle columns/indexes. Additive migration v14
-adds the bounded hard read-only Review rows/findings and their indexes. Fresh
-databases and either legacy v12 shape converge on the same v14 schema while
+adds the bounded hard read-only Review rows/findings and their indexes; v15
+indexes session listing; v16 adds `product_sessions.last_outcome` /
+`last_outcome_at`, the outcome and timestamp of the most recently finished turn,
+written in the same transaction that closes it. A session that has never
+finished a turn keeps both columns `NULL` — migration v16 does not backfill — and
+the API omits both JSON fields together in that case.
+Fresh databases and either legacy v12 shape converge on the same v16 schema while
 retaining legacy Provider/control rows only for compatibility/migration.
 Startup rolls back a failed migration attempt, refuses a database with a
 future schema version, and does not implement automatic downgrade.

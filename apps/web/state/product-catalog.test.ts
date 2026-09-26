@@ -91,6 +91,58 @@ describe("product catalog", () => {
     });
   });
 
+  it("carries the last finished turn's outcome onto the session record", () => {
+    const sessions: ProductSession[] = [
+      {
+        id: "sess_ok",
+        workspace_id: "ws_server",
+        title: "Succeeded",
+        status: "idle",
+        last_outcome: "success",
+        last_outcome_at: "2026-09-26T12:00:00.000Z",
+        created_at: "2026-09-26T00:00:00.000Z",
+        updated_at: "2026-09-26T12:00:00.000Z",
+      },
+      {
+        id: "sess_new",
+        workspace_id: "ws_server",
+        title: "Never ran",
+        status: "idle",
+        created_at: "2026-09-26T00:00:00.000Z",
+        updated_at: "2026-09-26T00:00:00.000Z",
+      },
+    ];
+
+    const catalog = replaceServerSessions(
+      {
+        ...emptyCatalog(),
+        workspaces: [
+          {
+            id: "ws_server",
+            rootPath: "/tmp/server",
+            kind: "folder",
+            displayName: "server",
+            pinned: false,
+            lastOpenedAt: "2026-09-26T00:00:00.000Z",
+          },
+        ],
+      },
+      ["ws_server"],
+      sessions,
+    );
+
+    // A successful turn and a never-run session share `status: "idle"`; only the
+    // outcome distinguishes them, which is the whole point of R3.
+    expect(catalog.sessions.map((session) => session.status)).toEqual([
+      "idle",
+      "idle",
+    ]);
+    expect(catalog.sessions[0]?.lastOutcome).toBe("success");
+    expect(catalog.sessions[0]?.lastOutcomeAt).toBe("2026-09-26T12:00:00.000Z");
+    expect(catalog.sessions[1]?.lastOutcome).toBeNull();
+    expect(catalog.sessions[1]?.lastOutcomeAt).toBeNull();
+  });
+
   it("refreshes durable session statuses without changing valid focus", () => {
     const catalog: ProductCatalog = {
       workspaces: [

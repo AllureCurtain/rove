@@ -18,8 +18,8 @@ use crate::product::{
     PreparedM1BrowserMigration, ProductApprovalPreference, ProductControlKind,
     ProductControlStatus, ProductErrorCode, ProductMessagePageQuery, ProductMessageStatus,
     ProductProviderSelection, ProductProviderType, ProductReasoningPreference, ProductReviewId,
-    ProductReviewStatus, ProductSessionRecovery, ProductSessionStatus, ProductStore,
-    ProductThemePreference, ProductWorkspaceKind, UpdateProductPreferencesRequest,
+    ProductReviewStatus, ProductSessionOutcome, ProductSessionRecovery, ProductSessionStatus,
+    ProductStore, ProductThemePreference, ProductWorkspaceKind, UpdateProductPreferencesRequest,
     UpdateProductSessionModelConfigRequest, VerifiedM1SessionRunBinding,
     VerifiedProductForkBoundary,
 };
@@ -2378,6 +2378,7 @@ async fn nonfinal_turn_drops_steers_and_abandons_followups_atomically() {
             &claim.claim_id,
             Some(RunId::new()),
             ProductSessionStatus::NeedsAttention,
+            Some(ProductSessionOutcome::Cancelled),
             "run cancelled",
         )
         .await
@@ -2612,6 +2613,7 @@ async fn abandoned_followup_requires_explicit_confirmation_before_redrain() {
             &claim.claim_id,
             Some(RunId::new()),
             ProductSessionStatus::NeedsAttention,
+            Some(ProductSessionOutcome::Failed),
             "tool effect is uncertain",
         )
         .await
@@ -3487,4 +3489,129 @@ fn grouping_records_takes_session_fields_from_the_newest_run() {
         crate::product::ownership::to_store_input(Vec::new()).is_none(),
         "an empty group has nothing to recover"
     );
+}
+
+#[tokio::test]
+async fn finishing_a_turn_records_the_session_outcome_in_the_same_transaction() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (workspace, session) = create_workspace_and_session(&store, &temp).await;
+
+    // A session that has never finished a turn must not claim one: `None` is
+    // what keeps "just completed" distinguishable from "never started".
+    let fresh = store
+        .get_session_context(&session.id)
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(fresh.last_outcome, None);
+    assert_eq!(fresh.last_outcome_at, None);
+
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    store
+        .finish_session_turn_and_claim_followup(&claim.claim_id)
+        .await
+        .unwrap();
+    let succeeded = store
+        .get_session_context(&session.id)
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(succeeded.status, ProductSessionStatus::Idle);
+    assert_eq!(succeeded.last_outcome, Some(ProductSessionOutcome::Success));
+    assert!(succeeded.last_outcome_at.is_some());
+
+    // The list projection reads the row through a different SELECT list, so a
+    // column added to one query and not the other would surface here.
+    let listed = store.list_all_sessions(&workspace.id).await.unwrap();
+    let listed = listed
+        .iter()
+        .find(|candidate| candidate.id == session.id)
+        .expect("the session is listed");
+    assert_eq!(listed.last_outcome, Some(ProductSessionOutcome::Success));
+    assert_eq!(listed.last_outcome_at, succeeded.last_outcome_at);
+
+    for (expected, reason) in [
+        (ProductSessionOutcome::Cancelled, "run cancelled"),
+        (ProductSessionOutcome::Failed, "run failed"),
+    ] {
+        let (_, other) = create_workspace_and_session(&store, &temp).await;
+        let claim = store.claim_session_turn(&other.id).await.unwrap();
+        store
+            .finish_session_turn_and_abandon_pending_controls(
+                &claim.claim_id,
+                None,
+                ProductSessionStatus::Idle,
+                Some(expected),
+                reason,
+            )
+            .await
+            .unwrap();
+        let finished = store.get_session_context(&other.id).await.unwrap().session;
+        assert_eq!(finished.last_outcome, Some(expected), "{reason}");
+        assert!(finished.last_outcome_at.is_some(), "{reason}");
+    }
+
+    // The outcome round-trips through the persisted column rather than living
+    // only in the in-process projection.
+    drop(store);
+    let reopened = open_store(&temp);
+    let reloaded = reopened
+        .get_session_context(&session.id)
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(reloaded.last_outcome, Some(ProductSessionOutcome::Success));
+    assert_eq!(reloaded.last_outcome_at, succeeded.last_outcome_at);
+}
+
+#[tokio::test]
+async fn an_attempt_without_an_outcome_leaves_the_last_result_alone() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    store
+        .finish_session_turn_and_abandon_pending_controls(
+            &claim.claim_id,
+            None,
+            ProductSessionStatus::Idle,
+            Some(ProductSessionOutcome::Cancelled),
+            "run cancelled",
+        )
+        .await
+        .unwrap();
+    let cancelled = store
+        .get_session_context(&session.id)
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(
+        cancelled.last_outcome,
+        Some(ProductSessionOutcome::Cancelled)
+    );
+
+    // A retry that is rejected before it becomes a turn restores the previous
+    // status; it must not rewrite what the last real turn did.
+    let rejected = store.claim_session_turn(&session.id).await.unwrap();
+    store
+        .finish_session_turn_and_abandon_pending_controls(
+            &rejected.claim_id,
+            None,
+            ProductSessionStatus::Idle,
+            None,
+            "workspace validation",
+        )
+        .await
+        .unwrap();
+
+    let after = store
+        .get_session_context(&session.id)
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(after.status, ProductSessionStatus::Idle);
+    assert_eq!(after.last_outcome, Some(ProductSessionOutcome::Cancelled));
+    assert_eq!(after.last_outcome_at, cancelled.last_outcome_at);
 }

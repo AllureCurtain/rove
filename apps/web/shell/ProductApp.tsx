@@ -73,6 +73,7 @@ import {
 } from "../settings/sections";
 import { createSettingsPlatformClient } from "../settings/settings-platform-client";
 import { EmptyState } from "../sidebar/EmptyState";
+import { sessionSubtitle } from "../sidebar/session-labels";
 import { WorkspaceTree } from "../sidebar/WorkspaceTree";
 import {
   findSession,
@@ -949,7 +950,11 @@ function ServerProductApp({ uiVersion, draftStore }: {
         id: `session:${session.id}`,
         groupKey: "sessions",
         title: session.title,
-        subtitle: workspaceNames.get(session.workspaceId) ?? "",
+        subtitle: sessionSubtitle(
+          session,
+          workspaceNames.get(session.workspaceId) ?? "",
+          t,
+        ),
         order: index,
         action: {
           kind: "open-session",

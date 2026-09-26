@@ -4553,6 +4553,17 @@ body.is-resizing-column * {
   background: var(--v2-danger);
 }
 
+/* R3: the dot reports the last finished turn, so it needs all three outcomes.
+   `cancelled` reuses the rail's muted tone because the v2 palette has no
+   general-purpose neutral surface colour. */
+.product-app-frame[data-ui-version="v2"] .session-item__dot[data-tone="success"] {
+  background: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__dot[data-tone="neutral"] {
+  background: var(--v2-rail-muted);
+}
+
 .product-app-frame[data-ui-version="v2"] .session-item--editing {
   display: flex;
   flex-direction: column;

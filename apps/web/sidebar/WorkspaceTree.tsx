@@ -34,7 +34,12 @@ import type { SessionRecord, WorkspaceKind, WorkspaceRecord } from "../state/pro
 import { SessionHoverCard } from "./SessionHoverCard";
 import { orderSessions, type SessionPin } from "./session-order";
 import { filterSessions, normalizeSearch } from "./session-search";
-import { formatDisplayPath, sessionStatusLabel, shortId } from "./session-labels";
+import {
+  formatDisplayPath,
+  sessionResultMark,
+  sessionStatusLabel,
+  shortId,
+} from "./session-labels";
 import { useSessionHoverCard } from "./use-session-hover-card";
 import { useSessionPins } from "./use-session-pins";
 
@@ -698,10 +703,10 @@ function SessionBranch({
   const renameInputRef = useRef<HTMLInputElement>(null);
   const selected = session.id === paintedSessionId;
   const active = session.id === activeSessionId;
-  // W4.4: a failed run leaves a dot on the row until the session is opened.
-  // Success cannot be distinguished from "never ran" by the status field
-  // alone, so only failure carries a dot (danger tone, not an inbox).
-  const failedInBackground = session.status === "error" && !active;
+  // W4.4 + R3: the dot reports the last finished turn's outcome and clears once
+  // the session is opened. Before R3 the status field was the only source, so a
+  // successful turn and a never-run session both drew nothing.
+  const resultMark = sessionResultMark(session, active, t);
 
   useEffect(() => {
     if (renaming) {
@@ -835,12 +840,12 @@ function SessionBranch({
               <span className="session-item__warning" />
             ) : null}
           </span>
-          {failedInBackground ? (
+          {resultMark ? (
             <span
               className="session-item__dot"
-              data-tone="danger"
+              data-tone={resultMark.tone}
               role="status"
-              title={t("workspace.sessionErrorDot")}
+              title={resultMark.label}
             />
           ) : null}
         </button>

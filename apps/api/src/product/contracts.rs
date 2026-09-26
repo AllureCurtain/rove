@@ -184,6 +184,25 @@ pub enum ProductSessionStatus {
     Archived,
 }
 
+/// How the most recent finished turn in a session ended.
+///
+/// This is deliberately separate from [`ProductSessionStatus`]: a turn that
+/// produced a final answer, a turn the user cancelled, and a turn that failed
+/// can all leave the session `idle` (or `needs_attention`), so only this records
+/// *how* the last turn ended. `None` means the session has never finished a
+/// turn, which is what keeps "just completed" distinguishable from "never ran".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductSessionOutcome {
+    /// The turn reached its final answer.
+    Success,
+    /// The turn ended without a final answer, including an error, an
+    /// interruption, and a completion that produced no answer at all.
+    Failed,
+    /// The user cancelled the turn. A known decision, not a failure.
+    Cancelled,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProductProviderType {
@@ -506,6 +525,12 @@ pub struct ProductSession {
     /// Terminal canonical event sequence for `fork_point_run_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_point_seq: Option<u64>,
+    /// Outcome of the most recent finished turn, absent until one finishes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome: Option<ProductSessionOutcome>,
+    /// When `last_outcome` was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -2211,11 +2236,17 @@ pub trait ProductStore: Send + Sync {
     /// submitted after the session has reached its next state.
     /// `run_id` is `None` only before a runtime run has been allocated. Once
     /// a run id exists, dropped steers retain it for auditability.
+    /// `outcome` records how the finished turn ended in the same transaction as
+    /// the status change, so a session can never look idle without saying why.
+    /// `None` means this close is not a turn outcome at all — the caller is
+    /// undoing an attempt that never became a turn and restored the session's
+    /// previous status, so the last real outcome is deliberately left alone.
     async fn finish_session_turn_and_abandon_pending_controls(
         &self,
         claim_id: &ProductTurnClaimId,
         run_id: Option<RunId>,
         status: ProductSessionStatus,
+        outcome: Option<ProductSessionOutcome>,
         reason: &str,
     ) -> Result<ProductTurnControlFinish, ProductStoreError>;
 
