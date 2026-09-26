@@ -403,6 +403,11 @@ const enUS: CopyDictionary = {
       language: "Language",
       languageDesc:
         "Interface language. Applies immediately and is stored on this machine.",
+      fontScale: "Font size",
+      fontScaleDesc: "Adjust the text size of the conversation reading area. Stored on this machine.",
+      fontScaleSmaller: "Smaller text",
+      fontScaleLarger: "Larger text",
+      fontScaleReset: "Reset font size",
     },
     providers: {
       title: "Model providers",
@@ -669,6 +674,14 @@ const enUS: CopyDictionary = {
     toggleInspectorDesc: "Show or hide the current run inspector.",
     openCommandPalette: "Command palette",
     openCommandPaletteDesc: "Search commands, workspaces, sessions and settings.",
+    change: "Change binding",
+    unbind: "Unbind",
+    reset: "Reset to default",
+    awaitingKey: "Press the new key combination… (Escape to cancel)",
+    unbound: "Unbound",
+    defaultLabel: "Default",
+    conflict: "Conflicts with \"{{action}}\". Not saved.",
+    reserved: "This combination is reserved by the browser and cannot be used.",
   },
   about: {
     lede: "Live API, product storage, and session recovery health.",
