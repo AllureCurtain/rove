@@ -28,7 +28,7 @@
 | F2 | 工具与活动耗时呈现（徽标 + 活动组 elapsed） | P0 | 无 | Implemented |
 | F3 | 流式 markdown 的分块 memo 化 | P0 | 无 | Implemented |
 | F4 | 会话 hover 卡片 | P1 | 无 | Implemented |
-| F5 | Toast 通知层与后台失败可见性 | P1 | 无（收件箱部分依赖 R5） | Proposed |
+| F5 | Toast 通知层与后台失败可见性 | P1 | 无（收件箱部分依赖 R5） | Implemented（toast 层与后台失败；收件箱待 R5） |
 | F6 | smart-stop 发送快照（含粘贴 chips） | P1 | 无 | Proposed |
 | F7 | 杂项清理（/dev 文案、mock 页标注、降级语义如实标注） | P1 | 无 | Proposed |
 | F8 | 样式 token linter 与 CI 接入 | P1 | 无 | Proposed |
@@ -332,6 +332,25 @@ rove 现状（§1.9）：无 toast；后台失败只有侧栏红点 + 2.5s 轮�
 
 - vitest：队列上限、去重窗口、hover 暂停、reduced-motion 分支。
 - e2e（mock）：后台会话置 error → toast 出现且 5 分钟内不重复；success 4s 自动消失。
+
+### 6.5 实现记录（2026-09-26）
+
+- `shell/toast/` 落地：`toast-store.ts`（上限 3 条丢最旧、success/info 4s、error 8s、
+  去重窗口 5 分钟、hover 暂停、error 失败历史）+ `notifications.ts`（哪些事值得弹）+
+  `ToastProvider.tsx`（定时器、`role` 映射、reduced-motion、portal 视图）+ 
+  `use-background-failure-toasts.ts`。
+- **接入点取舍**：§6.2 要求"行内提示保持不变，不重复弹"。因此只对**没有行内出口**的事弹
+  toast：后台会话失败（侧栏只有一个红点）、fork 创建完成、以及 provider 连接测试**面板
+  已经不在屏幕上**时的结果。M1 迁移结果与 partial restore 保持原有行内视图——前者有可
+  关闭的完成摘要，后者有带原因列表和重试按钮的 `restore-notice`——同一屏再弹一条是重复，
+  不是可见性；这条差异在此记录，而不是删掉行内提示。
+- 失败才算"新闻"：本窗口第一次看到某会话就是 error 时**不弹**（可能在窗口打开前就失败
+  了）；当前正在看的会话也不弹（会话自己会在行内报错）。
+- 收件箱仍按 §6.2 等运行时 R5 的目录级 SSE；本轮把错题历史（`failures`，上限 50）留成
+  可查询的接缝，已由单测固定。
+- 去重窗口的 e2e 做法：让一个"keeper"会话长期处于 running 以维持轮询，同一会话在一个窗口
+  内失败两次 + 同一轮另一个会话首次失败，断言只出现后者一条——否则断言"只有一条"会被
+  "根本没弹"蒙混过关。
 
 ---
 

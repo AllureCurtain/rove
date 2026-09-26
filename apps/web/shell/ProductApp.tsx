@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { HamburgerMenuIcon } from "@radix-ui/react-icons";
 import type { CSSProperties } from "react";
@@ -53,6 +53,8 @@ import {
 import { routePrefetchTargets } from "./route-prefetch";
 import { useIdleRoutePrefetch } from "./use-idle-route-prefetch";
 import { SettingsShell } from "../settings/SettingsShell";
+import { ToastProvider, useToast } from "./toast/ToastProvider";
+import { useBackgroundFailureToasts } from "./toast/use-background-failure-toasts";
 import { matchKeyboardShortcut } from "../settings/keyboard-settings-model";
 import { useKeybindingOverrides } from "../settings/use-keybinding-overrides";
 import {
@@ -115,7 +117,9 @@ export function ProductApp({
   return (
     <CopyProvider>
       <UiSkinProvider>
-        <ProductFrame uiVersion={uiVersion} draftStore={draftStore} />
+        <ToastProvider>
+          <ProductFrame uiVersion={uiVersion} draftStore={draftStore} />
+        </ToastProvider>
       </UiSkinProvider>
     </CopyProvider>
   );
@@ -146,6 +150,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
   draftStore: ComposerDraftStore;
 }) {
   const { t } = useCopy();
+  const toast = useToast();
   const server = useServerProductState();
   const settingsClient = useMemo(() => createSettingsPlatformClient(), []);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -364,6 +369,10 @@ function ServerProductApp({ uiVersion, draftStore }: {
     leaveSession: continuity.leaveSession,
   });
   const workspaces = sortedWorkspaces(server.catalog);
+  useBackgroundFailureToasts({
+    sessions: server.catalog.sessions,
+    activeSessionId: activeSession?.id ?? null,
+  });
   const sessionsByWorkspace = useMemo(() => {
     const map: Record<string, ReturnType<typeof sessionsForWorkspace>> = {};
     for (const workspace of server.catalog.workspaces) {
@@ -554,8 +563,15 @@ function ServerProductApp({ uiVersion, draftStore }: {
     const navigationIntent = routing.captureNavigationIntent();
     const child = await server.forkSession(activeSession.id);
     const activeNow = server.catalogRef.current.active;
+    if (child === null) {
+      // The reason is already on screen as a shell alert; do not say it twice.
+      return;
+    }
+    toast.notify({
+      kind: "success",
+      message: t("toast.forkCreated", { title: child.title }),
+    });
     if (
-      child &&
       routing.isNavigationIntentCurrent(navigationIntent) &&
       activeNow.workspaceId === activeBefore.workspaceId &&
       activeNow.sessionId === activeBefore.sessionId
