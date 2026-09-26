@@ -29,14 +29,14 @@ use crate::product::{
     ProductResumeHealthStatus, ProductReview, ProductReviewFinding, ProductReviewFindingsQuery,
     ProductReviewFindingsResponse, ProductReviewId, ProductReviewStatus, ProductRuntimeBinding,
     ProductSession, ProductSessionContext, ProductSessionCursor, ProductSessionId,
-    ProductSessionModelConfig, ProductSessionPage, ProductSessionPageQuery, ProductSessionRecovery,
-    ProductSessionRunBinding, ProductSessionRunModelView, ProductSessionStatus, ProductStoreError,
-    ProductThemePreference, ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish,
-    ProductWorkspace, ProductWorkspaceId, ProductWorkspaceKind, RecoverProductSessionOwnership,
-    SESSION_RANK_ARCHIVED, SESSION_RANK_LIVE, UpdateProductPreferencesRequest,
-    UpdateProductProviderProfileRequest, UpdateProductSessionModelConfigRequest,
-    UpdateProductSessionRequest, VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
-    m1_browser_migration_digest,
+    ProductSessionModelConfig, ProductSessionOutcome, ProductSessionPage, ProductSessionPageQuery,
+    ProductSessionRecovery, ProductSessionRunBinding, ProductSessionRunModelView,
+    ProductSessionStatus, ProductStoreError, ProductThemePreference, ProductTurnClaim,
+    ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace, ProductWorkspaceId,
+    ProductWorkspaceKind, RecoverProductSessionOwnership, SESSION_RANK_ARCHIVED, SESSION_RANK_LIVE,
+    UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
+    UpdateProductSessionModelConfigRequest, UpdateProductSessionRequest,
+    VerifiedM1SessionRunBinding, VerifiedProductForkBoundary, m1_browser_migration_digest,
 };
 
 use super::schema::{ProductDatabase, storage_error};
@@ -1889,6 +1889,7 @@ impl ProductRepository {
                 claim_id,
                 &session_id,
                 ProductSessionStatus::Idle,
+                Some(ProductSessionOutcome::Success),
             )?;
             transaction.commit().map_err(storage_error)?;
             return Ok(None);
@@ -1944,7 +1945,8 @@ impl ProductRepository {
             .execute(
                 r#"
                 UPDATE product_sessions
-                SET status = 'running', updated_at = ?2
+                SET status = 'running', last_outcome = 'success',
+                    last_outcome_at = ?2, updated_at = ?2
                 WHERE product_session_id = ?1
                 "#,
                 params![session_id.to_string(), now_rfc3339()],
@@ -2010,6 +2012,7 @@ impl ProductRepository {
         claim_id: &ProductTurnClaimId,
         run_id: Option<RunId>,
         status: ProductSessionStatus,
+        outcome: Option<ProductSessionOutcome>,
         reason: &str,
     ) -> Result<ProductTurnControlFinish, ProductStoreError> {
         if status == ProductSessionStatus::Running {
@@ -2033,7 +2036,7 @@ impl ProductRepository {
             reason,
             abandoned_followups.len(),
         )?;
-        release_turn_claim_with_status(&transaction, claim_id, &session_id, status)?;
+        release_turn_claim_with_status(&transaction, claim_id, &session_id, status, outcome)?;
         transaction.commit().map_err(storage_error)?;
         Ok(ProductTurnControlFinish {
             dropped_steers,
@@ -3597,6 +3600,7 @@ fn release_turn_claim_with_status(
     claim_id: &ProductTurnClaimId,
     session_id: &ProductSessionId,
     status: ProductSessionStatus,
+    outcome: Option<ProductSessionOutcome>,
 ) -> Result<(), ProductStoreError> {
     let deleted = transaction
         .execute(
@@ -3609,17 +3613,23 @@ fn release_turn_claim_with_status(
             "product session turn claim is missing or no longer active",
         ));
     }
+    let now = now_rfc3339();
     let updated = transaction
         .execute(
             r#"
             UPDATE product_sessions
-            SET status = ?2, updated_at = ?3
+            SET status = ?2,
+                last_outcome = COALESCE(?3, last_outcome),
+                last_outcome_at = COALESCE(?4, last_outcome_at),
+                updated_at = ?5
             WHERE product_session_id = ?1
             "#,
             params![
                 session_id.to_string(),
                 session_status_to_db(status),
-                now_rfc3339(),
+                outcome.map(session_outcome_to_db),
+                outcome.map(|_| now.clone()),
+                now,
             ],
         )
         .map_err(storage_error)?;
@@ -3796,6 +3806,8 @@ struct RawSession {
     parent_session_id: Option<String>,
     fork_point_run_id: Option<String>,
     fork_point_seq: Option<i64>,
+    last_outcome: Option<String>,
+    last_outcome_at: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -3853,6 +3865,8 @@ impl RawSession {
             parent_session_id,
             fork_point_run_id,
             fork_point_seq,
+            last_outcome: session_outcome_from_db(self.last_outcome.as_deref())?,
+            last_outcome_at: self.last_outcome_at,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -4184,8 +4198,10 @@ fn raw_session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSession>
         parent_session_id: row.get(8)?,
         fork_point_run_id: row.get(9)?,
         fork_point_seq: row.get(10)?,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
+        last_outcome: row.get(11)?,
+        last_outcome_at: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
     })
 }
 
@@ -4326,6 +4342,7 @@ fn get_session(
             SELECT product_session_id, workspace_id, title, status, latest_ordinal,
                    runtime_session_id, latest_job_id, latest_run_id,
                    parent_session_id, fork_point_run_id, fork_point_seq,
+                   last_outcome, last_outcome_at,
                    created_at, updated_at
             FROM product_sessions WHERE product_session_id = ?1
             "#,
@@ -4725,6 +4742,7 @@ pub(super) fn rank_page_sql(query: &ProductSessionPageQuery, resuming: bool) -> 
         SELECT product_session_id, workspace_id, title, status, latest_ordinal,
                runtime_session_id, latest_job_id, latest_run_id,
                parent_session_id, fork_point_run_id, fork_point_seq,
+               last_outcome, last_outcome_at,
                created_at, updated_at
         FROM product_sessions
         WHERE workspace_id = ?1 AND {RANK} = ?2
@@ -7235,6 +7253,31 @@ fn session_status_from_db(value: &str) -> Result<ProductSessionStatus, ProductSt
         "needs_attention" => Ok(ProductSessionStatus::NeedsAttention),
         "archived" => Ok(ProductSessionStatus::Archived),
         _ => Err(storage_error("persisted product session status is invalid")),
+    }
+}
+
+fn session_outcome_to_db(outcome: ProductSessionOutcome) -> &'static str {
+    match outcome {
+        ProductSessionOutcome::Success => "success",
+        ProductSessionOutcome::Failed => "failed",
+        ProductSessionOutcome::Cancelled => "cancelled",
+    }
+}
+
+/// `NULL` is a real value here: it means no turn has finished yet. Anything
+/// else must be one of the three recorded outcomes, so a corrupt row fails the
+/// read instead of being silently projected as "never ran".
+fn session_outcome_from_db(
+    value: Option<&str>,
+) -> Result<Option<ProductSessionOutcome>, ProductStoreError> {
+    match value {
+        None => Ok(None),
+        Some("success") => Ok(Some(ProductSessionOutcome::Success)),
+        Some("failed") => Ok(Some(ProductSessionOutcome::Failed)),
+        Some("cancelled") => Ok(Some(ProductSessionOutcome::Cancelled)),
+        Some(_) => Err(storage_error(
+            "persisted product session outcome is invalid",
+        )),
     }
 }
 

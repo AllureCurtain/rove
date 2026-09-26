@@ -3286,6 +3286,9 @@ async fn product_session_resume_fails_closed_when_exact_task_state_is_missing() 
         .unwrap();
     let sessions: serde_json::Value = decode_json(sessions).await;
     assert_eq!(sessions["sessions"][0]["status"], "needs_attention");
+    // A run that needed attention did not deliver a final answer, so the
+    // session must not report the latest turn as a success.
+    assert_eq!(sessions["sessions"][0]["last_outcome"], "failed");
     assert_eq!(
         sessions["sessions"][0]["runtime_binding"]["latest_run_id"],
         first.run_id.to_string()
@@ -3807,9 +3810,14 @@ async fn product_cancel_releases_the_single_turn_claim_before_continuation() {
     assert_eq!(mismatch.status(), StatusCode::CONFLICT);
     let mismatch: serde_json::Value = decode_json(mismatch).await;
     assert_eq!(mismatch["code"], "product_session_workspace_mismatch");
-    assert_eq!(
-        get_product_session(&app, workspace_id, session_id).await["status"],
-        "idle"
+    let cancelled_session = get_product_session(&app, workspace_id, session_id).await;
+    assert_eq!(cancelled_session["status"], "idle");
+    // Cancelling is a decision, not a failure: the session reports the outcome
+    // the user chose so the sidebar can distinguish it from an error.
+    assert_eq!(cancelled_session["last_outcome"], "cancelled");
+    assert!(
+        cancelled_session["last_outcome_at"].is_string(),
+        "a recorded outcome carries when it happened: {cancelled_session}"
     );
 
     let resumed = create_product_job(&app, session_id, "after cancellation").await;
@@ -4151,6 +4159,10 @@ async fn product_followup_after_final_is_server_owned_and_starts_one_successor()
 
     let finished = wait_for_product_session_status(&app, workspace_id, session_id, "idle").await;
     assert_eq!(finished["runtime_binding"]["ordinal"], 2);
+    assert_eq!(
+        finished["last_outcome"], "success",
+        "a final answer is the only success this contract records"
+    );
     assert_eq!(
         finished["runtime_binding"]["latest_run_id"],
         successor_run_id

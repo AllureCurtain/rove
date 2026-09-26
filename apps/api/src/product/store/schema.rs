@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::product::{ProductErrorCode, ProductStoreError};
 
-const CURRENT_SCHEMA_VERSION: i64 = 15;
+const CURRENT_SCHEMA_VERSION: i64 = 16;
 const MAX_BUSY_TIMEOUT_MS: u64 = 120_000;
 
 const MIGRATION_001: &str = r#"
@@ -330,6 +330,19 @@ CREATE INDEX IF NOT EXISTS idx_product_sessions_workspace_page
         product_session_id ASC
     );
 "#;
+
+/// `product_sessions.last_outcome` records how the most recent finished turn
+/// ended, which the status column cannot express: a successful turn, a
+/// cancelled turn, and a failed turn all release the session back to a
+/// non-running status. Existing rows stay NULL, and NULL means "no turn has
+/// finished yet" — back-filling a guess would turn an unknown into a claim.
+const MIGRATION_016_COLUMNS: [(&str, &str); 2] = [
+    (
+        "last_outcome",
+        "TEXT CHECK(last_outcome IS NULL OR last_outcome IN ('success', 'failed', 'cancelled'))",
+    ),
+    ("last_outcome_at", "TEXT"),
+];
 
 const MIGRATION_002: &str = r#"
 ALTER TABLE product_preferences
@@ -657,6 +670,7 @@ fn apply_migrations(
     apply_migration_013(connection)?;
     apply_migration_014(connection)?;
     apply_migration_015(connection)?;
+    apply_migration_016(connection)?;
     Ok(())
 }
 
@@ -1158,6 +1172,42 @@ fn apply_migration_015(connection: &mut Connection) -> Result<(), ProductStoreEr
     Ok(())
 }
 
+fn apply_migration_016(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 16)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    // Guarded for the same reason as migrations 007 and 015: a historical
+    // compatibility fixture can claim a version without containing every table
+    // that version implies, and an added column is pure additive state.
+    if table_exists(&transaction, "product_sessions")? {
+        for (column, declaration) in MIGRATION_016_COLUMNS {
+            if !table_has_column(&transaction, "product_sessions", column)? {
+                transaction
+                    .execute_batch(&format!(
+                        "ALTER TABLE product_sessions ADD COLUMN {column} {declaration};"
+                    ))
+                    .map_err(|_| database_error(true))?;
+            }
+        }
+    }
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                16,
+                "product_session_last_outcome",
+                super::repository::now_rfc3339()
+            ],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
 fn reconcile_productization_schema(
     transaction: &rusqlite::Transaction<'_>,
 ) -> Result<(), ProductStoreError> {
@@ -1594,6 +1644,12 @@ mod tests {
             1,
             "the session paging index is missing"
         );
+        // Migration 016 is additive, so a fresh store must record it and have
+        // both columns even though no session row exists yet.
+        assert!(migration_is_applied(connection, 16).unwrap());
+        for column in ["last_outcome", "last_outcome_at"] {
+            assert!(table_has_column(connection, "product_sessions", column).unwrap());
+        }
     }
 
     #[test]
@@ -1627,5 +1683,117 @@ mod tests {
             )
             .unwrap();
         assert_eq!(index_count, 0);
+    }
+
+    #[test]
+    fn a_v15_store_gains_the_session_outcome_columns_without_backfilling() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize_v11(&mut connection);
+        apply_migration_012(&mut connection).unwrap();
+        apply_migration_013(&mut connection).unwrap();
+        apply_migration_014(&mut connection).unwrap();
+        apply_migration_015(&mut connection).unwrap();
+        insert_v15_session(&connection);
+        assert!(!table_has_column(&connection, "product_sessions", "last_outcome").unwrap());
+
+        apply_migrations_isolated(&mut connection).unwrap();
+
+        assert!(migration_is_applied(&connection, 16).unwrap());
+        assert!(table_has_column(&connection, "product_sessions", "last_outcome").unwrap());
+        assert!(table_has_column(&connection, "product_sessions", "last_outcome_at").unwrap());
+        // An existing session keeps an unknown outcome: back-filling a guess
+        // would turn "no turn has finished here" into a claim about the past.
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT last_outcome, last_outcome_at FROM product_sessions WHERE product_session_id = 'session-1'",
+                    [],
+                    |row| Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    )),
+                )
+                .unwrap(),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn a_store_with_one_outcome_column_already_present_still_upgrades() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize_v11(&mut connection);
+        apply_migration_012(&mut connection).unwrap();
+        apply_migration_013(&mut connection).unwrap();
+        apply_migration_014(&mut connection).unwrap();
+        apply_migration_015(&mut connection).unwrap();
+        // The guard exists because a compatibility fixture can carry part of a
+        // version. Adding the missing column must not fail on the present one.
+        connection
+            .execute_batch("ALTER TABLE product_sessions ADD COLUMN last_outcome TEXT;")
+            .unwrap();
+
+        apply_migrations_isolated(&mut connection).unwrap();
+
+        assert!(migration_is_applied(&connection, 16).unwrap());
+        assert!(table_has_column(&connection, "product_sessions", "last_outcome").unwrap());
+        assert!(table_has_column(&connection, "product_sessions", "last_outcome_at").unwrap());
+    }
+
+    #[test]
+    fn session_outcomes_are_constrained_and_the_upgrade_is_idempotent() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        apply_migrations_isolated(&mut connection).unwrap();
+        // A second pass over a current store is a no-op rather than an attempt
+        // to add the same columns twice.
+        apply_migrations_isolated(&mut connection).unwrap();
+        insert_v15_session(&connection);
+
+        for outcome in ["success", "failed", "cancelled"] {
+            connection
+                .execute(
+                    "UPDATE product_sessions SET last_outcome = ?1, last_outcome_at = '2026-09-26T00:00:00Z' WHERE product_session_id = 'session-1'",
+                    params![outcome],
+                )
+                .unwrap_or_else(|error| panic!("{outcome} must be an accepted outcome: {error}"));
+        }
+        connection
+            .execute(
+                "UPDATE product_sessions SET last_outcome = NULL, last_outcome_at = NULL WHERE product_session_id = 'session-1'",
+                [],
+            )
+            .unwrap();
+        assert!(
+            connection
+                .execute(
+                    "UPDATE product_sessions SET last_outcome = 'partial' WHERE product_session_id = 'session-1'",
+                    [],
+                )
+                .is_err(),
+            "an outcome outside the three-value contract must be rejected"
+        );
+    }
+
+    /// A minimal v15 session row, used to prove additive migrations do not
+    /// rewrite existing state.
+    fn insert_v15_session(connection: &Connection) {
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO product_workspaces(
+                    workspace_id, canonical_root, canonical_key, kind, display_name,
+                    pinned, last_opened_at, created_at, updated_at
+                ) VALUES (
+                    'ws-1', 'C:/ws', 'key-1', 'folder', 'ws',
+                    0, '2026-09-26T00:00:00Z', '2026-09-26T00:00:00Z', '2026-09-26T00:00:00Z'
+                );
+                INSERT INTO product_sessions(
+                    product_session_id, workspace_id, title, status, created_at, updated_at
+                ) VALUES (
+                    'session-1', 'ws-1', 'existing', 'idle',
+                    '2026-09-26T00:00:00Z', '2026-09-26T00:00:00Z'
+                );
+                "#,
+            )
+            .unwrap();
     }
 }

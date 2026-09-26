@@ -25,10 +25,10 @@ use crate::product::{
     ProductMessagePageQuery, ProductPreferences, ProductProviderProfile, ProductProviderProfileId,
     ProductResumeHealth, ProductReview, ProductReviewFindingsQuery, ProductReviewFindingsResponse,
     ProductReviewId, ProductSession, ProductSessionContext, ProductSessionId,
-    ProductSessionModelConfig, ProductSessionPage, ProductSessionPageQuery, ProductSessionRecovery,
-    ProductSessionRunBinding, ProductSessionRunModelView, ProductSessionStatus, ProductStore,
-    ProductStoreError, ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish,
-    ProductWorkspace, ProductWorkspaceId, RecoverProductSessionOwnership,
+    ProductSessionModelConfig, ProductSessionOutcome, ProductSessionPage, ProductSessionPageQuery,
+    ProductSessionRecovery, ProductSessionRunBinding, ProductSessionRunModelView,
+    ProductSessionStatus, ProductStore, ProductStoreError, ProductTurnClaim, ProductTurnClaimId,
+    ProductTurnControlFinish, ProductWorkspace, ProductWorkspaceId, RecoverProductSessionOwnership,
     UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
     UpdateProductSessionModelConfigRequest, UpdateProductSessionRequest,
     VerifiedProductForkBoundary,
@@ -379,13 +379,14 @@ impl ProductStore for SqliteProductStore {
         claim_id: &ProductTurnClaimId,
         run_id: Option<RunId>,
         status: ProductSessionStatus,
+        outcome: Option<ProductSessionOutcome>,
         reason: &str,
     ) -> Result<ProductTurnControlFinish, ProductStoreError> {
         let claim_id = claim_id.clone();
         let reason = reason.to_string();
         self.blocking(move |repository| {
             repository.finish_session_turn_and_abandon_pending_controls(
-                &claim_id, run_id, status, &reason,
+                &claim_id, run_id, status, outcome, &reason,
             )
         })
         .await

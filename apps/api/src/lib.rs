@@ -1713,6 +1713,10 @@ async fn prepare_claimed_product_job_launch(
                     } else {
                         previous_product_status
                     },
+                    // A Provider that cannot resume is a failure the user has to
+                    // resolve; any other validation failure leaves the session as
+                    // it was, which is also where the last outcome stays.
+                    provider_resume_failure.then_some(ProductSessionOutcome::Failed),
                     "workspace validation",
                 )
                 .await;
@@ -1745,6 +1749,7 @@ async fn prepare_claimed_product_job_launch(
                             &claim_id,
                             None,
                             ProductSessionStatus::NeedsAttention,
+                            Some(ProductSessionOutcome::Failed),
                             "exact runtime resume validation",
                         )
                         .await;
@@ -1772,6 +1777,7 @@ async fn prepare_claimed_product_job_launch(
                             &claim_id,
                             None,
                             ProductSessionStatus::NeedsAttention,
+                            Some(ProductSessionOutcome::Failed),
                             "fork source resume validation",
                         )
                         .await;
@@ -1847,6 +1853,9 @@ async fn prepare_claimed_product_job_launch(
                     &claim_id,
                     None,
                     previous_product_status,
+                    // Nothing ran: the engine could not be assembled, so the
+                    // session is restored and the last outcome is untouched.
+                    None,
                     "engine assembly",
                 )
                 .await;
@@ -1891,6 +1900,7 @@ async fn prepare_claimed_product_job_launch(
                     &claim_id,
                     Some(record.run_id),
                     ProductSessionStatus::NeedsAttention,
+                    Some(ProductSessionOutcome::Failed),
                     "runtime run start",
                 )
                 .await;
@@ -1948,6 +1958,7 @@ async fn prepare_claimed_product_job_launch(
                     &claim_id,
                     Some(record.run_id),
                     ProductSessionStatus::NeedsAttention,
+                    Some(ProductSessionOutcome::Failed),
                     "runtime binding commit",
                 )
                 .await;
@@ -2511,15 +2522,23 @@ fn append_missing_product_tool_results(
     }
 }
 
+/// Close a product turn that failed before or during startup.
+///
+/// `outcome` is what this attempt leaves behind: `Some(Failed)` when the caller
+/// classified the attempt as a failure the user must see, and `None` when the
+/// caller is undoing the attempt and restoring the session's previous status —
+/// in that case the record of the last turn that actually ran must survive, so
+/// a rejected retry cannot rewrite the session's history.
 async fn finish_failed_product_start(
     store: &Arc<dyn ProductStore>,
     claim_id: &ProductTurnClaimId,
     run_id: Option<RunId>,
     status: ProductSessionStatus,
+    outcome: Option<ProductSessionOutcome>,
     phase: &'static str,
 ) {
     if let Err(error) = store
-        .finish_session_turn_and_abandon_pending_controls(claim_id, run_id, status, phase)
+        .finish_session_turn_and_abandon_pending_controls(claim_id, run_id, status, outcome, phase)
         .await
     {
         tracing::warn!(
@@ -3540,6 +3559,7 @@ async fn finish_product_turn_needs_attention(
             &product_turn.claim_id,
             run_id,
             ProductSessionStatus::NeedsAttention,
+            Some(ProductSessionOutcome::Failed),
             reason,
         )
         .await
@@ -3581,12 +3601,24 @@ async fn finish_nonfinal_product_turn(
         RunStatus::Error | RunStatus::Interrupted => "run did not complete normally",
         RunStatus::Init | RunStatus::Running => "run ended without a durable terminal",
     };
+    // `Done` reaching this path means the run finished *without* a final answer,
+    // so the turn did not succeed even though the run completed: the session is
+    // deliberately moved to `needs_attention`, and the recorded outcome must
+    // agree with that rather than claim a success the user never saw.
+    let outcome = match terminal_status {
+        RunStatus::Cancelled => ProductSessionOutcome::Cancelled,
+        RunStatus::Done | RunStatus::Error | RunStatus::Interrupted => {
+            ProductSessionOutcome::Failed
+        }
+        RunStatus::Init | RunStatus::Running => ProductSessionOutcome::Failed,
+    };
     let finished = match product_turn
         .store
         .finish_session_turn_and_abandon_pending_controls(
             &product_turn.claim_id,
             Some(record.run_id),
             status,
+            Some(outcome),
             reason,
         )
         .await
