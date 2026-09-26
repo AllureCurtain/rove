@@ -1020,12 +1020,17 @@ pub(crate) async fn list_product_session_messages(
     tag = docs::PRODUCT_TAG,
     security(("BearerAuth" = [])),
     params(("session_id" = String, Path), ("message_id" = String, Path)),
+    request_body = Option<PromoteProductMessageRequest>,
     responses((status = 200, description = "Intervention requested", body = ProductMessage))
 )]
 pub(crate) async fn promote_product_session_message(
     State(state): State<ApiState>,
     Path((session_id, message_id)): Path<(ProductSessionId, ProductControlId)>,
+    body: Option<Json<PromoteProductMessageRequest>>,
 ) -> Result<Json<ProductMessage>, ApiError> {
+    let delivery = body
+        .map(|Json(request)| request.delivery())
+        .unwrap_or(ProductMessageDelivery::CurrentRun);
     let live = live_product_job(&state, &session_id).await;
     let Some(record) = live else {
         return Err(ApiError::conflict_with_code(
@@ -1045,16 +1050,35 @@ pub(crate) async fn promote_product_session_message(
         ));
     }
     let store = state.product_store()?;
-    if let Ok(existing) = store.get_message(&session_id, &message_id).await
-        && existing.requested_delivery == ProductMessageDelivery::CurrentRun
+    // A repeated `current_run` promotion is a no-op replay; a repeated
+    // `successor` promotion still has to move the message back to the head,
+    // because it may have been reordered behind another one in the meantime.
+    if delivery == ProductMessageDelivery::CurrentRun
+        && let Ok(existing) = store.get_message(&session_id, &message_id).await
+        && existing.requested_delivery == delivery
     {
         return Ok(Json(existing));
     }
-    let service = super::message_adapter::service(store.clone());
-    let _promoted = service
-        .promote(session_id.as_str(), message_id.as_str())
-        .await
-        .map_err(super::message_adapter::map_domain_error)?;
+    match delivery {
+        // `current_run` is the shared runtime message contract's promotion: the
+        // message becomes a steer for the live run.
+        ProductMessageDelivery::CurrentRun => {
+            let service = super::message_adapter::service(store.clone());
+            service
+                .promote(session_id.as_str(), message_id.as_str())
+                .await
+                .map_err(super::message_adapter::map_domain_error)?;
+        }
+        // `successor` only moves the message to the head of its queue; the live
+        // run must not be interrupted, so nothing is steered here. The terminal
+        // boundary drains the queue through the existing claimed-successor path.
+        ProductMessageDelivery::Successor => {
+            store
+                .promote_message(&session_id, &message_id, delivery)
+                .await?;
+            return Ok(Json(store.get_message(&session_id, &message_id).await?));
+        }
+    }
     let message = store.get_message(&session_id, &message_id).await?;
     let handle = record.control.lock().await.clone();
     let accepted = handle.is_some_and(|handle| {
@@ -1076,6 +1100,47 @@ pub(crate) async fn promote_product_session_message(
         return Ok(Json(store.get_message(&session_id, &message_id).await?));
     }
     Ok(Json(message))
+}
+
+#[utoipa::path(
+    post,
+    path = "/product/sessions/{session_id}/messages/reorder",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(("session_id" = String, Path)),
+    request_body = ReorderProductMessagesRequest,
+    responses(
+        (status = 200, description = "Reordered queue", body = ProductQueueResponse),
+        (status = 400, description = "Invalid reorder list", body = ApiErrorResponse),
+        (status = 404, description = "Product session not found", body = ApiErrorResponse),
+        (status = 409, description = "Reorder list no longer matches the queue", body = ApiErrorResponse),
+    )
+)]
+pub(crate) async fn reorder_product_session_messages(
+    State(state): State<ApiState>,
+    Path(session_id): Path<ProductSessionId>,
+    Json(request): Json<ReorderProductMessagesRequest>,
+) -> Result<Json<ProductQueueResponse>, ApiError> {
+    if request.ordered_ids.len() > MAX_PENDING_MESSAGES_PER_SESSION as usize {
+        return Err(ApiError::bad_request_with_code(
+            ProductErrorCode::ProductInvalidInput.as_str(),
+            "reorder list is larger than the bounded message queue",
+        ));
+    }
+    // Reordering is a pure queue operation, so it holds the same lifecycle lock
+    // a promote does: that serializes it against a concurrent promote/revoke
+    // inside this process, and the store's exact-coverage check covers the
+    // cross-process case.
+    let live = live_product_job(&state, &session_id).await;
+    let _lifecycle = match &live {
+        Some(record) => Some(record.control_lifecycle_lock.lock().await),
+        None => None,
+    };
+    let store = state.product_store()?;
+    let messages = store
+        .reorder_messages(&session_id, &request.ordered_ids)
+        .await?;
+    Ok(Json(ProductQueueResponse { messages }))
 }
 
 #[utoipa::path(
