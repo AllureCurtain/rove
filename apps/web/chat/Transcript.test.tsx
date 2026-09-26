@@ -239,7 +239,117 @@ describe("Transcript", () => {
     expect(html).not.toContain("ledger-claimed_successor");
     expect(html).not.toContain("ledger-revoked");
   });
+
+  it("offers the older server page only while the cursor exists", () => {
+    const html = renderTranscript(
+      <Transcript
+        timeline={singleRunTimeline()}
+        approvalBusy={null}
+        inputBusy={null}
+        restoreState={{ status: "complete", sessionId: "session-1" }}
+        olderHistory={{ hasMore: true, cursor: 5, loading: false, error: null }}
+        onLoadOlderHistory={vi.fn()}
+        onRetryRestore={vi.fn()}
+        onStartNewSession={vi.fn()}
+        onApproval={vi.fn()}
+        onInputSubmit={vi.fn()}
+      />,
+    );
+    expect(html).toContain("load-older-history");
+    expect(html).toContain("加载更早的历史");
+
+    // `has_more: false`, a legacy response without the fields, and a cursor-less
+    // page all leave only the local mount window.
+    for (const olderHistory of [
+      { hasMore: false, cursor: null, loading: false, error: null },
+      { hasMore: true, cursor: null, loading: false, error: null },
+    ]) {
+      const withoutPage = renderTranscript(
+        <Transcript
+          timeline={singleRunTimeline()}
+          approvalBusy={null}
+          inputBusy={null}
+          restoreState={{ status: "complete", sessionId: "session-1" }}
+          olderHistory={olderHistory}
+          onLoadOlderHistory={vi.fn()}
+          onRetryRestore={vi.fn()}
+          onStartNewSession={vi.fn()}
+          onApproval={vi.fn()}
+          onInputSubmit={vi.fn()}
+        />,
+      );
+      expect(withoutPage).not.toContain("load-older-history");
+    }
+  });
+
+  it("shows a truthful, retryable older-page state", () => {
+    const render = (olderHistory: {
+      hasMore: boolean;
+      cursor: number | null;
+      loading: boolean;
+      error: string | null;
+    }) =>
+      renderTranscript(
+        <Transcript
+          timeline={singleRunTimeline()}
+          approvalBusy={null}
+          inputBusy={null}
+          restoreState={{ status: "complete", sessionId: "session-1" }}
+          olderHistory={olderHistory}
+          onLoadOlderHistory={vi.fn()}
+          onRetryRestore={vi.fn()}
+          onStartNewSession={vi.fn()}
+          onApproval={vi.fn()}
+          onInputSubmit={vi.fn()}
+        />,
+      );
+
+    const loading = render({
+      hasMore: true,
+      cursor: 5,
+      loading: true,
+      error: null,
+    });
+    expect(loading).toContain("正在加载更早的历史");
+    expect(loading).toMatch(/load-older-history[^>]*disabled/);
+
+    const failed = render({
+      hasMore: true,
+      cursor: 5,
+      loading: false,
+      error: "Could not load older history: transcript store unavailable",
+    });
+    // The failure is visible and the same page can be requested again.
+    expect(failed).toContain('role="alert"');
+    expect(failed).toContain("transcript store unavailable");
+    expect(failed).toContain("load-older-history");
+    expect(failed).toContain("重试");
+  });
 });
+
+function singleRunTimeline(): TranscriptRunGroup[] {
+  return [
+    {
+      id: "run:run-1",
+      runId: "run-1",
+      runOrdinal: 1,
+      inherited: false,
+      sourceSessionId: null,
+      items: [
+        {
+          kind: "message",
+          entry: entry("message", "message-1", 1),
+          message: {
+            id: "message-1",
+            role: "assistant",
+            content: "Restored answer",
+            status: "final",
+          },
+        },
+      ],
+    },
+  ];
+}
 
 function entry(
   kind: "message" | "tool" | "input",

@@ -54,6 +54,10 @@ export interface MockTranscript {
   status: "complete" | "partial";
   partial_reasons: Array<Record<string, unknown>>;
   segments: Array<Record<string, unknown>>;
+  /** Present on a cursor page only, while strictly older runs remain. */
+  next_before_ordinal?: number;
+  /** Present on every cursor page; absent on the legacy response. */
+  has_more?: boolean;
 }
 
 export interface MockProviderProfile {
@@ -908,10 +912,18 @@ export async function installMockProductApi(
       if (!session) {
         return json(route, { code: "product_not_found", error: "session not found" }, 404);
       }
-      return json(
-        route,
+      const page = transcriptPage(
         state.transcripts[sessionId] ?? emptyTranscript(session),
+        url.searchParams,
       );
+      if ("error" in page) {
+        return json(
+          route,
+          { code: "product_invalid_input", error: page.error },
+          400,
+        );
+      }
+      return json(route, page);
     }
     const sessionModelConfigMatch = path.match(
       /^\/product\/sessions\/([^/]+)\/model-config$/u,
@@ -1935,6 +1947,49 @@ export function completedTranscript(
   };
 }
 
+/**
+ * A completed session with `runCount` contiguous runs. Long enough that the
+ * API's 64-run page ceiling spans several cursor pages.
+ */
+export function longCompletedTranscript(
+  workspace: MockWorkspace,
+  session: MockSession,
+  runCount: number,
+): MockTranscript {
+  const segments = Array.from({ length: runCount }, (_value, index) => {
+    const ordinal = index + 1;
+    const jobId = `job-restored-${ordinal}`;
+    const runId = `run-restored-${ordinal}`;
+    return transcriptSegment(
+      session,
+      ordinal,
+      jobId,
+      runId,
+      ordinal > 1 ? `run-restored-${ordinal - 1}` : null,
+      "done",
+      completedEvents(
+        jobId,
+        runId,
+        `Restored question ${ordinal}`,
+        `Restored answer ${ordinal}`,
+      ),
+    );
+  });
+  session.runtime_binding = {
+    ordinal: runCount,
+    runtime_session_id: `runtime-${session.id}`,
+    latest_job_id: `job-restored-${runCount}`,
+    latest_run_id: `run-restored-${runCount}`,
+  };
+  return {
+    product_session_id: session.id,
+    workspace_id: workspace.id,
+    status: "complete",
+    partial_reasons: [],
+    segments,
+  };
+}
+
 function emptyTranscript(session: MockSession): MockTranscript {
   return {
     product_session_id: session.id,
@@ -1942,6 +1997,102 @@ function emptyTranscript(session: MockSession): MockTranscript {
     status: "complete",
     partial_reasons: [],
     segments: [],
+  };
+}
+
+/** Longest run page the API serves; mirrors `limit_runs`' documented range. */
+const MAX_MOCK_TRANSCRIPT_RUNS = 64;
+
+/** Page size when only `before_ordinal` is sent; the documented default. */
+const DEFAULT_MOCK_TRANSCRIPT_RUNS = 256;
+
+function segmentOrdinal(segment: Record<string, unknown>): number {
+  const binding = segment.binding as { ordinal?: unknown } | undefined;
+  return typeof binding?.ordinal === "number" ? binding.ordinal : 0;
+}
+
+function positiveInteger(value: string | null): number | null {
+  if (value === null || !/^\d+$/u.test(value)) {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+/**
+ * Cursor pagination for the transcript route.
+ *
+ * A request without either parameter stays the legacy response: every run, and
+ * no `has_more`/`next_before_ordinal` keys. A request with at least one
+ * parameter returns a newest-to-oldest page of whole runs plus those keys, and
+ * out-of-range input is a typed 400 exactly as the API answers.
+ */
+function transcriptPage(
+  transcript: MockTranscript,
+  params: URLSearchParams,
+): MockTranscript | { error: string } {
+  const beforeRaw = params.get("before_ordinal");
+  const limitRaw = params.get("limit_runs");
+  if (beforeRaw === null && limitRaw === null) {
+    return {
+      ...transcript,
+      segments: [...transcript.segments].sort(
+        (left, right) => segmentOrdinal(left) - segmentOrdinal(right),
+      ),
+    };
+  }
+  let beforeOrdinal: number | null = null;
+  if (beforeRaw !== null) {
+    beforeOrdinal = positiveInteger(beforeRaw);
+    if (beforeOrdinal === null) {
+      return { error: "before_ordinal must be a positive integer" };
+    }
+  }
+  let limitRuns = DEFAULT_MOCK_TRANSCRIPT_RUNS;
+  if (limitRaw !== null) {
+    const parsed = positiveInteger(limitRaw);
+    if (parsed === null || parsed > MAX_MOCK_TRANSCRIPT_RUNS) {
+      return { error: `limit_runs must be between 1 and ${MAX_MOCK_TRANSCRIPT_RUNS}` };
+    }
+    limitRuns = parsed;
+  }
+  const ordinals = transcript.segments.map(segmentOrdinal);
+  const newestOrdinal = ordinals.length === 0 ? null : Math.max(...ordinals);
+  if (
+    beforeOrdinal !== null &&
+    (newestOrdinal === null || beforeOrdinal > newestOrdinal)
+  ) {
+    // A cursor past the newest run selects nothing: "older than this" has no
+    // answer, and clamping it to the newest page would hand the client runs it
+    // already holds.
+    return {
+      ...transcript,
+      status: "complete",
+      partial_reasons: [],
+      segments: [],
+      has_more: false,
+    };
+  }
+  const older = [...transcript.segments]
+    .filter(
+      (segment) =>
+        beforeOrdinal === null || segmentOrdinal(segment) < beforeOrdinal,
+    )
+    .sort((left, right) => segmentOrdinal(right) - segmentOrdinal(left));
+  const page = older.slice(0, limitRuns).reverse();
+  const hasMore = older.length > page.length;
+  const pageOrdinals = new Set(page.map(segmentOrdinal));
+  const reasons = transcript.partial_reasons.filter(
+    (reason) =>
+      typeof reason.run_ordinal !== "number" || pageOrdinals.has(reason.run_ordinal),
+  );
+  return {
+    ...transcript,
+    status: reasons.length === 0 ? "complete" : "partial",
+    partial_reasons: reasons,
+    segments: page,
+    has_more: hasMore,
+    ...(hasMore ? { next_before_ordinal: segmentOrdinal(page[0]!) } : {}),
   };
 }
 

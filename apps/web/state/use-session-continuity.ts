@@ -22,12 +22,19 @@ import {
 } from "../chat/activity-phase";
 import { captureActiveSessionView } from "../chat/session-view-snapshot";
 import { recordArrivalsForAction } from "../chat/tool-timing";
-import type {
-  ProductControl,
-  ProductControlKind,
-  ProductMessage,
+import {
+  MAX_PRODUCT_TRANSCRIPT_PAGE_RUNS,
+  type ProductControl,
+  type ProductControlKind,
+  type ProductMessage,
+  type ProductTranscriptResponse,
+  type ProductTranscriptRunSegment,
 } from "../product/product-api-types";
 import type { ProductApiClient } from "../product/product-client";
+import {
+  NO_OLDER_HISTORY,
+  type OlderHistoryState,
+} from "../chat/transcript-window";
 import {
   findSession,
   updateSession,
@@ -39,7 +46,11 @@ import type {
   SessionRecord,
 } from "./product-types";
 import {
+  loadedTranscriptHistory,
+  prependTranscriptPage,
   projectProductTranscript,
+  transcriptProjectionInput,
+  type LoadedTranscriptHistory,
   type TranscriptRestoreState,
 } from "./transcript-projection";
 import {
@@ -79,6 +90,8 @@ export function useSessionContinuity({
   const [restoreState, setRestoreState] = useState<TranscriptRestoreState>({
     status: "idle",
   });
+  const [olderHistory, setOlderHistory] =
+    useState<OlderHistoryState>(NO_OLDER_HISTORY);
   const [approvalBusyKey, setApprovalBusyKey] = useState<string | null>(null);
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const approvalRequestsRef = useRef(new Set<string>());
@@ -127,6 +140,14 @@ export function useSessionContinuity({
   const restoredSessionRef = useRef<string | null>(null);
   const observedBindingRef = useRef<ObservedRunBinding | null>(null);
   const transcriptGenerationRef = useRef(0);
+  // The pages already loaded, so an older page can be prepended and the whole
+  // history re-projected through the canonical projection.
+  const loadedTranscriptRef = useRef<LoadedTranscriptHistory | null>(null);
+  // The cursor the server published for the last page. The server covers every
+  // run at or above it, including runs it could not read, so following it makes
+  // progress even when a whole page resolves to partial reasons.
+  const olderCursorRef = useRef<number | null>(null);
+  const olderHistoryRequestRef = useRef(false);
   const controlsGenerationRef = useRef(0);
   const messagesGenerationRef = useRef(0);
   const messageRequestsRef = useRef(new Map<string, string>());
@@ -159,6 +180,10 @@ export function useSessionContinuity({
     setControlError(null);
     ++messagesGenerationRef.current;
     setMessages([]);
+    loadedTranscriptRef.current = null;
+    olderCursorRef.current = null;
+    olderHistoryRequestRef.current = false;
+    setOlderHistory(NO_OLDER_HISTORY);
   }, []);
 
   const refreshMessages = useCallback(
@@ -332,7 +357,9 @@ export function useSessionContinuity({
       setRestoreState({ status: "loading", sessionId });
 
       try {
-        const transcript = await productClient.getTranscript(sessionId);
+        const transcript = await productClient.getTranscript(sessionId, {
+          limitRuns: MAX_PRODUCT_TRANSCRIPT_PAGE_RUNS,
+        });
         if (
           transcriptGenerationRef.current !== generation ||
           focusedSessionRef.current !== sessionId
@@ -342,7 +369,14 @@ export function useSessionContinuity({
         if (transcript.workspace_id !== workspaceId) {
           throw new Error("Transcript workspace does not match the session route.");
         }
-        const projected = projectProductTranscript(transcript);
+        const history = loadedTranscriptHistory(transcript);
+        loadedTranscriptRef.current = history;
+        const older = olderHistoryFromResponse(transcript);
+        olderCursorRef.current = older.cursor;
+        setOlderHistory(older);
+        const projected = projectProductTranscript(
+          transcriptProjectionInput(history),
+        );
         dispatch({ type: "hydrate", state: projected });
         setConnection("ok");
         setRestoreState(
@@ -401,6 +435,91 @@ export function useSessionContinuity({
       refreshMessages,
     ],
   );
+
+  /**
+   * Fetch the next older page and prepend it to the loaded history. The whole
+   * loaded history is re-projected through the canonical projection, so a
+   * cursor page is never a second transcript state machine.
+   */
+  const loadOlderHistory = useCallback(async () => {
+    const sessionId = focusedSessionRef.current;
+    const loaded = loadedTranscriptRef.current;
+    if (!sessionId || !loaded || loaded.segments.length === 0) {
+      return;
+    }
+    if (olderHistoryRequestRef.current) {
+      return;
+    }
+    // Prefer the cursor the server published: it stays strictly older than
+    // every run the page covered, including runs that only produced partial
+    // reasons. The oldest loaded segment is the fallback for a cursor-less
+    // response.
+    const beforeOrdinal =
+      olderCursorRef.current ?? oldestLoadedOrdinal(loaded.segments);
+    if (beforeOrdinal === null || beforeOrdinal <= 1) {
+      // Ordinals start at 1: there is nothing strictly older to ask for.
+      olderCursorRef.current = null;
+      setOlderHistory((current) => ({
+        ...current,
+        hasMore: false,
+        cursor: null,
+        loading: false,
+        error: null,
+      }));
+      return;
+    }
+    const generation = transcriptGenerationRef.current;
+    olderHistoryRequestRef.current = true;
+    setOlderHistory((current) => ({ ...current, loading: true, error: null }));
+    try {
+      const page = await productClient.getTranscript(sessionId, {
+        beforeOrdinal,
+        limitRuns: MAX_PRODUCT_TRANSCRIPT_PAGE_RUNS,
+      });
+      if (
+        transcriptGenerationRef.current !== generation ||
+        focusedSessionRef.current !== sessionId
+      ) {
+        return;
+      }
+      if (page.workspace_id !== loaded.workspaceId) {
+        throw new Error("Older transcript page does not match the session route.");
+      }
+      const merged = prependTranscriptPage(loaded, page);
+      loadedTranscriptRef.current = merged;
+      dispatch({
+        type: "hydrate",
+        state: projectProductTranscript(transcriptProjectionInput(merged)),
+      });
+      const older = olderHistoryFromResponse(page);
+      olderCursorRef.current = older.cursor;
+      setOlderHistory(older);
+      if (merged.partialReasons.length > 0) {
+        setRestoreState({
+          status: "partial",
+          sessionId,
+          reasons: merged.partialReasons,
+        });
+      }
+    } catch (error) {
+      if (
+        transcriptGenerationRef.current !== generation ||
+        focusedSessionRef.current !== sessionId
+      ) {
+        return;
+      }
+      // The cursor stays published, so the reader can retry the same page.
+      setOlderHistory((current) => ({
+        ...current,
+        loading: false,
+        error: boundErrorMessage(
+          `Could not load older history: ${describeError(error)}`,
+        ),
+      }));
+    } finally {
+      olderHistoryRequestRef.current = false;
+    }
+  }, [dispatch, productClient]);
 
   const focusSession = useCallback(
     (workspaceId: string, sessionId: string) => {
@@ -977,6 +1096,11 @@ export function useSessionContinuity({
     runState,
     activityPhase,
     restoreState,
+    hasOlderHistory: olderHistory.hasMore,
+    olderCursor: olderHistory.cursor,
+    olderHistoryLoading: olderHistory.loading,
+    olderHistoryError: olderHistory.error,
+    loadOlderHistory,
     approvalBusy: runState.tools.find((tool) => approvalBusyKey === JSON.stringify([
       activeSession?.workspaceId, activeSession?.id, runState.activeJobId,
       runState.activeRunId, tool.id,
@@ -1049,6 +1173,41 @@ function activityEventForWorkbenchAction(action: WorkbenchAction): ActivityEvent
 
 function controlLabel(kind: ProductControlKind): string {
   return kind === "steer" ? "steer" : "follow-up";
+}
+
+const MAX_OLDER_HISTORY_ERROR_CHARS = 512;
+
+/** The error state is a bounded, single line: never an unbounded dump. */
+function boundErrorMessage(message: string): string {
+  const compact = message.replace(/\s+/g, " ").trim();
+  return compact.length <= MAX_OLDER_HISTORY_ERROR_CHARS
+    ? compact
+    : `${compact.slice(0, MAX_OLDER_HISTORY_ERROR_CHARS)}…`;
+}
+
+function olderHistoryFromResponse(
+  transcript: ProductTranscriptResponse,
+): OlderHistoryState {
+  const hasMore = transcript.has_more === true;
+  return {
+    hasMore,
+    cursor: hasMore ? (transcript.next_before_ordinal ?? null) : null,
+    loading: false,
+    error: null,
+  };
+}
+
+/** The cursor for the next older page: below the oldest loaded run. */
+function oldestLoadedOrdinal(
+  segments: ProductTranscriptRunSegment[],
+): number | null {
+  let oldest: number | null = null;
+  for (const segment of segments) {
+    if (oldest === null || segment.binding.ordinal < oldest) {
+      oldest = segment.binding.ordinal;
+    }
+  }
+  return oldest;
 }
 
 function messageStatusLabel(status: ProductMessage["status"]): string {

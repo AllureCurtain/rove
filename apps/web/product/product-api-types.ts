@@ -734,12 +734,25 @@ export interface ProductTranscriptRunSegment {
   fallback?: ProductTranscriptFallback;
 }
 
+/** Longest transcript run page the API will serve for `limit_runs`. */
+export const MAX_PRODUCT_TRANSCRIPT_PAGE_RUNS = 64;
+
 export interface ProductTranscriptResponse {
   product_session_id: ProductSessionId;
   workspace_id: ProductWorkspaceId;
   status: ProductTranscriptStatus;
   partial_reasons: ProductTranscriptPartialReason[];
   segments: ProductTranscriptRunSegment[];
+  /**
+   * Ordinal of the oldest segment in this page while strictly older runs
+   * remain; absent on a legacy response and on the oldest page.
+   */
+  next_before_ordinal?: number;
+  /**
+   * Present on every cursor page and exactly `next_before_ordinal !== undefined`;
+   * absent on a legacy response that passed no pagination parameter.
+   */
+  has_more?: boolean;
 }
 
 export interface ProductAuthorizationOutcome {
@@ -5021,6 +5034,27 @@ export function parseProductTranscriptResponse(
       parseProductTranscriptRunSegment,
     ),
   };
+  assignOptional(
+    response,
+    "next_before_ordinal",
+    optionalInteger(record, "next_before_ordinal", path, { min: 1 }),
+  );
+  assignOptional(response, "has_more", optionalBoolean(record, "has_more", path));
+  if (response.next_before_ordinal !== undefined && response.has_more === undefined) {
+    schemaError(
+      `${path}.has_more`,
+      "present on a response that carries next_before_ordinal",
+    );
+  }
+  if (
+    response.has_more !== undefined &&
+    response.has_more !== (response.next_before_ordinal !== undefined)
+  ) {
+    schemaError(
+      `${path}.has_more`,
+      "equal to whether next_before_ordinal is present",
+    );
+  }
   if (
     (response.status === "complete" && response.partial_reasons.length !== 0) ||
     (response.status === "partial" && response.partial_reasons.length === 0)
@@ -5030,6 +5064,10 @@ export function parseProductTranscriptResponse(
       "consistent with whether partial_reasons is empty",
     );
   }
+  // A cursor page starts wherever the cursor landed, so the ordinals below its
+  // first segment wait for an older page instead of a partial reason. Legacy
+  // responses still account for every leading gap.
+  const cursorPage = response.has_more !== undefined;
 
   let previousOrdinal = 0;
   for (const [segmentIndex, segment] of response.segments.entries()) {
@@ -5066,7 +5104,8 @@ export function parseProductTranscriptResponse(
       );
     }
     for (
-      let missingOrdinal = previousOrdinal + 1;
+      let missingOrdinal =
+        segmentIndex === 0 && cursorPage ? segment.binding.ordinal : previousOrdinal + 1;
       missingOrdinal < segment.binding.ordinal;
       missingOrdinal += 1
     ) {

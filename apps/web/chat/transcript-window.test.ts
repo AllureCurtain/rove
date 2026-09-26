@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   MOUNT_STEP,
+  NO_OLDER_HISTORY,
   initialTranscriptWindow,
+  olderHistoryControl,
   reduceTranscriptWindow,
   shouldRequestOlderPage,
 } from "./transcript-window";
@@ -49,5 +51,33 @@ describe("transcript window", () => {
   it("grow steps by the mount step", () => {
     const window = reduceTranscriptWindow(initialTranscriptWindow(100), { type: "grow" });
     expect(window.mounted).toBe(12 + MOUNT_STEP);
+  });
+});
+
+describe("older history control", () => {
+  const drained = { mounted: 64, loaded: 64 };
+
+  it("grows the local window first, even with a server cursor", () => {
+    expect(
+      olderHistoryControl({ mounted: 12, loaded: 64 }, { hasMore: true, cursor: 237 }),
+    ).toBe("grow");
+  });
+
+  it("requests a server page once the window is drained and a cursor exists", () => {
+    expect(olderHistoryControl(drained, { hasMore: true, cursor: 237 })).toBe(
+      "server",
+    );
+  });
+
+  it("offers nothing when the server published no more history", () => {
+    expect(olderHistoryControl(drained, { hasMore: false, cursor: null })).toBe(
+      "none",
+    );
+    // A legacy response has no pagination fields at all.
+    expect(olderHistoryControl(drained, NO_OLDER_HISTORY)).toBe("none");
+    // `has_more` without a cursor can never be fetched.
+    expect(olderHistoryControl(drained, { hasMore: true, cursor: null })).toBe(
+      "none",
+    );
   });
 });
