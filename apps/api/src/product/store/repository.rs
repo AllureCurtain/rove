@@ -16,27 +16,28 @@ use crate::product::{
     CreateProductSessionRequest, CreateProductWorkspaceRequest, DEFAULT_PRODUCT_MAX_STEPS,
     M1BrowserMigrationPreflight, M1BrowserMigrationResponse, M1MigrationDisposition,
     M1MigrationIssue, M1MigrationIssueCode, M1PreferencesBaseline, M1ProviderProfileIdMapping,
-    M1SessionIdMapping, M1WorkspaceIdMapping, MAX_PRODUCT_FORK_INHERITED_RUNS,
-    MAX_PRODUCT_MAX_STEPS, MAX_PRODUCT_MESSAGE_PAGE_LIMIT, MAX_PRODUCT_PROVIDER_PROFILES,
-    MAX_PRODUCT_SESSIONS, MAX_PRODUCT_TEXT_BYTES, MAX_PRODUCT_WORKSPACES,
-    PreparedM1BrowserMigration, ProductApprovalPreference, ProductControl, ProductControlId,
-    ProductControlKind, ProductControlStatus, ProductErrorCode, ProductFollowupTurnClaim,
-    ProductFork, ProductForkContext, ProductForkId, ProductForkInheritedRun, ProductMessage,
-    ProductMessageDelivery, ProductMessagePage, ProductMessagePageQuery, ProductMessageStatus,
-    ProductMigrationReceiptId, ProductPreferences, ProductPricingAvailability,
-    ProductProviderCredentialSource, ProductProviderProfile, ProductProviderProfileId,
-    ProductProviderSelection, ProductProviderType, ProductReasoningPreference, ProductResumeHealth,
-    ProductResumeHealthStatus, ProductReview, ProductReviewFinding, ProductReviewFindingsQuery,
-    ProductReviewFindingsResponse, ProductReviewId, ProductReviewStatus, ProductRuntimeBinding,
-    ProductSession, ProductSessionContext, ProductSessionCursor, ProductSessionId,
-    ProductSessionModelConfig, ProductSessionOutcome, ProductSessionPage, ProductSessionPageQuery,
-    ProductSessionRecovery, ProductSessionRunBinding, ProductSessionRunModelView,
-    ProductSessionStatus, ProductStoreError, ProductThemePreference, ProductTurnClaim,
-    ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace, ProductWorkspaceId,
-    ProductWorkspaceKind, RecoverProductSessionOwnership, SESSION_RANK_ARCHIVED, SESSION_RANK_LIVE,
-    UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
-    UpdateProductSessionModelConfigRequest, UpdateProductSessionRequest,
-    VerifiedM1SessionRunBinding, VerifiedProductForkBoundary, m1_browser_migration_digest,
+    M1SessionIdMapping, M1WorkspaceIdMapping, MAX_PENDING_MESSAGES_PER_SESSION,
+    MAX_PRODUCT_FORK_INHERITED_RUNS, MAX_PRODUCT_MAX_STEPS, MAX_PRODUCT_MESSAGE_PAGE_LIMIT,
+    MAX_PRODUCT_PROVIDER_PROFILES, MAX_PRODUCT_SESSIONS, MAX_PRODUCT_TEXT_BYTES,
+    MAX_PRODUCT_WORKSPACES, PreparedM1BrowserMigration, ProductApprovalPreference, ProductControl,
+    ProductControlId, ProductControlKind, ProductControlStatus, ProductErrorCode,
+    ProductFollowupTurnClaim, ProductFork, ProductForkContext, ProductForkId,
+    ProductForkInheritedRun, ProductMessage, ProductMessageDelivery, ProductMessagePage,
+    ProductMessagePageQuery, ProductMessageStatus, ProductMigrationReceiptId, ProductPreferences,
+    ProductPricingAvailability, ProductProviderCredentialSource, ProductProviderProfile,
+    ProductProviderProfileId, ProductProviderSelection, ProductProviderType,
+    ProductReasoningPreference, ProductResumeHealth, ProductResumeHealthStatus, ProductReview,
+    ProductReviewFinding, ProductReviewFindingsQuery, ProductReviewFindingsResponse,
+    ProductReviewId, ProductReviewStatus, ProductRuntimeBinding, ProductSession,
+    ProductSessionContext, ProductSessionCursor, ProductSessionId, ProductSessionModelConfig,
+    ProductSessionOutcome, ProductSessionPage, ProductSessionPageQuery, ProductSessionRecovery,
+    ProductSessionRunBinding, ProductSessionRunModelView, ProductSessionStatus, ProductStoreError,
+    ProductThemePreference, ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish,
+    ProductWorkspace, ProductWorkspaceId, ProductWorkspaceKind, RecoverProductSessionOwnership,
+    SESSION_RANK_ARCHIVED, SESSION_RANK_LIVE, UpdateProductPreferencesRequest,
+    UpdateProductProviderProfileRequest, UpdateProductSessionModelConfigRequest,
+    UpdateProductSessionRequest, VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
+    m1_browser_migration_digest,
 };
 
 use super::schema::{ProductDatabase, storage_error};
@@ -53,8 +54,10 @@ const MIGRATION_SOURCE_WEB_M1: &str = "web_m1_local_storage";
 const MIGRATION_PREPARATION_TTL_SECS: i64 = 24 * 60 * 60;
 // Mirrors the bounded runtime steer channel. Keeping persistent pending
 // steers within this capacity guarantees a run attaching after an HTTP/API
-// race can inject every pending message at its first declared safe point.
-const MAX_PENDING_STEERS_PER_SESSION: i64 = 64;
+// race can inject every pending message at its first declared safe point. The
+// published bound lives in the product contract so the reorder endpoint can
+// reject an oversized list with the same number.
+const MAX_PENDING_STEERS_PER_SESSION: i64 = MAX_PENDING_MESSAGES_PER_SESSION;
 
 fn validate_control_message(
     content: &str,
@@ -2599,11 +2602,18 @@ impl ProductRepository {
         &self,
         session_id: &ProductSessionId,
         message_id: &ProductControlId,
+        delivery: ProductMessageDelivery,
     ) -> Result<ProductMessage, ProductStoreError> {
         let mut connection = self.database.connect()?;
         let transaction = immediate_transaction(&mut connection)?;
         let existing_message = get_message_in_transaction(&transaction, session_id, message_id)?;
-        if existing_message.requested_delivery == ProductMessageDelivery::CurrentRun {
+        // Replaying a `current_run` promotion must not steer the live run
+        // twice, so that mode is idempotent. A repeated `successor` promotion is
+        // instead re-applied, because "move to the head" is meaningful each
+        // time: the message may have been reordered behind another one since.
+        if delivery == ProductMessageDelivery::CurrentRun
+            && existing_message.requested_delivery == delivery
+        {
             transaction.commit().map_err(storage_error)?;
             return Ok(existing_message);
         }
@@ -2625,17 +2635,36 @@ impl ProductRepository {
                 "message is no longer eligible for promotion",
             ));
         }
-        let changed = transaction
-            .execute(
-                r#"
-                UPDATE product_session_controls
-                SET kind = 'steer', message_contract_version = 1,
-                    requested_delivery = 'current_run'
-                WHERE product_session_id = ?1 AND control_id = ?2 AND status = 'pending'
-                "#,
-                params![session_id.to_string(), message_id.to_string()],
-            )
-            .map_err(storage_error)?;
+        let changed = match delivery {
+            ProductMessageDelivery::CurrentRun => transaction
+                .execute(
+                    r#"
+                    UPDATE product_session_controls
+                    SET kind = 'steer', message_contract_version = 1,
+                        requested_delivery = 'current_run'
+                    WHERE product_session_id = ?1 AND control_id = ?2 AND status = 'pending'
+                    "#,
+                    params![session_id.to_string(), message_id.to_string()],
+                )
+                .map_err(storage_error)?,
+            // A successor promotion keeps the row in the drainable
+            // `followup`/`pending` shape and only moves it to the front of the
+            // queue. Writing a position below every current one reuses the same
+            // ordering rule the drain uses, without rewriting the other rows.
+            ProductMessageDelivery::Successor => {
+                let head = next_queue_order_head(&transaction, session_id)?;
+                transaction
+                    .execute(
+                        r#"
+                        UPDATE product_session_controls
+                        SET requested_delivery = 'successor', queue_order = ?3
+                        WHERE product_session_id = ?1 AND control_id = ?2 AND status = 'pending'
+                        "#,
+                        params![session_id.to_string(), message_id.to_string(), head],
+                    )
+                    .map_err(storage_error)?
+            }
+        };
         if changed != 1 {
             return Err(ProductStoreError::new(
                 ProductErrorCode::ProductControlRejected,
@@ -2645,6 +2674,102 @@ impl ProductRepository {
         let updated = get_message_in_transaction(&transaction, session_id, message_id)?;
         transaction.commit().map_err(storage_error)?;
         Ok(updated)
+    }
+
+    /// Atomically rewrite the successor queue order.
+    ///
+    /// The list must cover the session's current successor queue exactly; that
+    /// coverage requirement is also the concurrency control, because any
+    /// concurrent promote, revoke, or drain removes or adds a queue member and
+    /// therefore fails this check with a typed conflict instead of silently
+    /// interleaving two orders. `seq` is never rewritten: it remains the
+    /// append-only ledger order that message paging depends on.
+    pub(super) fn reorder_messages(
+        &self,
+        session_id: &ProductSessionId,
+        ordered_ids: &[ProductControlId],
+    ) -> Result<Vec<ProductMessage>, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        get_session(&transaction, session_id)?;
+        let current: Vec<String> = {
+            let mut statement = transaction
+                .prepare(
+                    r#"
+                    SELECT control_id
+                    FROM product_session_controls
+                    WHERE product_session_id = ?1 AND message_contract_version = 1
+                      AND kind = 'followup' AND status = 'pending'
+                    ORDER BY COALESCE(queue_order, seq) ASC, seq ASC
+                    "#,
+                )
+                .map_err(storage_error)?;
+            statement
+                .query_map(params![session_id.to_string()], |row| row.get(0))
+                .map_err(storage_error)?
+                .collect::<Result<Vec<String>, _>>()
+                .map_err(storage_error)?
+        };
+        let requested: Vec<String> = ordered_ids.iter().map(|id| id.to_string()).collect();
+        let mut sorted_requested = requested.clone();
+        sorted_requested.sort();
+        sorted_requested.dedup();
+        if sorted_requested.len() != requested.len() {
+            return Err(invalid("reorder list repeats a queued message"));
+        }
+        let mut sorted_current = current.clone();
+        sorted_current.sort();
+        if sorted_requested != sorted_current {
+            // A stale list is the normal race outcome: a promote, revoke, or
+            // drain changed the queue after the client read it.
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlConflict,
+                "reorder list does not match the session's current queued messages",
+            ));
+        }
+        for (position, control_id) in requested.iter().enumerate() {
+            let position = i64::try_from(position).map_err(storage_error)?;
+            let changed = transaction
+                .execute(
+                    r#"
+                    UPDATE product_session_controls
+                    SET queue_order = ?3
+                    WHERE product_session_id = ?1 AND control_id = ?2
+                      AND message_contract_version = 1
+                      AND kind = 'followup' AND status = 'pending'
+                    "#,
+                    params![session_id.to_string(), control_id, position],
+                )
+                .map_err(storage_error)?;
+            if changed != 1 {
+                return Err(ProductStoreError::new(
+                    ProductErrorCode::ProductControlConflict,
+                    "queued message changed while it was being reordered",
+                ));
+            }
+        }
+        let reordered = {
+            let mut statement = transaction
+                .prepare(
+                    r#"
+                    SELECT control_id, product_session_id, content, status, run_id, seq,
+                           created_at, applied_at, abandoned_reason, requested_delivery,
+                           queue_order
+                    FROM product_session_controls
+                    WHERE product_session_id = ?1 AND message_contract_version = 1
+                      AND kind = 'followup' AND status = 'pending'
+                    ORDER BY COALESCE(queue_order, seq) ASC, seq ASC
+                    "#,
+                )
+                .map_err(storage_error)?;
+            statement
+                .query_map(params![session_id.to_string()], row_to_message)
+                .map_err(storage_error)?
+                .collect::<Result<Vec<ProductMessage>, _>>()
+                .map_err(storage_error)?
+        };
+        transaction.commit().map_err(storage_error)?;
+        Ok(reordered)
     }
 
     pub(super) fn revoke_message(
@@ -2715,7 +2840,8 @@ impl ProductRepository {
                 .prepare(
                     r#"
                     SELECT control_id, product_session_id, content, status, run_id, seq,
-                           created_at, applied_at, abandoned_reason, requested_delivery
+                           created_at, applied_at, abandoned_reason, requested_delivery,
+                           queue_order
                     FROM product_session_controls
                     WHERE product_session_id = ?1 AND message_contract_version = 1
                       AND seq > ?2
@@ -2739,7 +2865,8 @@ impl ProductRepository {
                 .prepare(
                     r#"
                     SELECT control_id, product_session_id, content, status, run_id, seq,
-                           created_at, applied_at, abandoned_reason, requested_delivery
+                           created_at, applied_at, abandoned_reason, requested_delivery,
+                           queue_order
                     FROM product_session_controls
                     WHERE product_session_id = ?1 AND message_contract_version = 1
                       AND seq < ?2
@@ -3046,7 +3173,7 @@ impl ProductRepository {
                        status, run_id, seq, created_at, applied_at
                 FROM product_session_controls
                 WHERE product_session_id = ?1 AND kind = 'followup' AND status = 'pending'
-                ORDER BY seq ASC
+                ORDER BY COALESCE(queue_order, seq) ASC, seq ASC
                 "#,
             )
             .map_err(storage_error)?;
@@ -3075,7 +3202,7 @@ impl ProductRepository {
                        status, run_id, seq, created_at, applied_at
                 FROM product_session_controls
                 WHERE product_session_id = ?1 AND kind = 'followup' AND status = 'pending'
-                ORDER BY seq ASC
+                ORDER BY COALESCE(queue_order, seq) ASC, seq ASC
                 LIMIT 1
                 "#,
                 params![session_id.to_string()],
@@ -3144,7 +3271,7 @@ impl ProductRepository {
                        status, run_id, seq, created_at, applied_at
                 FROM product_session_controls
                 WHERE product_session_id = ?1 AND kind = 'followup' AND status = 'pending'
-                ORDER BY seq ASC
+                ORDER BY COALESCE(queue_order, seq) ASC, seq ASC
                 LIMIT 1
                 "#,
                 params![session_id.to_string()],
@@ -3437,6 +3564,31 @@ fn active_turn_session_id(
         .ok_or_else(|| resume_conflict("product session turn claim is missing or no longer active"))
 }
 
+/// The position that places a promoted message ahead of the whole queue.
+///
+/// It is one below the smallest effective position rather than a fixed `-1`, so
+/// repeated promotions still order themselves: the second promotion lands ahead
+/// of the first. `i64::MIN` saturation is deliberately unreachable in practice
+/// (it would need ~9e18 promotions) and degrades to "shares the head position",
+/// which the `seq` tie-break still resolves deterministically.
+fn next_queue_order_head(
+    transaction: &Transaction<'_>,
+    session_id: &ProductSessionId,
+) -> Result<i64, ProductStoreError> {
+    let head: Option<i64> = transaction
+        .query_row(
+            r#"
+            SELECT MIN(COALESCE(queue_order, seq))
+            FROM product_session_controls
+            WHERE product_session_id = ?1 AND kind = 'followup' AND status = 'pending'
+            "#,
+            params![session_id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    Ok(head.unwrap_or(0).saturating_sub(1))
+}
+
 fn pending_followup_for_session(
     transaction: &Transaction<'_>,
     session_id: &ProductSessionId,
@@ -3448,7 +3600,7 @@ fn pending_followup_for_session(
                    status, run_id, seq, created_at, applied_at
             FROM product_session_controls
             WHERE product_session_id = ?1 AND kind = 'followup' AND status = 'pending'
-            ORDER BY seq ASC
+            ORDER BY COALESCE(queue_order, seq) ASC, seq ASC
             LIMIT 1
             "#,
             params![session_id.to_string()],
@@ -7367,7 +7519,8 @@ fn get_message_in_transaction(
         .query_row(
             r#"
             SELECT control_id, product_session_id, content, status, run_id, seq,
-                   created_at, applied_at, abandoned_reason, requested_delivery
+                   created_at, applied_at, abandoned_reason, requested_delivery,
+                   queue_order
             FROM product_session_controls
             WHERE product_session_id = ?1 AND control_id = ?2
               AND message_contract_version = 1
@@ -7391,6 +7544,7 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProductMessage> {
     let applied_at: Option<String> = row.get(7)?;
     let persisted_reason: Option<String> = row.get(8)?;
     let requested_delivery: String = row.get(9)?;
+    let queue_order: Option<i64> = row.get(10)?;
     let mapped = (|| {
         let stored_status = control_status_from_db(&status)?;
         let requested_delivery = match requested_delivery.as_str() {
@@ -7445,6 +7599,7 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProductMessage> {
                 .flatten(),
             created_at,
             applied_at,
+            queue_order,
             reason: match status {
                 ProductMessageStatus::NeedsAttention => persisted_reason.or_else(|| {
                     Some("message delivery requires an explicit recovery decision".to_string())
