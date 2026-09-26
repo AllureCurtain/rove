@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import {
   FormEvent,
@@ -31,8 +31,11 @@ import {
 import { useCopy } from "../copy/CopyProvider";
 import { useArmedDelete } from "../shell/use-armed-delete";
 import type { SessionRecord, WorkspaceKind, WorkspaceRecord } from "../state/product-types";
+import { SessionHoverCard } from "./SessionHoverCard";
 import { orderSessions, type SessionPin } from "./session-order";
 import { filterSessions, normalizeSearch } from "./session-search";
+import { formatDisplayPath, sessionStatusLabel, shortId } from "./session-labels";
+import { useSessionHoverCard } from "./use-session-hover-card";
 import { useSessionPins } from "./use-session-pins";
 
 /** Sidebar order: pins lead, then modification time (newest first). */
@@ -451,6 +454,7 @@ export function WorkspaceTree({
                         sessions={sessions}
                         allSessions={allSessions}
                         workspaceId={workspace.id}
+                        workspaceRootPath={workspace.rootPath}
                         activeSessionId={activeSessionId}
                         paintedSessionId={selectionPaint?.sessionId ?? activeSessionId}
                         mutationBusy={mutationBusy}
@@ -586,6 +590,7 @@ function SessionBranchList({
   sessions,
   allSessions,
   workspaceId,
+  workspaceRootPath,
   activeSessionId,
   paintedSessionId,
   mutationBusy,
@@ -597,6 +602,7 @@ function SessionBranchList({
   sessions: SessionRecord[];
   allSessions: SessionRecord[];
   workspaceId: string;
+  workspaceRootPath: string;
   activeSessionId: string | null;
   /** The optimistically highlighted session while a selection paints/loads. */
   paintedSessionId: string | null;
@@ -632,7 +638,11 @@ function SessionBranchList({
           parentAvailable={
             !session.parentSessionId || allSessions.some((parent) => parent.id === session.parentSessionId)
           }
+          parentTitle={
+            allSessions.find((parent) => parent.id === session.parentSessionId)?.title ?? null
+          }
           workspaceId={workspaceId}
+          workspaceRootPath={workspaceRootPath}
           activeSessionId={activeSessionId}
           paintedSessionId={paintedSessionId}
           mutationBusy={mutationBusy}
@@ -651,7 +661,9 @@ function SessionBranch({
   session,
   childrenByParent,
   parentAvailable,
+  parentTitle,
   workspaceId,
+  workspaceRootPath,
   activeSessionId,
   paintedSessionId,
   mutationBusy,
@@ -664,7 +676,9 @@ function SessionBranch({
   session: SessionRecord;
   childrenByParent: Map<string, SessionRecord[]>;
   parentAvailable: boolean;
+  parentTitle?: string | null;
   workspaceId: string;
+  workspaceRootPath: string;
   activeSessionId: string | null;
   paintedSessionId: string | null;
   mutationBusy: boolean;
@@ -675,6 +689,7 @@ function SessionBranch({
   onRenameSession?: (sessionId: string, title: string) => Promise<boolean>;
 }) {
   const { t } = useCopy();
+  const hoverCard = useSessionHoverCard(session.id);
   const children = childrenByParent.get(session.id) ?? [];
   const [renaming, setRenaming] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
@@ -779,6 +794,10 @@ function SessionBranch({
           aria-current={active ? "page" : undefined}
           title={sessionAriaLabel(session, parentAvailable, t)}
           data-status={session.status}
+          ref={hoverCard.anchorRef}
+          aria-describedby={hoverCard.open ? hoverCard.cardId : undefined}
+          onMouseEnter={hoverCard.rowProps.onMouseEnter}
+          onMouseLeave={hoverCard.rowProps.onMouseLeave}
           onClick={(event) =>
             onSelectSession(workspaceId, session.id, event.detail === 0)
           }
@@ -856,7 +875,9 @@ function SessionBranch({
               session={child}
               childrenByParent={childrenByParent}
               parentAvailable
+              parentTitle={session.title}
               workspaceId={workspaceId}
+              workspaceRootPath={workspaceRootPath}
               activeSessionId={activeSessionId}
               paintedSessionId={paintedSessionId}
               mutationBusy={mutationBusy}
@@ -868,6 +889,16 @@ function SessionBranch({
             />
           ))}
         </ul>
+      ) : null}
+      {hoverCard.open ? (
+        <SessionHoverCard
+          id={hoverCard.cardId}
+          session={session}
+          workspaceRootPath={workspaceRootPath}
+          parentTitle={parentTitle}
+          anchor={hoverCard.anchor}
+          host={hoverCard.portalHost}
+        />
       ) : null}
     </li>
   );
@@ -893,22 +924,6 @@ function trapFocus(event: KeyboardEvent<HTMLElement>) {
   } else if (!event.shiftKey && document.activeElement === last) {
     event.preventDefault();
     first.focus();
-  }
-}
-
-function sessionStatusLabel(
-  status: SessionRecord["status"],
-  t: (path: string) => string,
-): string {
-  switch (status) {
-    case "running":
-      return t("workspace.running");
-    case "needs_attention":
-      return t("workspace.needsAttention");
-    case "error":
-      return t("inspector.statusFailed");
-    default:
-      return t("inspector.statusQueued");
   }
 }
 
@@ -940,14 +955,6 @@ function forkPointLabel(
     ? `event ${session.forkPointSeq}`
     : t("inspector.notAvailable");
   return `${parentAvailable ? t("workspace.forkPrefix") : t("workspace.parentRemoved")} · ${source} · ${sequence}`;
-}
-
-function shortId(value: string): string {
-  return value.length <= 10 ? value : value.slice(0, 10);
-}
-
-function formatDisplayPath(path: string): string {
-  return path.startsWith("\\\\?\\") ? path.slice(4) : path;
 }
 
 function OpenWorkspaceDialog({

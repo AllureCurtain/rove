@@ -110,6 +110,12 @@ export interface MockProductApiOptions {
   transcriptDelayMs?: Record<string, number>;
   transcriptFailures?: Record<string, number>;
   sessionModelConfigFailures?: number;
+  /**
+   * Failures for `GET .../model-config`, per session id. The shell reads the
+   * active session's config on load, so a card-only failure has to be addressed
+   * to the session the test hovers.
+   */
+  sessionModelConfigReadFailures?: Record<string, number>;
   disconnectJobStartResponses?: number;
   jobBindingVisibilityDelayReads?: number;
   sessionCreateDelayMs?: number;
@@ -161,6 +167,9 @@ export interface MockProductApiState {
   transcriptFailures: Record<string, number>;
   sessionModelConfigUpdateRequests: number;
   remainingSessionModelConfigFailures: number;
+  /** Every `GET .../model-config`, in order, so a caller can be identified. */
+  sessionModelConfigReads: string[];
+  remainingSessionModelConfigReadFailures: Record<string, number>;
   disconnectedJobStartResponses: number;
   delayedJobBindingReads: number;
   sessionCreateRequests: number;
@@ -259,6 +268,10 @@ export async function installMockProductApi(
     sessionModelConfigUpdateRequests: 0,
     remainingSessionModelConfigFailures:
       options.sessionModelConfigFailures ?? 0,
+    sessionModelConfigReads: [],
+    remainingSessionModelConfigReadFailures: {
+      ...(options.sessionModelConfigReadFailures ?? {}),
+    },
     disconnectedJobStartResponses: 0,
     delayedJobBindingReads: 0,
     sessionCreateRequests: 0,
@@ -939,6 +952,18 @@ export async function installMockProductApi(
         );
       }
       if (method === "GET") {
+        state.sessionModelConfigReads.push(sessionId);
+        if ((state.remainingSessionModelConfigReadFailures[sessionId] ?? 0) > 0) {
+          state.remainingSessionModelConfigReadFailures[sessionId] -= 1;
+          return json(
+            route,
+            {
+              code: "product_storage_failure",
+              error: "session model settings unavailable",
+            },
+            503,
+          );
+        }
         return json(route, config);
       }
       if (method === "PUT") {

@@ -607,6 +607,57 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   text-transform: none;
 }
 
+/* Session hover card (design F4). Portaled inside the frame, so it keeps the
+   v2 tokens while escaping the sidebar's scroll clipping. Read-only surface:
+   the row itself owns every action. */
+.product-app-frame[data-ui-version="v2"] .session-hover-card {
+  position: fixed;
+  z-index: 40;
+  display: grid;
+  width: 320px;
+  max-height: min(70vh, 420px);
+  gap: 8px;
+  border: 1px solid var(--v2-border-strong);
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-md);
+  color: var(--v2-ink-2);
+  padding: 10px 12px;
+  font-size: 11px;
+  overflow: auto;
+  pointer-events: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-hover-card__title {
+  margin: 0;
+  color: var(--v2-ink);
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-hover-card__facts {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-hover-card__fact {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-hover-card__fact dt {
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-hover-card__fact dd {
+  margin: 0;
+  color: var(--v2-ink);
+  overflow-wrap: anywhere;
+}
+
 .product-app-frame[data-ui-version="v2"] .session-list__actions {
   padding: 4px 0 8px 12px;
 }
