@@ -1,9 +1,10 @@
 # 运行时与产品合同对齐（下一轮）设计
 
 - 日期：2026-09-26
-- 状态：**Proposed / Not Implemented**。本文档全部条目均未实现；每个条目落地时必须在
-  同一变更中更新 `docs/runtime/` 对应现状文档与 `docs/runtime/implementation-status.md`、
-  `docs/runtime/acceptance-matrix.md`，并按 `CONTRIBUTING.md` 走 feature worktree + PR。
+- 状态：**Partially Implemented**。R1 已落地（§0.1 状态列与 §1.7）；其余条目仍未实现。
+  每个条目落地时必须在同一变更中更新 `docs/runtime/` 对应现状文档与
+  `docs/runtime/implementation-status.md`、`docs/runtime/acceptance-matrix.md`，
+  并按 `CONTRIBUTING.md` 走 feature worktree + PR。
 - 基线：`main @ 915cbb9`（2026-09-26）。
 - 范围：`runtime/`、`core/`、`models/`、`apps/api/`、`apps/bootstrap/`、`tests/`、
   ProductStore schema 迁移，以及为消费新合同所需的 `apps/web` 最小接线
@@ -38,7 +39,7 @@
 
 | 编号 | 条目 | 优先级 | 主要触碰面 | 状态 |
 |---|---|---|---|---|
-| R1 | transcript 游标分页（F.4 闭环） | P0 | `apps/api` + `apps/web` 接线 | Proposed |
+| R1 | transcript 游标分页（F.4 闭环） | P0 | `apps/api` + `apps/web` 接线 | Implemented（见 §1.7） |
 | R2 | 回合失败恢复家族（a 静默回合 / b 中止保留 / c 重试预算+事件） | P0 | `core`/`runtime`/`models`/`apps/api`/事件合同 | Proposed |
 | R3 | 会话 `last_outcome` 字段 | P1 | ProductStore 迁移 016 + contracts + web | Proposed |
 | R4 | 队列协议扩展（原子重排 / send-now 边界语义 / 重启存活验证） | P1 | `apps/api` + 迁移 017 | Proposed |
@@ -112,7 +113,9 @@ rove 的 trace/events 已是 append-only 且有 `seq`，缺的只是把"最新�
 
 - 纯 additive：无 schema 迁移（数据源是既有 events/index 表）；旧客户端不传参行为不变。
 - OpenAPI 同步；`tests/api.rs` 新增合同用例（见 1.6）。
-- `docs/runtime/browser-workspace-spec.md`（transcript 投影章节）同变更更新。
+- `docs/runtime/implementation-guide.md`（路由表与游标语义）同变更更新；
+  原文写作时指向的 `docs/runtime/browser-workspace-spec.md` 没有 transcript 投影章节，
+  属文档更正，见 §1.7 第 5 条。
 
 ### 1.5 Web 接线（最小集，细节归前端文档）
 
@@ -134,6 +137,48 @@ rove 的 trace/events 已是 append-only 且有 `seq`，缺的只是把"最新�
 - Web e2e（mock 300 runs）：翻页拼接、prepend 滚动锚定、`has_more` 终止。
 - 声明闭环：`implementation-status.md` 的 F.4 行在两条接线（服务端游标 + Web 消费）
   都落地后才允许改写；只落服务端不得宣称 F.4 完成。
+
+### 1.7 实施记录
+
+服务端与 Web 两条接线同批落地（branch `feature/runtime-align-r1`）。
+
+- 服务端：`apps/api/src/product/contracts.rs`（`ProductTranscriptQuery`、
+  `MAX_TRANSCRIPT_PAGE_RUNS = 64`、两个 additive 字段）、
+  `apps/api/src/product/transcript/reader.rs`（`PageWalk` 纯状态机 + 游标页投影）、
+  `apps/api/src/product/routes.rs`（query DTO + 400 校验）、
+  `apps/api/src/product/export.rs`（沿用无参导出）。
+- Web：`product/product-api-types.ts`、`product/product-client.ts`、
+  `state/transcript-projection.ts`、`state/use-session-continuity.ts`、
+  `chat/transcript-window.ts`、`chat/Transcript.tsx`、`shell/ProductApp.tsx`。
+
+落地时确认并解决的设计歧义（以本文档为准的记录，不静默改写历史）：
+
+1. **无参兼容 vs "最新页"**：§1.3 写"不传 = 现状（最新页）"，而现状实际是
+   自旧到新、预算内最多 `MAX_TRANSCRIPT_RUNS` 个 run。两种读法冲突时以 §1.3 同段的
+   "逐字节兼容"为准：**无参请求完全走既有路径**（旧到新、`has_more`/
+   `next_before_ordinal` 两个字段整体省略），带任一页参数才返回游标页
+   （新→旧取、升序发出、两字段都出现且 `has_more === next_before_ordinal.is_some()`）。
+   因此 §1.3 写的 `has_more: bool` 在实现中是 additive `Option<bool>`：
+   字段恒在会破坏无参响应的字节兼容。
+2. **游标边界**：`before_ordinal` 大于最大 ordinal → 空页 + `has_more:false`（§1.3 已写）；
+   实现同样把"等于最旧 run"的游标收成空终页，否则客户端会在最后一页之后无限重取。
+3. **`limit_runs` 上界**：0 与 >64 都返回 `product_invalid_input` 400（§1.3 只写了 0）；
+   只给 `before_ordinal` 时默认页大小沿用 `MAX_TRANSCRIPT_RUNS`。
+4. **验证门第 4 条（页内超预算）未做端到端重放**：product 消息内容上限 32 KiB
+   （`runtime/src/conversation.rs` 的 `MAX_MESSAGE_BYTES`，超限回合会转
+   `needs_attention`），fake provider 也不能从 API 配置脚本化，因此让单页超过 16 MiB
+   事件预算需要约 170 个满额回合（约 3 分钟）。改为 `PageWalk` 单元测试驱动同一状态机
+   的"预算已耗尽"与"单 run 被预算截断"两条分支（`page_walk_continues_older_after_the_budget_stops_a_page`、
+   `page_walk_keeps_paging_after_a_run_is_truncated_by_the_budget`），端到端只覆盖
+   翻页拼接与边界矩阵。**这条门禁是降级覆盖，不是通过。**
+5. **文档更正**：§1.4 指的 `docs/runtime/browser-workspace-spec.md` 是未来的
+   browser 自动化 workspace 说明，没有 transcript 投影章节。当前合同已写入
+   `docs/runtime/implementation-guide.md`（路由表 + 游标语义 + Web 消费），
+   `docs/runtime/implementation-status.md` 与 `docs/runtime/acceptance-matrix.md`
+   同步更新。
+
+非目标（本轮明确不做）：分页仍受既有校验窗口约束（`min(bindings, MAX_TRANSCRIPT_RUNS + 1)`
+= 257 个 binding），超过该窗口的会话无法继续向更旧翻页；消息账本 `before_seq` 分页仍不接线（§1.5）。
 
 ---
 
@@ -628,7 +673,7 @@ R2a/R2b 共享 fake provider 脚本化扩展（PR-2 先建）；R6 依赖 R1 的
 
 | 条目 | Rust 门 | 合同/集成用例 | Web 门 | 文档更新 |
 |---|---|---|---|---|
-| R1 | fmt/clippy/test | api×4 组 | e2e 翻页拼接 | browser-workspace-spec |
+| R1 | fmt/clippy/test ✅ | api 3 组（无参兼容、65-run 翻页拼接、边界矩阵+OpenAPI 参数）✅；页内超预算改为 `PageWalk` 单测 ✅（端到端重放未做，见 §1.7 第 4 条） | mock 300-run 翻页拼接 + 锚定 `transcript-pagination.spec.ts` ✅ | implementation-guide / implementation-status / acceptance-matrix ✅（§1.7 第 5 条的更正） |
 | R2a | 同上 + fake 脚本化 | 恢复/不循环/关配置/审批照常 | 等待行显示 | react-loop |
 | R2b | 同上 | salvage 两分支/幂等/空文本 | "(已中止)"标记 | react-loop |
 | R2c | 同上 | 分账/首事件前/流中断不重试/退避取消 | 重试状态行 | provider-smoke |

@@ -58,3 +58,42 @@ export function shouldRequestOlderPage(
 export function hiddenMountedCount(window: TranscriptWindow): number {
   return Math.max(0, Math.min(window.loaded, window.loaded) - window.mounted);
 }
+
+/**
+ * Older history the server has published but the client has not fetched yet.
+ * `cursor` is the server's `next_before_ordinal`; it only exists while
+ * strictly older runs remain.
+ */
+export interface OlderHistoryState {
+  hasMore: boolean;
+  cursor: number | null;
+  loading: boolean;
+  error: string | null;
+}
+
+export const NO_OLDER_HISTORY: OlderHistoryState = {
+  hasMore: false,
+  cursor: null,
+  loading: false,
+  error: null,
+};
+
+/**
+ * What the "older history" affordance should offer right now. Everything
+ * already loaded mounts first, so a server page is only requested once the
+ * mounted window has drained and the server published a cursor.
+ */
+export type OlderHistoryControl = "none" | "grow" | "server";
+
+export function olderHistoryControl(
+  window: TranscriptWindow,
+  older: Pick<OlderHistoryState, "hasMore" | "cursor">,
+): OlderHistoryControl {
+  if (hiddenMountedCount(window) > 0) {
+    return "grow";
+  }
+  if (!older.hasMore || !shouldRequestOlderPage(window, older.cursor)) {
+    return "none";
+  }
+  return "server";
+}

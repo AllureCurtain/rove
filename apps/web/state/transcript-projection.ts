@@ -23,6 +23,90 @@ export type TranscriptRestoreState =
     }
   | { status: "error"; sessionId: string; error: string };
 
+/**
+ * Every run segment the client has loaded so far, ascending by `ordinal`,
+ * together with the partial reasons those pages reported.
+ */
+export interface LoadedTranscriptHistory {
+  productSessionId: string;
+  workspaceId: string;
+  segments: ProductTranscriptRunSegment[];
+  partialReasons: ProductTranscriptPartialReason[];
+}
+
+export function loadedTranscriptHistory(
+  transcript: ProductTranscriptResponse,
+): LoadedTranscriptHistory {
+  return {
+    productSessionId: transcript.product_session_id,
+    workspaceId: transcript.workspace_id,
+    segments: transcript.segments,
+    partialReasons: transcript.partial_reasons,
+  };
+}
+
+/**
+ * Prepend an older page to the loaded history. The cursor is exclusive, so
+ * overlap is only possible if the server regressed; the already-loaded segment
+ * wins and the result stays ascending by `binding.ordinal`.
+ */
+export function prependTranscriptPage(
+  loaded: LoadedTranscriptHistory,
+  page: ProductTranscriptResponse,
+): LoadedTranscriptHistory {
+  const byOrdinal = new Map<number, ProductTranscriptRunSegment>();
+  for (const segment of [...loaded.segments, ...page.segments]) {
+    if (!byOrdinal.has(segment.binding.ordinal)) {
+      byOrdinal.set(segment.binding.ordinal, segment);
+    }
+  }
+  return {
+    ...loaded,
+    segments: [...byOrdinal.values()].sort(
+      (left, right) => left.binding.ordinal - right.binding.ordinal,
+    ),
+    partialReasons: mergeTranscriptPartialReasons(
+      loaded.partialReasons,
+      page.partial_reasons,
+    ),
+  };
+}
+
+/**
+ * The loaded history as one transcript response, so the canonical projection
+ * sees exactly what a single unpaginated response would have carried.
+ */
+export function transcriptProjectionInput(
+  history: LoadedTranscriptHistory,
+): ProductTranscriptResponse {
+  return {
+    product_session_id: history.productSessionId,
+    workspace_id: history.workspaceId,
+    status: history.partialReasons.length === 0 ? "complete" : "partial",
+    partial_reasons: history.partialReasons,
+    segments: history.segments,
+  };
+}
+
+function mergeTranscriptPartialReasons(
+  ...pages: ProductTranscriptPartialReason[][]
+): ProductTranscriptPartialReason[] {
+  const merged = new Map<string, ProductTranscriptPartialReason>();
+  for (const reason of pages.flat()) {
+    const key = JSON.stringify([
+      reason.code,
+      reason.run_ordinal ?? null,
+      reason.run_id ?? null,
+      reason.expected_seq ?? null,
+      reason.observed_seq ?? null,
+    ]);
+    if (!merged.has(key)) {
+      merged.set(key, reason);
+    }
+  }
+  return [...merged.values()];
+}
+
 export function projectProductTranscript(
   transcript: ProductTranscriptResponse,
 ): WorkbenchState {

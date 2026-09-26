@@ -160,6 +160,9 @@ const enUS: CopyDictionary = {
     stop: "Stop",
     placeholder: "Type a message. Ctrl/Cmd+Enter to send, Enter for a new line.",
     loadOlder: "Load {{n}} earlier turns",
+    loadOlderHistory: "Load older history",
+    loadingOlderHistory: "Loading older history…",
+    retryOlderHistory: "Try again",
     restoring: "Restoring this conversation…",
     restorePartialTitle: "Partial conversation history",
     restorePartial:

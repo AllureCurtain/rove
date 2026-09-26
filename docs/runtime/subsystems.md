@@ -749,6 +749,10 @@ Web Complete C0 implements the backend product-control plane in
 workspace/session/profile/preferences CRUD, exact server-owned
 product-session/runtime bindings, single-active-turn claims, and transcript
 projection over canonical sequenced runtime events with typed partial reasons.
+The same endpoint serves bounded older-history cursor pages
+(`before_ordinal`/`limit_runs` → `next_before_ordinal`/`has_more`) over those
+ordered bindings; a run is the pagination atom, and the parameterless response
+keeps its original shape.
 ProductStore retains safe catalog/settings/mapping state only; canonical
 trace/task/report facts remain in each execution workspace. The C0 Web modules
 provide strict response validation, a thin product client, and a versioned,
@@ -763,7 +767,11 @@ ordered presentation index uses run ordinal/event sequence identity, keeps
 tool and interaction cards at their canonical position, and deduplicates
 replayed event sequences. Handled input prompts remain read-only without
 persisting the answer. Partial history and storage failures remain explicit and
-retryable instead of becoming an empty conversation.
+retryable instead of becoming an empty conversation. The first read is one
+bounded cursor page; "load older history" prepends the next page, re-projects
+the merged history, keeps the reader's scroll anchor, retries the same cursor
+with a bounded visible error, and disappears once the server reports no older
+page.
 Product turns include the exact `product_session_id` and omit client `resume`,
 so the server resolves the session's own latest runtime binding rather than
 workspace-global `latest`.

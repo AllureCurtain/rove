@@ -49,8 +49,10 @@ New maintainers should start with [`docs/ONBOARDING.md`](../ONBOARDING.md), then
 The productization integration implements workstreams A-E and F.1-F.3. Their
 current contracts and evidence are recorded in [`react-loop.md`](react-loop.md),
 [`subsystems.md`](subsystems.md), and [`acceptance-matrix.md`](acceptance-matrix.md).
-F.4/F.5 are partially complete: long-session older-history pagination/windowing
-and complete TUI restart recovery remain open. Workstream G is also partially
+F.4 is complete for the Web transcript: the API serves bounded older-history
+cursor pages and the reader prepends them with a stable anchor. Long-session
+windowing beyond the two-layer mount window, the TUI equivalent, and F.5
+complete TUI restart recovery remain open. Workstream G is also partially
 complete: deterministic Rust/Web/TUI checks and five live local fake-provider
 browser scenarios pass, while credentialed Provider, real third-party/official
 filesystem MCP, Windows ConPTY, macOS/Linux packaging, signing,
@@ -153,9 +155,12 @@ The Web product line is tracked separately:
   API routes, SSE/replay reflection, Web reducers/transcript, and the TUI all
   consume the shared message-domain vocabulary. Web unit/type/build, mocked
   browser, and five live local fake-provider cases pass; Windows ConPTY and
-  external-provider delivery remain unverified. F.4 remains partial because
-  the current Web/TUI path loads only the latest bounded message page and does
-  not yet provide stable older-history prepend/windowing. F.5 remains partial
+  external-provider delivery remain unverified. F.4's Web transcript half is
+  implemented: the transcript endpoint serves bounded older-history cursor pages
+  (`before_ordinal`/`limit_runs`) and the reader prepends them with a stable
+  scroll anchor, so the current Web path is no longer limited to the newest
+  bounded page. Long-session windowing beyond the two-layer mount window and the
+  TUI equivalent remain open. F.5 remains partial
   because TUI process restart does not yet drain an existing queued successor
   or reconcile a successor claim that has no run.
 - The completed
@@ -184,7 +189,10 @@ The Web product line is tracked separately:
   this is not an interoperability claim.
 - The productization implementation record and its remaining G gates are in
   [`2026-08-10-post-full-delivery-productization.md`](../plans/2026-08-10-post-full-delivery-productization.md).
-  Workstreams A-E and F.1-F.3 are implemented; F.4/F.5 and G remain partial.
+  Workstreams A-E and F.1-F.3 are implemented; F.4's Web transcript pagination is
+  implemented through the
+  [`runtime contract alignment`](../design/2026-09-26-runtime-contract-alignment-design.md)
+  R1 transcript cursor, while long-session windowing, F.5, and G remain partial.
   Its dated audit inputs remain evidence and rationale, not independent plans.
 
 Historical May/June hardening and RAG design notes live under

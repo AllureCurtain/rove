@@ -7,8 +7,11 @@ import type {
 } from "../product/product-api-types";
 import {
   describeTranscriptPartialReason,
+  loadedTranscriptHistory,
+  prependTranscriptPage,
   projectProductTranscript,
   toWorkbenchStreamEvent,
+  transcriptProjectionInput,
 } from "./transcript-projection";
 import {
   selectTranscriptTimeline,
@@ -519,7 +522,76 @@ describe("product transcript projection", () => {
     expect(describeTranscriptPartialReason(reason)).toContain("canonical event range");
     expect(describeTranscriptPartialReason(reason)).toContain("Expected event 4, observed 6");
   });
+
+  it("prepends an older cursor page and re-projects one whole history", () => {
+    let loaded = loadedTranscriptHistory(cursorPage(3, 4));
+    loaded = prependTranscriptPage(loaded, cursorPage(1, 2));
+
+    expect(loaded.segments.map((segment) => segment.binding.ordinal)).toEqual([
+      1, 2, 3, 4,
+    ]);
+    expect(transcriptProjectionInput(loaded).segments).toEqual(loaded.segments);
+
+    const combined = projectProductTranscript(transcriptProjectionInput(loaded));
+    const single = projectProductTranscript({
+      product_session_id: "product-session",
+      workspace_id: "workspace",
+      status: "complete",
+      partial_reasons: [],
+      segments: [1, 2, 3, 4].map((ordinal) => segmentFor(ordinal)),
+    });
+    expect(combined.messages.map((message) => [message.role, message.content])).toEqual(
+      single.messages.map((message) => [message.role, message.content]),
+    );
+    expect(
+      selectTranscriptTimeline(combined).map((group) => group.runOrdinal),
+    ).toEqual([1, 2, 3, 4]);
+  });
+
+  it("keeps the loaded run when a page repeats an ordinal", () => {
+    const loaded = loadedTranscriptHistory(cursorPage(5, 6));
+    const merged = prependTranscriptPage(loaded, {
+      ...cursorPage(4, 5),
+      partial_reasons: [
+        { code: "cleaned_history", run_ordinal: 5 },
+        { code: "cleaned_history", run_ordinal: 4 },
+      ],
+      status: "partial",
+    });
+
+    expect(merged.segments.map((segment) => segment.binding.ordinal)).toEqual([
+      4, 5, 6,
+    ]);
+    // The already-loaded segment wins a repeated ordinal.
+    expect(merged.segments[1]).toBe(loaded.segments[0]);
+    expect(merged.partialReasons).toEqual([
+      { code: "cleaned_history", run_ordinal: 5 },
+      { code: "cleaned_history", run_ordinal: 4 },
+    ]);
+    expect(transcriptProjectionInput(merged).status).toBe("partial");
+  });
 });
+
+function segmentFor(ordinal: number) {
+  return completedSegment(
+    ordinal,
+    `job-${ordinal}`,
+    `run-${ordinal}`,
+    `Question ${ordinal}`,
+    `Answer ${ordinal}`,
+    ordinal > 1 ? `run-${ordinal - 1}` : undefined,
+  );
+}
+
+function cursorPage(...ordinals: number[]): ProductTranscriptResponse {
+  return {
+    product_session_id: "product-session",
+    workspace_id: "workspace",
+    status: "complete",
+    partial_reasons: [],
+    segments: ordinals.map(segmentFor),
+  };
+}
 
 function completedSegment(
   ordinal: number,

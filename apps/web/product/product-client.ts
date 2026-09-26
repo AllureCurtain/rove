@@ -1,4 +1,5 @@
 import {
+  MAX_PRODUCT_TRANSCRIPT_PAGE_RUNS,
   ProductApiSchemaError,
   parseApiErrorResponse,
   parseCreateProductControlRequest,
@@ -210,7 +211,10 @@ export interface ProductApiClient {
     query?: { cursor?: number; limit?: number },
   ): Promise<ProductReviewFindingsResponse>;
   cancelReview(reviewId: string): Promise<ProductReview>;
-  getTranscript(sessionId: string): Promise<ProductTranscriptResponse>;
+  getTranscript(
+    sessionId: string,
+    query?: { beforeOrdinal?: number; limitRuns?: number },
+  ): Promise<ProductTranscriptResponse>;
   sendMessage(sessionId: string, request: CreateProductMessageRequest): Promise<ProductMessage>;
   listMessages(
     sessionId: string,
@@ -386,6 +390,39 @@ function attachmentFilename(value: string | null): string | null {
 function safeFilenamePart(value: string): string {
   const safe = value.replace(/[^A-Za-z0-9_-]/g, "-").replace(/-+/g, "-").slice(0, 96);
   return safe || "session";
+}
+
+/**
+ * Cursor query for a transcript page. An unbounded or zero cursor is a caller
+ * bug the server would answer with 400, so it fails before leaving the client.
+ */
+function transcriptPageQuery(
+  query?: { beforeOrdinal?: number; limitRuns?: number },
+): string {
+  const params = new URLSearchParams();
+  if (query?.beforeOrdinal !== undefined) {
+    if (
+      !Number.isSafeInteger(query.beforeOrdinal) ||
+      query.beforeOrdinal < 1
+    ) {
+      throw new RangeError("transcript before_ordinal must be a positive integer");
+    }
+    params.set("before_ordinal", String(query.beforeOrdinal));
+  }
+  if (query?.limitRuns !== undefined) {
+    if (
+      !Number.isSafeInteger(query.limitRuns) ||
+      query.limitRuns < 1 ||
+      query.limitRuns > MAX_PRODUCT_TRANSCRIPT_PAGE_RUNS
+    ) {
+      throw new RangeError(
+        `transcript limit_runs must be between 1 and ${MAX_PRODUCT_TRANSCRIPT_PAGE_RUNS}`,
+      );
+    }
+    params.set("limit_runs", String(query.limitRuns));
+  }
+  const encoded = params.toString();
+  return encoded ? `?${encoded}` : "";
 }
 
 function jsonRequest(
@@ -902,12 +939,12 @@ export function createProductApiClient(
       );
     },
 
-    async getTranscript(sessionId) {
+    async getTranscript(sessionId, query) {
       const transcript = await requestJson(
         fetchImpl,
         productUrl(
           apiPrefix,
-          `/product/sessions/${encodeURIComponent(sessionId)}/transcript`,
+          `/product/sessions/${encodeURIComponent(sessionId)}/transcript${transcriptPageQuery(query)}`,
         ),
         undefined,
         parseProductTranscriptResponse,

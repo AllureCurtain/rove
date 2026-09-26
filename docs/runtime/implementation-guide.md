@@ -13,6 +13,14 @@ This guide is for maintainers who need to understand, debug, or extend the curre
 > Deterministic checks and five live local fake-provider browser cases pass;
 > the external-provider browser gate was not run.
 
+> Transcript cursor note (2026-09-26): the transcript endpoint now serves
+> bounded older-history cursor pages (`before_ordinal`, `limit_runs`) with the
+> additive `next_before_ordinal`/`has_more` page shape, and the default shell
+> loads older history from them. This closes F.4's older-history pagination for
+> the Web reader; the parameterless response keeps its previous shape. See §5
+> (API route table and transcript contract), §6 (Web read path), and
+> [`acceptance-matrix.md`](acceptance-matrix.md).
+
 The root manifest is a modular resolver-3 Cargo Workspace whose default
 member is `apps/cli`, with independent packages `rove-models`, `rove-core`,
 `rove-runtime`, `rove-app-bootstrap`, `rove-cli`, `rove-api`, `rove-bench`, and
@@ -663,7 +671,7 @@ Routes:
 | `POST /providers/test` | Validate provider connectivity/model presence without returning secrets |
 | `GET/POST /product/workspaces`, `DELETE /product/workspaces/{workspace_id}` | List, create, or remove product workspace catalog entries without deleting workspace files |
 | `GET/POST /product/sessions`, `PATCH/DELETE /product/sessions/{session_id}` | List, create, rename/archive, or remove server-owned product sessions |
-| `GET /product/sessions/{session_id}/transcript` | Project ordered canonical run events with complete/partial status and typed reasons |
+| `GET /product/sessions/{session_id}/transcript` | Project ordered canonical run events with complete/partial status and typed reasons; optional bounded older-history cursor paging via `before_ordinal` and `limit_runs` |
 | `GET/POST /product/provider-profiles`, `PUT/DELETE /product/provider-profiles/{profile_id}` | Manage secret-reference-only provider profiles |
 | `GET/PUT /product/preferences` | Read or update the bounded safe product preference set |
 | `POST /product/migrations/m1-browser` | Validate and atomically apply or replay an idempotent M1 browser import |
@@ -711,6 +719,29 @@ task snapshots, and reports remain in the selected execution workspace. The
 transcript endpoint walks the product session's ordered run bindings and reads
 canonical indexed events from those workspace stores. Missing or inconsistent
 facts produce typed partial reasons rather than a silently complete response.
+
+The transcript endpoint also serves bounded older history. Without a query
+parameter it keeps the original contract: every run the reader can project, in
+ascending run order, with no cursor fields. `limit_runs` (1–64) and
+`before_ordinal` (≥1) turn the response into one cursor page:
+
+- a run is the pagination atom, so a page never splits a run across pages;
+- the page is selected newest to oldest within the session's ordered bindings,
+  which keeps the response budget on the newest runs, and is emitted ascending;
+- `next_before_ordinal` is the oldest run ordinal the page carries and exists
+  exactly while strictly older runs remain; `has_more` is present on every
+  cursor page and mirrors `next_before_ordinal.is_some()`; both fields are
+  additive, so a client that never sends a parameter sees the legacy shape;
+- a cursor at or above the newest run ordinal, and a cursor at the oldest run
+  ordinal, both return an empty terminal page (`has_more: false`) instead of
+  re-sending runs the client already holds;
+- `before_ordinal=0` and `limit_runs` outside 1–64 are rejected with the typed
+  `product_invalid_input` 400;
+- a page that exhausts the response event/byte budget is reported as `partial`
+  with `response_limit_reached` and still publishes a cursor, so the client keeps
+  walking strictly older runs with a fresh budget. The truncated run's unsent
+  tail is not re-sent by a later page; it stays covered by that page's partial
+  reason.
 
 The unified conversation command is implemented by
 `rove_runtime::conversation::MessageDomainService`. The API ProductStore and
@@ -810,6 +841,16 @@ The current product shell:
    not add another entry. Tools and interaction requests remain interleaved
    with the assistant turns that produced them. Handled input requests remain
    as read-only history without retaining the submitted answer.
+   The first read is a bounded cursor page (`limit_runs=64`); scrolling to the
+   oldest loaded run offers "load older history", which prepends the next
+   `before_ordinal` page, re-projects the merged history through the same
+   projection, keeps the reader's scroll anchor, and retries the same cursor
+   with a bounded visible error when a page fails. The older-history control
+   disappears once the server reports `has_more: false`. A page's own
+   `partial_reasons` are merged into the restore notice instead of being
+   swallowed, and a page arriving while a run streams can briefly regress the
+   projected tail until the next canonical event or `job_state_synced`
+   reconciliation.
 5. Sends each turn with its absolute Folder/Repo workspace plus
    `product_session_id`, omitting client `resume`; the Rust API resolves exact
    product-session continuation and fails closed on binding errors.

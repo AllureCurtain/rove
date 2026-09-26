@@ -2212,6 +2212,21 @@ async fn api_exposes_openapi_json_for_all_routes() {
         );
     }
 
+    // The transcript cursor is part of the published contract: a client can
+    // discover paging without reading the server source.
+    let transcript_params =
+        spec["paths"]["/product/sessions/{session_id}/transcript"]["get"]["parameters"]
+            .as_array()
+            .expect("GET transcript parameters");
+    for expected in ["before_ordinal", "limit_runs"] {
+        assert!(
+            transcript_params
+                .iter()
+                .any(|parameter| parameter["name"] == expected && parameter["in"] == "query"),
+            "missing transcript query parameter {expected} in {transcript_params:?}"
+        );
+    }
+
     for (path, method) in [
         ("/product/workspaces", "get"),
         ("/product/workspaces", "post"),
@@ -10516,6 +10531,315 @@ fn run_git(root: &Path, args: &[&str]) {
     );
 }
 
+// ─── R1: transcript cursor pagination ──────────────────────────────────────
+
+/// Run ordinals of a transcript response, in response order.
+fn transcript_ordinals(transcript: &serde_json::Value) -> Vec<u64> {
+    transcript["segments"]
+        .as_array()
+        .unwrap_or_else(|| panic!("transcript segments: {transcript}"))
+        .iter()
+        .map(|segment| {
+            segment["binding"]["ordinal"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("segment ordinal: {segment}"))
+        })
+        .collect()
+}
+
+/// Compact transcript facts for assertion messages: a full projection carries
+/// thousands of events and is unreadable inside a panic.
+fn transcript_summary(transcript: &serde_json::Value) -> String {
+    let reasons: Vec<&str> = transcript["partial_reasons"]
+        .as_array()
+        .map(|reasons| {
+            reasons
+                .iter()
+                .map(|reason| reason["code"].as_str().unwrap_or("?"))
+                .collect()
+        })
+        .unwrap_or_default();
+    format!(
+        "status={} ordinals={:?} has_more={} next={:?} reasons={reasons:?}",
+        transcript["status"],
+        transcript_ordinals(transcript),
+        transcript["has_more"],
+        transcript["next_before_ordinal"],
+    )
+}
+
+async fn run_product_turns(
+    app: &axum::Router,
+    session_id: &str,
+    turns: std::ops::RangeInclusive<u64>,
+    message: impl Fn(u64) -> String,
+) {
+    for turn in turns {
+        let created = create_product_job(app, session_id, &message(turn)).await;
+        let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
+        assert_eq!(state.status, RunStatus::Done, "turn {turn}");
+    }
+}
+
+#[tokio::test]
+async fn product_transcript_cursor_pages_older_runs_without_gaps_or_repeats() {
+    const RUNS: u64 = 65;
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state-transcript-pages".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap().to_string();
+    let session = create_product_session(&app, &workspace_id, "Transcript pages").await;
+    let session_id = session["id"].as_str().unwrap().to_string();
+
+    run_product_turns(&app, &session_id, 1..=RUNS, |turn| {
+        format!("page turn {turn}")
+    })
+    .await;
+
+    // 1. The parameterless request stays the pre-pagination response: every run
+    // in ascending order and no cursor fields at all.
+    let legacy: serde_json::Value = decode_json(
+        get_response(&app, &format!("/product/sessions/{session_id}/transcript")).await,
+    )
+    .await;
+    assert_eq!(
+        legacy["status"],
+        "complete",
+        "{}",
+        transcript_summary(&legacy)
+    );
+    assert_eq!(transcript_ordinals(&legacy), (1..=RUNS).collect::<Vec<_>>());
+    assert!(
+        legacy.get("has_more").is_none(),
+        "a legacy response must not grow cursor fields: {}",
+        transcript_summary(&legacy)
+    );
+    assert!(
+        legacy.get("next_before_ordinal").is_none(),
+        "a legacy response must not grow cursor fields: {}",
+        transcript_summary(&legacy)
+    );
+
+    // 2. The cursor walk starts at the newest page and reaches every run exactly
+    // once, with a cursor that always points at the page's oldest run.
+    let mut pages: Vec<Vec<u64>> = Vec::new();
+    let mut cursor: Option<u64> = None;
+    let mut requests = 0;
+    loop {
+        let uri = match cursor {
+            Some(before) => format!(
+                "/product/sessions/{session_id}/transcript?before_ordinal={before}&limit_runs=8"
+            ),
+            None => format!("/product/sessions/{session_id}/transcript?limit_runs=8"),
+        };
+        let page: serde_json::Value = decode_json(get_response(&app, &uri).await).await;
+        assert_eq!(
+            page["status"],
+            "complete",
+            "page {requests}: {}",
+            transcript_summary(&page)
+        );
+        let ordinals = transcript_ordinals(&page);
+        assert!(
+            !ordinals.is_empty(),
+            "page {requests}: {}",
+            transcript_summary(&page)
+        );
+        assert!(
+            ordinals.len() <= 8,
+            "page {requests} exceeded its page size: {}",
+            transcript_summary(&page)
+        );
+        let expected = page["next_before_ordinal"].as_u64();
+        let has_more = page["has_more"].as_bool().unwrap_or_else(|| {
+            panic!(
+                "a cursor page carries has_more: {}",
+                transcript_summary(&page)
+            )
+        });
+        assert_eq!(
+            has_more,
+            expected.is_some(),
+            "has_more must mirror next_before_ordinal: {}",
+            transcript_summary(&page)
+        );
+        if let Some(expected) = expected {
+            assert_eq!(
+                expected,
+                ordinals[0],
+                "the cursor must be the page's oldest run ordinal: {}",
+                transcript_summary(&page)
+            );
+        }
+        pages.push(ordinals);
+        requests += 1;
+        match expected {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+        assert!(requests < 32, "the cursor walk did not terminate");
+    }
+    assert_eq!(requests, 9, "65 runs at 8 per page need nine pages");
+    assert_eq!(
+        pages[0],
+        (58..=RUNS).collect::<Vec<_>>(),
+        "the first cursor page is the newest one"
+    );
+
+    let mut merged: Vec<u64> = Vec::new();
+    for page in pages.iter().rev() {
+        merged.extend(page.iter().copied());
+    }
+    assert_eq!(
+        merged,
+        (1..=RUNS).collect::<Vec<_>>(),
+        "prepending every page must reconstruct the full history without gaps or repeats"
+    );
+
+    // 3. A cursor past the newest run is an empty terminal page, and ordinal 0
+    // is rejected as an invalid cursor.
+    let beyond: serde_json::Value = decode_json(
+        get_response(
+            &app,
+            &format!("/product/sessions/{session_id}/transcript?before_ordinal=1000&limit_runs=8"),
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        transcript_ordinals(&beyond).is_empty(),
+        "{}",
+        transcript_summary(&beyond)
+    );
+    assert_eq!(beyond["has_more"], false, "{}", transcript_summary(&beyond));
+    assert!(
+        beyond.get("next_before_ordinal").is_none(),
+        "{}",
+        transcript_summary(&beyond)
+    );
+
+    let zero = get_response(
+        &app,
+        &format!("/product/sessions/{session_id}/transcript?before_ordinal=0"),
+    )
+    .await;
+    assert_eq!(zero.status(), StatusCode::BAD_REQUEST);
+    let zero: serde_json::Value = decode_json(zero).await;
+    assert_eq!(zero["code"], "product_invalid_input", "{zero}");
+}
+
+#[tokio::test]
+async fn product_transcript_page_query_rejects_unbounded_pages() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state-transcript-page-bounds".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap().to_string();
+    let session = create_product_session(&app, &workspace_id, "Transcript page bounds").await;
+    let session_id = session["id"].as_str().unwrap().to_string();
+
+    run_product_turns(&app, &session_id, 1..=3, |turn| {
+        format!("bounds turn {turn}")
+    })
+    .await;
+
+    for bad in ["limit_runs=0", "limit_runs=65", "before_ordinal=0"] {
+        let response = get_response(
+            &app,
+            &format!("/product/sessions/{session_id}/transcript?{bad}"),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "`{bad}` should have been rejected"
+        );
+        let error: serde_json::Value = decode_json(response).await;
+        assert_eq!(error["code"], "product_invalid_input", "for `{bad}`");
+    }
+
+    // The largest supported page is accepted and still reports its shape.
+    let largest: serde_json::Value = decode_json(
+        get_response(
+            &app,
+            &format!("/product/sessions/{session_id}/transcript?limit_runs=64"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        transcript_ordinals(&largest),
+        vec![1, 2, 3],
+        "{}",
+        transcript_summary(&largest)
+    );
+    assert_eq!(
+        largest["has_more"],
+        false,
+        "{}",
+        transcript_summary(&largest)
+    );
+
+    // Strictly older than ordinal 1 is empty, and so is a cursor beyond the
+    // newest run: the client advances its cursor and stops.
+    for cursor in ["before_ordinal=1", "before_ordinal=4"] {
+        let page: serde_json::Value = decode_json(
+            get_response(
+                &app,
+                &format!("/product/sessions/{session_id}/transcript?{cursor}&limit_runs=2"),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            page["status"],
+            "complete",
+            "{cursor}: {}",
+            transcript_summary(&page)
+        );
+        assert!(
+            transcript_ordinals(&page).is_empty(),
+            "{cursor}: {}",
+            transcript_summary(&page)
+        );
+        assert_eq!(
+            page["has_more"],
+            false,
+            "{cursor}: {}",
+            transcript_summary(&page)
+        );
+    }
+
+    // A cursor window below the newest run keeps the ascending run order of the
+    // legacy response inside the window.
+    let window: serde_json::Value = decode_json(
+        get_response(
+            &app,
+            &format!("/product/sessions/{session_id}/transcript?before_ordinal=3&limit_runs=2"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        transcript_ordinals(&window),
+        vec![1, 2],
+        "{}",
+        transcript_summary(&window)
+    );
+    assert_eq!(window["has_more"], false, "{}", transcript_summary(&window));
+}
+
 async fn post_json(
     app: &axum::Router,
     uri: &str,
@@ -10836,7 +11160,16 @@ async fn create_product_job(
         }),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
+    if response.status() != StatusCode::OK {
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        panic!(
+            "product job start failed with {status}: {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
     decode_json(response).await
 }
 

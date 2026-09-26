@@ -14,7 +14,7 @@ import {
   Pencil1Icon,
   RotateCounterClockwiseIcon,
 } from "@radix-ui/react-icons";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type {
   ChatMessage,
@@ -43,8 +43,11 @@ import {
 import {
   INITIAL_MOUNTED,
   MOUNT_STEP,
+  NO_OLDER_HISTORY,
   initialTranscriptWindow,
+  olderHistoryControl,
   reduceTranscriptWindow,
+  type OlderHistoryState,
 } from "./transcript-window";
 import { useFollowScroll } from "./use-follow-scroll";
 import {
@@ -86,6 +89,8 @@ export function Transcript({
   approvalBusy,
   inputBusy,
   restoreState,
+  olderHistory = NO_OLDER_HISTORY,
+  onLoadOlderHistory,
   onRetryRestore,
   onStartNewSession,
   onApproval,
@@ -109,6 +114,9 @@ export function Transcript({
   approvalBusy: string | null;
   inputBusy: string | null;
   restoreState: TranscriptRestoreState;
+  /** Server cursor pages that have not been fetched yet. */
+  olderHistory?: OlderHistoryState;
+  onLoadOlderHistory?: () => void | Promise<void>;
   onRetryRestore: () => void;
   onStartNewSession: () => void;
   onApproval: (tool: ToolCallView, decision: "approve" | "reject") => void;
@@ -134,7 +142,7 @@ export function Transcript({
   const { t } = useCopy();
   // Two layers stay apart: how many runs the projection holds versus how many
   // are on the DOM. Growing mounts in-memory runs first; only a drained mount
-  // window proposes a server page (no transcript cursor exists yet).
+  // window proposes a server page, and only while the server publishes a cursor.
   const [transcriptWindow, setTranscriptWindow] = useState(() =>
     initialTranscriptWindow(timeline.length),
   );
@@ -188,6 +196,10 @@ export function Transcript({
     [messages],
   );
   const hiddenRunCount = Math.max(0, timeline.length - visibleTimeline.length);
+  const olderControl = olderHistoryControl(transcriptWindow, olderHistory);
+  // The loaded run count raised by the last server page. It lets the prepend
+  // correction below tell that page's arrival from unrelated growth.
+  const olderHistoryRunsRef = useRef<number | null>(null);
   // The successor queue in ledger order: adjacency for move up/down.
   const movableQueueIds = useMemo(
     () =>
@@ -496,12 +508,54 @@ export function Transcript({
     viewSessionId,
   ]);
 
+  useLayoutEffect(() => {
+    const pendingRuns = olderHistoryRunsRef.current;
+    if (pendingRuns === null || timeline.length <= pendingRuns) {
+      return;
+    }
+    // The older page landed. A cursor page never grows the mounted slice (the
+    // window stays tail-anchored), but the control row above the reader does
+    // change, so correct before paint with the same baseline mechanism the
+    // mount-growth path uses.
+    olderHistoryRunsRef.current = null;
+    const transcript = transcriptRef.current;
+    const baseline = prependHeightRef.current;
+    prependHeightRef.current = null;
+    if (!transcript || baseline === null) {
+      return;
+    }
+    const delta = transcript.scrollHeight - baseline;
+    if (delta > 0) {
+      transcript.scrollTop += delta;
+      recordScrollPosition(transcript.scrollTop);
+    }
+  }, [recordScrollPosition, timeline.length]);
+
+  useEffect(() => {
+    if (olderHistory.loading || olderHistoryRunsRef.current === null) {
+      return;
+    }
+    // No prepend followed the request (a failure, or an empty page): drop the
+    // baseline so later growth is never misread as this page arriving.
+    olderHistoryRunsRef.current = null;
+    prependHeightRef.current = null;
+  }, [olderHistory.loading, timeline.length]);
+
   function loadOlderRuns() {
     const transcript = transcriptRef.current;
     if (transcript) {
       prependHeightRef.current = transcript.scrollHeight;
     }
     setTranscriptWindow((current) => reduceTranscriptWindow(current, { type: "grow" }));
+  }
+
+  function loadOlderHistory() {
+    const transcript = transcriptRef.current;
+    if (transcript) {
+      prependHeightRef.current = transcript.scrollHeight;
+    }
+    olderHistoryRunsRef.current = timeline.length;
+    void onLoadOlderHistory?.();
   }
 
   return (
@@ -522,10 +576,35 @@ export function Transcript({
             onRetry={onRetryRestore}
             onStartNewSession={onStartNewSession}
           />
-          {hiddenRunCount > 0 ? (
+          {olderControl === "grow" ? (
             <button type="button" className="load-older-turns" onClick={loadOlderRuns}>
               {t("chat.loadOlder", { n: Math.min(MOUNT_STEP, hiddenRunCount) })}
             </button>
+          ) : null}
+          {olderControl === "server" ? (
+            <button
+              type="button"
+              className="load-older-history"
+              disabled={olderHistory.loading}
+              onClick={loadOlderHistory}
+            >
+              {olderHistory.loading
+                ? t("chat.loadingOlderHistory")
+                : t("chat.loadOlderHistory")}
+            </button>
+          ) : null}
+          {olderHistory.error ? (
+            <div className="load-older-history__error" role="alert">
+              <span>{olderHistory.error}</span>
+              <button
+                type="button"
+                className="secondary"
+                disabled={olderHistory.loading}
+                onClick={loadOlderHistory}
+              >
+                {t("chat.retryOlderHistory")}
+              </button>
+            </div>
           ) : null}
           {itemCount === 0 &&
           (restoreState.status === "complete" || restoreState.status === "idle") ? (

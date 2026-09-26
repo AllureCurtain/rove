@@ -909,6 +909,141 @@ describe("product API client", () => {
     ).toThrow(ProductApiSchemaError);
   });
 
+  it("parses the transcript cursor fields and enforces their invariant", () => {
+    const page = parseProductTranscriptResponse(
+      transcriptResponse({ has_more: true, next_before_ordinal: 237 }),
+    );
+    expect(page.has_more).toBe(true);
+    expect(page.next_before_ordinal).toBe(237);
+
+    const oldest = parseProductTranscriptResponse(
+      transcriptResponse({ has_more: false }),
+    );
+    expect(oldest.has_more).toBe(false);
+    expect(oldest.next_before_ordinal).toBeUndefined();
+
+    // A legacy response carries neither field.
+    const legacy = parseProductTranscriptResponse(transcriptResponse());
+    expect(legacy.has_more).toBeUndefined();
+    expect(legacy.next_before_ordinal).toBeUndefined();
+
+    // `has_more` must equal whether the cursor is present.
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({ has_more: true }),
+      ),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({ has_more: false, next_before_ordinal: 5 }),
+      ),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({ next_before_ordinal: 5 }),
+      ),
+    ).toThrow(ProductApiSchemaError);
+  });
+
+  it("rejects transcript cursor values that are not positive integers", () => {
+    for (const next_before_ordinal of [0, -1, 1.5, "5", true]) {
+      expect(() =>
+        parseProductTranscriptResponse(
+          transcriptResponse({ has_more: true, next_before_ordinal }),
+        ),
+      ).toThrow(ProductApiSchemaError);
+    }
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({ has_more: "yes" }),
+      ),
+    ).toThrow(ProductApiSchemaError);
+  });
+
+  it("relaxes only the leading gap of a cursor page", () => {
+    // A cursor page starts where the cursor landed: the runs below its first
+    // segment are fetched by an older page, not explained by a partial reason.
+    expect(
+      parseProductTranscriptResponse(
+        transcriptResponse({
+          has_more: true,
+          next_before_ordinal: 5,
+          segments: [transcriptSegment(5), transcriptSegment(6)],
+        }),
+      ).segments.map((segment) => segment.binding.ordinal),
+    ).toEqual([5, 6]);
+
+    // The relaxation keys on the response being a cursor page (`has_more`
+    // present), not on its value: the last page is still a page, and the runs
+    // below its first segment were simply never returned.
+    expect(
+      parseProductTranscriptResponse(
+        transcriptResponse({
+          has_more: false,
+          segments: [transcriptSegment(5)],
+        }),
+      ).has_more,
+    ).toBe(false);
+    // A gap *inside* the page stays a partial reason even on a cursor page.
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({
+          has_more: true,
+          next_before_ordinal: 5,
+          segments: [transcriptSegment(5), transcriptSegment(7)],
+        }),
+      ),
+    ).toThrow(ProductApiSchemaError);
+
+    // A legacy response keeps the strict leading-gap rule.
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({ segments: [transcriptSegment(5)] }),
+      ),
+    ).toThrow(ProductApiSchemaError);
+  });
+
+  it("builds the transcript cursor query only from valid options", async () => {
+    const urls: string[] = [];
+    const client = createProductApiClient({
+      fetch: vi.fn(async (input: URL | RequestInfo) => {
+        urls.push(String(input));
+        return jsonResponse(
+          transcriptResponse({ segments: [], has_more: false }),
+        );
+      }),
+    });
+
+    await client.getTranscript(session.id);
+    await client.getTranscript(session.id, { limitRuns: 64 });
+    await client.getTranscript(session.id, { beforeOrdinal: 45 });
+    await client.getTranscript(session.id, { beforeOrdinal: 45, limitRuns: 1 });
+
+    expect(urls.map((url) => url.replace(/^.*\/transcript/u, ""))).toEqual([
+      "",
+      "?limit_runs=64",
+      "?before_ordinal=45",
+      "?before_ordinal=45&limit_runs=1",
+    ]);
+
+    const failing = vi.fn();
+    const strict = createProductApiClient({ fetch: failing });
+    const invalid = [
+      { beforeOrdinal: 0 },
+      { beforeOrdinal: -3 },
+      { beforeOrdinal: 1.5 },
+      { limitRuns: 0 },
+      { limitRuns: 65 },
+      { limitRuns: 2.5 },
+    ];
+    for (const options of invalid) {
+      await expect(strict.getTranscript(session.id, options)).rejects.toBeInstanceOf(
+        RangeError,
+      );
+    }
+    expect(failing).not.toHaveBeenCalled();
+  });
+
   it("rejects provider URL credentials, query secrets, and invalid env names before fetch", async () => {
     const fetchMock = vi.fn();
     const client = createProductApiClient({ fetch: fetchMock });
