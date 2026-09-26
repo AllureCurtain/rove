@@ -32,7 +32,7 @@
 | F6 | smart-stop 发送快照（含粘贴 chips） | P1 | 无 | Implemented（部分中止文案分支待 R2b） |
 | F7 | 杂项清理（/dev 文案、mock 页标注、降级语义如实标注） | P1 | 无 | Implemented |
 | F8 | 样式 token linter 与 CI 接入 | P1 | 无 | Implemented（本地门；按 §9.1 不接入 CI） |
-| F9 | 侧栏折叠动效合成器友好化 | P2 | 无 | Proposed |
+| F9 | 侧栏折叠动效合成器友好化 | P2 | 无 | Implemented（轨道一步到位 + 侧栏滑出；视觉偏差见 §10.4） |
 | F10 | 偏好小项（per-model reasoning 记忆、会话自动标题） | P2 | 无 | Proposed |
 | F11 | 服务端会话搜索 `q` 接线 | P2 | 无 | Proposed |
 | F12 | 决策点（默认不做）：发送键 morph/涟漪、phrase reveal、跨引擎/视觉回归、系统通知 | — | — | 不做（除非用户拍板） |
@@ -527,6 +527,48 @@ ease token（in-out/emphasized），都放在既有 motion token 块里：循环
      `inert`/`aria-hidden` 门控。视觉从"连续推挤"变为"侧栏滑出、内容即切"——
      作为记录在案的偏差接受。
   3. 测量显示成本可忽略 → 不改，把数据写进实施记录即可（"不在未复现时就改"的纪律）。
+
+### 10.4 实现记录（2026-09-26）
+
+**测量**。复刻 §8.1C 的方法（CDP `Performance.getMetrics`，同一台机器、`next dev`、
+1280×720、30-run transcript 的长会话），对**同一次折叠/展开动作**取 6 次平均，扣掉等长空转窗口
+（空转窗口 Script/Layout/Recalc 均为 0，故净值≈原值；一次交互占用 700ms 窗口）：
+
+| 每次折叠/展开 | ScriptDuration | LayoutDuration | LayoutCount | RecalcStyleDuration | RecalcStyleCount | TaskDuration |
+|---|---|---|---|---|---|---|
+| 轨道动画（改前） | 55.0 ms | 18.9 ms | 15.2 | 33.4 ms | 24.5 | 160.4 ms |
+| 轨道一步到位（改后） | 44.9 ms | **1.8 ms** | **2** | **6.0 ms** | 13.3 | 75.8 ms |
+
+即：布局次数 15.2 → 2（−87%），布局耗时 18.9 → 1.8 ms（−90%），样式重算 33.4 → 6.0 ms。
+长任务计数两种形态都是 0（单帧未超 50ms），但逐帧 reflow 的成本真实存在且与设计 §1.11 的
+判断一致，因此按步骤 2 落地。
+
+**改动**（`apps/web/styles/product-v2.css`）：
+
+- 删除 `.product-body:not([data-settings="true"])` 上的
+  `transition: grid-template-columns ...`（两处对应注释写明测量值与原因）；
+- 侧栏基础规则补 `position: relative; z-index: 2; width: var(--sidebar-nav-width)`：轨道在
+  一帧内变成 0 后，拉伸的 grid item 会在同一帧被压成 0 宽而"没有东西可滑"，固定宽度让它保持
+  240px 并从对话区上方滑出（折叠态已是 `pointer-events: none`，滑出过程不抢点击）；
+  这三条写在**基础规则**里而不是新规则里，是因为 `max-width: 960px` 抽屉块与它同特异性且在后，
+  这样 ≤960px 仍然由抽屉接管（已在 820px 视口实测：`position: fixed`、320px、`z-index: 42`）。
+
+**偏差（记录在案）**：视觉从"连续推挤"变为"轨道一步到位、侧栏滑出、内容即切"。折叠瞬间对话列
+即占满整行，侧栏在这 240ms 内从其上方滑走（240ms `transform + opacity`，`--motion-duration-slide`）。
+`inert`/`aria-hidden` 门控**无需补**——设计原文要求补齐的那一项已在
+`apps/web/sidebar/WorkspaceTree.tsx:268-270` 存在（`data-collapsed` + `aria-hidden` +
+`inert`），实施时逐条核对并已写进 e2e 断言。
+
+**回归**：`apps/web/tests/e2e/layout.spec.ts` 新增
+"the rail's collapse snaps the track and slides the rail itself"：断言
+`.product-body` 的 `transition-property` 不含 `grid-template-columns`、侧栏自身保留
+`transform` 过渡、折叠后对话列 `x≈0`、侧栏仍是 240px 且 `z-index: 2`、折叠态
+`aria-hidden="true"` + `inert`、重开后对话列从 240px 起、侧栏最终回到 `x≈0`。同一文件里
+原有的"折叠侧栏不占列"断言改为对 `main.x` 断言，并对侧栏自身位置用有界轮询等到滑出结束
+（滑出是真实动画，瞬时采样不再是稳定读数——这不是放宽断言，而是把"不占列"与"已滑走"分开测）。
+
+**未做**：手动 Performance 面板长任务截图仍未做（与 F3 同一遗留项）；本项的长任务计数为 0，
+因此这里没有"长任务"证据可提供。
 
 ---
 
