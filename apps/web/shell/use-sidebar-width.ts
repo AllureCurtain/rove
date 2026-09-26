@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * Left navigation width as a UI preference (design §3.1).
@@ -59,6 +59,24 @@ function writeStoredWidth(width: number): void {
 }
 
 /**
+ * Rail width requested by a pointer position.
+ *
+ * The handle is pinned to the rail's trailing edge, so it slides with the width
+ * it is measuring. Using the handle's own rect as the origin makes the grab
+ * itself change the width: a 240px rail computes `240 - 236 = 4px` and snaps to
+ * the minimum, and every later frame recomputes against the moved handle. The
+ * caller therefore passes the container's left edge, which does not move with
+ * the rail, so the pointer position *is* the requested rail width.
+ */
+export function sidebarWidthFromPointer(
+  clientX: number,
+  containerLeft: number,
+): number {
+  const left = Number.isFinite(containerLeft) ? containerLeft : 0;
+  return boundSidebarWidth(clientX - left);
+}
+
+/**
  * Keyboard stepping for the width handle: arrows move by the design step,
  * Shift multiplies it, Home/End jump to the bounds. Returns null when the key
  * is not a resize key, so the caller can leave it alone.
@@ -90,7 +108,9 @@ export function sidebarWidthKeyboardStep(
 export function useSidebarWidth(): {
   width: number;
   setWidth: (width: number) => void;
-  settleWidth: (clientX: number, element: HTMLElement) => void;
+  previewWidth: (clientX: number, element: HTMLElement) => void;
+  commitWidth: () => void;
+  cancelPreview: (element: HTMLElement) => void;
   onHandleKeyDown: (event: {
     key: string;
     shiftKey: boolean;
@@ -98,11 +118,17 @@ export function useSidebarWidth(): {
   }) => void;
 } {
   const [width, setWidthState] = useState<number>(SIDEBAR_DEFAULT_WIDTH);
+  const previewRef = useRef<number | null>(null);
+  const committedRef = useRef<number>(SIDEBAR_DEFAULT_WIDTH);
 
   // Restore after mount so the server and the first client render agree.
   useEffect(() => {
     setWidthState(readStoredWidth());
   }, []);
+
+  useEffect(() => {
+    committedRef.current = width;
+  }, [width]);
 
   const setWidth = useCallback((next: number) => {
     const bounded = boundSidebarWidth(next);
@@ -110,15 +136,50 @@ export function useSidebarWidth(): {
     writeStoredWidth(bounded);
   }, []);
 
-  // The width is committed when the drag settles. Writing on every pointermove
-  // would re-render the whole rail and fight the drag.
-  const settleWidth = useCallback(
-    (clientX: number, element: HTMLElement) => {
-      const rect = element.getBoundingClientRect();
-      setWidth(clientX - rect.left);
-    },
-    [setWidth],
-  );
+  /**
+   * Live preview while dragging the rail handle.
+   *
+   * The width is committed when the drag settles; writing state on every
+   * pointermove re-renders the whole shell, and this one is not a micro
+   * optimisation: a measured 24-step rail drag cost ~600ms of script and
+   * re-rendered the conversation tree on every move, because the rail width is
+   * an inline custom property on the shell. The preview therefore writes the
+   * custom property and the handle's own aria value directly, and only the
+   * release commits React state. PI-Desktop's divider documents the same policy.
+   */
+  const previewWidth = useCallback((clientX: number, element: HTMLElement) => {
+    // The origin is the shell the handle is anchored in, not the handle: see
+    // sidebarWidthFromPointer for why the handle's own rect cannot be used.
+    const container = element.parentElement ?? element;
+    const next = sidebarWidthFromPointer(
+      clientX,
+      container.getBoundingClientRect().left,
+    );
+    previewRef.current = next;
+    element
+      .closest<HTMLElement>(".product-body")
+      ?.style.setProperty("--sidebar-nav-width", `${next}px`);
+    element.setAttribute("aria-valuenow", String(next));
+  }, []);
+
+  const commitWidth = useCallback(() => {
+    const next = previewRef.current;
+    previewRef.current = null;
+    if (next === null) {
+      return;
+    }
+    setWidth(next);
+  }, [setWidth]);
+
+  /** Restores the committed width without writing state. */
+  const cancelPreview = useCallback((element: HTMLElement) => {
+    previewRef.current = null;
+    const committed = committedRef.current;
+    element
+      .closest<HTMLElement>(".product-body")
+      ?.style.setProperty("--sidebar-nav-width", `${committed}px`);
+    element.setAttribute("aria-valuenow", String(committed));
+  }, []);
 
   const onHandleKeyDown = useCallback(
     (event: { key: string; shiftKey: boolean; preventDefault: () => void }) => {
@@ -132,5 +193,5 @@ export function useSidebarWidth(): {
     [width, setWidth],
   );
 
-  return { width, setWidth, settleWidth, onHandleKeyDown };
+  return { width, setWidth, previewWidth, commitWidth, cancelPreview, onHandleKeyDown };
 }

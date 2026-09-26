@@ -26,6 +26,7 @@ import {
   selectDesktopWorkspace,
 } from "../platform/desktop-commands";
 import { useCopy } from "../copy/CopyProvider";
+import { useArmedDelete } from "../shell/use-armed-delete";
 import type { SessionRecord, WorkspaceKind, WorkspaceRecord } from "../state/product-types";
 
 export function WorkspaceTree({
@@ -41,7 +42,10 @@ export function WorkspaceTree({
   onTogglePin,
   onRemoveWorkspace,
   mobileOpen = false,
+  peekOpen = false,
   onCloseMobile,
+  onOverlayPointerEnter,
+  onOverlayPointerLeave,
   onOpenSettings,
   railCollapsed,
   onToggleCollapsed,
@@ -58,7 +62,15 @@ export function WorkspaceTree({
   onTogglePin: (workspaceId: string) => void;
   onRemoveWorkspace: (workspaceId: string) => void;
   mobileOpen?: boolean;
+  /**
+   * Narrow screen: the rail is showing because a pointer summoned it, so it is
+   * visually open but *not* a dialog — no modal semantics, no focus trap, and
+   * the page behind it stays interactive.
+   */
+  peekOpen?: boolean;
   onCloseMobile?: () => void;
+  onOverlayPointerEnter?: () => void;
+  onOverlayPointerLeave?: () => void;
   onOpenSettings?: () => void;
   /** Collapsed rail: the subtree stays mounted but inert and aria-hidden. */
   railCollapsed?: boolean;
@@ -165,12 +177,15 @@ export function WorkspaceTree({
       className="product-sidebar"
       aria-label={t("workspace.label")}
       aria-busy={mutationBusy}
-      data-open={mobileOpen}
+      data-open={mobileOpen || peekOpen}
+      data-peek={peekOpen ? "true" : undefined}
       data-collapsed={railCollapsed}
       aria-hidden={railCollapsed ? true : undefined}
       inert={railCollapsed ? true : undefined}
       aria-modal={mobileOpen ? true : undefined}
       role={mobileOpen ? "dialog" : undefined}
+      onPointerEnter={onOverlayPointerEnter}
+      onPointerLeave={onOverlayPointerLeave}
       onKeyDown={
         mobileOpen
           ? (event) => {
@@ -398,6 +413,9 @@ function WorkspaceActions({ workspace, disabled, onTogglePin, onRemoveWorkspace 
 }) {
   const { t } = useCopy();
   const [open, setOpen] = useState(false);
+  // A workspace removal also drops its sessions from the catalog, so it needs a
+  // second click (ported from PI-Desktop's `use-armed-delete`).
+  const { armed, setArmed } = useArmedDelete();
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -413,11 +431,13 @@ function WorkspaceActions({ workspace, disabled, onTogglePin, onRemoveWorkspace 
   }, [open]);
   function close() {
     setOpen(false);
+    // A dismissed menu never reopens armed.
+    setArmed(null);
     trigger.current?.focus();
   }
   return (
     <div className="workspace-actions" ref={root}
-      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}
+      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) { setOpen(false); setArmed(null); } }}
       onKeyDown={(event) => {
         if (event.key === "Escape" && open) {
           event.preventDefault();
@@ -429,7 +449,7 @@ function WorkspaceActions({ workspace, disabled, onTogglePin, onRemoveWorkspace 
       <button ref={trigger} type="button" className="ghost icon-button"
         aria-label={t("workspace.projectActions", { name: workspace.displayName })}
         aria-haspopup="menu" aria-expanded={open} aria-controls={`workspace-menu-${workspace.id}`}
-        disabled={disabled} onClick={() => setOpen((value) => !value)}
+        disabled={disabled} onClick={() => { setArmed(null); setOpen((value) => !value); }}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") { event.preventDefault(); setOpen(true); }
         }}
@@ -452,8 +472,22 @@ function WorkspaceActions({ workspace, disabled, onTogglePin, onRemoveWorkspace 
             {t(workspace.pinned ? "workspace.unpinWorkspace" : "workspace.pinWorkspace")}
           </button>
           <button type="button" role="menuitem" className="ghost" disabled={disabled}
-            onClick={() => { close(); onRemoveWorkspace(workspace.id); }}>
-            {t("workspace.removeWorkspace")}
+            data-armed={armed === workspace.id ? "true" : undefined}
+            onClick={() => {
+              // First click arms and relabels; the menu stays open so the second
+              // click lands on the same control. The arm expires by itself.
+              if (armed !== workspace.id) {
+                setArmed(workspace.id);
+                return;
+              }
+              close();
+              onRemoveWorkspace(workspace.id);
+            }}>
+            {t(
+              armed === workspace.id
+                ? "workspace.removeWorkspaceArmed"
+                : "workspace.removeWorkspace",
+            )}
           </button>
         </div>
       ) : null}

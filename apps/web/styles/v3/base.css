@@ -1,4 +1,7 @@
-/* Warm skin component overrides — only where tokens alone are not enough. */
+/* rove product web — layer 3 of 3: the warm skin's component overrides.
+ *
+ * Skin only. Shell layout, width budgets and breakpoints stay in
+ * `styles/product-v2.css`, which this file intentionally does not restate. */
 
 .product-app-frame[data-skin="warm"] {
   font-family: var(--cp-font-body);

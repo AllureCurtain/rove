@@ -2,7 +2,8 @@ export type KeyboardShortcutActionId =
   | "focus-composer"
   | "new-session"
   | "open-settings"
-  | "toggle-inspector";
+  | "toggle-inspector"
+  | "open-command-palette";
 
 export interface KeyboardShortcutDescriptor {
   action: KeyboardShortcutActionId;
@@ -71,6 +72,18 @@ export const KEYBOARD_SHORTCUTS = [
     display: "Ctrl / Cmd + .",
     ariaKeyShortcuts: "Control+. Meta+.",
     allowInEditable: false,
+  },
+  {
+    action: "open-command-palette",
+    title: "Command palette",
+    description: "Search commands, workspaces, sessions and settings.",
+    key: "k",
+    modifiers: { primary: true, shift: false, alt: false },
+    display: "Ctrl / Cmd + K",
+    ariaKeyShortcuts: "Control+K Meta+K",
+    // Deliberately available while typing: a palette that cannot be opened from
+    // the composer is a palette nobody uses.
+    allowInEditable: true,
   },
 ] as const satisfies readonly KeyboardShortcutDescriptor[];
 

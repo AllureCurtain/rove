@@ -1,3 +1,25 @@
+/*
+ * rove product web — layer 1 of 3: base and v1 presentation.
+ *
+ * Cascade order is owned by `app/layout.tsx`:
+ *   1. `styles/product.css` (this file) + `styles/tokens.css`
+ *      Base resets, shared component classes, and the v1 layout used when
+ *      `ROVE_PRODUCT_UI_VERSION=v1` is set. v1 remains a supported runtime
+ *      switch, so its layout rules are deliberately still here.
+ *   2. `styles/product-v2.css`
+ *      The default v2 presentation and the three-column shell layout. Every
+ *      rule is scoped to `.product-app-frame[data-ui-version="v2"]`, so it
+ *      cannot leak into v1.
+ *   3. `styles/v3/index.css` (`tokens.css` + `base.css`)
+ *      Design tokens and the optional `data-skin="warm"` skin. Skin rules may
+ *      override layers 1-2 because they load last, which is why they must stay
+ *      token-driven and component-scoped.
+ *
+ * Ownership rule: layout geometry lives with the layer that renders it (v2 for
+ * the shell), and a later layer must not silently re-derive another layer's
+ * width budget. See `docs/plans/2026-09-22-ui-shell-layout-remediation.md`.
+ */
+
 @import "./tokens.css";
 
 * {
@@ -86,6 +108,17 @@ button:disabled {
 
 *::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* Reveal while scrolling (PI-Desktop styles/base.css): `data-scrolling` is set on
+   whatever element scrolled by lib/scrollbar-reveal.ts. The thumb carries a
+   stronger ink while the scroller is active and settles back once it is quiet. */
+[data-scrolling] {
+  scrollbar-color: var(--scrollbar-hover) transparent;
+}
+
+[data-scrolling]::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-hover);
 }
 
 button.secondary,

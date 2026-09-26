@@ -32,6 +32,7 @@ describe("keyboard settings model", () => {
       "new-session",
       "open-settings",
       "toggle-inspector",
+      "open-command-palette",
     ]);
     expect(new Set(KEYBOARD_SHORTCUTS.map((shortcut) => shortcut.action)).size).toBe(
       KEYBOARD_SHORTCUTS.length,

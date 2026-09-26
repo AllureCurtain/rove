@@ -1,4 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
+
+import {
+  MAIN_PANE_MIN_WIDTH,
+  WORK_PANEL_DEFAULT_WIDTH,
+  WORK_PANEL_MIN_WIDTH,
+} from "../../inspector/work-panel-layout";
 import { createMockSession, createMockWorkspace, installMockProductApi } from "./product-api-mock";
 
 async function pendingRun(page: Page) {
@@ -72,21 +78,44 @@ test("refresh restores pending request; panel width is keyboard bounded and sele
   const { inline } = await pendingRun(page);
   await page.reload();
   await inline.getByRole("button", { name: "审批详情", exact: true }).click();
-  const width = page.getByRole("slider", { name: /面板宽度/ });
+  // The panel divider is a separator (not a slider); its range is the live
+  // three-column budget, and End may make the rail yield (design §5.0).
+  const width = page.getByRole("separator", { name: /面板宽度/ });
+  const widthNow = async () => Number(await width.getAttribute("aria-valuenow"));
+  const widthMax = async () => Number(await width.getAttribute("aria-valuemax"));
+
+  // A fresh browser context has no stored preference, so the default applies.
+  expect(await widthNow()).toBe(WORK_PANEL_DEFAULT_WIDTH);
+
   await width.focus();
-  await width.press("End");
-  await expect(width).toHaveValue("560");
-  await width.press("ArrowRight");
-  await expect(width).toHaveValue("560");
+  await width.press("ArrowLeft");
+  expect(await widthNow()).toBe(WORK_PANEL_DEFAULT_WIDTH + 16);
+  await width.press("Shift+ArrowLeft");
+  expect(await widthNow()).toBe(WORK_PANEL_DEFAULT_WIDTH + 48);
   await width.press("Home");
-  await expect(width).toHaveValue("280");
+  expect(await widthNow()).toBe(WORK_PANEL_MIN_WIDTH);
   await width.press("ArrowRight");
-  await expect(width).toHaveValue("300");
+  expect(await widthNow()).toBe(WORK_PANEL_MIN_WIDTH);
+  await width.press("ArrowLeft");
+  expect(await widthNow()).toBe(WORK_PANEL_MIN_WIDTH + 16);
+  // The width is a global UI preference (design §3 ownership table), so it
+  // survives a session switch; only the panel *selection* is session-isolated.
   await page.getByRole("button", { name: "Session B", exact: true }).click();
   await expect(page.getByRole("region", { name: "审批详情", exact: true })).toHaveCount(0);
-  await expect(width).toHaveValue("360");
+  // Convergence, not a single read: a session switch re-mounts the panel, which
+  // reports the default width until the stored preference is applied again. Polling
+  // still fails if the preference is genuinely lost, but no longer depends on which
+  // frame the read lands in.
+  await expect.poll(widthNow).toBe(WORK_PANEL_MIN_WIDTH + 16);
   await page.getByRole("button", { name: /^Session A(?:,|$)/ }).click();
-  await expect(width).toHaveValue("300");
+  await expect.poll(widthNow).toBe(WORK_PANEL_MIN_WIDTH + 16);
+
+  // Widening to the live maximum may make the rail yield; the conversation keeps
+  // its floor either way (design §5.0 priority order).
+  await width.press("End");
+  expect(await widthNow()).toBeLessThanOrEqual(await widthMax());
+  const mainBox = await page.locator(".product-main").boundingBox();
+  expect(mainBox?.width ?? 0).toBeGreaterThanOrEqual(MAIN_PANE_MIN_WIDTH);
   await expect(page.getByRole("region", { name: "审批详情", exact: true }).getByRole("button", { name: "批准", exact: true })).toBeVisible();
 });
 
@@ -155,7 +184,11 @@ test("opening a file does not discard pending pagination or leave loading stuck"
       text: "selected file content", truncated: false, preview_allowed: false } });
   });
   await inline.getByRole("button", { name: "审批详情", exact: true }).click();
-  await page.getByRole("tab", { name: "活动", exact: true }).click();
+  // The panel is a dynamic tab strip, so the browser tab is opened from the
+  // launcher instead of always being present.
+  const panel = page.getByRole("tabpanel");
+  await page.getByRole("button", { name: "打开一个页签", exact: true }).click();
+  await panel.getByRole("button", { name: "文件", exact: true }).click();
   const files = page.getByRole("region", { name: "文件", exact: true });
   await expect(files.getByRole("button", { name: "first.txt 12 B", exact: true })).toBeVisible();
   await files.getByRole("button", { name: "加载更多", exact: true }).click();

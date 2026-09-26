@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-
 import { useCopy } from "../copy/CopyProvider";
+import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from "./use-sidebar-width";
 
 /**
  * A pointer- and keyboard-resizable vertical handle for the left navigation.
@@ -16,11 +16,15 @@ import { useCopy } from "../copy/CopyProvider";
  */
 export function SidebarResizeHandle({
   width,
-  settleWidth,
+  previewWidth,
+  commitWidth,
+  cancelPreview,
   onHandleKeyDown,
 }: {
   width: number;
-  settleWidth: (clientX: number, element: HTMLElement) => void;
+  previewWidth: (clientX: number, element: HTMLElement) => void;
+  commitWidth: () => void;
+  cancelPreview: (element: HTMLElement) => void;
   onHandleKeyDown: (event: {
     key: string;
     shiftKey: boolean;
@@ -30,16 +34,29 @@ export function SidebarResizeHandle({
   const { t } = useCopy();
   const handleRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
+  const releaseRef = useRef<(cancelled: boolean) => void>(() => undefined);
 
   useEffect(() => {
     const handle = handleRef.current;
     if (!handle) {
       return;
     }
-    function release() {
+    function releaseTarget(cancelled: boolean, target: HTMLDivElement) {
+      if (!draggingRef.current) {
+        return;
+      }
       draggingRef.current = false;
       document.body.classList.remove("is-resizing-column");
+      if (cancelled) {
+        cancelPreview(target);
+      } else {
+        commitWidth();
+      }
     }
+    // An arrow bound to the narrowed `handle`: a hoisted function declaration
+    // would lose that narrowing.
+    const release = (cancelled: boolean) => releaseTarget(cancelled, handle);
+    releaseRef.current = release;
     // The handle element is read through the ref so a mid-drag unmount cannot
     // leave a stale node receiving moves.
     function onMove(event: PointerEvent) {
@@ -47,22 +64,24 @@ export function SidebarResizeHandle({
       if (!draggingRef.current || !target) {
         return;
       }
-      settleWidth(event.clientX, target);
+      previewWidth(event.clientX, target);
     }
+    const onUp = () => release(false);
+    const onCancel = () => release(true);
     handle.addEventListener("pointermove", onMove);
-    handle.addEventListener("pointerup", release);
-    handle.addEventListener("pointercancel", release);
-    handle.addEventListener("lostpointercapture", release);
-    window.addEventListener("blur", release);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onCancel);
+    handle.addEventListener("lostpointercapture", onCancel);
+    window.addEventListener("blur", onCancel);
     return () => {
-      release();
+      release(true);
       handle.removeEventListener("pointermove", onMove);
-      handle.removeEventListener("pointerup", release);
-      handle.removeEventListener("pointercancel", release);
-      handle.removeEventListener("lostpointercapture", release);
-      window.removeEventListener("blur", release);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onCancel);
+      handle.removeEventListener("lostpointercapture", onCancel);
+      window.removeEventListener("blur", onCancel);
     };
-  }, [settleWidth]);
+  }, [cancelPreview, commitWidth, previewWidth]);
 
   return (
     <div
@@ -72,8 +91,9 @@ export function SidebarResizeHandle({
       aria-orientation="vertical"
       aria-label={t("inspector.sidebarWidth")}
       aria-valuenow={width}
-      aria-valuemin={200}
-      aria-valuemax={360}
+      aria-valuetext={t("inspector.sidebarWidthValue", { width })}
+      aria-valuemin={SIDEBAR_MIN_WIDTH}
+      aria-valuemax={SIDEBAR_MAX_WIDTH}
       tabIndex={0}
       onPointerDown={(event) => {
         // Pointer-only affordance; keyboard resizing is handled below.
@@ -84,7 +104,15 @@ export function SidebarResizeHandle({
         document.body.classList.add("is-resizing-column");
         event.currentTarget.setPointerCapture(event.pointerId);
       }}
-      onKeyDown={(event) => onHandleKeyDown(event)}
+      onKeyDown={(event) => {
+        // Escape abandons an in-flight drag, like the panel and band dividers.
+        if (event.key === "Escape" && draggingRef.current) {
+          event.preventDefault();
+          releaseRef.current(true);
+          return;
+        }
+        onHandleKeyDown(event);
+      }}
     />
   );
 }

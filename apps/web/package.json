@@ -10,6 +10,7 @@
     "start": "next start --port 3000",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:prod": "node scripts/run-e2e-prod.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

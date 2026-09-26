@@ -23,6 +23,10 @@ const SHORTCUT_COPY: Record<
     title: "keyboard.toggleInspector",
     description: "keyboard.toggleInspectorDesc",
   },
+  "open-command-palette": {
+    title: "keyboard.openCommandPalette",
+    description: "keyboard.openCommandPaletteDesc",
+  },
 };
 
 export function KeyboardSettings() {

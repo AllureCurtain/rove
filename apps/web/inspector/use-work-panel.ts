@@ -1,27 +1,77 @@
 "use client";
 
-import { useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
-export type WorkPanelTab = "run" | "review" | "approval";
+import {
+  WORK_PANEL_DEFAULT_WIDTH,
+  clampWorkPanelWidth,
+  parseStoredWorkPanelWidth,
+  workPanelKeyboardWidth,
+  workPanelMinimumFor,
+} from "./work-panel-layout";
+
+import { matchesDrawerLayout } from "../lib/viewport-breakpoints";
+import {
+  activateWorkPanelTab,
+  closeWorkPanelTab,
+  defaultWorkPanelTabs,
+  openWorkPanelTab,
+  replaceWorkPanelTab,
+  type WorkPanelTabKind,
+  type WorkPanelTabsState,
+} from "./work-panel-tabs";
+
 export type WorkPanelTarget =
   | { kind: "approval"; jobId: string; runId: string; callId: string }
   | { kind: "file"; path: string; line: number }
   | null;
 interface PanelSelection {
-  tab: WorkPanelTab;
+  tabs: WorkPanelTabsState;
   target: WorkPanelTarget;
   width: number;
   collapsed: boolean;
   returnFocus: HTMLElement | null;
 }
-export const PANEL_MIN_WIDTH = 280;
-export const PANEL_MAX_WIDTH = 560;
-export function boundPanelWidth(width: number) {
-  return Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, Number.isFinite(width) ? width : 360));
+
+/**
+ * Panel width as a UI preference (design §3 ownership table: layout values live
+ * in localStorage, not in the product preference contract). The stored value is
+ * a *request*; the rendered width is always the live budget's answer
+ * (`workPanelLayout`), so a wide stored value can never squeeze the chat.
+ */
+const STORAGE_KEY = "rove.ui-work-panel-width";
+
+function readStoredPanelWidth(): number {
+  if (typeof window === "undefined") {
+    return WORK_PANEL_DEFAULT_WIDTH;
+  }
+  try {
+    return (
+      parseStoredWorkPanelWidth(window.localStorage.getItem(STORAGE_KEY)) ??
+      WORK_PANEL_DEFAULT_WIDTH
+    );
+  } catch {
+    // A blocked storage quota must not break resizing.
+    return WORK_PANEL_DEFAULT_WIDTH;
+  }
 }
+
+function writeStoredPanelWidth(width: number): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(STORAGE_KEY, String(width));
+  } catch {
+    // Ignore; the in-memory width still applies for this session.
+  }
+}
+
 const initialSelection = (): PanelSelection => ({
-  tab: "run", target: null, width: 360,
-  collapsed: typeof window === "undefined" || window.matchMedia("(max-width: 960px)").matches,
+  tabs: defaultWorkPanelTabs(),
+  target: null,
+  width: WORK_PANEL_DEFAULT_WIDTH,
+  collapsed: matchesDrawerLayout(),
   returnFocus: null,
 });
 
@@ -35,6 +85,21 @@ export function useWorkPanel(
   const selections = useRef(new Map<string, PanelSelection>());
   const [, render] = useState(0);
   const selection = selections.current.get(key) ?? initialSelection();
+
+  // Restore after mount so the server and the first client render agree.
+  useEffect(() => {
+    const stored = readStoredPanelWidth();
+    if (stored === WORK_PANEL_DEFAULT_WIDTH) {
+      return;
+    }
+    const current = selections.current.get(key);
+    if (current && current.width === stored) {
+      return;
+    }
+    selections.current.set(key, { ...(current ?? initialSelection()), width: stored });
+    render((value) => value + 1);
+  }, [key]);
+
   function update(patch: Partial<PanelSelection>) {
     // Bound the UI cache; evicting a selection never changes runtime state.
     if (!selections.current.has(key) && selections.current.size >= 64) {
@@ -43,9 +108,13 @@ export function useWorkPanel(
     selections.current.set(key, { ...(selections.current.get(key) ?? initialSelection()), ...patch });
     render((value) => value + 1);
   }
-  function open(tab = selection.tab, target = selection.target, trigger?: HTMLElement | null) {
-    update({ collapsed: false, tab, target,
-      returnFocus: trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null) });
+  function open(kind = selection.tabs.activeKind ?? "status", target = selection.target, trigger?: HTMLElement | null) {
+    update({
+      collapsed: false,
+      tabs: openWorkPanelTab(selection.tabs, kind),
+      target,
+      returnFocus: trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null),
+    });
   }
   function close() {
     update({ collapsed: true });
@@ -57,11 +126,46 @@ export function useWorkPanel(
     const target = trigger?.isConnected ? trigger : fallback;
     requestAnimationFrame(() => { if (target?.isConnected) target.focus(); });
   }
+  const setWidth = useCallback(
+    (width: number) => {
+      // Only the lower bound is enforced here; the live budget caps the render.
+      const bounded = clampWorkPanelWidth(width, workPanelMinimumFor(width));
+      selections.current.set(key, {
+        ...(selections.current.get(key) ?? initialSelection()),
+        width: bounded,
+      });
+      writeStoredPanelWidth(bounded);
+      render((value) => value + 1);
+    },
+    [key],
+  );
   return {
-    ...selection, open, close,
-    setTab: (tab: WorkPanelTab) => update({ tab }),
+    ...selection,
+    tabs: selection.tabs.tabs,
+    activeKind: selection.tabs.activeKind,
+    open,
+    close,
+    openTab: (kind: WorkPanelTabKind) =>
+      update({ tabs: openWorkPanelTab(selection.tabs, kind) }),
+    activateTab: (kind: WorkPanelTabKind) =>
+      update({ tabs: activateWorkPanelTab(selection.tabs, kind) }),
+    closeTab: (kind: WorkPanelTabKind) =>
+      update({ tabs: closeWorkPanelTab(selection.tabs, kind) }),
+    replaceTab: (from: WorkPanelTabKind, kind: WorkPanelTabKind) =>
+      update({ tabs: replaceWorkPanelTab(selection.tabs, from, kind) }),
     setTarget: (target: WorkPanelTarget) => update({ target }),
-    setWidth: (width: number) => update({ width: boundPanelWidth(width) }),
+    setWidth,
+    resizeByKeyboard: (
+      event: { key: string; shiftKey: boolean; preventDefault: () => void },
+      maxPanelWidth: number,
+    ) => {
+      const next = workPanelKeyboardWidth(event, selection.width, maxPanelWidth);
+      if (next === null || next === selection.width) {
+        return;
+      }
+      event.preventDefault();
+      setWidth(next);
+    },
     setCollapsed: (collapsed: boolean) => update({ collapsed }),
     toggle: () => selection.collapsed ? open() : close(),
   };

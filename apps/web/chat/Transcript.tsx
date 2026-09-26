@@ -20,6 +20,10 @@ import { useCopy } from "../copy/CopyProvider";
 import { DiffView } from "../product-v2/DiffView";
 import { RichText } from "../product-v2/RichText";
 import type { ProductMessage } from "../product/product-api-types";
+import { ConversationMinimap } from "./ConversationMinimap";
+import { ReadingWidthHandles } from "./ReadingWidthHandles";
+import { buildConversationMinimapMarkers } from "./conversation-minimap";
+import { useFollowScroll } from "./use-follow-scroll";
 import {
   describeTranscriptPartialReason,
   type TranscriptRestoreState,
@@ -27,6 +31,9 @@ import {
 
 const INITIAL_VISIBLE_RUNS = 24;
 const RUN_PAGE_SIZE = 16;
+
+/** Sub-pixel slack before the transcript counts as scrolling. */
+const TRANSCRIPT_OVERFLOW_SLACK_PX = 4;
 
 export function Transcript({
   timeline,
@@ -78,9 +85,38 @@ export function Transcript({
   const hiddenRunCount = Math.max(0, timeline.length - visibleTimeline.length);
   const itemCount = visibleTimeline.reduce((total, group) => total + group.items.length, 0)
     + actionableMessages.length;
-  const transcriptRef = useRef<HTMLDivElement>(null);
+  // One marker per rendered turn: jumping is only offered to what is on screen.
+  const minimapMarkers = useMemo(
+    () =>
+      buildConversationMinimapMarkers(
+        visibleTimeline.flatMap((group) =>
+          group.items.flatMap((item) =>
+            item.kind === "message"
+              ? [
+                  {
+                    id: item.message.id,
+                    role: item.message.role,
+                    content: item.message.content,
+                  },
+                ]
+              : [],
+          ),
+        ),
+      ),
+    [visibleTimeline],
+  );
+  const {
+    scrollRef: transcriptRef,
+    showJump,
+    handleScroll,
+    jumpToLatest,
+    pinToLatest,
+    followNow,
+    recordScrollPosition,
+    jumpToMarker,
+  } = useFollowScroll();
   const prependHeightRef = useRef<number | null>(null);
-  const [atLatest, setAtLatest] = useState(true);
+  const [transcriptOverflows, setTranscriptOverflows] = useState(false);
 
   useEffect(() => {
     const transcript = transcriptRef.current;
@@ -89,23 +125,40 @@ export function Transcript({
     }
     const observer = new ResizeObserver(() => {
       if (prependHeightRef.current !== null) {
+        // Loading older turns pushes everything down: keep the reading position
+        // and tell the follow state machine where the scroller landed, so the
+        // correction is not mistaken for the user scrolling up.
         transcript.scrollTop += transcript.scrollHeight - prependHeightRef.current;
         prependHeightRef.current = null;
-      } else if (atLatest) {
-        transcript.scrollTop = transcript.scrollHeight;
+        recordScrollPosition(transcript.scrollTop);
+        return;
       }
+      // The minimap only earns its lane once the transcript actually scrolls.
+      // React bails out when the boolean is unchanged, so repeated observer
+      // callbacks at a settled size cost nothing.
+      setTranscriptOverflows(
+        transcript.scrollHeight - transcript.clientHeight > TRANSCRIPT_OVERFLOW_SLACK_PX,
+      );
+      // Re-pin from the observer callback itself: a frame scheduled from here
+      // paints one unpinned frame before the follow lands.
+      followNow();
     });
     const content = transcript.firstElementChild ?? transcript;
     observer.observe(content);
-    if (atLatest) {
-      transcript.scrollTop = transcript.scrollHeight;
-    }
+    // Observe the scroller as well as its content. A taller composer (or a new
+    // queued-message row) shrinks the viewport by tens of pixels without
+    // touching the content box, which leaves the pinned position short of the
+    // bottom — measured 22px at 1280x800 — until something else re-pins.
+    observer.observe(transcript);
+    followNow();
     return () => observer.disconnect();
-  }, [atLatest]);
+  }, [followNow, recordScrollPosition, transcriptRef]);
 
   useEffect(() => {
     setVisibleRunCount(INITIAL_VISIBLE_RUNS);
-  }, [restoreState.status === "idle" ? "idle" : restoreState.sessionId]);
+    // A session switch starts at its newest turn.
+    pinToLatest();
+  }, [pinToLatest, restoreState.status === "idle" ? "idle" : restoreState.sessionId]);
 
   function loadOlderRuns() {
     const transcript = transcriptRef.current;
@@ -113,25 +166,6 @@ export function Transcript({
       prependHeightRef.current = transcript.scrollHeight;
     }
     setVisibleRunCount((count) => Math.min(timeline.length, count + RUN_PAGE_SIZE));
-  }
-
-  function syncScrollPosition() {
-    const transcript = transcriptRef.current;
-    if (!transcript) {
-      return;
-    }
-    setAtLatest(
-      transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 48,
-    );
-  }
-
-  function returnToLatest() {
-    const transcript = transcriptRef.current;
-    if (!transcript) {
-      return;
-    }
-    transcript.scrollTo({ top: transcript.scrollHeight, behavior: "smooth" });
-    setAtLatest(true);
   }
 
   return (
@@ -144,7 +178,7 @@ export function Transcript({
         role="log"
         aria-live="polite"
         aria-relevant="additions text"
-        onScroll={syncScrollPosition}
+        onScroll={handleScroll}
       >
         <div className="chat-transcript__content">
           <RestoreNotice
@@ -206,11 +240,19 @@ export function Transcript({
           ))}
         </div>
       </div>
-      {!atLatest && itemCount > 0 ? (
-        <button type="button" className="return-to-latest" onClick={returnToLatest}>
-          Return to latest
+      {showJump && itemCount > 0 ? (
+        <button type="button" className="return-to-latest" onClick={jumpToLatest}>
+          {t("chat.returnToLatest")}
         </button>
       ) : null}
+      <ConversationMinimap
+        markers={minimapMarkers}
+        overflows={transcriptOverflows}
+        hasEarlier={hiddenRunCount > 0}
+        onJumpTo={jumpToMarker}
+      />
+      {/* Dual edge handles for the centered reading band (PI-Desktop D439). */}
+      <ReadingWidthHandles />
     </div>
   );
 }
@@ -232,10 +274,15 @@ function QueuedMessage({
   const promotable = message.status === "queued" && canPromote;
   const revocable = message.status === "queued" || message.status === "needs_attention";
   return (
-    <article className="chat-bubble queued-message" data-role="user" data-status={message.status}>
+    <article
+      className="chat-bubble queued-message"
+      data-role="user"
+      data-status={message.status}
+      data-delivery={message.requested_delivery}
+    >
       <div className="message-byline">
         <strong>{t("chat.you")}</strong>
-        <span>{messageStatusLabel(message.status, t)}</span>
+        <span>{messageStatusLabel(message, t)}</span>
       </div>
       <RichText content={message.content} />
       {message.reason ? <p className="queued-message__reason">{message.reason}</p> : null}
@@ -259,23 +306,33 @@ function QueuedMessage({
 }
 
 function messageStatusLabel(
-  status: ProductMessage["status"],
+  message: ProductMessage,
   t: (path: string) => string,
 ): string {
-  switch (status) {
+  switch (message.status) {
     case "queued":
-      return t("inspector.statusQueued");
+      // The ledger row says where the message is headed, not just that it waits.
+      return `${t("inspector.statusQueued")} · ${deliveryLabel(message.requested_delivery, t)}`;
     case "intervention_requested":
-      return t("chat.promote");
+      return t("chat.statusJoiningTurn");
     case "applied_current_run":
-      return t("chat.promote");
+      return t("chat.statusJoinedTurn");
     case "claimed_successor":
-      return t("chat.queue");
+      return t("chat.statusNextTurn");
     case "needs_attention":
       return t("workspace.needsAttention");
     case "revoked":
       return t("chat.revoke");
   }
+}
+
+function deliveryLabel(
+  delivery: ProductMessage["requested_delivery"],
+  t: (path: string) => string,
+): string {
+  return delivery === "current_run"
+    ? t("chat.deliveryThisTurn")
+    : t("chat.deliveryNextTurn");
 }
 
 function TranscriptItem({
@@ -302,6 +359,8 @@ function TranscriptItem({
             className="chat-bubble"
             data-role={item.message.role}
             data-status={item.message.status}
+            // Anchor for the conversation minimap: one marker per turn message.
+            data-message-id={item.message.id}
           >
             <div className="message-byline">
               <strong>

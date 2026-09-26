@@ -15,14 +15,42 @@ import { CopyProvider, useCopy } from "../copy/CopyProvider";
 import { Transcript } from "../chat/Transcript";
 import { RunInspector } from "../inspector/RunInspector";
 import { useWorkPanel } from "../inspector/use-work-panel";
+import {
+  MAIN_PANE_MIN_WIDTH,
+  workPanelLayout,
+  workPanelWidthForSidebarReopen,
+  type WorkPanelLayout,
+} from "../inspector/work-panel-layout";
 import { useSessionUsage } from "../state/use-session-usage";
 import {
   createComposerDraftStore,
   type ComposerDraftStore,
 } from "../state/composer-draft-store";
 import { selectTranscriptTimeline } from "../lib/rove-state";
+import { installScrollbarReveal } from "../lib/scrollbar-reveal";
+import { DRAWER_MEDIA_QUERY } from "../lib/viewport-breakpoints";
+import {
+  SIDEBAR_OVERLAY_CLOSE_DELAY_MS,
+  shouldFocusSessionHeadingAfterSelection,
+  shouldShowSidebarHoverZone,
+} from "./sidebar-overlay";
+import { CommandPalette, type CommandPaletteLabels } from "./CommandPalette";
+import {
+  type CommandPaletteAction,
+  type CommandPaletteEntry,
+} from "./command-palette";
+import { routePrefetchTargets } from "./route-prefetch";
+import { useIdleRoutePrefetch } from "./use-idle-route-prefetch";
 import { SettingsShell } from "../settings/SettingsShell";
 import { matchKeyboardShortcut } from "../settings/keyboard-settings-model";
+import {
+  KEYBOARD_SHORTCUTS,
+  type KeyboardShortcutActionId,
+} from "../settings/keyboard-settings-model";
+import {
+  SETTINGS_SECTION_COPY_KEYS,
+  VISIBLE_SETTINGS_SECTIONS,
+} from "../settings/sections";
 import { createSettingsPlatformClient } from "../settings/settings-platform-client";
 import { EmptyState } from "../sidebar/EmptyState";
 import { WorkspaceTree } from "../sidebar/WorkspaceTree";
@@ -109,6 +137,16 @@ function ServerProductApp({ uiVersion, draftStore }: {
   // The width persists as a UI preference; the collapse does not, so a reload
   // always returns to the expanded rail.
   const sidebar = useSidebarWidth();
+  // Warm the routes the header can reach in one click, off the boot path
+  // (open-vetta's idle prefetch; see `route-prefetch`).
+  const prefetchTargets = useMemo(
+    () =>
+      routePrefetchTargets({
+        activeWorkspaceId: server.catalog.active.workspaceId,
+      }),
+    [server.catalog.active.workspaceId],
+  );
+  useIdleRoutePrefetch(prefetchTargets);
   const [navCollapsed, setNavCollapsed] = useState(false);
   // Focus target for the narrow-screen "select session, close rail" flow.
   const sessionTitleRef = useRef<HTMLHeadingElement>(null);
@@ -116,6 +154,123 @@ function ServerProductApp({ uiVersion, draftStore }: {
   const inspectorCollapsed = panel.collapsed;
   const [mobileLayout, setMobileLayout] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  // Narrow screen: a pointer at the left edge peeks the rail without turning it
+  // into a modal dialog (open-vetta's hover-summoned overlay).
+  const [workspacePeek, setWorkspacePeek] = useState(false);
+  const peekCloseTimerRef = useRef<number | null>(null);
+  // The command palette is shell chrome: open state only, the entries are data.
+  const [commandOpen, setCommandOpen] = useState(false);
+
+  // ── Shared three-column width budget (design §5.0, ported from PI-Desktop) ──
+  const [shellNode, setShellNode] = useState<HTMLDivElement | null>(null);
+  const [shellWidth, setShellWidth] = useState(0);
+  // The live measurement, for event handlers that must not read a stale render.
+  const shellWidthRef = useRef(0);
+  // The budget inputs and the layout they produced. The shell is a parent of the
+  // whole conversation, so a resize that does not move the budget must not
+  // re-render: the visible geometry stays exact anyway because the track is
+  // `min(panelWidth, calc(100% - floor))` and CSS evaluates `100%` live.
+  const geometryRef = useRef<{
+    sidebarWidth: number;
+    navCollapsed: boolean;
+    requestedPanelWidth: number;
+    layout: WorkPanelLayout | null;
+  }>({
+    sidebarWidth: sidebar.width,
+    navCollapsed: false,
+    requestedPanelWidth: panel.width,
+    layout: null,
+  });
+  // A callback ref rather than a mount-time effect: `.product-body` only exists
+  // once the boot state resolves, so an effect with `[]` dependencies could run
+  // against a null ref and never observe the shell.
+  useEffect(() => {
+    if (!shellNode) {
+      return;
+    }
+    const sync = () => {
+      const next = shellNode.clientWidth;
+      const snapshot = geometryRef.current;
+      const layout = workPanelLayout({
+        containerWidth: next,
+        sidebarWidth: snapshot.sidebarWidth,
+        sidebarCollapsed: snapshot.navCollapsed,
+        requestedPanelWidth: snapshot.requestedPanelWidth,
+      });
+      const previous = snapshot.layout;
+      shellWidthRef.current = next;
+      const unchanged =
+        previous !== null &&
+        previous.panelWidth === layout.panelWidth &&
+        previous.maxPanelWidth === layout.maxPanelWidth &&
+        previous.mainWidth === layout.mainWidth &&
+        previous.shouldCollapseSidebar === layout.shouldCollapseSidebar;
+      if (unchanged) {
+        return;
+      }
+      setShellWidth(next);
+    };
+    sync();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", sync);
+      return () => window.removeEventListener("resize", sync);
+    }
+    const observer = new ResizeObserver(sync);
+    observer.observe(shellNode);
+    return () => observer.disconnect();
+  }, [shellNode]);
+  // The first render precedes the observer's first notification, so it uses the
+  // same conservative estimate PI-Desktop uses: the request plus the rail plus
+  // the conversation floor.
+  const measuredShellWidth =
+    shellWidth > 0
+      ? shellWidth
+      : panel.width + (navCollapsed ? 0 : sidebar.width) + MAIN_PANE_MIN_WIDTH;
+  const panelLayout = useMemo(
+    () =>
+      workPanelLayout({
+        containerWidth: measuredShellWidth,
+        sidebarWidth: sidebar.width,
+        sidebarCollapsed: navCollapsed,
+        requestedPanelWidth: panel.width,
+      }),
+    [measuredShellWidth, navCollapsed, panel.width, sidebar.width],
+  );
+  // The rail yields first: when the panel request cannot coexist with the
+  // conversation floor, collapse the rail instead of squeezing the chat. The
+  // effect settles in one step because collapsing removes the condition.
+  useEffect(() => {
+    if (!mobileLayout && shellWidth > 0 && panelLayout.shouldCollapseSidebar) {
+      setNavCollapsed(true);
+    }
+  }, [mobileLayout, panelLayout.shouldCollapseSidebar, shellWidth]);
+
+  // Keep the observer's snapshot of the budget inputs current. Declared after
+  // `panelLayout` so it records the layout this render committed.
+  useEffect(() => {
+    geometryRef.current = {
+      sidebarWidth: sidebar.width,
+      navCollapsed,
+      requestedPanelWidth: panel.width,
+      layout: panelLayout,
+    };
+  });
+
+  /**
+   * Reopening the rail spends the panel's column instead of squeezing the
+   * conversation: the panel gives up space first (PI-Desktop
+   * `workPanelWidthForSidebarReopen`).
+   */
+  function expandRail() {
+    panel.setWidth(
+      workPanelWidthForSidebarReopen({
+        containerWidth: shellWidthRef.current || measuredShellWidth,
+        sidebarWidth: sidebar.width,
+        currentPanelWidth: panel.width,
+      }),
+    );
+    setNavCollapsed(false);
+  }
 
   // Keep a stable ref to the panel for the *current* workspace/session. The
   // media-query listener below is registered once, so it must not close over
@@ -126,11 +281,14 @@ function ServerProductApp({ uiVersion, draftStore }: {
   });
 
   useEffect(() => {
-    const narrow = window.matchMedia("(max-width: 960px)");
+    const narrow = window.matchMedia(DRAWER_MEDIA_QUERY);
     const syncInspector = () => {
       setMobileLayout(narrow.matches);
       panelRef.current.setCollapsed(narrow.matches);
       if (!narrow.matches) {
+        // The peek only exists on a narrow screen.
+        cancelPeekClose();
+        setWorkspacePeek(false);
         setWorkspaceOpen(false);
       }
     };
@@ -239,10 +397,42 @@ function ServerProductApp({ uiVersion, draftStore }: {
               ? t("chat.disabledRoute")
               : undefined;
 
+  function cancelPeekClose() {
+    if (peekCloseTimerRef.current !== null) {
+      window.clearTimeout(peekCloseTimerRef.current);
+      peekCloseTimerRef.current = null;
+    }
+  }
+
+  /** The pointer reached the edge: show the rail without taking focus. */
+  function openWorkspacePeek() {
+    cancelPeekClose();
+    setWorkspacePeek(true);
+  }
+
+  /** The pointer left: hide shortly after, so crossing a gap does not flicker. */
+  function schedulePeekClose() {
+    cancelPeekClose();
+    peekCloseTimerRef.current = window.setTimeout(() => {
+      peekCloseTimerRef.current = null;
+      setWorkspacePeek(false);
+    }, SIDEBAR_OVERLAY_CLOSE_DELAY_MS);
+  }
+
   function closeWorkspaceDrawer() {
+    cancelPeekClose();
+    setWorkspacePeek(false);
     setWorkspaceOpen(false);
     window.requestAnimationFrame(() => workspaceButtonRef.current?.focus());
   }
+
+  // A pending peek timer must not outlive the shell.
+  useEffect(() => cancelPeekClose, []);
+
+  // Reveal-while-scrolling for every scroller in the shell (PI-Desktop's
+  // `data-scrolling` contract): one capture-phase listener at the root, marking
+  // whichever element scrolled and clearing the mark once it has been quiet.
+  useEffect(() => installScrollbarReveal(document), []);
 
   function closeInspector() {
     panel.close();
@@ -317,42 +507,46 @@ function ServerProductApp({ uiVersion, draftStore }: {
     }
   }
 
+  /**
+   * One implementation of "what a shortcut does", shared by the global key
+   * listener and the command palette so the two can never drift.
+   */
+  function runShortcut(action: KeyboardShortcutActionId): boolean {
+    switch (action) {
+      case "focus-composer":
+        if (routing.viewSettings || composerDisabled || !composerRef.current) {
+          return false;
+        }
+        composerRef.current.focus();
+        return true;
+      case "new-session":
+        if (!activeWorkspace || server.catalogMutationBusy) {
+          return false;
+        }
+        void handleNewSession(activeWorkspace.id);
+        return true;
+      case "open-settings":
+        routing.openSettings("general");
+        return true;
+      case "toggle-inspector":
+        if (routing.viewSettings || !activeWorkspace || !activeSession) {
+          return false;
+        }
+        panel.toggle();
+        return true;
+      case "open-command-palette":
+        setCommandOpen((open) => !open);
+        return true;
+    }
+  }
+
   useEffect(() => {
     function handleShortcut(event: KeyboardEvent) {
       const shortcut = matchKeyboardShortcut(event);
       if (!shortcut) {
         return;
       }
-
-      let handled = true;
-      switch (shortcut.action) {
-        case "focus-composer":
-          if (routing.viewSettings || composerDisabled || !composerRef.current) {
-            handled = false;
-          } else {
-            composerRef.current.focus();
-          }
-          break;
-        case "new-session":
-          if (!activeWorkspace || server.catalogMutationBusy) {
-            handled = false;
-          } else {
-            void handleNewSession(activeWorkspace.id);
-          }
-          break;
-        case "open-settings":
-          routing.openSettings("general");
-          break;
-        case "toggle-inspector":
-          if (routing.viewSettings || !activeWorkspace || !activeSession) {
-            handled = false;
-          } else {
-            panel.toggle();
-          }
-          break;
-      }
-
-      if (handled) {
+      if (runShortcut(shortcut.action)) {
         event.preventDefault();
       }
     }
@@ -367,6 +561,143 @@ function ServerProductApp({ uiVersion, draftStore }: {
     server.catalogMutationBusy,
     panel,
   ]);
+
+  const commandLabels = useMemo<CommandPaletteLabels>(
+    () => ({
+      title: t("commandPalette.title"),
+      placeholder: t("commandPalette.placeholder"),
+      empty: t("commandPalette.empty"),
+      groups: {
+        actions: t("commandPalette.groupActions"),
+        workspaces: t("commandPalette.groupWorkspaces"),
+        sessions: t("commandPalette.groupSessions"),
+        settings: t("commandPalette.groupSettings"),
+      },
+    }),
+    [t],
+  );
+
+  // Entries are data, so the palette stays a pure view and this is the only place
+  // that knows how to build them from the catalog and the shortcut registry.
+  const commandEntries = useMemo<CommandPaletteEntry[]>(() => {
+    const actionTitles: Record<KeyboardShortcutActionId, string> = {
+      "focus-composer": t("commandPalette.actionFocusComposer"),
+      "new-session": t("commandPalette.actionNewSession"),
+      "open-settings": t("commandPalette.actionOpenSettings"),
+      "toggle-inspector": t("commandPalette.actionToggleInspector"),
+      "open-command-palette": t("commandPalette.title"),
+    };
+    const entries: CommandPaletteEntry[] = [];
+
+    for (const descriptor of KEYBOARD_SHORTCUTS) {
+      // The palette is not an entry inside itself.
+      if (descriptor.action === "open-command-palette") {
+        continue;
+      }
+      const unavailable =
+        descriptor.action === "new-session" && !activeWorkspace
+          ? t("commandPalette.unavailableNoWorkspace")
+          : descriptor.action === "toggle-inspector" &&
+              (!activeWorkspace || !activeSession)
+            ? t("commandPalette.unavailableNoSession")
+            : descriptor.action === "focus-composer" &&
+                (routing.viewSettings || composerDisabled)
+              ? t("commandPalette.unavailableComposer")
+              : undefined;
+      entries.push({
+        id: `action:${descriptor.action}`,
+        groupKey: "actions",
+        title: actionTitles[descriptor.action],
+        subtitle: descriptor.display,
+        // A command that cannot run right now is shown and disabled rather than
+        // dropped: "it is not here" is a worse answer than "not yet".
+        disabled: unavailable !== undefined,
+        disabledReason: unavailable,
+        order: entries.length,
+        action: { kind: "shortcut", action: descriptor.action },
+      });
+    }
+    entries.push({
+      id: "action:toggle-theme",
+      groupKey: "actions",
+      title: t("commandPalette.actionToggleTheme"),
+      order: entries.length,
+      action: { kind: "toggle-theme" },
+    });
+
+    workspaces.forEach((workspace, index) => {
+      entries.push({
+        id: `workspace:${workspace.id}`,
+        groupKey: "workspaces",
+        title: workspace.displayName,
+        subtitle: formatDisplayPath(workspace.rootPath),
+        order: index,
+        action: { kind: "open-workspace", workspaceId: workspace.id },
+      });
+    });
+
+    const workspaceNames = new Map(
+      server.catalog.workspaces.map((workspace) => [
+        workspace.id,
+        workspace.displayName,
+      ]),
+    );
+    server.catalog.sessions.forEach((session, index) => {
+      entries.push({
+        id: `session:${session.id}`,
+        groupKey: "sessions",
+        title: session.title,
+        subtitle: workspaceNames.get(session.workspaceId) ?? "",
+        order: index,
+        action: {
+          kind: "open-session",
+          workspaceId: session.workspaceId,
+          sessionId: session.id,
+        },
+      });
+    });
+
+    VISIBLE_SETTINGS_SECTIONS.forEach((section, index) => {
+      entries.push({
+        id: `settings:${section.id}`,
+        groupKey: "settings",
+        title: t(SETTINGS_SECTION_COPY_KEYS[section.id]),
+        order: index,
+        action: { kind: "open-settings-section", section: section.id },
+      });
+    });
+
+    return entries;
+  }, [
+    activeSession,
+    activeWorkspace,
+    composerDisabled,
+    routing.viewSettings,
+    server.catalog,
+    t,
+    workspaces,
+  ]);
+
+  /** The single place that turns a palette action into navigation or a command. */
+  function handleCommandAction(action: CommandPaletteAction) {
+    switch (action.kind) {
+      case "shortcut":
+        runShortcut(action.action);
+        return;
+      case "toggle-theme":
+        server.changeTheme(server.theme === "dark" ? "light" : "dark");
+        return;
+      case "open-settings-section":
+        routing.openSettings(action.section);
+        return;
+      case "open-workspace":
+        routing.navigateWorkspace(action.workspaceId);
+        return;
+      case "open-session":
+        routing.navigateSession(action.workspaceId, action.sessionId);
+        return;
+    }
+  }
 
   if (server.bootState.status !== "ready") {
     return (
@@ -408,7 +739,13 @@ function ServerProductApp({ uiVersion, draftStore }: {
         onToggleWorkspace={
           routing.viewSettings
             ? undefined
-            : () => setWorkspaceOpen((value) => !value)
+            : () => {
+                // A deliberate open is the modal one: it may trap focus, and it
+                // hands focus back to this button when it closes.
+                cancelPeekClose();
+                setWorkspacePeek(false);
+                setWorkspaceOpen((value) => !value);
+              }
         }
         // When the rail is collapsed its entries move to the header so they
         // stay reachable (design 搂3.1).
@@ -422,7 +759,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
                   if (server.catalog.active.workspaceId) {
                     void handleNewSession(server.catalog.active.workspaceId);
                   } else {
-                    setNavCollapsed(false);
+                    expandRail();
                   }
                 }}
               >
@@ -431,7 +768,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
               <button
                 type="button"
                 className="ghost icon-button"
-                onClick={() => setNavCollapsed(false)}
+                onClick={expandRail}
                 aria-label={t("nav.expandWorkspace")}
                 title={t("nav.expandWorkspace")}
               >
@@ -481,12 +818,23 @@ function ServerProductApp({ uiVersion, draftStore }: {
       ) : (
         <div
           className="product-body"
+          ref={setShellNode}
           data-workspace-open={workspaceOpen}
           data-inspector-open={mobileLayout && !inspectorCollapsed}
           data-nav-collapsed={navCollapsed}
-          style={{
-            "--sidebar-nav-width": `${sidebar.width}px`,
-          } as CSSProperties}
+          style={
+            {
+              "--sidebar-nav-width": `${sidebar.width}px`,
+              // Design §5.0 shared width budget: `workPanelLayout` owns the
+              // answer (it knows the rail's actual state), and the CSS keeps a
+              // viewport-level safety net against a stale measurement. Deriving
+              // the cap from the rail's *expanded* width here instead would let
+              // CSS and JS disagree whenever the rail is collapsed.
+              "--work-panel-track": inspectorCollapsed
+                ? "minmax(0, var(--work-panel-collapsed-width, 40px))"
+                : `min(${panelLayout.panelWidth}px, calc(100% - var(--pane-floor)))`,
+            } as CSSProperties
+          }
         >
           <WorkspaceTree
             workspaces={workspaces}
@@ -498,10 +846,17 @@ function ServerProductApp({ uiVersion, draftStore }: {
             onSelectWorkspace={routing.navigateWorkspace}
             onSelectSession={(workspaceId, sessionId) => {
               routing.navigateSession(workspaceId, sessionId);
+              // Narrow screen: the rail closes on selection. Only a deliberate
+              // open moves focus to the session title in the conversation header
+              // (design §3.1); a pointer-driven peek must not pull focus.
+              cancelPeekClose();
+              setWorkspacePeek(false);
               setWorkspaceOpen(false);
-              // Narrow screen: the rail closes on selection, so move focus to
-              // the session title in the conversation header (design 搂3.1).
-              if (mobileLayout) {
+              if (
+                shouldFocusSessionHeadingAfterSelection({
+                  deliberate: workspaceOpen,
+                })
+              ) {
                 window.requestAnimationFrame(() =>
                   sessionTitleRef.current?.focus(),
                 );
@@ -515,20 +870,42 @@ function ServerProductApp({ uiVersion, draftStore }: {
               void handleRemoveWorkspace(workspaceId)
             }
             mobileOpen={mobileLayout && workspaceOpen}
+            peekOpen={mobileLayout && workspacePeek}
+            onOverlayPointerEnter={mobileLayout ? cancelPeekClose : undefined}
+            onOverlayPointerLeave={mobileLayout ? schedulePeekClose : undefined}
             onCloseMobile={closeWorkspaceDrawer}
             onOpenSettings={() => {
               setWorkspaceOpen(false);
               routing.openSettings("general");
             }}
             railCollapsed={navCollapsed}
-            onToggleCollapsed={() => setNavCollapsed((value) => !value)}
+            onToggleCollapsed={() =>
+              navCollapsed ? expandRail() : setNavCollapsed(true)
+            }
           />
           {/* Hidden on narrow layouts by CSS; the drawer has no width to drag. */}
           {!mobileLayout && !navCollapsed ? (
             <SidebarResizeHandle
               width={sidebar.width}
-              settleWidth={sidebar.settleWidth}
+              previewWidth={sidebar.previewWidth}
+              commitWidth={sidebar.commitWidth}
+              cancelPreview={sidebar.cancelPreview}
               onHandleKeyDown={sidebar.onHandleKeyDown}
+            />
+          ) : null}
+          {mobileLayout &&
+          shouldShowSidebarHoverZone({
+            narrow: mobileLayout,
+            open: workspaceOpen || workspacePeek,
+          }) ? (
+            /* A fine-pointer affordance (see `sidebar-overlay`): decorative, so
+               it stays out of the accessibility tree, and the header button
+               remains the deliberate, keyboard-reachable way in. */
+            <div
+              className="sidebar-hover-zone"
+              aria-hidden="true"
+              data-testid="sidebar-hover-zone"
+              onPointerEnter={openWorkspacePeek}
             />
           ) : null}
 
@@ -589,7 +966,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
                     }
                   >
                     {inspectorCollapsed
-                      ? t("inspector.tabRun")
+                      ? t("inspector.title")
                       : t("common.close")}
                   </button>
                 </div>
@@ -602,7 +979,7 @@ function ServerProductApp({ uiVersion, draftStore }: {
                   approvalError={continuity.approvalError}
                   onApprovalDetail={(tool, trigger) => {
                     const { activeJobId, activeRunId } = continuity.runState;
-                    if (activeJobId && activeRunId) panel.open("approval", {
+                    if (activeJobId && activeRunId) panel.open("pending", {
                       kind: "approval", jobId: activeJobId, runId: activeRunId, callId: tool.id,
                     }, trigger);
                   }}
@@ -660,6 +1037,8 @@ function ServerProductApp({ uiVersion, draftStore }: {
             <RunInspector
               key={`${activeWorkspace.id}:${activeSession.id}`}
               panel={panel}
+              panelLayout={panelLayout}
+              uiVersion={uiVersion}
               approvalBusy={continuity.approvalBusy}
               approvalError={continuity.approvalError}
               onApproval={continuity.approve}
@@ -686,7 +1065,9 @@ function ServerProductApp({ uiVersion, draftStore }: {
                 void reviews.loadFindings(reviewId, cursor);
               }}
               onOpenReviewFinding={(path, line) => {
-                panel.setTarget({ kind: "file", path, line });
+                // A finding opens its file, so the files tab takes the target
+                // (PI-Desktop opens a file tab from a review finding).
+                panel.open("files", { kind: "file", path, line });
               }}
               fileFocusPath={panel.target?.kind === "file" ? panel.target.path : undefined}
               fileFocusLine={panel.target?.kind === "file" ? panel.target.line : undefined}
@@ -705,6 +1086,13 @@ function ServerProductApp({ uiVersion, draftStore }: {
           ) : null}
         </div>
       )}
+      <CommandPalette
+        open={commandOpen}
+        entries={commandEntries}
+        labels={commandLabels}
+        onAction={handleCommandAction}
+        onClose={() => setCommandOpen(false)}
+      />
     </div>
   );
 }

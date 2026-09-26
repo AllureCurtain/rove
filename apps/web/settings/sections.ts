@@ -12,3 +12,25 @@ export const SETTINGS_SECTIONS = [
 ] as const;
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];
+
+/**
+ * Copy key per section: the settings navigation and the command palette must
+ * resolve one label for a section, so the mapping lives here instead of being
+ * restated per surface.
+ */
+export const SETTINGS_SECTION_COPY_KEYS: Record<SettingsSectionId, string> = {
+  general: "settings.sectionGeneral",
+  providers: "settings.sectionProviders",
+  tools: "settings.sectionTools",
+  workspace: "settings.sectionWorkspace",
+  memory: "settings.sectionMemory",
+  sessions: "settings.sectionSessions",
+  keyboard: "settings.sectionKeyboard",
+  advanced: "settings.sectionAdvanced",
+  about: "settings.sectionAbout",
+};
+
+/** Sections the surfaces offer: `advanced` is a route-compatibility alias. */
+export const VISIBLE_SETTINGS_SECTIONS = SETTINGS_SECTIONS.filter(
+  (section) => section.id !== "advanced",
+);

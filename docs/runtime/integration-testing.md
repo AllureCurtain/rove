@@ -486,6 +486,37 @@ $env:ROVE_MCP_FILESYSTEM_SMOKE = "1"
 cargo test -p rove-integration-tests --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture
 ```
 
+### Production-Build Web E2E
+
+`pnpm test:e2e` serves the browser suite from `next dev`. Two behaviours are only
+observable in a production build: route payload prefetching, and the real status of the
+`/dev/*` preview routes, which `app/dev/layout.tsx` resolves to a 404 unless
+`ROVE_ENABLE_DEV_ROUTES=1` is present **while those pages prerender**, so the gate must be
+set for `next build`, not only for `next start`. Running the mocked suite against a
+production build without that gate reports the preview specs as failures even though the
+shipped product shell is unaffected.
+
+From `apps/web/`:
+
+```powershell
+pnpm test:e2e:prod
+```
+
+`scripts/run-e2e-prod.mjs` builds with `ROVE_ENABLE_DEV_ROUTES=1` and then runs the whole
+suite with `ROVE_E2E_PROD=1`; `playwright.config.ts` answers that flag with `next start`
+instead of `next dev` and passes the dev-route gate to the server it spawns. Extra
+arguments are forwarded, so one spec can be profiled:
+
+```powershell
+pnpm test:e2e:prod tests/e2e/route-prefetch.spec.ts
+```
+
+`tests/e2e/route-prefetch.spec.ts` skips itself unless `ROVE_E2E_PROD=1`, because Next
+issues no prefetch requests in dev; a dev run of that file only proves the skip path. This
+profile is opt-in evidence: it is not part of `local-full`, but it is required for any
+claim about production-only behaviour.
+
+
 ## Product Acceptance Runner
 
 `scripts/product-acceptance.ps1` and `scripts/product-acceptance.sh` are two
@@ -502,6 +533,16 @@ bash scripts/product-acceptance.sh
 
 Flags: `-SkipWeb` / `--skip-web`, `-SkipBrowser` / `--skip-browser`, and
 `-IncludeGated` / `--include-gated` for env-gated checks.
+
+On a machine that cannot afford the default browser fan-out, the `web-e2e` step fails with
+`toBeVisible` timeouts even though the assertions are correct: the dev server and one
+browser per worker have to fit in memory together. `ROVE_E2E_WORKERS=<n>` bounds the worker
+count without changing what is asserted:
+
+```powershell
+$env:ROVE_E2E_WORKERS = "3"
+powershell -ExecutionPolicy Bypass -File scripts/product-acceptance.ps1
+```
 
 Report contract:
 
