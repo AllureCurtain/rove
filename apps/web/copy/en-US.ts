@@ -636,6 +636,12 @@ const enUS: CopyDictionary = {
     noSessionsBody: "No sessions in this workspace.",
     sessionName: "Session name",
     openPickerFailed: "Failed to open the folder picker.",
+    sessionPin: "Pin session",
+    sessionUnpin: "Unpin session",
+    sessionRename: "Rename session",
+    sessionRenameEmpty: "The title cannot be empty.",
+    sessionRenameFailed: "Rename failed. The previous title was restored.",
+    sessionErrorDot: "The last run of this session failed",
   },
   tools: {
     lede: "Default tool authorization and execution limits.",
