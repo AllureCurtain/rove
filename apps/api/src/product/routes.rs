@@ -357,14 +357,30 @@ pub(crate) async fn delete_product_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct GetProductTranscriptQuery {
+    /// Cursor from a previous page's `next_before_ordinal`. Returns only runs
+    /// older than that ordinal, newest first.
+    #[serde(default)]
+    pub before_ordinal: Option<u64>,
+    /// Maximum runs in this page. Omit for the bounded legacy window.
+    #[serde(default)]
+    pub limit_runs: Option<usize>,
+}
+
 #[utoipa::path(
     get,
     path = "/product/sessions/{session_id}/transcript",
     tag = docs::PRODUCT_TAG,
     security(("BearerAuth" = [])),
-    params(("session_id" = ProductSessionId, Path, description = "Product session id")),
+    params(
+        ("session_id" = ProductSessionId, Path, description = "Product session id"),
+        GetProductTranscriptQuery
+    ),
     responses(
         (status = 200, description = "Canonical-event transcript projection", body = ProductTranscriptResponse),
+        (status = 400, description = "Invalid transcript page query", body = ApiErrorResponse),
         (status = 404, description = "Session not found", body = ApiErrorResponse),
         (status = 500, description = "Product transcript projection failed", body = ApiErrorResponse),
         (status = 503, description = "Product transcript projector is unavailable", body = ApiErrorResponse)
@@ -373,10 +389,27 @@ pub(crate) async fn delete_product_session(
 pub(crate) async fn get_product_session_transcript(
     State(state): State<ApiState>,
     Path(session_id): Path<ProductSessionId>,
+    Query(query): Query<GetProductTranscriptQuery>,
 ) -> Result<Json<ProductTranscriptResponse>, ApiError> {
+    if query.before_ordinal == Some(0)
+        || query
+            .limit_runs
+            .is_some_and(|limit| limit == 0 || limit > MAX_TRANSCRIPT_PAGE_RUNS)
+    {
+        return Err(ApiError::bad_request_with_code(
+            ProductErrorCode::ProductInvalidInput.as_str(),
+            "transcript page query is invalid",
+        ));
+    }
     let transcript = state
         .product_transcript_reader()?
-        .read_transcript(&session_id)
+        .read_transcript(
+            &session_id,
+            ProductTranscriptQuery {
+                before_ordinal: query.before_ordinal,
+                limit_runs: query.limit_runs,
+            },
+        )
         .await?;
     Ok(Json(transcript))
 }
