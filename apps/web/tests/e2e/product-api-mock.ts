@@ -1792,11 +1792,14 @@ export async function installMockProductApi(
       run_status: string;
     };
     const completed = approvalCompletionEvents();
-    segment.events.push(...completed);
-    segment.observed_through_seq = 4;
-    segment.last_event_seq = 4;
-    segment.run_status = "done";
+    // segment.events and job.events alias one array (transcriptSegment stores
+    // the creation events by reference), so pushing twice would duplicate the
+    // completion events and the restore parser would rightly reject the
+    // non-contiguous seqs.
     job.events.push(...completed);
+    segment.observed_through_seq = job.events.at(-1)!.seq;
+    segment.last_event_seq = job.events.at(-1)!.seq;
+    segment.run_status = "done";
     job.status = "done";
     session.status = "idle";
     return fulfillJobState(route, job, completed);

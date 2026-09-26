@@ -244,6 +244,8 @@ const enUS: CopyDictionary = {
     triggerFiles: "Workspace files",
     triggerFilesLimited: "Showing the first {{n}}. Type more to narrow the list.",
     triggerNoFiles: "No matching files",
+    messageCopy: "Copy",
+    messageCopied: "Copied",
     pasteChip: "Pasted content ({{count}} characters)",
     pasteExpand: "View full text",
     pasteRejectedTooMany: "At most {{n}} pasted attachments per draft. This one was not accepted.",

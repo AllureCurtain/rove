@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import {
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -130,14 +131,20 @@ export function WorkspaceTree({
 
   /**
    * Select-then-paint (open-vetta's `selectAfterPaint`): commit the highlight
-   * synchronously, let one committed frame pass, then start the session load.
-   * A newer click invalidates the older request so rapid clicks never stack
+   * synchronously with the click (flushSync, so concurrent rendering cannot
+   * defer it), let one committed frame pass, then start the session load. A
+   * newer click invalidates the older request so rapid clicks never stack
    * stale loads. Keyboard activation skips the barrier — repeated Enter must
-   * not pile up delayed navigations.
+   * not pile up delayed navigations. Input typed inside the barrier belongs
+   * to the still-mounted session, exactly like the reference.
    */
   function handleSelectSession(workspaceId: string, sessionId: string, immediate: boolean) {
     const sequence = ++selectSequenceRef.current;
-    setSelectionPaint({ workspaceId, sessionId });
+    // A discrete pointer action: commit the lightweight sidebar state before
+    // scheduling the navigation (open-vetta's flushSync contract).
+    flushSync(() => {
+      setSelectionPaint({ workspaceId, sessionId });
+    });
     const navigate = () => {
       if (sequence !== selectSequenceRef.current) {
         return;
@@ -148,6 +155,8 @@ export function WorkspaceTree({
       navigate();
       return;
     }
+    // waitForCommittedPaint's web equivalent (open-vetta
+    // `committed-paint.ts`): one rAF to commit, one to present.
     window.requestAnimationFrame(() => window.requestAnimationFrame(navigate));
   }
   const normalizedQuery = query.trim().toLocaleLowerCase();

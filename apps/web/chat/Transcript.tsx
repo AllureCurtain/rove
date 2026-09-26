@@ -290,7 +290,12 @@ export function Transcript({
             continue;
           }
           const reduced = reduceDisclosure(state, { type: "auto", wantOpen });
-          if (reduced !== state) {
+          // reduceDisclosure always allocates a fresh state for auto events;
+          // compare by value or the effect feeds itself forever.
+          if (
+            reduced.open !== state.open ||
+            reduced.userControlled !== state.userControlled
+          ) {
             next = next ?? new Map(current);
             next.set(entry.id, reduced);
           }
@@ -1052,7 +1057,8 @@ function MessageActions({
         type="button"
         className="ghost icon-button"
         onClick={() => void copy()}
-        aria-label={copied ? t("codeCopy.copied") : t("codeCopy.copy")}
+        aria-label={copied ? t("chat.messageCopied") : t("chat.messageCopy")}
+        title={copied ? t("chat.messageCopied") : t("chat.messageCopy")}
       >
         {copied ? <CheckIcon /> : <CopyIcon />}
       </button>

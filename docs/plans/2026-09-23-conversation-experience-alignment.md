@@ -728,4 +728,12 @@ W1–W13 与 W14 的发送历史已实现并验证；以下记录与原计划的
 
 **W14 草稿收养（§16.2）不适用**：本产品壳在无会话时渲染 `WorkspaceSessionEmpty`，**没有输入框**，"在还没有会话的页面打字"这个场景不存在，草稿存储只挂真实会话 id。发送历史（§16.3，50 条、仅成功发送记录、空框上箭头召回）已实现。
 
-**验证**：`pnpm exec vitest run` 511 个单测通过（含 transcript-window、font-scale、keybindings 新增断言与改写后的 Transcript 折叠断言）；`pnpm typecheck` 通过；`pnpm build` 生产构建通过；受影响 e2e（transcript-scroll、conversation-minimap、command-palette、workbench-composer、shell、settings、workbench-panel）结果见提交记录。Rust 门禁不适用：本轮无 `apps/web` 之外的改动。
+**验证**：`pnpm exec vitest run` 511 个单测通过（含 transcript-window、font-scale、keybindings 新增断言与改写后的 Transcript 折叠断言）；`pnpm typecheck` 通过；`pnpm build` 生产构建通过；全量 e2e（含 `tests/e2e/ui-visual.spec.ts` 视觉冒烟）116 通过、7 跳过（opt-in 真实服务用例）、0 失败；全部 22 张关键界面状态截图逐张人工检查通过。Rust 门禁不适用：本轮无 `apps/web` 之外的改动。
+
+**视觉验收修正的问题**（`ui-visual.spec.ts` 的截图巡检抓到，均已修复）：
+
+1. **disclosure 自动同步的无限重渲染**：`reduceDisclosure` 对自动事件恒返回新对象，效应里按引用比较导致每帧 setState。改为按值比较。单测是 SSR 渲染、不跑效应，只有真实浏览器暴露。
+2. **消息复制按钮误用代码块文案**（「复制代码」→「复制」）：新增 `chat.messageCopy`/`messageCopied`。
+3. **文件提及菜单的空态永不显示**：菜单可见性此前依赖"有结果"，结果为空时整个菜单消失，违反 §12.5 的空态要求。改为 file 触发期间菜单常显（空态提示在菜单内），slash 无匹配仍收起。
+4. **e2e mock 的批准事件双写**：`segment.events` 与 `job.events` 是同一数组的两个别名，批准 route 对两者各 push 一次，完成事件重复、seq 跳号，恢复解析器按设计正确拒绝（`空历史不会被伪造`），表现为批准→完成后转录清空。mock 只 push 一次。这是测试基建的预存在缺陷，被本轮的重恢复链路放大暴露。
+5. **点选先画与测试的竞态**：两帧屏障内 fill 落在旧会话的草稿槽。屏障语义与 open-vetta 一致（屏障期间输入属于仍挂载的会话），并改用参考实现的 `flushSync` 提交高亮；相关 e2e 改为等待目标面板出现后再交互。

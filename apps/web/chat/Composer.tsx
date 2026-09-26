@@ -275,7 +275,11 @@ export function Composer({
   }, [trigger, commands, fileItems, message]);
 
   const [activeIndex, setActiveIndex] = useState(0);
-  const menuOpen = menuItems.length > 0;
+  // A file trigger keeps its menu open even when the source returned nothing:
+  // the empty note lives inside the menu, so the reader can tell "no match"
+  // apart from "no trigger". A slash trigger with no matching command closes.
+  const menuOpen =
+    trigger !== null && (trigger.kind === "file" || menuItems.length > 0);
   useEffect(() => {
     setActiveIndex(0);
   }, [menuItems]);

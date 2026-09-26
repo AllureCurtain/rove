@@ -241,6 +241,8 @@ const zhCN = {
     triggerFiles: "工作区文件",
     triggerFilesLimited: "只显示前 {{n}} 条，输入更多字符缩小范围。",
     triggerNoFiles: "没有匹配的文件",
+    messageCopy: "复制",
+    messageCopied: "已复制",
     pasteChip: "粘贴内容（{{count}} 字符）",
     pasteExpand: "查看全文",
     pasteRejectedTooMany: "一次最多 {{n}} 条粘贴内容，本条未接受。",
