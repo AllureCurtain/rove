@@ -25,5 +25,8 @@ export function useComposerDraft(binding?: ComposerDraftBinding) {
     setText: (text: string) => store.setText({ workspaceId, productSessionId }, text),
     submit: (onSend: (message: string) => Promise<boolean> | boolean) =>
       store.submit({ workspaceId, productSessionId }, onSend),
+    recall: (direction: "older" | "newer", cursor: number) =>
+      store.recall({ workspaceId, productSessionId }, direction, cursor),
+    restore: (text: string) => store.restore({ workspaceId, productSessionId }, text),
   };
 }

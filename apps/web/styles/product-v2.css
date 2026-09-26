@@ -1768,6 +1768,7 @@ html[data-reading-resizing="true"] * {
 }
 
 .product-app-frame[data-ui-version="v2"] .chat-composer__row {
+  position: relative;
   min-width: 0;
   gap: 8px;
 }
@@ -4181,5 +4182,179 @@ body.is-resizing-column * {
 .product-app-frame[data-ui-version="v2"] .activity-group__hint + svg,
 .product-app-frame[data-ui-version="v2"] .activity-group__head > svg:last-child {
   margin-left: auto;
+}
+
+/* ─── Composer waiting line (activity phase, W4) ─── */
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__phase {
+  margin: 0;
+  padding: 0 2px;
+  color: var(--v2-ink-3);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__phase::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 999px;
+  background: var(--v2-rail-signal, var(--v2-ink-3));
+  animation: activity-phase-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes activity-phase-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .product-app-frame[data-ui-version="v2"] .chat-composer__phase::before {
+    animation: none;
+  }
+}
+
+/* ─── Context usage ring (W4) ─── */
+
+.product-app-frame[data-ui-version="v2"] .context-usage {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-pill, 999px);
+  background: transparent;
+  color: var(--v2-ink-2);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage__track {
+  stroke: var(--v2-border-strong, var(--v2-border));
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage__fill {
+  stroke: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage[data-tone="warn"] .context-usage__fill {
+  stroke: var(--v2-warning, var(--v2-ink-2));
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage[data-tone="danger"] .context-usage__fill,
+.product-app-frame[data-ui-version="v2"] .context-usage[data-tone="danger"] .context-usage__value {
+  stroke: var(--v2-danger);
+  color: var(--v2-danger);
+}
+
+/* ─── Composer trigger menu (W10) ─── */
+
+.product-app-frame[data-ui-version="v2"] .composer-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  right: auto;
+  min-width: 240px;
+  max-width: min(420px, 90%);
+  max-height: 264px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--v2-border-strong, var(--v2-border));
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-popover, 0 8px 24px rgba(0, 0, 0, 0.16));
+  z-index: 30;
+}
+
+.product-app-frame[data-ui-version="v2"] .composer-menu li[role="option"] {
+  padding: 6px 10px;
+  border-radius: calc(var(--v2-radius-sm, 6px) - 2px);
+  font-family: var(--v2-font-mono, monospace);
+  font-size: 12px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .composer-menu li[role="option"][data-active="true"] {
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .composer-menu__note {
+  padding: 6px 10px;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+/* ─── Paste attachments (W11) ─── */
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.product-app-frame[data-ui-version="v2"] .paste-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .paste-chip details {
+  flex: none;
+  max-width: 60%;
+}
+
+.product-app-frame[data-ui-version="v2"] .paste-chip summary {
+  cursor: pointer;
+  color: var(--v2-ink-2);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .paste-chip pre {
+  max-height: 160px;
+  overflow: auto;
+  margin: 6px 0 0;
+  font-family: var(--v2-font-mono, monospace);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .paste-chip__preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__paste-notice {
+  margin: 0;
+  color: var(--v2-warning, var(--v2-ink-2));
+  font-size: 11px;
+}
+
+/* ─── Editing queued message (W3) ─── */
+
+.product-app-frame[data-ui-version="v2"] .queued-message[data-editing="true"] {
+  outline: 1px dashed var(--v2-border-strong, var(--v2-border));
+  outline-offset: 2px;
 }
 
