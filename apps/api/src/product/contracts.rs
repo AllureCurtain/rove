@@ -1506,6 +1506,31 @@ pub struct ProductTranscriptRunSegment {
     pub fallback: Option<ProductTranscriptFallback>,
 }
 
+/// Largest page a cursor request may ask for. The legacy request keeps the
+/// wider bounded window so that a client which never paginates observes no
+/// change.
+pub const MAX_TRANSCRIPT_PAGE_RUNS: usize = 64;
+
+/// Cursor pagination for the canonical-event transcript projection.
+///
+/// The default value preserves the pre-pagination request: the response then
+/// covers the bounded window from the oldest run and carries no cursor fields.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProductTranscriptQuery {
+    /// Return only runs whose transcript ordinal is below this value.
+    pub before_ordinal: Option<u64>,
+    /// Maximum runs in this page.
+    pub limit_runs: Option<usize>,
+}
+
+impl ProductTranscriptQuery {
+    /// True when the request asked for an explicit cursor page. Such a response
+    /// always reports its page shape; a legacy response never does.
+    pub fn is_page(&self) -> bool {
+        self.before_ordinal.is_some() || self.limit_runs.is_some()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductTranscriptResponse {
     pub product_session_id: ProductSessionId,
@@ -1513,6 +1538,14 @@ pub struct ProductTranscriptResponse {
     pub status: ProductTranscriptStatus,
     pub partial_reasons: Vec<ProductTranscriptPartialReason>,
     pub segments: Vec<ProductTranscriptRunSegment>,
+    /// Cursor for the next older page: the ordinal of this page's oldest run,
+    /// present only on a cursor page while strictly older runs remain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_before_ordinal: Option<u64>,
+    /// Explicit `next_before_ordinal.is_some()` for clients. Present only on a
+    /// cursor page, so a legacy request keeps its exact previous body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_more: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -2406,6 +2439,7 @@ pub trait ProductTranscriptReader: Send + Sync {
     async fn read_transcript(
         &self,
         session_id: &ProductSessionId,
+        query: ProductTranscriptQuery,
     ) -> Result<ProductTranscriptResponse, ProductStoreError>;
 }
 

@@ -1231,6 +1231,13 @@ function ServerProductApp({ uiVersion, draftStore }: {
                   }}
                   inputBusy={continuity.inputBusy}
                   restoreState={transcriptRestoreState}
+                  olderHistory={{
+                    hasMore: continuity.hasOlderHistory,
+                    cursor: continuity.olderCursor,
+                    loading: continuity.olderHistoryLoading,
+                    error: continuity.olderHistoryError,
+                  }}
+                  onLoadOlderHistory={continuity.loadOlderHistory}
                   onRetryRestore={() =>
                     continuity.retryRestore(activeWorkspace.id, activeSession.id)
                   }

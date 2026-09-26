@@ -21,7 +21,7 @@ use super::usage::load_product_session_usage;
 use super::{
     ProductControl, ProductFork, ProductForkId, ProductSessionId, ProductSessionRunModelView,
     ProductSessionStatus, ProductSessionUsageResponse, ProductTranscriptPartialReason,
-    ProductTranscriptResponse, ProductWorkspaceId, ProductWorkspaceKind,
+    ProductTranscriptQuery, ProductTranscriptResponse, ProductWorkspaceId, ProductWorkspaceKind,
 };
 
 const EXPORT_SCHEMA_VERSION: u32 = 1;
@@ -203,7 +203,7 @@ async fn build_export_value(
     let context = store.get_session_context(session_id).await?;
     let transcript = state
         .product_transcript_reader()?
-        .read_transcript(session_id)
+        .read_transcript(session_id, ProductTranscriptQuery::default())
         .await?;
     let controls = store.list_controls(session_id, None).await?;
     let children = store.list_forks(session_id).await?;

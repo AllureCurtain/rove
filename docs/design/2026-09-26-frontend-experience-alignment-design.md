@@ -56,9 +56,14 @@ P2 = 有真实收益但收益/风险比偏低，允许延后。
 2. **切换后强制跳底**：`chat/Transcript.tsx:360-364` 有一个以 `restoreState.sessionId`
    为依赖的 `pinToLatest()` effect——滚动位置在切换时是被主动放弃的。
 3. **窗口状态在组件 state**：`chat/transcript-window.ts` 的 `{mounted, loaded}` 存在
-   `Transcript.tsx:115-117` 的 useState；新 timeline 比当前 `loaded` 短时重置
-   （`Transcript.tsx:118-140`）。`shouldRequestOlderPage` 已实现并带单测，但因服务端
-   没有游标而休眠（`Transcript.tsx:112-114` 注释）。
+   `Transcript.tsx` 的 `useState`（`initialTranscriptWindow`）；新 timeline 比当前 `loaded`
+   短时重置（同一文件里的同步 effect）。`shouldRequestOlderPage` 已实现并带单测。
+   **更新（2026-09-26）**：服务端 transcript 游标已落地（见
+   [运行时与产品合同对齐](2026-09-26-runtime-contract-alignment-design.md) §1），休眠前提失效。
+   窗口决策点现由 `olderHistoryControl(window, older)` 表达：`loaded` 里仍有未挂载的 run 时给
+   "load older turns"（grow）；全部挂载且服务端 `has_more` 为真时才给
+   `button.load-older-history`（server）；游标耗尽后两者都不渲染。prepend 锚定复用
+   `prependHeightRef`，失败时保留游标并显示有界错误。
 4. **披露状态以 entry id 剪枝**：`Transcript.tsx:263-306`——切换后旧 id 消失，披露 map
    相应清空。entry id 内嵌 run+seq（`lib/rove-state.ts:537-563`），同一 run 稳定。
 5. **follow 状态机是 per-instance ref**：`chat/use-follow-scroll.ts:41-46`
