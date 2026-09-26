@@ -33,6 +33,9 @@ tracing.workspace = true
 ulid.workspace = true
 
 [[test]]
+name = "abort_salvage"
+path = "abort_salvage.rs"
+[[test]]
 name = "api"
 path = "api.rs"
 [[test]]
