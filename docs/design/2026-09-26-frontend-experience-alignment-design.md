@@ -348,6 +348,11 @@ rove 现状（§1.9）：无 toast；后台失败只有侧栏红点 + 2.5s 轮�
   了）；当前正在看的会话也不弹（会话自己会在行内报错）。
 - 收件箱仍按 §6.2 等运行时 R5 的目录级 SSE；本轮把错题历史（`failures`，上限 50）留成
   可查询的接缝，已由单测固定。
+- **R5 接线后的补充（2026-09-26）**：运行时侧目录 SSE 已落地并在同一变更里接入前端
+  （见 §19）。因此"后台失败靠 2.5s 轮询发现"的前提不再成立：会话状态变化现在由推送驱动，
+  `useBackgroundFailureToasts` 的去重规则、`failures` 接缝与行内/弹窗取舍全都不变，只是
+  发现延迟从"最长 2.5s"变成"推送到达即可"。收件箱**视图**本身仍未实现：它是前端条目的
+  活，不属于运行时 R5 的范围。
 - 去重窗口的 e2e 做法：让一个"keeper"会话长期处于 running 以维持轮询，同一会话在一个窗口
   内失败两次 + 同一轮另一个会话首次失败，断言只出现后者一条——否则断言"只有一条"会被
   "根本没弹"蒙混过关。
@@ -764,3 +769,4 @@ P2 项（F9/F11/F12 若拍板）各自独立小 PR，不搭车。
 | 日期 | 运行时条目 | 前端待接线 | 状态 |
 |---|---|---|---|
 | 2026-09-26 | R4：`POST /product/sessions/{session_id}/messages/reorder`（原子重排）+ `POST .../messages/{message_id}/promote` 的 `delivery: "successor"`（提升为队首，等到当前回合终态边界才派发，不打断 live run） | 把 W3 的“撤销 + 重建”相邻交换换成一次 `reorder` 调用（`ordered_ids` 必须是当前 `status === "queued"` 且 `requested_delivery === "successor"` 的完整集合，少/多/重复/跨会话都会 400/409，见 R4 设计 §4.4）；队列按 `queue_order ?? seq` 排序；发送区给出“立即发送（successor，不打断）/ 插话（current_run）”两个动作并明示文案 | 未接线（运行时侧已实现） |
+| 2026-09-26 | R5：`GET /product/events` 目录级 SSE（帧 `id:` = 事件 `seq`、`event:` = 点号种类、`data:` 为带版本信封；`Last-Event-ID`/`?after=` 续传；显式游标早于保留窗口 → 409 `product_events_expired`；无游标从最新一条跟随；摘要只含状态，不含消息正文/标题/工具参数/错误细节） | 已在本次运行时变更中接线：`state/product-event-stream.ts`（`subscribeToProductEvents` + `decideProductStatusPoll`）在 boot ready 后订阅一次，**任何**帧都触发既有的 `refreshSessionStatuses()`（目录仍是唯一事实源，帧只当变更信号）；流可用时轮询降级为 30s 无条件兜底，不可用时维持既有 2.5s（仅在会话 running/needs_attention 时）降级；`AuthorizedEventSource` 新增 `open` 事件，收到 409 时丢弃游标重连（见 R5 设计 §5.5） | 已接线（本轮） |

@@ -1,7 +1,7 @@
 # 运行时与产品合同对齐（下一轮）设计
 
 - 日期：2026-09-26
-- 状态：**Partially Implemented**。R1、R3、R4 已落地（§0.1 状态列、§1.7、§3.4、§4.4）；
+- 状态：**Partially Implemented**。R1、R3、R4、R5 已落地（§0.1 状态列、§1.7、§3.4、§4.4、§5.5）；
   R2c 在同批 PR 中待独立评审（§2.4）；其余条目仍未实现。
   每个条目落地时必须在同一变更中更新 `docs/runtime/` 对应现状文档与
   `docs/runtime/implementation-status.md`、`docs/runtime/acceptance-matrix.md`，
@@ -44,7 +44,7 @@
 | R2 | 回合失败恢复家族（a 静默回合 / b 中止保留 / c 重试预算+事件） | P0 | `core`/`runtime`/`models`/`apps/api`/事件合同 | Proposed |
 | R3 | 会话 `last_outcome` 字段 | P1 | ProductStore 迁移 016 + contracts + web | Implemented（见 §3.4） |
 | R4 | 队列协议扩展（原子重排 / send-now 边界语义 / 重启存活验证） | P1 | `apps/api` + 迁移 017 | Implemented（见 §4.4；Web 接线交接前端文档） |
-| R5 | 产品级目录 SSE `/product/events` | P1 | `apps/api` + 迁移 018 + web | Proposed |
+| R5 | 产品级目录 SSE `/product/events` | P1 | `apps/api` + 迁移 018 + web | Implemented（见 §5.5；Web 消费见前端文档） |
 | R6 | 消息级编辑重发 = fork-at-message | P2 | `apps/api` fork 合同扩展 | Proposed |
 | R7 | 会话内容搜索（FTS5，先单会话） | P2 | ProductStore + 端点 | Proposed |
 | R8 | 附件/图片上传协议（骨架） | P2 | 存储/端点/消息合同/provider 层 | Proposed（骨架先行，实施前需独立评审） |
@@ -592,6 +592,83 @@ R4 未触碰：`ProductMessageStatus` 状态机、`seq` 写入路径、transcrip
 - 集成测试：订阅 → 触发状态迁移/目录变更 → 收到事件（kind/summary 正确、
   无敏感字段）；断线带 `Last-Event-ID` 重连 → 不丢不重；表滚动清理生效。
 - Web e2e（mock SSE）：后台会话失败实时上屏、断线回退轮询。
+
+### 5.5 实现记录（2026-09-26）
+
+- **迁移 018**（`apps/api/src/product/store/schema.rs`）：新表
+  `product_events(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL,
+  session_id TEXT NULL, workspace_id TEXT NULL, summary TEXT NULL, created_at TEXT NOT NULL)`，
+  `CURRENT_SCHEMA_VERSION = 18`，`assert_integrated_v14` 校验表与版本行；v17 库升级后**不为
+  历史事实补造事件**（单测 `a_v17_store_gains_the_directory_event_log_without_synthesizing_events`）。
+- **写入点在 store 内部，与状态变更同一事务**：`record_product_event` 只接受
+  `&Transaction`，因此“事务提交了但事件行没写”或“事件行写了但状态没提交”都不可能出现；SSE
+  回放的表就是唯一追赶事实源。设计 §5.2 写的“发布点 = 路由/终态迁移”在实现上落成 store 内的
+  调用点：workspace/session/preferences CRUD、`create_message` → `control.queued`、
+  `promote_message` → `control.promoted`、`revoke_message`/`transition_control` →
+  `control.revoked`、`confirm_abandoned_followup` → `control.queued`（+ 若会话非 idle 则
+  `session.status_changed`）、`create_fork` → 子会话 `session.created`。
+- **回合边界**：`claim_session_turn`/`claim_next_followup_turn`/`finish_session_turn_and_claim_followup`/
+  `recover_stale_turn_claims`/`release_*_claim_with_status` 的 status 写入统一收敛到
+  `write_session_status` + `record_session_status_change`：先读旧 status，只在**真实变化**时写
+  `session.status_changed`（summary = `{"status":...}`，`last_outcome` 存在时附加）。因此
+  “后继 claim 保持 running”不产生事件，而“running → idle”“running → needs_attention”
+  （含启动恢复）各产生一条。`finish_session_turn` 原本直接 UPDATE status，现改走同一 helper，
+  以免留下一条绕过事件日志的状态写路径。
+- **保留窗口**：每次写入后 `DELETE FROM product_events WHERE id <= (SELECT MAX(id) FROM product_events) - 10000`，
+  即滚动保留最近 `MAX_PRODUCT_EVENTS_RETAINED = 10_000` 行；单次读取上限
+  `MAX_PRODUCT_EVENT_PAGE = 512`。
+- **端点**（`apps/api/src/product/routes.rs`）：`GET /product/events` 返回
+  `text/event-stream`，帧为 `id: <seq>`、`event: <dotted kind>`、`data:` = job SSE 同款
+  `Versioned` 信封（`{"v":1,"type":<kind>,"seq":...,"session_id":...,"workspace_id":...,
+  "summary":"<JSON 字符串>","created_at":...}`）。续传游标来自 `?after=` 或
+  `Last-Event-ID`；不可解析或负值一律 400 `product_invalid_input`（两个游标来源同一语义）。
+- **推送是尽力而为，正确性靠游标**：状态变更后 `ApiState::notify_product_events()` 发一个
+  无载荷广播（缓冲区 64），SSE 任务同时以 1s 轮询兜底；漏掉通知只增加延迟，不丢事件，因为每次
+  唤醒都从订阅者自己的游标重新读表。服务关闭时流随之结束。
+
+实现时的四处决策与偏差（按 AGENTS §10 记录替换关系）：
+
+1. **`control.reordered` 不新增。** R4 的纯重排不改变任何可观察的队列“事实集合”（顺序由
+   `queue_order` 表达，客户端本来就要重读权威队列），且本轮没有消费者，因此只记录
+   `queued/promoted/revoked`。若后续需要“顺序变化也推送”，必须作为新事件种类登记，不能悄悄
+   复用 `control.queued`。
+2. **无游标 = 从最新一条开始跟随，而不是“回放保留窗口”。** 新连接的客户端本来就要读目录
+   （`GET /product/sessions`），把任意一段历史灌给它只是噪声；`latest_product_event_seq()`
+   让首帧从“现在”开始，且不会因为窗口已被修剪而把全新客户端判成过期。
+3. **显式游标过期 = 409 `product_events_expired`，不回退、不静默跳过。** 只有显式游标
+   （`?after=`/`Last-Event-ID`）低于保留窗口最旧 `seq` 时才 409，客户端应重读目录后再不带游标
+   重连。语义上这比“静默丢事件”安全：缺一段目录事实的流会让 UI 长期显示错误状态。
+4. **摘要比设计更严：连 session 标题也不进事件行。** 设计 §5.2 允许“鉴权后本可见的会话标题”，
+   但 SSE 是所有持 token 者共读的目录流，摘要保持纯状态（status/`last_outcome`/投递语义/序号），
+   标题只出现在目录响应里。测试用同一个字符串同时作为消息正文与标题，断言两者都不出现在流中。
+
+**Web 消费（§5.3，同一 PR 内落地）**：`apps/web/state/product-event-stream.ts` 是唯一接线点
+（`subscribeToProductEvents` + 纯函数 `decideProductStatusPoll`），`use-server-product-state.ts`
+在 boot ready 后订阅一次。四个实现取舍：
+
+1. **帧只当变更信号，绝不直接写状态**：任何种类（含未知种类之外的 11 种）都调用既有的
+   `refreshSessionStatuses()`，目录仍是唯一事实源。代价是一串帧会触发一串有界会话读
+   （既有 generation 守卫保证 last-writer-wins，状态仍正确），本轮不做合并；
+2. **轮询降级按“流是否可用”分档**：可用 → 30s 无条件兜底；不可用 → 沿用接入前的 2.5s 且仅在
+   有会话 running/needs_attention 时轮询。兜底定时器的依赖只含布尔量，不依赖 `catalog.sessions`，
+   否则流触发的目录刷新会不断重置定时器、把 30s 兜底永久推后；
+3. **`AuthorizedEventSource` 新增 `open` 事件与 409 游标丢弃**：目录流长时间“安静”是健康状态，
+   所以可用性必须由 `open` 而不是“收到帧”判定；收到 409 时先清空 `lastEventId` 再抛错，下一次
+   重连不带 `after=`，避免用同一个过期游标无限重连（`lib/rove-client.test.ts` 用一个“任何带
+   `after=` 的请求都 409”的桩证明第三次请求回到无游标）；
+4. **浏览器（无 desktop transport）仍走原生 `EventSource`**：它看不到响应状态，因此 409 之后
+   该标签页的流不再自愈，退回 2.5s 降级轮询直到刷新页面。桌面宿主路径（`AuthorizedEventSource`）
+   具备完整的 409 恢复。这是本轮登记在案的限制，不是未发现的行为。
+
+**未做（显式交接）**：`reorder_messages` 的纯顺序调整不产生事件（见偏差 1）；浏览器路径的
+409 自愈与 F5 收件箱视图属前端条目的活（前端文档 §19 与该文档 §6.5 已登记）。因此 §5.4 的
+Web e2e 门未执行：现有 e2e mock 对 `/api/product/events` 返回其未 mock 的 404，浏览器路径因此
+停在“流不可用 → 2.5s 降级轮询”，恰好是既有 toast/去重断言的场景；给 mock 加活的目录事件需要
+它在下游测试直接改 `state.sessions[i].status` 时同步发帧，收益不抵脆弱性。Web 侧门为
+`pnpm test`（83 文件 665 例）、`pnpm typecheck`、`pnpm build`。
+
+R5 未触碰：job SSE（`/jobs/{job_id}/events`）的帧合同与缓冲、`StreamEvent` 五个投影面、
+transcript 投影、CLI/TUI。
 
 ---
 

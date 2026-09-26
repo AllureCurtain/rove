@@ -50,6 +50,32 @@ This matrix compares the runtime hardening target with the current implementatio
 > queue still performs a revoke-and-recreate adjacent swap; moving it to this
 > endpoint is registered in the frontend design's §19 runtime-contract table.
 >
+> ProductStore directory event note (2026-09-26): schema v18 adds
+> `product_events`, the append-only log behind `GET /product/events` (R5 of
+> [`2026-09-26-runtime-contract-alignment-design.md`](../design/2026-09-26-runtime-contract-alignment-design.md)).
+> Each committed workspace/session/preference/control fact appends its row inside
+> the same transaction as the state change, so a committed fact always has an
+> event and the log never disagrees with the catalog. `session.status_changed`
+> is recorded only when a turn boundary or recovery actually moves the status
+> (including startup `running → needs_attention`), and its summary carries the
+> new status plus `last_outcome` when one exists — never message text, tool
+> arguments, error detail, or a session title. The stream frame reuses the job
+> SSE shape (`id:` = event `seq`, dotted `event:` name, versioned `data:`
+> envelope); `Last-Event-ID`/`?after=` resumes with no gap and no duplicate, a
+> cursor older than the retained 10_000 rows fails closed with 409
+> `product_events_expired`, and a client with no cursor follows from the newest
+> retained fact. Notifications are best-effort (a payload-free broadcast plus a
+> one second poll) because correctness rests on the cursor, not on the nudge.
+> The shell subscribes once per ready boot and treats every frame as a change
+> signal that refreshes the catalog it already reads; while the stream is up the
+> 2.5s status poll becomes a 30s unconditional safety net, and it falls back to
+> the guarded 2.5s poll while the stream is down. The Desktop transport drops an
+> expired cursor and reconnects without one; the plain-browser path keeps the
+> native `EventSource`, which cannot see the status, so an expired cursor there
+> ends the stream and leaves the poll in charge until the page reloads. The
+> implementation record, including the deliberately unemitted
+> `control.reordered` and the stricter summary rule, is design §5.5.
+>
 > Product UI content convergence note (feature branch, not yet on `main`):
 > `feature/ui-content-convergence` implements the A-line content/i18n plan and
 > dual visual skins in
