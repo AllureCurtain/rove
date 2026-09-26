@@ -869,6 +869,22 @@ still performs a revoke-and-recreate adjacent swap and must move to the reorder
 endpoint in the frontend workstream (see the frontend design's runtime-contract
 registration).
 
+ProductStore schema v18 owns the durable product directory log. Every committed
+workspace/session/preference/control fact appends one `product_events` row inside
+the same transaction as the change, and writes trim the log to its newest 10_000
+rows. `GET /product/events` serves that log as `text/event-stream` with the job
+stream's frame shape (`id:` is the event `seq`, `event:` is the dotted kind, and
+`data:` is the versioned envelope), so a browser resuming with `Last-Event-ID`
+(or `?after=`) receives every missed fact exactly once. A cursor below the
+retained window fails closed with HTTP 409 `product_events_expired`; a subscriber
+with no cursor follows from the newest retained fact instead of replaying history
+it never asked for. Event summaries carry state only — status, `last_outcome`,
+delivery position — never message text, tool arguments, error detail, or a
+session title, and `session.status_changed` is recorded only when a turn boundary
+or startup recovery really moves the status. Producers nudge the stream through a
+payload-free broadcast and a one second poll bounds missed latency, so the cursor,
+not the nudge, carries correctness.
+
 The current CDH G2 fork surface permits a branch only from an API-verified,
 terminal canonical run boundary. `product_session_forks` and its inherited-run
 records retain the parent identity, exact terminal sequence, and read-only

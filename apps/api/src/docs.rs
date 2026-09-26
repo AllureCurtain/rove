@@ -77,6 +77,8 @@ pub const DEBUG_TAG: &str = "Debug";
             super::PromoteProductMessageRequest,
             super::ReorderProductMessagesRequest,
             super::ProductQueueResponse,
+            super::ProductEvent,
+            super::ProductEventKind,
             super::ProductFork,
             super::ProductForkId,
             super::ProductForkResponse,

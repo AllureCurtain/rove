@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { STREAM_EVENT_NAMES, type ProviderProfile, type StreamEvent } from "./rove-types";
+import { STREAM_EVENT_NAMES, PRODUCT_EVENT_KINDS, type ProviderProfile, type StreamEvent } from "./rove-types";
 
 const streamEventFixtures: StreamEvent[] = [
   {
@@ -461,6 +461,22 @@ const providerProfileFixtures = [
 describe("rove stream event types", () => {
   it("lists every current runtime event name", () => {
     expect(STREAM_EVENT_NAMES).toEqual(streamEventFixtures.map((event) => event.type));
+  });
+
+  it("lists every current product directory event kind", () => {
+    expect(PRODUCT_EVENT_KINDS).toEqual([
+      "session.created",
+      "session.updated",
+      "session.deleted",
+      "session.status_changed",
+      "workspace.created",
+      "workspace.updated",
+      "workspace.deleted",
+      "preferences.changed",
+      "control.queued",
+      "control.promoted",
+      "control.revoked",
+    ]);
   });
 
   it("keeps web provider profiles aligned with the API provider surface", () => {

@@ -16,6 +16,11 @@ import {
   createProductApiClient,
   ProductApiError,
 } from "../product/product-client";
+import { openProductEventStream } from "../lib/rove-client";
+import {
+  decideProductStatusPoll,
+  subscribeToProductEvents,
+} from "./product-event-stream";
 import {
   isAbsoluteWorkspacePath,
   productCatalogFromApi,
@@ -86,6 +91,7 @@ export function useServerProductState() {
   const [connection, setConnection] = useState<"unknown" | "ok" | "error">(
     "unknown",
   );
+  const [eventStreamAvailable, setEventStreamAvailable] = useState(false);
   const catalogRef = useRef(catalog);
   const preferencesRef = useRef(preferences);
   const sessionModelConfigRef = useRef(sessionModelConfig);
@@ -380,21 +386,45 @@ export function useServerProductState() {
     }
   }, [patchCatalog, productClient]);
 
+  // One stream per ready boot: it refreshes the catalog for every directory
+  // fact the server records, and it reports whether it is up so polling can
+  // step back while it is. The dependencies are stable, so a re-render — which
+  // this hook does constantly while streaming — cannot open a second stream or
+  // orphan the listeners of the first.
   useEffect(() => {
-    if (
-      bootState.status !== "ready" ||
-      !catalog.sessions.some(
-        (session) =>
-          session.status === "running" || session.status === "needs_attention",
-      )
-    ) {
+    if (bootState.status !== "ready") {
+      return;
+    }
+    return subscribeToProductEvents(openProductEventStream(), {
+      refresh: () => {
+        void refreshSessionStatuses();
+      },
+      onAvailabilityChange: setEventStreamAvailable,
+    });
+  }, [bootState.status, refreshSessionStatuses]);
+
+  // Derived from booleans on purpose: catalog churn must not restart the timer,
+  // or a stream that refreshes the catalog every few seconds would keep pushing
+  // the unconditional 30s safety net past its own deadline.
+  const statusPoll = decideProductStatusPoll({
+    streamAvailable: eventStreamAvailable,
+    hasBusySession: catalog.sessions.some(
+      (session) =>
+        session.status === "running" || session.status === "needs_attention",
+    ),
+  });
+  const statusPollIntervalMs =
+    statusPoll.mode === "idle" ? null : statusPoll.intervalMs;
+
+  useEffect(() => {
+    if (bootState.status !== "ready" || statusPollIntervalMs === null) {
       return;
     }
     const interval = window.setInterval(() => {
       void refreshSessionStatuses();
-    }, 2_500);
+    }, statusPollIntervalMs);
     return () => window.clearInterval(interval);
-  }, [bootState.status, catalog.sessions, refreshSessionStatuses]);
+  }, [bootState.status, statusPollIntervalMs, refreshSessionStatuses]);
 
   const persistActiveRoute = useCallback(
     (workspaceId: string, sessionId: string | undefined) => {

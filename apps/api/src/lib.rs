@@ -70,6 +70,13 @@ use provider::{
 };
 
 const EVENT_BUFFER: usize = 256;
+/// Nudge capacity for `/product/events`.
+///
+/// A nudge carries no payload: every listener re-reads the durable event log
+/// from its own cursor, so a lagged or dropped nudge costs one poll interval of
+/// latency and never correctness. The capacity only decides how many wake-ups
+/// can queue before a slow listener starts lagging.
+const PRODUCT_EVENT_NOTIFY_BUFFER: usize = 64;
 pub(crate) const PRODUCT_MIGRATION_PREPARATION_DEADLINE: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
@@ -87,6 +94,8 @@ struct ApiStateInner {
     product_transcript_reader: Option<Arc<dyn ProductTranscriptReader>>,
     preview: product::preview::PreviewRegistry,
     shutdown_token: CancellationToken,
+    /// Wakes open `/product/events` streams after a product mutation committed.
+    product_events: broadcast::Sender<()>,
     job_starts: TaskTracker,
     supervisors: TaskTracker,
     jobs: RwLock<HashMap<JobId, Arc<JobRecord>>>,
@@ -308,6 +317,7 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(product::routes::list_product_session_controls))
         .routes(routes!(product::routes::revoke_product_session_control))
         .routes(routes!(product::routes::confirm_product_session_followup))
+        .routes(routes!(product::routes::product_events))
         .routes(routes!(product::platform::list_product_memory_topics))
         .routes(routes!(product::platform::create_product_memory_topic))
         .routes(routes!(product::platform::get_product_memory_topic))
@@ -627,6 +637,7 @@ impl ApiState {
                 product_transcript_reader,
                 preview: product::preview::PreviewRegistry::new(),
                 shutdown_token,
+                product_events: broadcast::channel(PRODUCT_EVENT_NOTIFY_BUFFER).0,
                 job_starts: TaskTracker::new(),
                 supervisors: TaskTracker::new(),
                 jobs: RwLock::new(HashMap::new()),
@@ -642,6 +653,30 @@ impl ApiState {
     /// Stable API-global ProductStore location. Requests cannot override it.
     pub fn product_store_path(&self) -> &FsPath {
         &self.inner.product_store_path
+    }
+
+    /// The process-wide shutdown signal.
+    ///
+    /// A long-lived stream ends with the server instead of parking forever, so
+    /// a test or a shutdown cannot hang on an open `/product/events` connection.
+    pub(crate) fn shutdown_token(&self) -> CancellationToken {
+        self.inner.shutdown_token.clone()
+    }
+
+    /// Subscribe to product-directory change nudges.
+    ///
+    /// The nudge is only a wake-up: the subscriber re-reads the durable event
+    /// log from its own cursor, so missing one never loses an event.
+    pub(crate) fn subscribe_product_events(&self) -> broadcast::Receiver<()> {
+        self.inner.product_events.subscribe()
+    }
+
+    /// Wake every open product event stream.
+    ///
+    /// Call this after a product mutation committed, from the path that
+    /// performed it. A send with no subscribers is not an error.
+    pub(crate) fn notify_product_events(&self) {
+        let _ = self.inner.product_events.send(());
     }
 
     /// Secure in-process Provider onboarding used by native delivery hosts.
@@ -2600,6 +2635,7 @@ async fn start_job_supervisor(state: ApiState, launch: JobLaunch) {
     let recovery_product_turn = product_turn.clone();
     let completion = record.completion.clone();
     let state_for_supervisor = state.clone();
+    let state_for_recovery = state.clone();
     // Register before spawning the stream. A control submitted after the
     // ProductStore turn claim but before `consume_job_stream` installs its
     // handle is either replayed from the durable queue or explicitly
@@ -2626,6 +2662,7 @@ async fn start_job_supervisor(state: ApiState, launch: JobLaunch) {
         if outcome.is_err() {
             tracing::warn!(job_id = %recovery_record.job_id, "job supervisor panicked");
             let recovery = AssertUnwindSafe(recover_job_supervisor_panic(
+                &state_for_recovery,
                 &recovery_record,
                 recovery_product_turn,
             ))
@@ -2801,6 +2838,11 @@ async fn run_job_supervisor(
     } else {
         None
     };
+
+    // The turn boundary just wrote the durable directory facts (the session's
+    // status/outcome and any successor claim), so wake the product event stream
+    // instead of leaving it to its poll interval.
+    state.notify_product_events();
 
     if let (Some(psid), Some(claim)) = (record.product_session_id.clone(), claimed_followup) {
         schedule_claimed_followup_start(&state, psid, claim);
@@ -3665,6 +3707,7 @@ async fn finish_nonfinal_product_turn(
 }
 
 async fn recover_job_supervisor_panic(
+    state: &ApiState,
     record: &JobRecord,
     product_turn: Option<ProductTurnSupervisor>,
 ) {
@@ -3689,6 +3732,7 @@ async fn recover_job_supervisor_panic(
     if finish_outcome.is_err() {
         tracing::warn!(job_id = %record.job_id, "product turn recovery panicked");
     }
+    state.notify_product_events();
     let terminal_published = {
         let status = record.status.lock().await;
         is_terminal(&status)
@@ -5055,7 +5099,8 @@ impl From<ProductStoreError> for ApiError {
             | ProductErrorCode::ProviderUnavailableForResume
             | ProductErrorCode::ProviderChangedForResume
             | ProductErrorCode::ReviewTargetUnavailable
-            | ProductErrorCode::ReviewConflict => StatusCode::CONFLICT,
+            | ProductErrorCode::ReviewConflict
+            | ProductErrorCode::ProductEventsExpired => StatusCode::CONFLICT,
             ProductErrorCode::ProductProviderProfileUnavailable => StatusCode::NOT_FOUND,
         };
         let message = if error.code == ProductErrorCode::ProductStorageFailure {

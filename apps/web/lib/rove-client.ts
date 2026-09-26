@@ -170,7 +170,30 @@ export async function submitInput(
 }
 
 export function openJobStream(jobId: string): EventSource {
-  const url = apiUrl(`/jobs/${encodeURIComponent(jobId)}/events`);
+  return openEventStream(apiUrl(`/jobs/${encodeURIComponent(jobId)}/events`));
+}
+
+/**
+ * The product directory stream: one long-lived connection carrying every
+ * workspace/session/preferences/control fact the server records.
+ *
+ * It is a change signal, not a transcript of the change: consumers refresh the
+ * catalog they already read instead of applying frames, so a frame kind this
+ * client does not know about costs nothing beyond the refresh it already owes.
+ *
+ * The Desktop transport gets the fetch-backed source, which can see a 409 and
+ * resynchronize from it. A plain browser keeps the native `EventSource` used by
+ * the job stream: it cannot observe a status, so an expired cursor there ends
+ * the connection and the catalog poll takes over until the page reloads.
+ */
+export function openProductEventStream(): EventSource {
+  return openEventStream(apiUrl("/product/events"));
+}
+
+export { PRODUCT_EVENT_KINDS } from "./rove-types";
+export type { ProductEvent, ProductEventKind } from "./rove-types";
+
+function openEventStream(url: string): EventSource {
   const desktop = desktopTransport();
   if (!desktop) {
     return new EventSource(url);
@@ -226,6 +249,31 @@ export function benchEvidenceUrl(benchRunId: string, path: string): string {
   );
 }
 
+/**
+ * A stream failure that knows the HTTP status the server answered with, when
+ * there was one. The native `EventSource` error event carries no status, so
+ * without this a consumer cannot tell "the resume cursor is stale" from "the
+ * transport is down".
+ */
+export class AuthorizedStreamErrorEvent extends Event {
+  readonly status: number | null;
+
+  constructor(status: number | null) {
+    super("error");
+    this.status = status;
+  }
+}
+
+/**
+ * True when a stream error means the resume cursor fell out of the server's
+ * retained window (`409 product_events_expired`). The stream has already
+ * dropped the cursor, so the caller owes only a catalog refetch: the reconnect
+ * that follows carries no `after=` and cannot replay the same 409.
+ */
+export function isStreamCursorExpired(event: Event): boolean {
+  return event instanceof AuthorizedStreamErrorEvent && event.status === 409;
+}
+
 class AuthorizedEventSource extends EventTarget {
   onerror: ((event: Event) => void) | null = null;
   private readonly controller = new AbortController();
@@ -258,14 +306,30 @@ class AuthorizedEventSource extends EventTarget {
           signal: this.controller.signal,
         });
         if (!response.ok || !response.body) {
-          throw new Error(`event stream failed with status ${response.status}`);
+          // A cursor below the retained window can never be served, so keeping
+          // it would turn every reconnect into the same 409. Dropping it makes
+          // the next attempt follow from the newest retained fact; the catalog
+          // refetch the caller performs alongside this error closes the gap.
+          if (response.status === 409) {
+            this.lastEventId = "";
+          }
+          throw new AuthorizedStreamErrorEvent(
+            response.ok ? null : response.status,
+          );
         }
+        // "Connected" and "quiet" are different states: a long-lived directory
+        // stream is healthy while it delivers nothing, so the consumer needs
+        // the open signal to know it may rely on the stream.
+        this.dispatchEvent(new Event("open"));
         await this.consume(response.body);
       } catch (error) {
         if (this.closed || (error instanceof DOMException && error.name === "AbortError")) {
           return;
         }
-        const event = new Event("error");
+        const event =
+          error instanceof AuthorizedStreamErrorEvent
+            ? error
+            : new AuthorizedStreamErrorEvent(null);
         this.dispatchEvent(event);
         this.onerror?.(event);
       }

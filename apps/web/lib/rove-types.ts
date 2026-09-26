@@ -1033,6 +1033,48 @@ export const STREAM_EVENT_NAMES = [
 
 export type StreamEventName = (typeof STREAM_EVENT_NAMES)[number];
 
+/**
+ * Product directory event kinds served by `GET /product/events`.
+ *
+ * The stream names every frame after its kind, so this list is the
+ * subscription: a kind missing here is never delivered. A kind added later on
+ * the server therefore costs latency, not correctness, because every delivered
+ * frame refreshes the catalog and the catalog is what the UI renders.
+ */
+export const PRODUCT_EVENT_KINDS = [
+  "session.created",
+  "session.updated",
+  "session.deleted",
+  "session.status_changed",
+  "workspace.created",
+  "workspace.updated",
+  "workspace.deleted",
+  "preferences.changed",
+  "control.queued",
+  "control.promoted",
+  "control.revoked",
+] as const;
+
+export type ProductEventKind = (typeof PRODUCT_EVENT_KINDS)[number];
+
+/**
+ * One `data:` body of the product directory stream.
+ *
+ * `seq` is the durable cursor the frame also carries in its SSE `id:`. `summary`
+ * is a JSON-encoded string of status/outcome fields only — never message
+ * content, tool arguments, error details, or secrets — so it can justify a
+ * catalog refresh but never replace one.
+ */
+export interface ProductEvent {
+  v: number;
+  type: ProductEventKind;
+  seq: number;
+  session_id?: string;
+  workspace_id?: string;
+  summary?: string;
+  created_at: string;
+}
+
 export interface BenchSuiteInfo {
   name: string;
   description: string;

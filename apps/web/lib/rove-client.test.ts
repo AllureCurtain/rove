@@ -3,9 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createJob,
   fetchRunReport,
+  isStreamCursorExpired,
   listProviderModels,
   listRuns,
   openJobStream,
+  openProductEventStream,
   RoveApiError,
   submitApproval,
   testProvider,
@@ -130,6 +132,118 @@ describe("rove client", () => {
       const headers = new Headers(call[1]?.headers);
       expect(headers.get("authorization")).toBe("Bearer desktop-secret");
     }
+  });
+
+  it("announces an open product stream once its body is being consumed", async () => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(": keep-alive\n\n"));
+        controller.close();
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, body });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("window", {
+      __ROVE_API_URL__: "http://127.0.0.1:49152",
+      __ROVE_TOKEN__: "desktop-secret",
+    });
+
+    const source = openProductEventStream();
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error("product SSE open timed out")),
+        1_000,
+      );
+      source.addEventListener("open", () => {
+        clearTimeout(timeout);
+        source.close();
+        resolve();
+      });
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]?.toString()).toBe(
+      "http://127.0.0.1:49152/product/events",
+    );
+  });
+
+  it("drops an expired cursor so the 409 cannot repeat forever", async () => {
+    const encoder = new TextEncoder();
+    const frame = (seq: number, kind: string) =>
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              `id: ${seq}\nevent: ${kind}\ndata: {"v":1,"type":"${kind}","seq":${seq}}\n\n`,
+            ),
+          );
+          controller.close();
+        },
+      });
+    let served = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      // Any resumption is refused: the server has already trimmed the window
+      // this cursor belongs to, so a client that keeps it never makes progress.
+      if (input.toString().includes("after=")) {
+        return { ok: false, status: 409, body: null };
+      }
+      served += 1;
+      return {
+        ok: true,
+        status: 200,
+        body:
+          served === 1
+            ? frame(7, "session.created")
+            : frame(9, "session.deleted"),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("window", {
+      __ROVE_API_URL__: "http://127.0.0.1:49152",
+      __ROVE_TOKEN__: "desktop-secret",
+    });
+
+    const source = openProductEventStream();
+    const expired: Event[] = [];
+    source.addEventListener("error", ((event: Event) => {
+      if (isStreamCursorExpired(event)) {
+        expired.push(event);
+      }
+    }) as EventListener);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error("product SSE resync timed out")),
+        5_000,
+      );
+      source.addEventListener("session.deleted", (() => {
+        clearTimeout(timeout);
+        source.close();
+        resolve();
+      }) as EventListener);
+    });
+
+    expect(expired).toHaveLength(1);
+    expect(fetchMock.mock.calls[1]?.[0]?.toString()).toBe(
+      "http://127.0.0.1:49152/product/events?after=7",
+    );
+    expect(fetchMock.mock.calls[2]?.[0]?.toString()).toBe(
+      "http://127.0.0.1:49152/product/events",
+    );
+  });
+
+  it("uses the browser EventSource when no Desktop transport is injected", () => {
+    const constructed: string[] = [];
+    class FakeEventSource {
+      constructor(url: string) {
+        constructed.push(url);
+      }
+      addEventListener(): void {}
+      close(): void {}
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+
+    expect(openProductEventStream()).toBeInstanceOf(FakeEventSource);
+    expect(constructed).toEqual(["/api/product/events"]);
   });
 
   it("posts approval decisions to the job approval endpoint", async () => {

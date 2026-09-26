@@ -4,14 +4,20 @@
 //! fail-closed until the coordinator validates browser runtime hints against
 //! workspace-owned runtime state.
 
+use std::collections::VecDeque;
+use std::convert::Infallible;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Path, Query, Request, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use futures::Stream;
 use serde::Deserialize;
+use tokio_util::sync::CancellationToken;
 use utoipa::IntoParams;
 
 use super::*;
@@ -130,6 +136,7 @@ pub(crate) async fn create_product_workspace(
 ) -> Result<(StatusCode, Json<ProductWorkspace>), ApiError> {
     let request = product_json(body)?;
     let workspace = state.product_store()?.create_workspace(request).await?;
+    state.notify_product_events();
     Ok((StatusCode::CREATED, Json(workspace)))
 }
 
@@ -155,6 +162,7 @@ pub(crate) async fn delete_product_workspace(
         .product_store()?
         .delete_workspace(&workspace_id)
         .await?;
+    state.notify_product_events();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -245,6 +253,7 @@ pub(crate) async fn create_product_session(
 ) -> Result<(StatusCode, Json<ProductSession>), ApiError> {
     let request = product_json(body)?;
     let session = state.product_store()?.create_session(request).await?;
+    state.notify_product_events();
     Ok((StatusCode::CREATED, Json(session)))
 }
 
@@ -281,6 +290,8 @@ pub(crate) async fn create_product_session_fork(
     let status = if already_exists {
         StatusCode::OK
     } else {
+        // A replayed fork is not a new fact, so it does not wake the stream.
+        state.notify_product_events();
         StatusCode::CREATED
     };
     Ok((status, Json(ProductForkResponse { fork, session })))
@@ -332,6 +343,7 @@ pub(crate) async fn update_product_session(
         .product_store()?
         .update_session(&session_id, request)
         .await?;
+    state.notify_product_events();
     Ok(Json(session))
 }
 
@@ -354,6 +366,7 @@ pub(crate) async fn delete_product_session(
     Path(session_id): Path<ProductSessionId>,
 ) -> Result<StatusCode, ApiError> {
     state.product_store()?.delete_session(&session_id).await?;
+    state.notify_product_events();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -747,6 +760,7 @@ pub(crate) async fn update_product_preferences(
 ) -> Result<Json<ProductPreferences>, ApiError> {
     let request = product_json(body)?;
     let preferences = state.product_store()?.update_preferences(request).await?;
+    state.notify_product_events();
     Ok(Json(preferences))
 }
 
@@ -957,6 +971,9 @@ pub(crate) async fn create_product_session_message(
             try_start_idle_followup(&state, &session_id).await;
         }
     }
+    if !already_exists {
+        state.notify_product_events();
+    }
     drop(lifecycle);
     Ok((
         if already_exists {
@@ -1068,6 +1085,7 @@ pub(crate) async fn promote_product_session_message(
                 .promote(session_id.as_str(), message_id.as_str())
                 .await
                 .map_err(super::message_adapter::map_domain_error)?;
+            state.notify_product_events();
         }
         // `successor` only moves the message to the head of its queue; the live
         // run must not be interrupted, so nothing is steered here. The terminal
@@ -1076,6 +1094,7 @@ pub(crate) async fn promote_product_session_message(
             store
                 .promote_message(&session_id, &message_id, delivery)
                 .await?;
+            state.notify_product_events();
             return Ok(Json(store.get_message(&session_id, &message_id).await?));
         }
     }
@@ -1174,6 +1193,7 @@ pub(crate) async fn revoke_product_session_message(
         .await
         .map_err(super::message_adapter::map_domain_error)?;
     let message = store.get_message(&session_id, &message_id).await?;
+    state.notify_product_events();
     if let Some(record) = live {
         crate::queue_or_publish_product_control_event(
             record,
@@ -1211,6 +1231,7 @@ async fn create_control(
     };
 
     if !already_exists {
+        state.notify_product_events();
         match kind {
             ProductControlKind::Steer => {
                 control =
@@ -1441,6 +1462,7 @@ pub(crate) async fn revoke_product_session_control(
             None,
         )
         .await?;
+    state.notify_product_events();
     Ok(Json(updated))
 }
 
@@ -1470,8 +1492,217 @@ pub(crate) async fn confirm_product_session_followup(
     let control = store
         .confirm_abandoned_followup(&session_id, &control_id)
         .await?;
+    state.notify_product_events();
     try_start_idle_followup(&state, &session_id).await;
     Ok(Json(control))
+}
+
+/// Query parameters for `GET /product/events`.
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct ProductEventsQuery {
+    /// Replay only events whose `seq` is greater than this value. When omitted,
+    /// a `Last-Event-ID` header is used instead; with neither, the stream
+    /// follows from the newest retained event.
+    #[serde(default)]
+    pub after: Option<i64>,
+}
+
+/// The `Last-Event-ID` header value for the product stream.
+///
+/// The job stream's parser accepts `u64`; product `seq` is an `i64` column, so
+/// this mirrors its behavior (absent = no cursor, unparsable = 400) on the
+/// product `seq` domain. Range checking stays with the query cursor so both
+/// cursor sources answer with the same typed error.
+fn parse_last_product_event_id(headers: &HeaderMap) -> Result<Option<i64>, ApiError> {
+    let Some(raw) = headers.get("last-event-id") else {
+        return Ok(None);
+    };
+    let invalid = || {
+        ApiError::bad_request_with_code(
+            ProductErrorCode::ProductInvalidInput.as_str(),
+            "Last-Event-ID must be a valid integer",
+        )
+    };
+    let raw = raw.to_str().map_err(|_| invalid())?;
+    let value = raw.parse::<i64>().map_err(|_| invalid())?;
+    Ok(Some(value))
+}
+
+/// One SSE frame for a product directory event.
+///
+/// The body reuses the job stream's versioned envelope — protocol version
+/// first, then the event's own fields — so a client that already parses
+/// `/jobs/{job_id}/events` can parse this stream with the same decoder. `id:`
+/// is the event's durable `seq`, which is what makes `Last-Event-ID` resume
+/// exact.
+fn product_event_frame(event: &ProductEvent) -> Result<Event, serde_json::Error> {
+    Ok(Event::default()
+        .id(event.seq.to_string())
+        .event(event.kind.as_str())
+        .data(serde_json::to_string(&rove_protocol::Versioned::now(
+            event,
+        ))?))
+}
+
+/// How long a stream waits before re-reading the log on its own.
+///
+/// Notifications are best-effort: a mutation performed by another process (or a
+/// nudge that arrived before this stream subscribed) only has the durable log
+/// to rely on, so the stream must not depend on being woken.
+const PRODUCT_EVENT_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+struct ProductEventStream {
+    store: Arc<dyn ProductStore>,
+    pending: VecDeque<ProductEvent>,
+    cursor: i64,
+    notify: tokio::sync::broadcast::Receiver<()>,
+    poll: tokio::time::Interval,
+    shutdown: CancellationToken,
+}
+
+/// Replay the retained log, then follow it live until the client disconnects or
+/// the server shuts down.
+///
+/// The durable log — not the notification channel — is the stream's source of
+/// truth, so a missed wake-up costs one poll interval and never an event.
+fn product_event_stream(
+    store: Arc<dyn ProductStore>,
+    initial: Vec<ProductEvent>,
+    after: i64,
+    notify: tokio::sync::broadcast::Receiver<()>,
+    shutdown: CancellationToken,
+) -> impl Stream<Item = Result<Event, Infallible>> {
+    let state = ProductEventStream {
+        store,
+        pending: VecDeque::from(initial),
+        cursor: after,
+        notify,
+        poll: tokio::time::interval_at(
+            tokio::time::Instant::now() + PRODUCT_EVENT_POLL_INTERVAL,
+            PRODUCT_EVENT_POLL_INTERVAL,
+        ),
+        shutdown,
+    };
+    futures::stream::unfold(state, |mut state| async move {
+        loop {
+            if let Some(event) = state.pending.pop_front() {
+                match product_event_frame(&event) {
+                    Ok(frame) => {
+                        state.cursor = event.seq;
+                        return Some((Ok(frame), state));
+                    }
+                    Err(error) => {
+                        // Dropping one frame would silently punch a hole in the
+                        // sequence the client resumes from, so end the stream
+                        // and let the client reconnect with its cursor.
+                        tracing::error!(%error, "product event frame could not be serialized");
+                        return None;
+                    }
+                }
+            }
+            match state
+                .store
+                .list_product_events(state.cursor, MAX_PRODUCT_EVENT_PAGE)
+                .await
+            {
+                Ok(events) if !events.is_empty() => {
+                    state.pending = VecDeque::from(events);
+                }
+                Ok(_) => {
+                    tokio::select! {
+                        received = state.notify.recv() => {
+                            // A lag still means "something was committed": fall
+                            // through and re-read. A closed channel means no
+                            // notification can ever arrive, so waking on the
+                            // poll alone is the only honest behaviour left.
+                            if matches!(
+                                received,
+                                Err(tokio::sync::broadcast::error::RecvError::Closed)
+                            ) {
+                                return None;
+                            }
+                        }
+                        _ = state.poll.tick() => {}
+                        _ = state.shutdown.cancelled() => return None,
+                    }
+                }
+                Err(error) => {
+                    // The stream cannot report a store failure in-band without
+                    // inventing a frame kind the client would have to special
+                    // case. Ending it makes the client reconnect with its
+                    // cursor, which either succeeds or surfaces the failure.
+                    tracing::warn!(%error, "product event stream ended after a store read failed");
+                    return None;
+                }
+            }
+        }
+    })
+}
+
+#[utoipa::path(
+    get,
+    path = "/product/events",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(ProductEventsQuery),
+    responses(
+        (status = 200, description = "Server-Sent Events stream of product directory facts. Each frame carries the event `seq` in the SSE `id:` field, the dotted kind in `event:`, and a `data:` body of `{\"v\": PROTOCOL_VERSION, \"type\": kind, \"seq\", \"session_id\", \"workspace_id\", \"summary\", \"created_at\"}`. `summary` is a JSON-encoded string of status/outcome fields; message content, tool arguments, error details, and secrets are never included. Without a cursor the stream follows from the newest retained event.", body = ProductEvent, content_type = "text/event-stream"),
+        (status = 400, description = "Invalid cursor or Last-Event-ID header", body = ApiErrorResponse, content_type = "application/json"),
+        (status = 409, description = "The cursor predates the retained event window; refetch the catalog and reconnect without a cursor", body = ApiErrorResponse, content_type = "application/json"),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse, content_type = "application/json"),
+    )
+)]
+pub(crate) async fn product_events(
+    State(state): State<ApiState>,
+    Query(query): Query<ProductEventsQuery>,
+    headers: HeaderMap,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let store = state.product_store()?;
+    let cursor = match query.after {
+        Some(after) => Some(after),
+        None => parse_last_product_event_id(&headers)?,
+    };
+    if cursor.is_some_and(|after| after < 0) {
+        return Err(ApiError::bad_request_with_code(
+            ProductErrorCode::ProductInvalidInput.as_str(),
+            "event cursor must not be negative",
+        ));
+    }
+    // No cursor means the client is not resuming anything: it has just
+    // connected and will read the catalog itself. Starting at the newest
+    // retained fact keeps the stream a delta feed instead of replaying history
+    // into a client that never asked for it.
+    let after = match cursor {
+        Some(after) => after,
+        None => store.latest_product_event_seq().await?,
+    };
+
+    let initial = store
+        .list_product_events(after, MAX_PRODUCT_EVENT_PAGE)
+        .await?;
+    // Retention trims the oldest rows, so an explicit cursor below the oldest
+    // retained `seq` cannot be served: the client would silently miss committed
+    // facts. Telling it to resynchronize is the only honest answer.
+    if cursor.is_some()
+        && initial
+            .first()
+            .is_some_and(|oldest| oldest.seq > after.saturating_add(1))
+    {
+        return Err(ApiError::conflict_with_code(
+            ProductErrorCode::ProductEventsExpired.as_str(),
+            "event cursor is older than the retained product event window",
+        ));
+    }
+
+    let stream = product_event_stream(
+        store,
+        initial,
+        after,
+        state.subscribe_product_events(),
+        state.shutdown_token(),
+    );
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 #[cfg(test)]
