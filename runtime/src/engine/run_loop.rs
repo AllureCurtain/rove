@@ -19,7 +19,10 @@ use crate::context::ContextManager;
 use crate::engine::control::{
     AcceptedSteer, SteerLifecycle, SteerMessage, steer_accepted_event, steer_applied_event,
 };
-use crate::engine::recovery::{ProviderRetryPolicy, RetryClass, retry_after_ms, retry_class};
+use crate::engine::recovery::{
+    ProviderRetryPolicy, RetryClass, SILENT_TURN_NUDGE, SilentTurnEvidence,
+    SilentTurnRecoveryPolicy, retry_after_ms, retry_class,
+};
 use crate::environment::ExecutionEnvironment;
 use crate::events::StreamEvent;
 use crate::execution::{
@@ -70,6 +73,8 @@ pub(crate) struct LoopContext<'a> {
     pub execution_policy: ExecutionPolicy,
     /// Model-call retry budget applied at the model-turn boundary.
     pub provider_retry: ProviderRetryPolicy,
+    /// Silent-turn recovery budget applied at each turn boundary.
+    pub silent_turn_recovery: SilentTurnRecoveryPolicy,
     pub finalizer: &'a Finalizer,
     pub approval_policy: ApprovalPolicy,
     pub approval_decision: ApprovalDecision,
@@ -421,6 +426,9 @@ pub(crate) fn run_unplanned_loop<'a>(
             pending_steer_ids: Vec::new(),
             initial_total_tokens,
             max_total_tokens: policy.budgets.max_total_tokens,
+            max_model_turns: Some(remaining_turns),
+            silent_turn_attempts: 0,
+            silence: Arc::new(Mutex::new(SilentTurnEvidence::default())),
             active_instruction_target,
         };
         let mut kernel = run_agent_kernel(
@@ -555,6 +563,15 @@ struct UnplannedKernelHost<'a> {
     pending_steer_ids: Vec<AcceptedSteer>,
     initial_total_tokens: u64,
     max_total_tokens: Option<u64>,
+    /// Model turns the kernel was granted for this run, so a recovery turn can
+    /// check it is affordable before spending one.
+    max_model_turns: Option<u32>,
+    /// Silent-turn recovery turns already spent by this run.
+    silent_turn_attempts: u32,
+    /// What the run has produced so far, recorded by the model and tool turn
+    /// wrappers. Shared rather than owned because those wrappers outlive the
+    /// borrow that created them.
+    silence: Arc<Mutex<SilentTurnEvidence>>,
     active_instruction_target: ActiveInstructionTarget,
 }
 
@@ -708,7 +725,8 @@ impl AgentKernelHost for UnplannedKernelHost<'_> {
         cancel_token: CancellationToken,
     ) -> BoxStream<'a, KernelModelTurnItem<Self::Event>> {
         let accepted = std::mem::take(&mut self.pending_steer_ids);
-        run_kernel_model_turn(
+        let silence = Arc::clone(&self.silence);
+        let mut inner = run_kernel_model_turn(
             self.ctx.model,
             self.ctx.model_schemas(),
             messages,
@@ -719,7 +737,18 @@ impl AgentKernelHost for UnplannedKernelHost<'_> {
                 run_mode: self.ctx.run_mode,
                 retry_policy: self.ctx.provider_retry.clone(),
             },
-        )
+        );
+        Box::pin(stream! {
+            while let Some(item) = inner.next().await {
+                if let KernelModelTurnItem::Event(StreamEvent::LlmMessage { full, .. }) = &item {
+                    silence
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .record_model_message(full);
+                }
+                yield item;
+            }
+        })
     }
 
     fn after_model_turn<'a>(
@@ -764,11 +793,20 @@ impl AgentKernelHost for UnplannedKernelHost<'_> {
             }
             run_tool_turn(self.ctx.tool_turn_context(cancel_token), action)
         };
+        let silence = Arc::clone(&self.silence);
         Box::pin(stream! {
             let mut inner = inner;
             while let Some(item) = inner.next().await {
                 match item {
-                    ToolTurnItem::Event(event) => yield KernelToolTurnItem::Event(event),
+                    ToolTurnItem::Event(event) => {
+                        if matches!(event, StreamEvent::ToolCallStarted { .. }) {
+                            silence
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .record_tool_call_started();
+                        }
+                        yield KernelToolTurnItem::Event(event);
+                    }
                     ToolTurnItem::Finished(outcome) => {
                         yield KernelToolTurnItem::Finished(outcome);
                         return;
@@ -797,16 +835,75 @@ impl AgentKernelHost for UnplannedKernelHost<'_> {
         Box::pin(async { KernelHook::continue_with(()) })
     }
 
+    /// Spend the run's silent-turn recovery budget, if the run qualifies.
+    ///
+    /// A run is silent when it terminated with a final answer but produced no
+    /// visible text, started no tool call, and answered a real user message. The
+    /// recovery turn is an ordinary turn: the same budget, tools, approvals,
+    /// cancellation, and repair limits apply, and the kernel cap makes it
+    /// exactly one turn per configured attempt.
     fn after_final<'a>(
         &'a mut self,
-        _state: &'a mut KernelState,
-        _output: &'a str,
+        state: &'a mut KernelState,
+        output: &'a str,
         _cancel_token: CancellationToken,
     ) -> BoxFuture<'a, KernelHook<KernelFinalAction, Self::Event, Self::Stop>> {
-        Box::pin(async { KernelHook::continue_with(KernelFinalAction::Complete) })
+        Box::pin(async move {
+            let policy = self.ctx.silent_turn_recovery;
+            let observation = {
+                let evidence = self
+                    .silence
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                evidence.observe(output, &self.user_message)
+            };
+            if !policy.is_enabled()
+                || !observation.is_silent()
+                || !policy.allows(self.silent_turn_attempts)
+                || !self.can_afford_another_model_turn(state)
+            {
+                return KernelHook::continue_with(KernelFinalAction::Complete);
+            }
+            self.silent_turn_attempts = self.silent_turn_attempts.saturating_add(1);
+            state
+                .history
+                .push(Message::system(SILENT_TURN_NUDGE.to_string()));
+            KernelHook::continue_with_events(
+                KernelFinalAction::Continue,
+                vec![
+                    StreamEvent::ModelStatus {
+                        status: SilentTurnRecoveryPolicy::STATUS.to_string(),
+                        message: SILENT_TURN_NUDGE.to_string(),
+                    },
+                    StreamEvent::ExecutionDegraded {
+                        record: policy.degradation(),
+                    },
+                ],
+            )
+        })
     }
 
     fn finish_output(&mut self, _state: &KernelState) -> Self::Output {}
+}
+
+impl UnplannedKernelHost<'_> {
+    /// Whether this run can pay for one more model turn out of the budgets it is
+    /// already running under.
+    ///
+    /// A recovery turn is an ordinary turn, so when no turn or token budget is
+    /// left the run terminates exactly as it did before recovery existed instead
+    /// of converting a final answer into a budget boundary.
+    fn can_afford_another_model_turn(&self, state: &KernelState) -> bool {
+        let turns = self
+            .max_model_turns
+            .is_none_or(|limit| state.model_turns < limit);
+        let tokens = self.max_total_tokens.is_none_or(|limit| {
+            self.initial_total_tokens
+                .saturating_add(u64::from(state.usage.total_tokens))
+                < limit
+        });
+        turns && tokens
+    }
 }
 
 /// Per-model-call options the host resolves before the call.

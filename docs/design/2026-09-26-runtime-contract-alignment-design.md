@@ -40,7 +40,7 @@
 | 编号 | 条目 | 优先级 | 主要触碰面 | 状态 |
 |---|---|---|---|---|
 | R1 | transcript 游标分页（F.4 闭环） | P0 | `apps/api` + `apps/web` 接线 | Implemented（见 §1.7） |
-| R2 | 回合失败恢复家族（a 静默回合 / b 中止保留 / c 重试预算+事件） | P0 | `core`/`runtime`/`models`/`apps/api`/事件合同 | R2c Implemented（见 §2.4）；R2a/R2b Proposed |
+| R2 | 回合失败恢复家族（a 静默回合 / b 中止保留 / c 重试预算+事件） | P0 | `core`/`runtime`/`models`/`apps/api`/事件合同 | R2c Implemented（见 §2.4）；R2a Implemented（见 §2.5）；R2b Proposed |
 | R3 | 会话 `last_outcome` 字段 | P1 | ProductStore 迁移 016 + contracts + web | Proposed |
 | R4 | 队列协议扩展（原子重排 / send-now 边界语义 / 重启存活验证） | P1 | `apps/api` + 迁移 017 | Proposed |
 | R5 | 产品级目录 SSE `/product/events` | P1 | `apps/api` + 迁移 018 + web | Proposed |
@@ -410,6 +410,107 @@ R2c 独立成一个 PR（对应 §11 的 PR-2，branch `feature/runtime-align-r2
 非目标（本轮明确不做）：R2c 不实现静默回合恢复（R2a）与中止保留（R2b）；
 不在 routing 包装层再加预算（预算在 run loop，天然覆盖直连 provider）；
 不做 provider 级别的幂等键或请求重放去重（模型调用无副作用）。
+
+### 2.5 R2a 实施记录
+
+R2a 是 R2 家族里第二个落地的条目，独立成一个 PR（对应 §11 的 PR-3），分支基于
+R2c 的 `feature/runtime-align-r2c`（R2c 的 `recovery.rs`、`ProviderRetryPolicy`、
+`provider_retry` 事件与 `tests/recovery.rs` 已在其中），本节记录静默回合恢复的
+落地事实；R2b 仍未实现。
+
+落地位置与形状：
+
+- 策略与判定是 runtime 私有的纯函数：`runtime/src/engine/recovery.rs`
+  增 `SilentTurnRecoveryPolicy { max_attempts }`（`Default` = 1，`disabled()` = 0）、
+  固定文案常量 `SILENT_TURN_NUDGE`、以及判定用的
+  `SilentTurnEvidence::{record_model_message, record_tool_call_started}` +
+  `observe(final_output, user_message) -> SilentTurnObservation::is_silent()`。
+  判定读的是"本 run 实际落账的事实"，不是推断出来的状态。
+- 触发点在 `runtime/src/engine/run_loop.rs` 的 `UnplannedKernelHost::after_final`：
+  判定成立时返回 `KernelHook::continue_with_events(KernelFinalAction::Continue, ..)`，
+  把 nudge 追加到 kernel 对话历史后继续跑一个回合。选这个扩展点的原因：
+  `KernelFinalAction::Continue` 是 core 为扩展留的正规出口（`core/src/agent.rs`
+  的 follow-up 排空已是先例），且复用同一个 kernel 意味着计数器、history、
+  compaction、working memory、steer receiver、instruction overlay 去重全部存活，
+  kernel 循环顶部既有的 `max_model_turns`/取消检查让恢复回合天然受硬上限约束。
+- 证据采集挂在既有 wrapper 上：`model_turn` 观察 `StreamEvent::LlmMessage.full`，
+  `tool_turn` 观察 `StreamEvent::ToolCallStarted`（`Arc<Mutex<SilentTurnEvidence>>`，
+  与既有 `instruction_overlays_seen` 同款 run-local 共享状态）。
+- 配置分层：`EngineConfig`/`LoopContext` 增 `silent_turn_recovery`（含
+  `with_silent_turn_recovery`），bootstrap `RecoveryConfig::silent_turn_policy()`
+  只做 overlay，API/Web 不直接读配置字段。Review engine 也拿到同一配置——Review
+  回合的文本被 redact 成非空占位符，规则 1 天然不成立，因此不需要特例。
+- 事件：不新增 `StreamEvent` 变体。恢复前发
+  `ModelStatus { status: "recovering_silent_turn", message: <nudge> }`，
+  并发 `ExecutionDegraded { record: ExecutionDegradation::{code:
+  "silent_turn_recovery", phase: Run, safe_summary: 固定安全摘要} }`。两者经
+  `yield_traced!` 进 run loop 事件流，于是 trace 持久化、SQLite 事件索引、API SSE、
+  CLI/TUI、Web 投影全部自动覆盖；`state/artifacts.rs` 与 `state/reconcile.rs` 既有的
+  记录逻辑会把该 degradation 事实物化进 `ExecutionLifecycleState.degradations`，
+  所以 resume 与 report 也能看到，无需额外接线。
+
+落地时确认并解决的设计歧义：
+
+1. **检测面比 §2.1 字面更严**：§2.1 规则 1 写"本 run 没有任何 `LlmMessage` 事件，
+   或最终 `LlmMessage.full.trim().is_empty()`"。本实现取"本 run **任何**
+   `LlmMessage` 都没有非空文本，且最终 output 也没有文本"（任务口径）。理由：
+   只要用户已经看到过文本，再 nudge 就是重复输出；字面读法会把"先说了话、最后
+   一回合空"的 run 也算静默。规则 2（无 `ToolCallStarted`）与规则 3（真实用户
+   输入）按字面实现。
+2. **终止口径**：§2.1 写 `TerminationReason::Done`，实现按 kernel 的
+   `KernelTermination::Final`（即 run 的 `TerminationReason::Final`），因为判定发生在
+   kernel 收尾处，`Final` 正是"正常结束"的事实来源。
+3. **触发方式**：不用新回合循环、不改 `StreamEvent` 生命周期，只在 `after_final`
+   返回 `Continue`。恢复回合因此是普通回合：同一预算、工具、审批、取消与修复上限。
+4. **硬上限 1 与 `0` 的语义**：`silent_turn_max_attempts` 每个 run 最多额外一次；
+   恢复回合再次静默 → 按现状终止，不循环。`0` 直通为 `max_attempts = 0`（不做
+   `0 → 1` 收敛，与 retry 的 `*_max_attempts` 相反），因为 0 在这里是文档化的
+   关闭值，且必须能逐字节复现恢复行为出现前的事件流。
+5. **可负担性预检**：`after_final` 先看 `can_afford_another_model_turn`
+   （模型回合数与总量 token 预算）。预算已满时不恢复，保持 `Final` + 空答案，
+   而不是把 `Final` 改写成 `StepLimit`/`TokenLimit`——后者会改变终态语义与
+   `status_for_reason` 的映射。残留边界：context manager 自身的硬 token 上限未预检，
+   理论上 nudge 可能让恢复回合以 `TokenLimit` 收尾；该情况的产品状态仍是 `Done`，
+   与今天静默 run 的报告状态一致，已记入 `docs/runtime/implementation-status.md`。
+6. **nudge 的持久化位置**：`SessionEntry` 只有 user/assistant/tool_result，没有
+   system 角色，也没有任何事件承载"历史里多了一条 system 消息"。因此 nudge 只进
+   kernel 的模型可见对话；它的 durable 记录就是 `ModelStatus.message`。据此
+   "nudge 恰好出现一次"的断言打在 fake provider 收到的 prompt 上
+   （`models/src/fake.rs` 为此增了有界的 `call_count`/`last_messages` 观测：
+   只保留最近一次请求，因为同一个 fake client 也支撑长跑 demo 会话），
+   "恢复产物进 history、resume 后可见"的断言打在 `task_state.history` 与恢复 run 的
+   prompt 上。
+7. **Web 不新增文案**：`apps/web/lib/rove-state.ts` 已把任意 `model_status.message`
+   投影到状态行，composer 的等待行是 status 无关的 `chat.phaseWaitingModel`，
+   所以本变更只把新 status 注册进 `KNOWN_MODEL_STATUSES` 并补单测，不改 copy 字典。
+8. **作用域限 React 宿主**：§2.1 的规则 3 定义在 `RunLoopState.user_message` 上；
+   规划路径有独立的 step 修复/重规划与确定性 Finalizer，规划 step 的静默不在本轮。
+9. **文档编号**：R2c 的落地记录已占 §2.4，本节编号顺延为 §2.5（标题格式与 §2.4
+   一致）。前端文档 `docs/design/2026-09-26-frontend-experience-alignment-design.md`
+   只有 §0–§18，任务里提到的 "§19 runtime-contract 表"不存在，因此运行期合同说明
+   记在该文档 §15 的状态注记处，不上新增章节。
+
+验证：
+
+- `tests/recovery.rs` 新增 8 个用例（全部走 fake provider，无 key/无网）：
+  静默一次→正常收尾（恰好一次 nudge、nudge 在恢复回合 prompt 中恰好一次、
+  `recovering_silent_turn` 一次、`silent_turn_recovery` degradation 一次、恢复答案
+  成为 run 最终答复）；连续两次静默→恰好一次恢复后终止；
+  `silent_turn_max_attempts = 0` → 事件名序列与 payload 与恢复前完全一致；
+  恢复回合调工具→走普通工具路径、工具结果回灌模型、nudge 不重复注入；
+  恢复回合取消→正常取消；跑过工具的 run 结尾为空→不恢复；
+  无用户输入→不恢复；durable 用例断言 degradation 进 `trace.jsonl`、进 SQLite
+  事件索引、进物化的 lifecycle degradations，恢复答案进 `task_state.history`，
+  且恢复 run 的 prompt 里能看到它。
+- `runtime/src/engine/recovery.rs` 单测：默认恰好一次、`0` 关闭、degradation 安全摘要、
+  三条规则必须同时成立。
+- `models/src/fake.rs` 单测：`call_count`/`last_messages` 只保留最近一次请求。
+- bootstrap 单测：未配置=默认、`0` 关闭可达、TOML round-trip。
+- Web：`apps/web/chat/activity-phase.test.ts`（新 status 仍是 waiting-model）、
+  `apps/web/lib/rove-state.test.ts`（状态行显示 runtime 自己的文案）。
+
+非目标（本轮明确不做）：不做 R2b 中止保留；不重试工具失败本身；不在 API 层实现；
+不新增依赖；不改 R2c 的重试预算语义。
 
 ---
 

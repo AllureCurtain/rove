@@ -8,7 +8,7 @@ use figment::providers::{Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
 
 use rove_runtime::agents::AgentSelector;
-use rove_runtime::engine::ProviderRetryPolicy;
+use rove_runtime::engine::{ProviderRetryPolicy, SilentTurnRecoveryPolicy};
 use rove_runtime::execution::{
     EvaluatorMode, ExecutionPolicy, FinalizerPolicy, StrategySelectionSource,
 };
@@ -264,12 +264,18 @@ fn overlay<T: Copy>(slot: &mut Option<T>, configured: Option<T>) {
 /// Operator-facing run recovery settings.
 ///
 /// Recovery is a runtime behavior, so the typed
-/// [`rove_runtime::engine::ProviderRetryPolicy`] stays the single config truth
-/// and every field here only overlays it.
+/// [`rove_runtime::engine::ProviderRetryPolicy`] and
+/// [`rove_runtime::engine::SilentTurnRecoveryPolicy`] stay the single config
+/// truth and every field here only overlays them.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct RecoveryConfig {
     pub retry: RecoveryRetryConfig,
+    /// Extra model turns a single run may spend recovering a turn that ended
+    /// with no visible response. `None` keeps the runtime default (`1`, so
+    /// recovery is enabled); `Some(0)` disables silent-turn recovery and
+    /// restores the behavior that existed before it.
+    pub silent_turn_max_attempts: Option<u32>,
 }
 
 /// Model-call retry budget overlay.
@@ -323,6 +329,20 @@ impl RecoveryConfig {
             policy.backoff_base_ms = policy.backoff_base_ms.min(policy.backoff_max_ms);
         }
         policy
+    }
+
+    /// Resolve the silent-turn recovery budget.
+    ///
+    /// Unlike a retry attempt count, `0` here is meaningful: it is the
+    /// documented way to turn silent-turn recovery off, so it is passed through
+    /// instead of being clamped to the default.
+    pub fn silent_turn_policy(&self) -> SilentTurnRecoveryPolicy {
+        match self.silent_turn_max_attempts {
+            Some(attempts) => SilentTurnRecoveryPolicy {
+                max_attempts: attempts,
+            },
+            None => SilentTurnRecoveryPolicy::default(),
+        }
     }
 }
 
@@ -3423,6 +3443,37 @@ max_steps = 7
         assert_eq!(policy.backoff_base_ms, 2_000);
         assert_eq!(policy.backoff_max_ms, 30_000);
         assert!(policy.is_enabled());
+
+        let silent = config.runtime.recovery.silent_turn_policy();
+        assert_eq!(silent, SilentTurnRecoveryPolicy::default());
+        assert_eq!(
+            silent.max_attempts, 1,
+            "silent-turn recovery is enabled once out of the box"
+        );
+        assert!(config.runtime.recovery.silent_turn_max_attempts.is_none());
+    }
+
+    #[test]
+    fn silent_turn_recovery_is_configurable_and_zero_disables_it() {
+        let unset = RecoveryConfig::default();
+        assert!(unset.silent_turn_policy().is_enabled());
+
+        let explicit = RecoveryConfig {
+            silent_turn_max_attempts: Some(3),
+            ..RecoveryConfig::default()
+        };
+        assert_eq!(explicit.silent_turn_policy().max_attempts, 3);
+
+        // Zero is the documented off switch, not a clamp target: unlike a retry
+        // attempt count it must survive as zero.
+        let off = RecoveryConfig {
+            silent_turn_max_attempts: Some(0),
+            ..RecoveryConfig::default()
+        };
+        let policy = off.silent_turn_policy();
+        assert_eq!(policy.max_attempts, 0);
+        assert!(!policy.is_enabled());
+        assert!(!policy.allows(0));
     }
 
     #[test]
@@ -3435,6 +3486,9 @@ max_steps = 7
         std::fs::write(
             config_dir.join("config.toml"),
             r#"
+[runtime.recovery]
+silent_turn_max_attempts = 2
+
 [runtime.recovery.retry]
 rate_limit_max_attempts = 2
 transient_max_attempts = 3
@@ -3457,6 +3511,8 @@ backoff_max_ms = 9000
         assert_eq!(policy.transient_max_attempts, 3);
         assert_eq!(policy.backoff_base_ms, 500);
         assert_eq!(policy.backoff_max_ms, 9_000);
+        assert_eq!(config.runtime.recovery.silent_turn_max_attempts, Some(2));
+        assert_eq!(config.runtime.recovery.silent_turn_policy().max_attempts, 2);
         clear_config_env();
     }
 
@@ -3467,6 +3523,7 @@ backoff_max_ms = 9000
                 transient_max_attempts: Some(2),
                 ..RecoveryRetryConfig::default()
             },
+            ..RecoveryConfig::default()
         };
 
         let policy = partial.retry_policy();
@@ -3487,6 +3544,7 @@ backoff_max_ms = 9000
                 transient_max_attempts: Some(1),
                 ..RecoveryRetryConfig::default()
             },
+            ..RecoveryConfig::default()
         };
         assert!(!disabled.retry_policy().is_enabled());
 
@@ -3498,6 +3556,7 @@ backoff_max_ms = 9000
                 transient_max_attempts: Some(0),
                 ..RecoveryRetryConfig::default()
             },
+            ..RecoveryConfig::default()
         };
         let policy = zero.retry_policy();
         assert_eq!(policy.rate_limit_max_attempts, 1);
@@ -3513,6 +3572,7 @@ backoff_max_ms = 9000
                 backoff_max_ms: Some(1_000),
                 ..RecoveryRetryConfig::default()
             },
+            ..RecoveryConfig::default()
         };
 
         let mut policy = contradictory.retry_policy();
@@ -3535,6 +3595,7 @@ backoff_max_ms = 9000
                 backoff_base_ms: Some(0),
                 ..RecoveryRetryConfig::default()
             },
+            ..RecoveryConfig::default()
         };
         let mut policy = zero_base.retry_policy();
         assert_eq!(policy.backoff_base_ms, 1);

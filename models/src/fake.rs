@@ -32,6 +32,19 @@ pub struct FakeModelClient {
     response: String,
     turns: Mutex<Vec<FakeTurn>>,
     compatibility_text_tool_calls: bool,
+    /// Number of calls, and the message view of the most recent one.
+    ///
+    /// Only the last request is retained: this client also backs long-running
+    /// demo sessions, and keeping every prompt would retain the whole
+    /// conversation. Tests that need to see what a recovery turn was told read
+    /// the last prompt and count the calls.
+    last_call: Mutex<FakeCallObservation>,
+}
+
+#[derive(Debug, Default)]
+struct FakeCallObservation {
+    calls: usize,
+    messages: Option<Vec<Message>>,
 }
 
 impl FakeModelClient {
@@ -40,6 +53,7 @@ impl FakeModelClient {
             response,
             turns: Mutex::new(Vec::new()),
             compatibility_text_tool_calls: false,
+            last_call: Mutex::new(FakeCallObservation::default()),
         }
     }
 
@@ -50,6 +64,7 @@ impl FakeModelClient {
             response,
             turns: Mutex::new(Vec::new()),
             compatibility_text_tool_calls: true,
+            last_call: Mutex::new(FakeCallObservation::default()),
         }
     }
 
@@ -62,7 +77,25 @@ impl FakeModelClient {
             response,
             turns: Mutex::new(reversed),
             compatibility_text_tool_calls: false,
+            last_call: Mutex::new(FakeCallObservation::default()),
         }
+    }
+
+    /// How many model calls this client has been asked to complete.
+    pub fn call_count(&self) -> usize {
+        self.last_call
+            .lock()
+            .expect("call observation mutex poisoned")
+            .calls
+    }
+
+    /// The message view of the most recent call, if the client was called.
+    pub fn last_messages(&self) -> Option<Vec<Message>> {
+        self.last_call
+            .lock()
+            .expect("call observation mutex poisoned")
+            .messages
+            .clone()
     }
 }
 
@@ -128,6 +161,14 @@ impl ModelClient for FakeModelClient {
         messages: &[Message],
         _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+        {
+            let mut observation = self
+                .last_call
+                .lock()
+                .expect("call observation mutex poisoned");
+            observation.calls = observation.calls.saturating_add(1);
+            observation.messages = Some(messages.to_vec());
+        }
         if let Some(turn) = self.turns.lock().expect("turns mutex poisoned").pop() {
             return Box::pin(futures::stream::iter(turn_events(turn)));
         }
@@ -299,6 +340,51 @@ mod tests {
         assert!(matches!(
             &concluded_events[0],
             Ok(ModelEvent::TextDelta { text }) if text == raw
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_client_reports_its_call_count_and_most_recent_prompt() {
+        let model = FakeModelClient::with_turns(
+            "unscripted".to_string(),
+            vec![
+                FakeTurn::Text(String::new()),
+                FakeTurn::Text("recovered".to_string()),
+            ],
+        );
+
+        assert_eq!(model.call_count(), 0);
+        assert!(model.last_messages().is_none());
+
+        let first = model
+            .stream(&[Message::user("ask")], &[])
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(model.call_count(), 1);
+        assert_eq!(
+            model.last_messages().expect("a recorded prompt"),
+            vec![Message::user("ask")]
+        );
+
+        let nudge = Message::system("nudge");
+        let second = model
+            .stream(&[Message::user("ask"), nudge.clone()], &[])
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(model.call_count(), 2);
+        assert_eq!(
+            model.last_messages().expect("a recorded prompt"),
+            vec![Message::user("ask"), nudge],
+            "only the most recent prompt is retained"
+        );
+
+        assert!(matches!(
+            &first[0],
+            Ok(ModelEvent::TextDelta { text }) if text.is_empty()
+        ));
+        assert!(matches!(
+            &second[0],
+            Ok(ModelEvent::TextDelta { text }) if text == "recovered"
         ));
     }
 }

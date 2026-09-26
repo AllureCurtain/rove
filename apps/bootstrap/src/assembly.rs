@@ -4,7 +4,9 @@ use rove_core::ToolRegistry;
 use rove_models::ModelClient;
 use rove_runtime::agents::{AgentActivationConfig, AgentSelector};
 use rove_runtime::context::{ContextBudget, ContextManager};
-use rove_runtime::engine::{Engine, EngineConfig, EngineEnvironmentOptions, ProviderRetryPolicy};
+use rove_runtime::engine::{
+    Engine, EngineConfig, EngineEnvironmentOptions, ProviderRetryPolicy, SilentTurnRecoveryPolicy,
+};
 use rove_runtime::environment::{
     ExecutionEnvironment, LocalExecutionEnvironment, local_environment,
 };
@@ -118,6 +120,7 @@ pub fn build_engine_with_registry(
             // Recovery is a runtime behavior: configured retry dimensions
             // overlay the runtime default policy.
             provider_retry: options.config.runtime.recovery.retry_policy(),
+            silent_turn_recovery: options.config.runtime.recovery.silent_turn_policy(),
         },
         options.workspace.clone(),
         EngineEnvironmentOptions {
@@ -159,6 +162,10 @@ pub struct ReviewEngineOptions<'a> {
     /// The configured model-call retry budget, resolved by the caller so a
     /// Review run does not silently fall back to the runtime default.
     pub provider_retry: ProviderRetryPolicy,
+    /// The configured silent-turn recovery budget. A Review run's model text is
+    /// always redacted, so its turns are never detected as silent; the field is
+    /// carried so Review does not silently run a different recovery policy.
+    pub silent_turn_recovery: SilentTurnRecoveryPolicy,
     pub max_steps: u32,
 }
 
@@ -176,6 +183,7 @@ pub fn build_review_engine(
         state_root,
         run_model_snapshot,
         provider_retry,
+        silent_turn_recovery,
         max_steps,
     } = options;
     let external_state =
@@ -205,6 +213,7 @@ pub fn build_review_engine(
                 false,
             )),
             provider_retry,
+            silent_turn_recovery,
         },
         review_workspace.clone(),
         EngineEnvironmentOptions {

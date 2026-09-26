@@ -22,6 +22,19 @@ describe("reduceActivityPhase", () => {
     expect(unknown).toBe(IDLE_PHASE);
   });
 
+  it("keeps announcing the model phase across a silent-turn recovery", () => {
+    const activity = activityEventForStreamEvent({
+      type: "model_status",
+      status: "recovering_silent_turn",
+      message: "Your previous turn produced no visible response.",
+    });
+    expect(activity).toEqual({
+      type: "model_status",
+      status: "recovering_silent_turn",
+    });
+    expect(reduceActivityPhase(IDLE_PHASE, activity!).kind).toBe("waiting-model");
+  });
+
   it("reports compaction with its degraded flag", () => {
     const phase = reduceActivityPhase(IDLE_PHASE, { type: "prompt_compacted", degraded: true });
     expect(phase).toEqual({ kind: "compacting", degraded: true });

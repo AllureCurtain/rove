@@ -21,7 +21,7 @@ use crate::compaction::{
 };
 use crate::context::{ContextManager, durable_memory_message, session_summary_message};
 use crate::engine::control::{RunControlHandle, SteerLifecycle, control_channel};
-use crate::engine::recovery::ProviderRetryPolicy;
+use crate::engine::recovery::{ProviderRetryPolicy, SilentTurnRecoveryPolicy};
 use crate::environment::{ExecutionEnvironment, local_environment};
 use crate::events::StreamEvent;
 use crate::execution::{ExecutionPolicy, ExecutionStrategy};
@@ -122,6 +122,10 @@ pub struct EngineConfig {
     /// Model-call retry budget applied at each model-turn boundary.
     /// [`ProviderRetryPolicy::disabled`] restores the pre-recovery behavior.
     pub provider_retry: ProviderRetryPolicy,
+    /// Silent-turn recovery budget applied at each run boundary.
+    /// [`SilentTurnRecoveryPolicy::disabled`] restores the pre-recovery
+    /// behavior.
+    pub silent_turn_recovery: SilentTurnRecoveryPolicy,
 }
 
 /// Invocation-scoped authority used when constructing an Engine for a
@@ -145,6 +149,7 @@ impl EngineConfig {
             plan_enabled,
             execution_policy: None,
             provider_retry: ProviderRetryPolicy::default(),
+            silent_turn_recovery: SilentTurnRecoveryPolicy::default(),
         }
     }
 
@@ -160,6 +165,16 @@ impl EngineConfig {
     /// Without this the engine uses [`ProviderRetryPolicy::default`].
     pub fn with_provider_retry(mut self, policy: ProviderRetryPolicy) -> Self {
         self.provider_retry = policy;
+        self
+    }
+
+    /// Attach a silent-turn recovery budget.
+    ///
+    /// Without this the engine uses [`SilentTurnRecoveryPolicy::default`], which
+    /// spends at most one extra turn recovering a run that answered with no
+    /// visible text.
+    pub fn with_silent_turn_recovery(mut self, policy: SilentTurnRecoveryPolicy) -> Self {
+        self.silent_turn_recovery = policy;
         self
     }
 
@@ -181,6 +196,7 @@ impl Default for EngineConfig {
             plan_enabled: false,
             execution_policy: None,
             provider_retry: ProviderRetryPolicy::default(),
+            silent_turn_recovery: SilentTurnRecoveryPolicy::default(),
         }
     }
 }
@@ -1065,6 +1081,7 @@ impl Engine {
                     max_steps: self.config.max_steps,
                     execution_policy: execution_policy.clone(),
                     provider_retry: self.config.provider_retry.clone(),
+                    silent_turn_recovery: self.config.silent_turn_recovery,
                     finalizer: &run_finalizer,
                     agent_profile: Some(Arc::new(resolved_agent.profile.clone())),
                     agent_planner_summary: Some(resolved_agent.prompt.planner_summary.clone()),

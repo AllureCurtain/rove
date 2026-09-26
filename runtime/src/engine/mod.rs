@@ -12,4 +12,7 @@ pub(crate) mod tool_turn;
 
 pub use control::{RunControlHandle, SteerId, SteerMessage};
 pub use facade::{Engine, EngineConfig, EngineEnvironmentOptions, RunStream};
-pub use recovery::{ProviderRetryPolicy, RetryClass};
+pub use recovery::{
+    ProviderRetryPolicy, RetryClass, SILENT_TURN_NUDGE, SilentTurnObservation,
+    SilentTurnRecoveryPolicy,
+};

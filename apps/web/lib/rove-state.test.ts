@@ -1210,6 +1210,27 @@ describe("workbenchReducer", () => {
     });
   });
 
+  it("shows the runtime's own message while it recovers a silent turn", () => {
+    // R2a: the runtime owns the nudge text and the shell narrates exactly what
+    // it was given, so no shell-side copy is needed for this status.
+    const nudge =
+      "Your previous turn produced no visible response. Continue: either finish the task or summarize the progress you have so far.";
+    const state = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      event: {
+        type: "model_status",
+        status: "recovering_silent_turn",
+        message: nudge,
+      },
+    });
+
+    expect(state.statusText).toBe(nudge);
+    expect(state.trace[0]).toMatchObject({
+      label: "model_status",
+      detail: nudge,
+    });
+  });
+
   it("projects MCP degradation and capability refresh into the canonical trace", () => {
     const degraded = workbenchReducer(createWorkbenchState(), {
       type: "stream_event",
