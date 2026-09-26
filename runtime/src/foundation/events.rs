@@ -127,6 +127,10 @@ pub enum StreamEvent {
     },
 
     /// The LLM finished producing a complete message.
+    ///
+    /// The same variant also carries a salvaged cancelled turn: text the user
+    /// had already seen, persisted instead of dropped when a cancel cut the
+    /// model turn short. `aborted` is the marker that separates the two facts.
     LlmMessage {
         full: String,
         usage: Usage,
@@ -136,6 +140,13 @@ pub enum StreamEvent {
         /// and are reconstructed through the legacy message projection.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         assistant_turn: Option<Box<AssistantTurn>>,
+        /// Set when this message was salvaged from a cancelled turn rather than
+        /// delivered as a complete model response. The run's terminal state
+        /// stays `cancelled`; a complete message and a cancelled run are
+        /// separate facts. Traces written before this field existed are
+        /// `false`, which is exactly the pre-salvage meaning.
+        #[serde(default)]
+        aborted: bool,
     },
 
     /// A tool call has been requested by the LLM.
@@ -494,6 +505,7 @@ impl StreamEvent {
                 usage,
                 tool_calls,
                 assistant_turn,
+                aborted,
                 ..
             } => {
                 let mut assistant_turn = assistant_turn.as_deref().cloned().unwrap_or_default();
@@ -515,6 +527,7 @@ impl StreamEvent {
                         })
                         .collect(),
                     assistant_turn: Some(Box::new(assistant_turn)),
+                    aborted: *aborted,
                 }
             }
             Self::ToolCallStarted {

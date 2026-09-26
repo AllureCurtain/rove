@@ -146,6 +146,7 @@ async fn canonical_session_persists_restarts_and_reprojects_provider_identity_at
                 usage: Usage::default(),
                 tool_calls: tool_refs,
                 assistant_turn: Some(Box::new(assistant_turn)),
+                aborted: false,
             },
             &store,
         )
