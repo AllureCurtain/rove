@@ -2,7 +2,9 @@
 
 This file defines repository-wide working rules for coding agents and maintainers.
 It applies to the entire repository unless a deeper directory contains its own
-`AGENTS.md`. There are currently no nested overrides.
+`AGENTS.md`. There are currently no nested overrides. The contribution
+workflow — branches, worktrees, commits, pull requests, and review — is
+canonical in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## 1. Start with the right source of truth
 
@@ -38,6 +40,7 @@ Additional routing:
 
 | Change area | Read first |
 |---|---|
+| Contribution workflow (branches, commits, PRs, review) | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 | Embedded Agent/tool loop | `core/src/`, `tests/embedding_contract.rs` |
 | Persistent Engine/planning/events | `docs/runtime/react-loop.md`, `runtime/src/`, `tests/e2e.rs` |
 | State/resume/artifacts | `docs/runtime/subsystems.md`, `runtime/src/state/`, `tests/` |
@@ -249,7 +252,24 @@ supporting audit evidence, not additional implementation plans.
 The optional terminal-interface direction is documented separately in
 `docs/design/2026-07-16-grok-build-reference-and-tui-design.md`.
 
-## 6. Working in a dirty tree
+## 6. Branch, commit, and PR workflow
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) is the canonical contributor guide
+for branches, worktrees, commits, pull requests, and review. Headlines:
+
+- Land every change — code and documentation — through a pull request
+  from a feature worktree under `.worktrees/`; direct commits to `main`
+  are forbidden.
+- One PR is one bounded, independently verifiable capability, with its
+  scope ceiling and non-goals stated in the PR description.
+- Commits follow `type(scope): subject`, describe behavior outcomes, and
+  stay granular; PRs merge with merge commits so that history stays
+  visible.
+- Review depth follows risk: self-review for small verified changes,
+  independent blind review for security-sensitive, shared-boundary, or
+  uncertain cross-package changes.
+
+## 7. Working in a dirty tree
 
 - Inspect `git status --short` before editing.
 - Existing modified or untracked files belong to the user unless the task says
@@ -263,7 +283,7 @@ The optional terminal-interface direction is documented separately in
   `apps/web/node_modules/`, test results, and temporary integration output must
   not be committed.
 
-## 7. Editing rules
+## 8. Editing rules
 
 - Prefer small, reviewable changes with an explicit compatibility story.
 - Use the repository's existing naming, error, event, and serialization
@@ -282,7 +302,7 @@ The optional terminal-interface direction is documented separately in
 - Do not weaken lints, ignore errors, add blanket `allow` attributes, or remove
   tests to make a gate pass.
 
-## 8. Verification
+## 9. Verification
 
 Run the smallest relevant check first, then expand in proportion to risk.
 
@@ -344,7 +364,7 @@ Code tests are not required solely because Markdown changed, unless the
 document is parsed or asserted by tests, changes executable commands, or the
 task explicitly asks for a full gate.
 
-## 9. Documentation governance
+## 10. Documentation governance
 
 - `docs/runtime/` describes current behavior and must be updated in the same
   implementation change that changes the contract.
@@ -362,7 +382,7 @@ task explicitly asks for a full gate.
 - When a design decision changes, record the replacement and affected
   migration rather than silently rewriting history.
 
-## 10. Security checklist
+## 11. Security checklist
 
 Before handing off a change involving tools, API, providers, state, MCP,
 artifacts, or Web:
@@ -380,7 +400,7 @@ artifacts, or Web:
 - Are API and Web behavior protected by existing auth/CORS/rate-limit rules?
 - Is the failure state typed and visible instead of reported as success?
 
-## 11. Completion and handoff
+## 12. Completion and handoff
 
 A completed change should state:
 
@@ -390,7 +410,8 @@ A completed change should state:
 - tests/checks run and their results;
 - checks not run and why;
 - known risks or follow-up work;
-- current `git status`, especially untracked evidence or user-owned files.
+- current `git status`, especially untracked evidence or user-owned files;
+- a PR description filled in per `.github/PULL_REQUEST_TEMPLATE.md`.
 
 Do not claim completion from prose alone. Implementation work is complete only
 when the requested behavior exists, relevant verification passes, and current
