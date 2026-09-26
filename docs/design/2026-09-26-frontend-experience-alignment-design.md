@@ -633,3 +633,12 @@ P2 项（F9/F11/F12 若拍板）各自独立小 PR，不搭车。
 - F2 的到达时间失真误用（重放批次判定错了会把假时长给用户——宁可不显示）。
 - F3 的 memo 被不稳定 props 打破后无感退化（渲染计数单测是唯一防线，不能删）。
 - F5 的 toast 噪音化（首批判：只做后台/跨会话事件，不做行内提示的复制弹窗）。
+
+## 19. 运行时合同联动登记
+
+本节只登记“运行时侧已提供、前端侧待接线”的能力，条目本身仍按 §16 的 PR 拆分另案实施。
+每行落地时必须更新本节状态与 §17 的对应证据。
+
+| 日期 | 运行时条目 | 前端待接线 | 状态 |
+|---|---|---|---|
+| 2026-09-26 | R4：`POST /product/sessions/{session_id}/messages/reorder`（原子重排）+ `POST .../messages/{message_id}/promote` 的 `delivery: "successor"`（提升为队首，等到当前回合终态边界才派发，不打断 live run） | 把 W3 的“撤销 + 重建”相邻交换换成一次 `reorder` 调用（`ordered_ids` 必须是当前 `status === "queued"` 且 `requested_delivery === "successor"` 的完整集合，少/多/重复/跨会话都会 400/409，见 R4 设计 §4.4）；队列按 `queue_order ?? seq` 排序；发送区给出“立即发送（successor，不打断）/ 插话（current_run）”两个动作并明示文案 | 未接线（运行时侧已实现） |

@@ -32,6 +32,24 @@ This matrix compares the runtime hardening target with the current implementatio
 > three-state session dot and as a command-palette subtitle word; the implementation
 > record, including the two resolved ambiguities, is design §3.4.
 >
+> ProductStore queue order note (2026-09-26): schema v17 adds nullable
+> `product_session_controls.queue_order` (R4 of
+> [`2026-09-26-runtime-contract-alignment-design.md`](../design/2026-09-26-runtime-contract-alignment-design.md)).
+> `seq` remains the immutable ledger sequence used by message paging and the
+> transcript projection; `queue_order` is the delivery position, and every queue
+> read/claim orders by `COALESCE(queue_order, seq), seq`, so rows written before
+> v17 and rows never moved keep creation order. `POST
+> /product/sessions/{session_id}/messages/reorder` rewrites the pending successor
+> queue in one transaction and requires `ordered_ids` to cover that queue exactly
+> (stale/unknown/cross-session lists are 409, duplicates and oversized lists are
+> 400). `promote` gained an optional `delivery`: `successor` moves a message to the
+> queue head and leaves it queued for the terminal boundary instead of steering the
+> live run. The implementation record, including the replaced `expected_revision`
+> CAS, the successor-only reorderable set, and why the restart gate is split
+> between an API reopen case and a store-level drain case, is design §4.4. The Web
+> queue still performs a revoke-and-recreate adjacent swap; moving it to this
+> endpoint is registered in the frontend design's §19 runtime-contract table.
+>
 > Product UI content convergence note (feature branch, not yet on `main`):
 > `feature/ui-content-convergence` implements the A-line content/i18n plan and
 > dual visual skins in

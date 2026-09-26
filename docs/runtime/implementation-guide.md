@@ -748,7 +748,15 @@ The unified conversation command is implemented by
 local Runtime SQLite adapters implement the same FIFO/idempotency/CAS contract.
 `POST /product/sessions/{id}/messages` is the product send path; active runs
 persist `queued` messages and can promote them at a safe provider/tool
-boundary, while idle sends claim a successor turn. Canonical message events
+boundary, while idle sends claim a successor turn. `POST
+/product/sessions/{id}/messages/reorder` rewrites the pending successor queue in
+one transaction — `ordered_ids` must cover that queue exactly, so a stale list is
+a typed 409 and a duplicate or oversized list is a typed 400 — and `POST
+/product/sessions/{id}/messages/{message_id}/promote` accepts an optional
+`delivery` (`current_run` steers the live run, `successor` moves the message to
+the queue head and waits for the terminal boundary). Queue ordering is
+`COALESCE(queue_order, seq), seq` (ProductStore schema v17), so `seq` remains the
+ledger sequence for paging and the transcript. Canonical message events
 are reflected through the existing trace/SSE/replay path. Approval, input,
 capability, and cancellation remain separate typed controls. The Web shell
 renders delivery state in the transcript, and TUI uses the same service
@@ -1555,7 +1563,7 @@ Web Complete C0 adds a separate API-global SQLite database at
 - schema versions, durable M1 migration preparations, and migration
   receipts/mappings/issues.
 
-The current ProductStore schema is v16. Migration v13 reconciles two parallel
+The current ProductStore schema is v17. Migration v13 reconciles two parallel
 v12 productization layouts: user-catalog mapping plus secret-free model identity
 fields, and unified-message lifecycle columns/indexes. Additive migration v14
 adds the bounded hard read-only Review rows/findings and their indexes; v15
@@ -1563,8 +1571,12 @@ indexes session listing; v16 adds `product_sessions.last_outcome` /
 `last_outcome_at`, the outcome and timestamp of the most recently finished turn,
 written in the same transaction that closes it. A session that has never
 finished a turn keeps both columns `NULL` — migration v16 does not backfill — and
-the API omits both JSON fields together in that case.
-Fresh databases and either legacy v12 shape converge on the same v16 schema while
+the API omits both JSON fields together in that case. Additive migration v17 adds
+nullable `product_session_controls.queue_order`, the delivery position of the
+successor queue; rows written before v17 stay `NULL` and keep their creation
+order, and every queue read orders by `COALESCE(queue_order, seq), seq` so `seq`
+remains the immutable ledger sequence.
+Fresh databases and either legacy v12 shape converge on the same v17 schema while
 retaining legacy Provider/control rows only for compatibility/migration.
 Startup rolls back a failed migration attempt, refuses a database with a
 future schema version, and does not implement automatic downgrade.

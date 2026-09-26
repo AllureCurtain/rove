@@ -276,10 +276,11 @@ Fallback can be configured as:
 Web consumes the API projection rather than maintaining a separate backend.
 API/Web create, update, and delete operations mutate the user catalog with
 `expected_revision` CAS and expose `catalog_revision`; stale/busy writes are
-HTTP 409. ProductStore schema v16 persists stable legacy-to-catalog mappings,
+HTTP 409. ProductStore schema v17 persists stable legacy-to-catalog mappings,
 session selections, immutable secret-free run model facts, the unified
-message compatibility projection, and, since v16, the
-`last_outcome`/`last_outcome_at` of the most recently finished turn, not duplicate
+message compatibility projection, since v16 the
+`last_outcome`/`last_outcome_at` of the most recently finished turn, and since v17
+the successor queue's delivery position, not duplicate
 endpoint or credential authority. Its reconciliation migration accepts either
 parallel v12 layout.
 
@@ -844,6 +845,29 @@ draft, while Enter and Shift+Enter insert newlines without submitting; IME
 composition confirmation (native `isComposing` or `keyCode === 229`) never
 submits, and the textarea clears only after the Send Message command reports
 acceptance (see `apps/web/chat/Composer.tsx`).
+
+ProductStore schema v17 owns the successor queue's delivery order. `seq` stays
+the immutable ledger sequence used by paging and the transcript projection, while
+nullable `product_session_controls.queue_order` is the delivery position: every
+queue read and claim orders by `COALESCE(queue_order, seq), seq`, so a row written
+before v17 or never moved keeps its creation order. `POST
+/product/sessions/{session_id}/messages/reorder` rewrites the whole pending
+successor queue in one transaction and returns the authoritative order; its
+`ordered_ids` must match the session's current pending queue exactly, so a
+concurrent promote/revoke/send turns a stale list into HTTP 409
+`product_control_conflict` (a repeated id or an oversized list is HTTP 400
+`product_invalid_input`). `POST
+/product/sessions/{session_id}/messages/{message_id}/promote` takes an optional
+`delivery`: `current_run` (default, the pre-v17 behaviour) persists and steers the
+message into the live run, while `successor` moves the message to the queue head
+and only marks it as queued — it never interrupts the run, and the terminal
+boundary claims it through the existing claimed-successor path. A `current_run`
+promotion replay is idempotent; a repeated `successor` promotion re-applies the
+head move. Both endpoints need a live non-terminal turn for the message's session,
+and reorder additionally accepts an idle session's pending queue. The Web queue
+still performs a revoke-and-recreate adjacent swap and must move to the reorder
+endpoint in the frontend workstream (see the frontend design's runtime-contract
+registration).
 
 The current CDH G2 fork surface permits a branch only from an API-verified,
 terminal canonical run boundary. `product_session_forks` and its inherited-run
