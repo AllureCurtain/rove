@@ -661,7 +661,10 @@ async fn a_trace_line_without_the_field_is_a_complete_message() {
 #[tokio::test]
 async fn the_salvage_window_is_bounded() {
     // The window is a policy constant, not a config knob, so this asserts the
-    // bound the contract names instead of trusting the call site.
+    // contract the constant names instead of trusting the call site: the stop
+    // really waits for the stalled request, and it really gives up. A run that
+    // returned at once would mean no window at all; a run that never returned
+    // would mean the bound is a comment.
     let harness = Harness::new();
     let release = Arc::new(Notify::new());
     let started = std::time::Instant::now();
@@ -678,6 +681,13 @@ async fn the_salvage_window_is_bounded() {
     let elapsed = started.elapsed();
 
     assert!(run.aborted_messages().len() == 1);
+    // 1500 ms is the window; the lower bound is slack for timer granularity
+    // (a timer never fires before its deadline), and the upper bound keeps a
+    // stalled request from holding the run open.
+    assert!(
+        elapsed >= Duration::from_millis(1_400),
+        "a stop with text on screen must wait for the in-flight request, took {elapsed:?}"
+    );
     assert!(
         elapsed < Duration::from_secs(5),
         "a stalled request must not hold the run open indefinitely, took {elapsed:?}"
