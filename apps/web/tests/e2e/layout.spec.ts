@@ -174,9 +174,18 @@ test("the rail yields before the conversation floor at 1024x768", async ({
   const panel = await box(page, "aside.product-inspector");
 
   expect(
-    collapsedRail.x + collapsedRail.width,
+    main.x,
     "the collapsed rail must not hold a column",
   ).toBeLessThanOrEqual(1);
+  // The rail itself still has to leave the row: since F9 the track snaps in one
+  // frame and the rail slides out on its own transform, so its box is only gone
+  // once that slide has run.
+  await expect
+    .poll(async () => {
+      const settledRail = await box(page, ".product-sidebar");
+      return settledRail.x + settledRail.width;
+    })
+    .toBeLessThanOrEqual(1);
   expect(
     main.width,
     "conversation keeps its 450px floor",
@@ -200,6 +209,98 @@ test("the rail yields before the conversation floor at 1024x768", async ({
     reopenedPanel.width,
     "the panel gives up the space the rail took",
   ).toBeLessThan(WORK_PANEL_DEFAULT_WIDTH);
+});
+
+/**
+ * F9 (design §10): collapsing the rail must not animate the grid track.
+ *
+ * Animating `grid-template-columns` re-lays-out the conversation column on every
+ * frame — measured at 1280x720 with a 30-run transcript, one collapse cost 15
+ * layout passes and 22.5ms of layout plus 34.2ms of style recalculation, against
+ * 2 passes / 1.9ms / 5.7ms once the track settles in one frame. The rail keeps
+ * its own 240ms transform slide instead, which is why it also needs a stable
+ * width: as a stretched grid item in a 0 track it would collapse in the same
+ * frame and have nothing left to slide.
+ */
+test("the rail's collapse snaps the track and slides the rail itself", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const workspace = createMockWorkspace();
+  const session = createMockSession();
+  await installMockProductApi(page, {
+    workspaces: [workspace],
+    sessions: [session],
+    transcripts: {
+      [session.id]: completedTranscript(
+        workspace,
+        session,
+        "Layout question",
+        "Layout answer",
+      ),
+    },
+    activeWorkspaceId: workspace.id,
+    activeSessionId: session.id,
+  });
+  await page.goto(`/w/${workspace.id}/s/${session.id}`);
+  await expect(page.getByText("Layout answer", { exact: true })).toBeVisible();
+
+  const motion = await page.evaluate(() => {
+    const body = document.querySelector(".product-body");
+    const rail = document.querySelector(".product-sidebar");
+    return {
+      bodyTransition: body ? getComputedStyle(body).transitionProperty : "",
+      railTransition: rail ? getComputedStyle(rail).transitionProperty : "",
+      railWidth: rail ? getComputedStyle(rail).width : "",
+      railPosition: rail ? getComputedStyle(rail).position : "",
+    };
+  });
+  expect(
+    motion.bodyTransition,
+    "the grid track must settle in one frame",
+  ).not.toContain("grid-template-columns");
+  expect(
+    motion.railTransition,
+    "the rail keeps its own transform slide",
+  ).toContain("transform");
+  expect(motion.railWidth).toBe("240px");
+  expect(motion.railPosition).toBe("relative");
+
+  const body = page.locator(".product-body");
+  await page.getByRole("button", { name: "收起工作区列表" }).click();
+  await expect(body).toHaveAttribute("data-nav-collapsed", "true");
+
+  // The conversation owns the row in the same frame the rail starts sliding, and
+  // the rail keeps a full-width box painted over it while it leaves.
+  const main = await box(page, ".product-main");
+  expect(main.x, "conversation starts at the viewport edge").toBeCloseTo(0, 0);
+  const collapsedRail = await page.evaluate(() => {
+    const rail = document.querySelector(".product-sidebar");
+    return {
+      width: rail ? getComputedStyle(rail).width : "",
+      zIndex: rail ? getComputedStyle(rail).zIndex : "",
+      ariaHidden: rail?.getAttribute("aria-hidden"),
+      inert: rail?.hasAttribute("inert") ?? false,
+    };
+  });
+  expect(collapsedRail.width).toBe("240px");
+  expect(collapsedRail.zIndex).toBe("2");
+  // The off-screen rail leaves the accessibility tree and the tab order.
+  expect(collapsedRail.ariaHidden).toBe("true");
+  expect(collapsedRail.inert).toBe(true);
+
+  // Reopening restores the rail's column, again without animating the track:
+  // the conversation starts at the rail's edge immediately, and the rail itself
+  // slides back in from the left.
+  await page.getByRole("button", { name: "展开工作区列表" }).click();
+  await expect(body).toHaveAttribute("data-nav-collapsed", "false");
+  const reopenedRail = await box(page, ".product-sidebar");
+  const reopenedMain = await box(page, ".product-main");
+  expect(reopenedRail.width).toBeCloseTo(240, 0);
+  expect(reopenedMain.x).toBeCloseTo(reopenedRail.width, 0);
+  await expect
+    .poll(async () => (await box(page, ".product-sidebar")).x)
+    .toBeCloseTo(0, 0);
 });
 
 /**
