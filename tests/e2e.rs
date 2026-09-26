@@ -19,7 +19,7 @@ use rove_models::{
 use rove_runtime::agents::validation::OperatorConstraints;
 use rove_runtime::agents::{AgentActivationConfig, AgentSelector};
 use rove_runtime::context::{ContextBudget, ContextManager};
-use rove_runtime::engine::{Engine, EngineConfig};
+use rove_runtime::engine::{Engine, EngineConfig, ProviderRetryPolicy};
 use rove_runtime::events::StreamEvent;
 use rove_runtime::execution::{
     PlanDecisionKind, PlanFinishReason, PlanIdentity, StepAttempt, StepCompletionBasis,
@@ -165,10 +165,13 @@ impl ModelClient for StepFailureModelClient {
                 text: r#"{"goal":"fix docs","steps":[{"id":"1","title":"inspect docs"}]}"#
                     .to_string(),
             })])),
-            1 => Box::pin(futures::stream::iter([Err(ModelError::RequestFailed(
+            // The step's model call fails for its first attempt and for the one
+            // retry the engine's two-attempt budget allows, so the plan loop
+            // still sees a recoverable step failure and replans.
+            1 | 2 => Box::pin(futures::stream::iter([Err(ModelError::RequestFailed(
                 "planned step model failed".to_string(),
             ))])),
-            2 => Box::pin(futures::stream::iter([Ok(ModelEvent::TextDelta {
+            3 => Box::pin(futures::stream::iter([Ok(ModelEvent::TextDelta {
                 text: r#"{"goal":"fix docs","steps":[{"id":"2","title":"inspect docs without a tool"}]}"#
                     .to_string(),
             })])),
@@ -870,6 +873,23 @@ fn build_planner_test_engine(responses: Vec<String>) -> Engine {
     Engine::new(model, registry, context_manager, config)
 }
 
+/// Retry budget with a millisecond backoff.
+///
+/// Fixtures in this file script *permanently* failing model calls to drive
+/// other mechanisms (planned-step repair, compaction fallback). They keep the
+/// real retry budget enabled -- so the failure path they exercise is the
+/// production one -- but a millisecond base delay keeps that budget from
+/// turning a contract test into a fourteen-second wait. Exact production
+/// delays are asserted in `tests/recovery.rs` and in the runtime policy tests.
+fn fast_retry_policy() -> ProviderRetryPolicy {
+    ProviderRetryPolicy {
+        backoff_base_ms: 1,
+        backoff_max_ms: 4,
+        jitter_ratio: 0.0,
+        ..ProviderRetryPolicy::default()
+    }
+}
+
 fn build_replanning_test_engine() -> Engine {
     let model = Box::new(StepFailureModelClient::new());
     let mut registry = ToolRegistry::new();
@@ -878,7 +898,13 @@ fn build_replanning_test_engine() -> Engine {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig::new(5, true),
+        EngineConfig::new(5, true).with_provider_retry(ProviderRetryPolicy {
+            // Two attempts: the fixture's step call fails for its first
+            // attempt and for the single retry, so the run reaches the
+            // repair path exactly as it did before retry existed.
+            transient_max_attempts: 2,
+            ..fast_retry_policy()
+        }),
     )
 }
 
@@ -5621,7 +5647,7 @@ async fn failing_model_compaction_falls_back_to_deterministic_summary_with_circu
         model,
         registry,
         ContextManager::with_max_history("You are a test agent.".to_string(), 1),
-        EngineConfig::new(2, false),
+        EngineConfig::new(2, false).with_provider_retry(fast_retry_policy()),
         workspace.clone(),
         ApprovalPolicy::Auto,
     )

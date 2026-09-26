@@ -88,6 +88,9 @@ path = "model_factory.rs"
 name = "provider_smoke"
 path = "provider_smoke.rs"
 [[test]]
+name = "recovery"
+path = "recovery.rs"
+[[test]]
 name = "request_input_tool"
 path = "request_input_tool.rs"
 [[test]]
