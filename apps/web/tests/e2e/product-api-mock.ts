@@ -102,7 +102,7 @@ export interface MockProductApiOptions {
   mcpProbeTools?: ProductMcpToolDescriptor[];
   activeWorkspaceId?: string;
   activeSessionId?: string;
-  mode?: "completed" | "approval";
+  mode?: "completed" | "approval" | "running_tool";
   transcriptDelayMs?: Record<string, number>;
   transcriptFailures?: Record<string, number>;
   sessionModelConfigFailures?: number;
@@ -179,7 +179,7 @@ interface MockJob {
   resumedFromRunId: string | null;
   sessionId: string;
   message: string;
-  mode: "completed" | "approval";
+  mode: "completed" | "approval" | "running_tool";
   status: "running" | "done" | "cancelled";
   events: Array<{ seq: number; event: Record<string, unknown> }>;
 }
@@ -341,7 +341,9 @@ export async function installMockProductApi(
     const events =
       mode === "approval"
         ? approvalEvents(jobId, runId, body.message)
-        : completedEvents(jobId, runId, body.message, output);
+        : mode === "running_tool"
+          ? runningToolEvents(jobId, runId, body.message)
+          : completedEvents(jobId, runId, body.message, output);
     const job: MockJob = {
       jobId,
       runId,
@@ -349,7 +351,7 @@ export async function installMockProductApi(
       sessionId: session.id,
       message: body.message,
       mode,
-      status: mode === "approval" ? "running" : "done",
+      status: mode === "completed" ? "done" : "running",
       events,
     };
     jobs.set(jobId, job);
@@ -361,9 +363,9 @@ export async function installMockProductApi(
     };
     session.status = keepActiveUntilObserved
       ? "running"
-      : mode === "approval"
-        ? "needs_attention"
-        : "idle";
+      : mode === "completed"
+        ? "idle"
+        : "needs_attention";
     session.updated_at = NOW;
     const transcript = state.transcripts[session.id] ?? emptyTranscript(session);
     transcript.segments.push(
@@ -373,7 +375,7 @@ export async function installMockProductApi(
         jobId,
         runId,
         resumedFromRunId,
-        mode === "approval" ? "running" : "done",
+        mode === "completed" ? "done" : "running",
         events,
       ),
     );
@@ -1991,6 +1993,28 @@ function completedEvents(
       },
     },
     { seq: 4, event: { type: "run_completed", reason: "final", output } },
+  ];
+}
+
+/**
+ * A job whose first tool call never completes within the test's window, so the
+ * activity group stays in flight and its elapsed value keeps ticking.
+ */
+function runningToolEvents(jobId: string, runId: string, message: string) {
+  return [
+    {
+      seq: 1,
+      event: { type: "run_started", job_id: jobId, run_id: runId, user_message: message },
+    },
+    {
+      seq: 2,
+      event: {
+        type: "tool_call_started",
+        call_id: "call-running-1",
+        name: "shell",
+        args: { command: "cargo test --workspace" },
+      },
+    },
   ];
 }
 
