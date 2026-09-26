@@ -526,6 +526,13 @@ token 体系目前全靠 review 自觉。新增 `scripts/check-web-style-tokens.
   自动改判：它仍是 F12 决策点，默认不做；R2c 的 PR 只接线了最小投影（状态行 + 等待相
   位回到 waiting-model，见 `apps/web/lib/rove-state.ts`、`apps/web/chat/activity-phase.ts`），
   没有做倒计时 UI。
+  **状态更新（2026-09-26 之后，R2a 落地）**：静默回合恢复已随 R2a 落地（见运行时设计
+  §2.5）。它复用既有事件，因此不需要新的前端合同：恢复期间运行时发
+  `model_status`，status 为 `recovering_silent_turn`、message 是运行时自己的固定文案，
+  shell 的状态行本就如实投影 `model_status.message`，等待行是 status 无关的
+  `chat.phaseWaitingModel`。本 PR 只把该 status 注册进 `KNOWN_MODEL_STATUSES` 并补单测
+  （`apps/web/chat/activity-phase.ts`、`apps/web/lib/rove-state.test.ts`），
+  没有新增 copy 字符串，也没有新增"恢复中"专属 UI。
 - 货币成本显示（PI 自己也不显示）；
 - 会话拖拽重排/多选/批量、密度设置、代码块换行开关、markdown/纯文本复制区分
   （W 文档 §17）；
