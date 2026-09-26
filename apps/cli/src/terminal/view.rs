@@ -1217,11 +1217,17 @@ impl From<&StreamEvent> for RunViewUpdate {
             } => Self::ModelStatus {
                 status: "recovery".to_string(),
                 message: format!(
-                    "Model call failed ({}); retrying attempt {}/{} in {:.1}s.",
+                    "Model call failed ({}); retrying attempt {}/{} in {}.",
                     reason.replace('_', " "),
                     attempt,
                     max_attempts,
-                    *delay_ms as f64 / 1000.0
+                    // A provider's own retry-after is often sub-second, so whole
+                    // seconds would render the common 429 case as "0.0s".
+                    if *delay_ms >= 1000 {
+                        format!("{:.1}s", *delay_ms as f64 / 1000.0)
+                    } else {
+                        format!("{delay_ms}ms")
+                    }
                 ),
             },
             StreamEvent::LlmMessage {

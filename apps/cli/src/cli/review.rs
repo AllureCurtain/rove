@@ -5,9 +5,11 @@ use std::time::Instant;
 use futures::StreamExt;
 use rove_app_bootstrap::{
     AppConfig, AppConfigOverrides, ModelSelection, ProviderCatalog, ProviderCatalogService,
-    ProviderProfileId, RunModelSnapshot, build_review_engine, try_build_model_client,
+    ProviderProfileId, ReviewEngineOptions, RunModelSnapshot, build_review_engine,
+    try_build_model_client,
 };
 use rove_models::fake::{FakeModelClient, FakeTurn};
+use rove_runtime::engine::ProviderRetryPolicy;
 use rove_runtime::review::{
     ReviewConclusion, ReviewResult, ReviewRuntimeEvidence, ReviewStats, ReviewTargetSpec,
     ReviewTargetSummary, ReviewUnchecked, apply_runtime_outcome, capture_target,
@@ -81,32 +83,36 @@ pub async fn run(
     state_store.index.initialize()?;
     let run = state_store.start_run(session_id, job_id, run_id)?;
 
-    let (model, run_model_snapshot) = match assemble_review_model(&workspace, model.as_deref()) {
-        Ok(assembly) => assembly,
-        Err(error) => {
-            tracing::warn!("Review Provider is unavailable: {error}");
-            let result = unavailable_result(
-                &review_id,
-                run_id,
-                session_id,
-                snapshot.clone(),
-                start.elapsed().as_millis() as u64,
-                ReviewConclusion::Unavailable,
-                "provider_unavailable",
-            );
-            persist_result(&state_root, &result).await?;
-            render(&result, format)?;
-            return Ok(2);
-        }
-    };
+    let (model, run_model_snapshot, provider_retry) =
+        match assemble_review_model(&workspace, model.as_deref()) {
+            Ok(assembly) => assembly,
+            Err(error) => {
+                tracing::warn!("Review Provider is unavailable: {error}");
+                let result = unavailable_result(
+                    &review_id,
+                    run_id,
+                    session_id,
+                    snapshot.clone(),
+                    start.elapsed().as_millis() as u64,
+                    ReviewConclusion::Unavailable,
+                    "provider_unavailable",
+                );
+                persist_result(&state_root, &result).await?;
+                render(&result, format)?;
+                return Ok(2);
+            }
+        };
     let (engine, submission_store) = match build_review_engine(
         model,
         &workspace,
-        Arc::new(snapshot.clone()),
-        &review_id,
-        Some(&state_root),
-        Some(run_model_snapshot),
-        max_steps.unwrap_or(8),
+        ReviewEngineOptions {
+            snapshot: Arc::new(snapshot.clone()),
+            review_id: review_id.clone(),
+            state_root: Some(&state_root),
+            run_model_snapshot: Some(run_model_snapshot),
+            provider_retry,
+            max_steps: max_steps.unwrap_or(8),
+        },
     ) {
         Ok(assembly) => assembly,
         Err(error) => {
@@ -302,7 +308,11 @@ async fn persist_result(
 fn assemble_review_model(
     workspace: &Workspace,
     requested_model: Option<&str>,
-) -> anyhow::Result<(Box<dyn rove_models::ModelClient>, RunModelSnapshot)> {
+) -> anyhow::Result<(
+    Box<dyn rove_models::ModelClient>,
+    RunModelSnapshot,
+    ProviderRetryPolicy,
+)> {
     let config = AppConfig::load(
         &workspace.root,
         AppConfigOverrides {
@@ -317,6 +327,8 @@ fn assemble_review_model(
         },
     )?;
     let requested_fake = requested_model.is_some_and(|model| matches!(model, "fake" | "fake-raw"));
+    // A Review run retries under the same configured budget as any other run.
+    let provider_retry = config.runtime.recovery.retry_policy();
     let catalog_service = ProviderCatalogService::discover();
     let catalog = catalog_service.load()?;
     let programmatic_fake = requested_fake
@@ -340,6 +352,7 @@ fn assemble_review_model(
                 catalog_revision: "programmatic".to_string(),
                 safe_config_digest: rove_runtime::context::stable_hash("programmatic-fake"),
             },
+            provider_retry,
         ));
     }
 
@@ -366,7 +379,7 @@ fn assemble_review_model(
             anyhow::anyhow!("provider_unavailable: Review model is unavailable: {error}")
         })?
     };
-    Ok((model, snapshot))
+    Ok((model, snapshot, provider_retry))
 }
 
 fn review_fake_model() -> FakeModelClient {

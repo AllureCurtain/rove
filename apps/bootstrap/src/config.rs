@@ -308,7 +308,9 @@ impl RecoveryConfig {
             configured = true;
         }
         if let Some(base) = self.retry.backoff_base_ms {
-            policy.backoff_base_ms = base;
+            // `0` would contradict the documented "first backoff delay" and only
+            // behave as 1ms because the runtime re-clamps it.
+            policy.backoff_base_ms = base.max(1);
             configured = true;
         }
         if let Some(max) = self.retry.backoff_max_ms {
@@ -3525,5 +3527,18 @@ backoff_max_ms = 9000
             1_000,
             "no delay may exceed the configured ceiling"
         );
+
+        // A zero base is clamped too, so the resolved policy never claims a
+        // first delay of zero: the documented value and the waited value agree.
+        let zero_base = RecoveryConfig {
+            retry: RecoveryRetryConfig {
+                backoff_base_ms: Some(0),
+                ..RecoveryRetryConfig::default()
+            },
+        };
+        let mut policy = zero_base.retry_policy();
+        assert_eq!(policy.backoff_base_ms, 1);
+        policy.jitter_ratio = 0.0;
+        assert_eq!(policy.delay_ms(2, None), 1);
     }
 }

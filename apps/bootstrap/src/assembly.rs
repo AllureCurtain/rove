@@ -146,18 +146,38 @@ pub fn build_engine_with_registry(
     Ok(engine)
 }
 
+/// Options identifying one Review run's engine.
+///
+/// Grouping them keeps the Review profile explicit at the call site: a Review
+/// engine is assembled from an immutable target snapshot, an external state
+/// root, and the same configured recovery budget as any other run.
+pub struct ReviewEngineOptions<'a> {
+    pub snapshot: Arc<ReviewTargetSnapshot>,
+    pub review_id: String,
+    pub state_root: Option<&'a std::path::Path>,
+    pub run_model_snapshot: Option<RunModelSnapshot>,
+    /// The configured model-call retry budget, resolved by the caller so a
+    /// Review run does not silently fall back to the runtime default.
+    pub provider_retry: ProviderRetryPolicy,
+    pub max_steps: u32,
+}
+
 /// Build the shared Engine under the hard read-only Review profile. The target
 /// snapshot is supplied by the caller and every registered read tool closes
 /// over it; the live workspace is never used as a model-read authority.
 pub fn build_review_engine(
     model: Box<dyn ModelClient>,
     workspace: &Workspace,
-    snapshot: Arc<ReviewTargetSnapshot>,
-    review_id: impl Into<String>,
-    state_root: Option<&std::path::Path>,
-    run_model_snapshot: Option<RunModelSnapshot>,
-    max_steps: u32,
+    options: ReviewEngineOptions<'_>,
 ) -> anyhow::Result<(Engine, ReviewSubmissionStore)> {
+    let ReviewEngineOptions {
+        snapshot,
+        review_id,
+        state_root,
+        run_model_snapshot,
+        provider_retry,
+        max_steps,
+    } = options;
     let external_state =
         resolve_external_state_root(workspace, state_root).map_err(anyhow::Error::new)?;
     let mut review_workspace = workspace.clone();
@@ -184,7 +204,7 @@ pub fn build_review_engine(
                 max_steps.clamp(1, 256),
                 false,
             )),
-            provider_retry: ProviderRetryPolicy::default(),
+            provider_retry,
         },
         review_workspace.clone(),
         EngineEnvironmentOptions {
