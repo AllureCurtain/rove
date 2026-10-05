@@ -13,6 +13,11 @@ import {
   setKeybindingOverride,
   useKeybindingOverrides,
 } from "./use-keybinding-overrides";
+import {
+  setSendKeyPreference,
+  useSendKeyPreference,
+  type SendKeyPreference,
+} from "../state/use-send-key";
 
 const SHORTCUT_COPY: Record<
   KeyboardShortcutActionId,
@@ -57,6 +62,7 @@ type RecordError =
 export function KeyboardSettings() {
   const { t } = useCopy();
   const overrides = useKeybindingOverrides();
+  const sendKey = useSendKeyPreference();
   const [recording, setRecording] = useState<KeyboardShortcutActionId | null>(null);
   const [recordError, setRecordError] = useState<RecordError | null>(null);
 
@@ -157,6 +163,35 @@ export function KeyboardSettings() {
               })}
         </p>
       ) : null}
+      {/* §6.2: Enter-to-send is the default; this restores the earlier
+          Ctrl/Cmd+Enter binding for readers who prefer it. */}
+      <div className="settings-card">
+        <h2>{t("keyboard.sendKeyTitle")}</h2>
+        <div className="profile-row" role="listitem">
+          <div>
+            <strong>{t("keyboard.sendKeyTitle")}</strong>
+            <span>{t("keyboard.sendKeyDesc")}</span>
+          </div>
+          <div
+            className="chat-composer__modes"
+            role="radiogroup"
+            aria-label={t("keyboard.sendKeyTitle")}
+          >
+            {(["enter", "mod-enter"] as const).map((mode: SendKeyPreference) => (
+              <button
+                key={mode}
+                type="button"
+                role="radio"
+                aria-checked={sendKey === mode}
+                data-active={sendKey === mode ? "true" : undefined}
+                onClick={() => setSendKeyPreference(mode)}
+              >
+                {t(mode === "enter" ? "keyboard.sendKeyEnter" : "keyboard.sendKeyModEnter")}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
       <div className="settings-card">
         <h2>{t("keyboard.title")}</h2>
         <div

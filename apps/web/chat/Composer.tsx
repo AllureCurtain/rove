@@ -54,8 +54,11 @@ import {
   type ComposerFileFailure,
   type ComposerFileRow,
 } from "./composer-files";
-import type { ActivityPhase } from "./activity-phase";
 import type { ContextUsage } from "./context-usage";
+import {
+  useSendKeyPreference,
+  type SendKeyPreference,
+} from "../state/use-send-key";
 import { QuickModelControl } from "../product-v2/QuickModelControl";
 import type {
   ProviderProfileRecord,
@@ -65,6 +68,7 @@ import type {
 import type {
   ProductAttachmentUpload,
   ProductMessageAttachmentRequest,
+  ProductMessageDelivery,
   ProductProviderModelsResponse,
   ProductReviewTargetSpec,
 } from "../product/product-api-types";
@@ -97,7 +101,11 @@ interface MenuItem {
 
 export function Composer({
   draftBinding,
+  variant = "session",
+  placeholder,
   disabled,
+  sendDisabled = false,
+  onSendBlocked,
   sendPaused = false,
   busy,
   disabledReason,
@@ -113,7 +121,6 @@ export function Composer({
   onLoadProviderModels,
   onModelConfigChange,
   controlError,
-  activityPhase,
   contextUsage,
   commands,
   findFiles,
@@ -124,7 +131,20 @@ export function Composer({
   onCreateReview,
 }: {
   draftBinding?: ComposerDraftBinding;
+  /**
+   * §9.1: `"home"` is the same composer without the session furniture — the
+   * send slot, key bindings, and hint stay identical, while the model control,
+   * review launcher, and session-scoped rows only exist where a session does.
+   */
+  variant?: "session" | "home";
+  placeholder?: string;
   disabled: boolean;
+  /**
+   * §9.2: blocks only the send — the draft stays editable. A submit attempt
+   * while blocked fires `onSendBlocked` so the surface can answer inline.
+   */
+  sendDisabled?: boolean;
+  onSendBlocked?: () => void;
   /**
    * A transcript re-read is in flight for the session on screen.
    *
@@ -145,6 +165,12 @@ export function Composer({
   onSend: (
     message: string,
     attachments: ProductMessageAttachmentRequest[],
+    /**
+     * §6.1: `"current_run"` is the Alt+Enter interjection — the send lands in
+     * the durable queue and is immediately promoted to steer the live turn.
+     * Absent (or when nothing is running) the send is the plain one.
+     */
+    delivery?: ProductMessageDelivery,
   ) => Promise<boolean> | boolean;
   /**
    * Uploads one file for the active session (R8). Absent disables file
@@ -161,8 +187,6 @@ export function Composer({
   onLoadProviderModels: (profileId: string) => Promise<ProductProviderModelsResponse>;
   onModelConfigChange: (config: SessionModelConfigInput) => Promise<boolean>;
   controlError: string | null;
-  /** Waiting line above the input; idle renders nothing. */
-  activityPhase?: ActivityPhase;
   contextUsage?: ContextUsage | null;
   commands?: ComposerCommand[];
   findFiles?: (query: string) => Promise<ComposerFileSuggestion[]>;
@@ -268,18 +292,23 @@ export function Composer({
    * The pause is short, but not instantaneous: a reader can keep editing while
    * it lasts. A send only goes out if the draft is the one that was submitted —
    * anything else and the press is spent on the version the reader has since
-   * changed, which is nothing anyone asked to send.
+   * changed, which is nothing anyone asked to send. The delivery intent is
+   * armed with it: an Alt+Enter pressed while the transcript re-reads still
+   * asks for the live turn once the send lands.
    */
   const pendingSendRef = useRef<{
     text: string;
     chips: string[];
     files: string[];
+    delivery?: ProductMessageDelivery;
   } | null>(null);
+  const sendKey = useSendKeyPreference();
 
   const canSubmit =
     Boolean(message.trim()) &&
     !submitting &&
     !disabled &&
+    !sendDisabled &&
     !sendPaused &&
     // A row that is still uploading, still retrying, or already failed is not
     // something a send may quietly drop: the attachment stays visible until the
@@ -311,9 +340,10 @@ export function Composer({
     if (sendPaused || submitting || !canSubmit) {
       return;
     }
+    const armedDelivery = armed.delivery;
     pendingSendRef.current = null;
     setPendingSend(null);
-    void submitDraft();
+    void submitDraft(armedDelivery);
     // `submitDraft` reads the current draft, attachments, and rows; every value
     // it reads is in this list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -439,9 +469,17 @@ export function Composer({
     void uploadFile(row.id, file);
   }
 
-  async function submitDraft() {
+  async function submitDraft(delivery?: ProductMessageDelivery) {
     if (!canSubmit) {
       if (disabled || submitting) {
+        return;
+      }
+      if (sendDisabled) {
+        // §9.2: a blocked send still answers — the surface escalates its hint
+        // into an inline message with a direct action.
+        if (message.trim()) {
+          onSendBlocked?.();
+        }
         return;
       }
       if (sendPaused && message.trim() && !hasUnfinishedFiles(files)) {
@@ -453,6 +491,7 @@ export function Composer({
           text: message,
           chips: attachments.map((attachment) => attachment.text),
           files: files.map((row) => row.id),
+          delivery,
         };
         setPendingSend(message);
       }
@@ -468,6 +507,7 @@ export function Composer({
         const accepted = await onSend(
           composeMessageWithAttachments(sent, attachments),
           sentAttachments,
+          delivery,
         );
         if (accepted) {
           setAttachments([]);
@@ -533,8 +573,11 @@ export function Composer({
   const fileQuery = trigger?.kind === "file" ? trigger.query : null;
   useEffect(() => {
     if (!findFiles || fileQuery === null) {
-      setFileItems([]);
-      setFileListCapped(false);
+      // Bail without dispatching: a fresh [] per run would still schedule a
+      // nested update per parent render, which never lets the passive-effect
+      // cascade settle during a stream.
+      setFileItems((current) => (current.length === 0 ? current : []));
+      setFileListCapped((current) => (current ? false : current));
       return;
     }
     const sequence = ++filesSequenceRef.current;
@@ -645,7 +688,9 @@ export function Composer({
         event.key === "Enter" &&
         !event.ctrlKey &&
         !event.metaKey &&
-        !event.shiftKey
+        !event.shiftKey &&
+        // Alt+Enter is the send/interject binding, not a menu accept.
+        !event.altKey
       ) {
         event.preventDefault();
         acceptActiveMenuItem();
@@ -662,26 +707,38 @@ export function Composer({
       return;
     }
     if (event.key !== "Enter" || event.shiftKey) {
+      // Shift+Enter is the newline in every keymap (design §6.2).
       return;
     }
     if (event.nativeEvent.isComposing || event.keyCode === 229) {
       return;
     }
-    if (!event.ctrlKey && !event.metaKey) {
-      return; // Plain Enter keeps the newline behavior.
+    const altOnly = event.altKey && !event.ctrlKey && !event.metaKey;
+    const modOnly = (event.ctrlKey || event.metaKey) && !event.altKey;
+    const plain = !event.altKey && !event.ctrlKey && !event.metaKey;
+    // Enter-mode sends on Enter (Ctrl/Cmd+Enter stays an alias so the old
+    // habit keeps working); mod-enter mode only sends on the chord. Alt+Enter
+    // sends in both — it is the interjection binding, not a newline.
+    if (!altOnly && !modOnly && !(plain && sendKey === "enter")) {
+      return;
     }
     event.preventDefault();
     if (event.repeat) return;
-    void submitDraft();
+    // Alt+Enter is the interjection: while a turn is running it asks for the
+    // current_run delivery, and idle it is just a send.
+    void submitDraft(altOnly && busy ? "current_run" : undefined);
   }
 
-  const phaseText = activityPhase ? activityPhaseCopy(activityPhase, t) : "";
+  // §6.4: "what is it doing now" is owned by the transcript tail lane — the
+  // composer keeps only state that belongs to the send itself.
+  const hasDraft = message.trim().length > 0;
+  const placeholderText = placeholder ?? t("chat.placeholder");
 
   return (
     <form
       className="chat-composer"
       onSubmit={handleSubmit}
-      aria-label={t("chat.placeholder")}
+      aria-label={placeholderText}
       data-drop-active={dropActive ? "true" : undefined}
       onDragOver={(event) => {
         if (!onUploadAttachment || !event.dataTransfer.types.includes("Files")) {
@@ -716,13 +773,7 @@ export function Composer({
           {displayError}
         </div>
       ) : null}
-      {phaseText ? (
-        <p className="chat-composer__phase" role="status" aria-live="polite">
-          {phaseText}
-        </p>
-      ) : null}
       <div className="chat-composer__meta">
-        {busy ? <span>{t("chat.responding")}</span> : null}
         {disabledReason ? <span>{disabledReason}</span> : null}
         {pendingSend !== null ? (
           <span role="status">{t("chat.sendQueuedRestoring")}</span>
@@ -836,8 +887,8 @@ export function Composer({
       <div className="chat-composer__row">
         <textarea
           ref={textareaRef}
-          aria-label={t("chat.placeholder")}
-          aria-keyshortcuts="/ Control+Enter Meta+Enter"
+          aria-label={placeholderText}
+          aria-keyshortcuts={sendKeyShortcuts(sendKey)}
           aria-activedescendant={menuOpen ? `composer-menu-item-${activeIndex}` : undefined}
           value={message}
           onChange={(event) => {
@@ -851,7 +902,7 @@ export function Composer({
           onSelect={(event) => {
             refreshTrigger(event.currentTarget.value, event.currentTarget.selectionStart);
           }}
-          placeholder={t("chat.placeholder")}
+          placeholder={placeholderText}
           disabled={disabled || submitting}
           aria-invalid={displayError ? "true" : undefined}
           aria-describedby={displayError ? "composer-error" : undefined}
@@ -919,26 +970,67 @@ export function Composer({
             </button>
           </>
         ) : null}
-        <button type="submit" disabled={!canSubmit} aria-label={t("chat.send")}>
-          <PaperPlaneIcon />
-          {t("chat.send")}
-        </button>
         {contextUsage && contextUsage.used > 0 ? <ContextUsageRing usage={contextUsage} /> : null}
-        {busy ? <StopRunButton onCancel={onCancel} /> : null}
+        {/* §6.1: send and stop share one slot. While a turn runs and the draft
+            is empty the slot is Stop; the moment the reader starts a draft the
+            slot is Send again, so queue (Enter) and interject (Alt+Enter) stay
+            explicit choices instead of a hidden stop behind a second button. */}
+        {busy && !hasDraft ? (
+          <button
+            // The two sides of the mutex must stay distinct elements: a stop
+            // click can hand the draft back synchronously, and reusing this
+            // node would leave a `type="submit"` button under the same pointer
+            // — the click's own default action would then send the restored
+            // draft right back out.
+            key="stop"
+            type="button"
+            className="chat-composer__slot"
+            data-slot="stop"
+            onClick={onCancel}
+            aria-label={t("chat.stop")}
+            title={t("chat.stop")}
+          >
+            <StopIcon />
+          </button>
+        ) : (
+          <button
+            key="send"
+            type="submit"
+            className="chat-composer__slot"
+            data-slot="send"
+            disabled={!canSubmit}
+            aria-label={t("chat.send")}
+            title={busy ? t("chat.sendWhileRunningHint") : t("chat.send")}
+          >
+            <PaperPlaneIcon />
+          </button>
+        )}
       </div>
       {controlError ? <p className="control-queue__error" role="alert">{controlError}</p> : null}
       <div className="chat-composer__controls">
-        {modelConfig ? (
-          <QuickModelControl
-            profiles={profiles}
-            modelConfig={modelConfig}
-            saving={modelConfigSaving}
-            loadProviderModels={onLoadProviderModels}
-            onModelConfigChange={onModelConfigChange}
-          />
-        ) : (
-          <span>{t("chat.disabledSettings")}</span>
-        )}
+        {/* The model control and review launcher are session furniture: the
+            home variant has no session yet, so its controls row carries only
+            the persistent key hint. */}
+        {variant === "session" ? (
+          modelConfig ? (
+            <QuickModelControl
+              profiles={profiles}
+              modelConfig={modelConfig}
+              saving={modelConfigSaving}
+              loadProviderModels={onLoadProviderModels}
+              onModelConfigChange={onModelConfigChange}
+            />
+          ) : (
+            <span>{t("chat.disabledSettings")}</span>
+          )
+        ) : null}
+        {/* §6.2: the binding is persistent furniture, not placeholder copy —
+            it stays readable while a draft is being typed and follows the
+            send-key preference. */}
+        <span className="chat-composer__sendkey-hint">
+          {sendKeyHint(sendKey, t)}
+        </span>
+        {variant === "session" ? (
         <div className="chat-composer__review">
           <button
             type="button"
@@ -1007,6 +1099,7 @@ export function Composer({
             </div>
           ) : null}
         </div>
+        ) : null}
       </div>
     </form>
   );
@@ -1080,30 +1173,26 @@ function ContextUsageRing({ usage }: { usage: ContextUsage }) {
   );
 }
 
-function activityPhaseCopy(
-  phase: ActivityPhase,
-  t: (path: string, params?: Record<string, string | number>) => string,
+function sendKeyShortcuts(sendKey: SendKeyPreference): string {
+  // The chords the composer actually answers to, in preference order.
+  return sendKey === "enter"
+    ? "Enter Alt+Enter Control+Enter Meta+Enter"
+    : "Control+Enter Meta+Enter Alt+Enter";
+}
+
+function sendKeyHint(
+  sendKey: SendKeyPreference,
+  t: (path: string) => string,
 ): string {
-  switch (phase.kind) {
-    case "idle":
-      return "";
-    case "sending":
-      return t("chat.phaseSending");
-    case "waiting-model":
-      return t("chat.phaseWaitingModel");
-    case "compacting":
-      return phase.degraded
-        ? t("chat.phaseCompactingDegraded")
-        : t("chat.phaseCompacting");
-    case "tool":
-      return t("chat.phaseTool", { name: phase.name });
-    case "planning":
-      return t("chat.phasePlanning");
-    case "finalizing":
-      return t("chat.phaseFinalizing");
-    case "degraded":
-      return t("chat.phaseDegraded", { summary: phase.summary });
-  }
+  const send =
+    sendKey === "enter"
+      ? t("chat.sendKeyHintEnter")
+      : t("chat.sendKeyHintModEnter");
+  const newline =
+    sendKey === "enter"
+      ? t("chat.sendKeyHintShiftEnter")
+      : t("chat.sendKeyHintPlainEnter");
+  return [send, newline, t("chat.sendKeyHintAltEnter")].join(" · ");
 }
 
 function createAttachmentId(): string {
@@ -1111,14 +1200,4 @@ function createAttachmentId(): string {
     return crypto.randomUUID();
   }
   return `paste_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
-}
-
-function StopRunButton({ onCancel }: { onCancel: () => void }) {
-  const { t } = useCopy();
-  return (
-    <button type="button" className="danger" onClick={onCancel} aria-label={t("chat.stop")}>
-      <StopIcon />
-      {t("chat.stop")}
-    </button>
-  );
 }
