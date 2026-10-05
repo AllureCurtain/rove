@@ -340,6 +340,12 @@ test("reload restores bubbles and the next turn resumes the exact product sessio
     latest_run_id: "run-1",
   });
   await page.getByRole("button", { name: "展开详情面板" }).click();
+  // The panel defaults to the evidence tab (§8); open the run pane via `+`.
+  await page.getByRole("button", { name: "打开一个页签", exact: true }).click();
+  await page
+    .getByRole("tabpanel")
+    .getByRole("button", { name: "运行", exact: true })
+    .click();
   await expect(page.getByLabel("详情").getByText("已完成")).toBeVisible();
 });
 
@@ -498,6 +504,11 @@ test("partial transcript remains distinct from a completed run and a run error",
   await expect(conversation.getByText("Visible answer")).toBeVisible();
   await expect(conversation.getByText(/Expected event 3, observed 4/)).toBeVisible();
   await page.getByRole("button", { name: "展开详情面板" }).click();
+  await page.getByRole("button", { name: "打开一个页签", exact: true }).click();
+  await page
+    .getByRole("tabpanel")
+    .getByRole("button", { name: "运行", exact: true })
+    .click();
   await expect(page.getByLabel("详情").getByText("已完成", { exact: true })).toBeVisible();
   await expect(page.getByText("运行中断")).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: /输入消息/ })).toBeEnabled();

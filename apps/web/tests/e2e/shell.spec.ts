@@ -18,6 +18,13 @@ test("empty -> open workspace -> run -> complete on live shell mock", async ({
   // The work panel is closed by default (design §3.3); the floating toggle
   // opens it.
   await page.getByRole("button", { name: "展开详情面板" }).click();
+  // The panel defaults to the evidence tab (design §8); open the run pane
+  // from the `+` launcher.
+  await page.getByRole("button", { name: "打开一个页签", exact: true }).click();
+  await page
+    .getByRole("tabpanel")
+    .getByRole("button", { name: "运行", exact: true })
+    .click();
   await page.getByRole("textbox", { name: /输入消息/ }).fill("Summarize the runtime state");
   await page.getByRole("button", { name: "发送" }).click();
 
@@ -84,6 +91,13 @@ test("inspector shows empty then completed states during a run", async ({ page }
   await page.getByRole("button", { name: "展开详情面板" }).click();
 
   const inspector = page.getByLabel("详情");
+  // The panel opens on the evidence tab (design §8); the run status pane is
+  // opened from the `+` launcher.
+  await page.getByRole("button", { name: "打开一个页签", exact: true }).click();
+  await page
+    .getByRole("tabpanel")
+    .getByRole("button", { name: "运行", exact: true })
+    .click();
   await expect(inspector.getByText("暂无进行中的运行")).toBeVisible();
   await expect(inspector.getByText(/发送一条消息/)).toBeVisible();
 
