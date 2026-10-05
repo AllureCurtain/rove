@@ -129,7 +129,13 @@ test("visual: sidebar pin, rename editor", async ({ page }) => {
   await page.waitForTimeout(150);
   await shot(page, "13-sidebar-hover");
 
-  await page.getByRole("button", { name: "置顶会话" }).first().click();
+  // Pin lives inside the row's ⋯ menu (§7.2), not as a standalone action.
+  await page
+    .locator(".session-branch")
+    .first()
+    .getByRole("button", { name: /的操作$/ })
+    .click();
+  await page.getByRole("menuitem", { name: "置顶会话" }).click();
   await page.waitForTimeout(150);
   await shot(page, "14-sidebar-pinned");
 

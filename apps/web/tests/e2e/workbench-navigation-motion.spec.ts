@@ -131,8 +131,9 @@ test("session list collapse animates then unmounts, and reduced motion is honore
 
   // Reduced motion: the global wildcard collapses durations, so the unmount
   // still happens and the row is gone rather than stuck at zero height.
+  // Scope to the group: the flat Sessions zone keeps its own copy of the rows.
   await expect(group).toBeHidden();
-  await expect(page.locator(".session-item")).toHaveCount(0);
+  await expect(group.locator(".session-item")).toHaveCount(0);
 
   await page.getByRole("button", { name: new RegExp(`展开.*${workspace.display_name}`) }).click();
   await expect(group).toHaveAttribute("data-expanded", "true");

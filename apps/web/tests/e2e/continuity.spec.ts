@@ -209,10 +209,14 @@ test("removing the active workspace does not override a newer settings route", a
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
   await page.getByRole("button", { name: `${workspace.display_name} 的操作` }).click();
   // Removing a workspace also drops its sessions, so the first click only arms
-  // the action and relabels it.
+  // the action and relabels it; the armed click opens a confirm dialog.
   await page.getByRole("menuitem", { name: "从列表移除工作区" }).click();
   await expect.poll(() => api.workspaces).toHaveLength(1);
   await page.getByRole("menuitem", { name: "确认移除工作区及其会话" }).click();
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "移除项目" })
+    .click();
   // The console has no page-level banner; settings lives in the rail's footer
   // icon row (design §3.1).
   await page.getByLabel("设置", { exact: true }).click();
@@ -592,7 +596,12 @@ test("a delayed session restore cannot overwrite a faster session switch", async
 
   await page.goto(`/w/${workspace.id}/s/${sessionA.id}`);
   await expect(page.getByText("正在恢复此会话…")).toBeVisible();
-  await page.getByRole("button", { name: "Session B", exact: true }).click();
+  // The row's accessible name carries its project too ("Session B, …"), so
+  // match the title prefix; two zones render the row, either works here.
+  await page
+    .getByRole("button", { name: /Session B, rove-shell-demo/ })
+    .first()
+    .click();
 
   await expect(page).toHaveURL(`/w/${workspace.id}/s/${sessionB.id}`);
   const conversation = page.getByLabel("Conversation");
@@ -620,14 +629,17 @@ test("the sidebar marks the last finished outcome of another session", async ({
 
   await page.goto(`/w/${workspace.id}/s/session-3`);
 
-  const successDot = page.locator('.session-item__dot[data-tone="success"]');
-  const neutralDot = page.locator('.session-item__dot[data-tone="neutral"]');
+  // The row renders twice — flat Sessions zone and project group (§7.1) — so
+  // scope to the project group where this assertion lived before the split.
+  const project = page.locator(".workspace-group");
+  const successDot = project.locator('.session-item__dot[data-tone="success"]');
+  const neutralDot = project.locator('.session-item__dot[data-tone="neutral"]');
   await expect(successDot).toHaveCount(1);
   await expect(neutralDot).toHaveCount(1);
   await expect(successDot).toHaveAttribute("title", "最近一次运行成功");
   await expect(neutralDot).toHaveAttribute("title", "最近一次运行已取消");
   // The session that never ran carries no mark, and the selected row never does.
-  await expect(page.locator(".session-item__dot")).toHaveCount(2);
+  await expect(project.locator(".session-item__dot")).toHaveCount(2);
 });
 
 test("a background attention badge survives a new session without an EventSource", async ({

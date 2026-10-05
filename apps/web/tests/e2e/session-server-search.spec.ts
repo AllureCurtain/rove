@@ -45,8 +45,12 @@ test("a session only the server knows about appears in the search", async ({
   ]);
 
   // Clearing the query restores the loaded list, with no server rows left over.
+  // The session rows in the flat Sessions zone and inside the project group
+  // are the same record rendered twice (§7.1), hence `.first()`.
   await search.fill("");
-  await expect(page.getByRole("button", { name: /Alpha work/ })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /Alpha work/ }).first(),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: /Release checklist/ })).toHaveCount(0);
 });
 

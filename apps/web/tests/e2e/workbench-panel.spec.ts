@@ -100,7 +100,12 @@ test("refresh restores pending request; panel width is keyboard bounded and sele
   expect(await widthNow()).toBe(WORK_PANEL_MIN_WIDTH + 16);
   // The width is a global UI preference (design §3 ownership table), so it
   // survives a session switch; only the panel *selection* is session-isolated.
-  await page.getByRole("button", { name: "Session B", exact: true }).click();
+  // A session row renders once per rail zone (§7), so scope the click to the
+  // project group where it resolves exactly once.
+  await page
+    .locator(".workspace-group")
+    .getByRole("button", { name: /^Session B(?:,|$)/ })
+    .click();
   // Select-then-paint: the pane follows the click one committed frame later.
   await expect(page.getByRole("heading", { name: "Session B" })).toBeVisible();
   await expect(page.getByRole("region", { name: "审批详情", exact: true })).toHaveCount(0);
@@ -109,7 +114,10 @@ test("refresh restores pending request; panel width is keyboard bounded and sele
   // still fails if the preference is genuinely lost, but no longer depends on which
   // frame the read lands in.
   await expect.poll(widthNow).toBe(WORK_PANEL_MIN_WIDTH + 16);
-  await page.getByRole("button", { name: /^Session A(?:,|$)/ }).click();
+  await page
+    .locator(".workspace-group")
+    .getByRole("button", { name: /^Session A(?:,|$)/ })
+    .click();
   await expect.poll(widthNow).toBe(WORK_PANEL_MIN_WIDTH + 16);
 
   // Widening to the live maximum may make the rail yield; the conversation keeps
@@ -154,7 +162,10 @@ test("late approval response cannot clear another session's pending submission",
     await route.fulfill({ status: 409, json: { error: "stale" } });
   });
   await inline.getByRole("button", { name: "批准", exact: true }).click();
-  await page.getByRole("button", { name: "Session B", exact: true }).click();
+  await page
+    .locator(".workspace-group")
+    .getByRole("button", { name: /^Session B(?:,|$)/ })
+    .click();
   // Select-then-paint: the pane follows the click one committed frame later.
   await expect(page.getByRole("heading", { name: "Session B" })).toBeVisible();
   await page.getByRole("textbox", { name: /输入消息/ }).fill("B note");

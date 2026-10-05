@@ -88,7 +88,10 @@ test("mobile chat reflows, traps both production panels, and honors reduced moti
   const lastDrawerAction = workspaceDrawer.getByRole("button", { name: "设置" });
   await lastDrawerAction.focus();
   await page.keyboard.press("Tab");
-  await expect(workspaceDrawer.getByRole("button", { name: "新会话", exact: true })).toBeFocused();
+  // The trap wraps to the drawer's first focusable — its close button.
+  await expect(
+    workspaceDrawer.getByRole("button", { name: "关闭工作区列表" }),
+  ).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(workspaceDrawer).toBeHidden();
   await expect(workspaceTrigger).toBeFocused();
