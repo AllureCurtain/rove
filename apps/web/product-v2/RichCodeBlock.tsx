@@ -92,10 +92,14 @@ export default function RichCodeBlock({
           <pre className={className} tabIndex={0}>
             {tokens.map((line, lineIndex) => (
               <div {...getLineProps({ line })} key={lineIndex}>
-                <span className="rich-code__line-number" aria-hidden="true">
+                <span
+                  key="line-number"
+                  className="rich-code__line-number"
+                  aria-hidden="true"
+                >
                   {lineIndex + 1}
                 </span>
-                <span>
+                <span key="tokens">
                   {line.map((token, tokenIndex) => (
                     <span {...getTokenProps({ token })} key={tokenIndex} />
                   ))}

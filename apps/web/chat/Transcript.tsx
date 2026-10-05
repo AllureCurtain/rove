@@ -3,7 +3,6 @@
 import {
   CheckIcon,
   ArrowDownIcon,
-  ArrowUpIcon,
   ChevronDownIcon,
   CodeIcon,
   CopyIcon,
@@ -14,7 +13,7 @@ import {
   Pencil1Icon,
   RotateCounterClockwiseIcon,
 } from "@radix-ui/react-icons";
-import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type {
   ChatMessage,
@@ -28,7 +27,6 @@ import { RichText } from "../product-v2/RichText";
 import type {
   ProductMessage,
   ProductMessageAttachmentRef,
-  ProductMessageDelivery,
 } from "../product/product-api-types";
 import {
   attachmentsByRunId,
@@ -36,20 +34,18 @@ import {
   formatAttachmentBytes,
   isRasterContentType,
 } from "./composer-files";
-import { actionableQueueOrder, successorQueue } from "./queue-order";
-import {
-  IDLE_FOLLOWUP_RECOVERY,
-  followupRecoveryActionLabel,
-  followupRecoveryNotice,
-  isStrandedSuccessor,
-  reduceFollowupRecovery,
-  type FollowupConfirmationResult,
-} from "./followup-recovery";
 import { formatPruningBytes, promptPruningSummary } from "./prompt-pruning";
 import { ConversationMinimap } from "./ConversationMinimap";
+import { RuntimeStatusLane } from "./RuntimeStatusLane";
+import { IDLE_PHASE, type ActivityPhase } from "./activity-phase";
 import { ReadingWidthHandles } from "./ReadingWidthHandles";
 import { buildConversationMinimapMarkers } from "./conversation-minimap";
 import { buildToolPresentation, type ToolBlock } from "./tool-presentation";
+import {
+  formatReceiptDuration,
+  formatReceiptTokens,
+  runGroupOutcome,
+} from "./turn-outcome";
 import {
   activityWantsOpen,
   buildTranscriptEntries,
@@ -105,11 +101,19 @@ const TRANSCRIPT_OVERFLOW_SLACK_PX = 4;
  */
 const SESSION_VIEW_RESTORE_TIMEOUT_MS = 400;
 
+/**
+ * Longest window in which a settled-anchor correction may keep converging:
+ * rows just outside the viewport render at real height over the next frames,
+ * and each of those renders is a residual the anchor has to absorb.
+ */
+const ANCHOR_SETTLE_MS = 300;
+
 export function Transcript({
   timeline,
   messages = [],
-  messageBusy = null,
-  canPromote = false,
+  sessionId = null,
+  busy = false,
+  activityPhase = IDLE_PHASE,
   approvalBusy,
   inputBusy,
   restoreState,
@@ -121,12 +125,6 @@ export function Transcript({
   onApprovalDetail,
   approvalError,
   onInputSubmit,
-  onPromoteMessage = () => {},
-  onRevokeMessage = () => {},
-  onConfirmStrandedSuccessor,
-  onEditQueuedMessage,
-  onMoveQueuedMessage,
-  editingQueuedMessageId = null,
   onRetryMessage,
   onEditMessage,
   onForkSession,
@@ -138,8 +136,20 @@ export function Transcript({
 }: {
   timeline: TranscriptRunGroup[];
   messages?: ProductMessage[];
-  messageBusy?: string | null;
-  canPromote?: boolean;
+  /**
+   * §5.1: the session this pane belongs to. The pane keeps its own identity so
+   * its view snapshot lands under its own key even when it is not the pane the
+   * data layer is currently restoring.
+   */
+  sessionId?: string | null;
+  /**
+   * `runState.busy`: whether the focused session has a live turn. The tail
+   * status lane (design §5.3) and the per-run receipt both read it — it is the
+   * single owner of "turn running" and no other surface repeats it.
+   */
+  busy?: boolean;
+  /** The live phase behind the status lane's one indicator. */
+  activityPhase?: ActivityPhase;
   approvalBusy: string | null;
   inputBusy: string | null;
   restoreState: TranscriptRestoreState;
@@ -152,21 +162,6 @@ export function Transcript({
   onApprovalDetail?: (tool: ToolCallView, trigger: HTMLElement) => void;
   approvalError?: string | null;
   onInputSubmit: (inputId: string, answer: string) => void;
-  onPromoteMessage?: (messageId: string, delivery: ProductMessageDelivery) => void;
-  onRevokeMessage?: (messageId: string) => void;
-  /**
-   * F.5: ask the server to retry one successor it abandoned. Absent hides the
-   * recovery action, which is what a shell without the confirm route wants.
-   */
-  onConfirmStrandedSuccessor?: (
-    messageId: string,
-  ) => Promise<FollowupConfirmationResult>;
-  /** Load a queued message back into the composer for replacement. */
-  onEditQueuedMessage?: (messageId: string, content: string) => void;
-  /** Adjacent swap within the successor queue. */
-  onMoveQueuedMessage?: (messageId: string, direction: "up" | "down") => void;
-  /** The queued message currently loaded for editing, if any. */
-  editingQueuedMessageId?: string | null;
   /** Resend the prompt of the last turn as a new message (no truncation). */
   onRetryMessage?: (content: string) => void;
   /** Load the last user message into the composer (edit-resend, degraded). */
@@ -250,13 +245,6 @@ export function Transcript({
       })),
     [visibleTimeline],
   );
-  // The ledger arrives in `seq` order, but a reorder rewrites `queue_order` and
-  // never `seq`: the pending rows are shown in the order the server will
-  // dispatch them, not the order they were created in.
-  const actionableMessages = useMemo(
-    () => actionableQueueOrder(messages),
-    [messages],
-  );
   // Runs the DOM is not holding: the loaded runs the reader has not revealed
   // yet, plus whatever the bounded window released from the newest end. The
   // minimap reports it as "there is more above", which is true of both.
@@ -268,12 +256,6 @@ export function Transcript({
   // The loaded run count raised by the last server page. It lets the prepend
   // correction below tell that page's arrival from unrelated growth.
   const olderHistoryRunsRef = useRef<number | null>(null);
-  // The successor queue in delivery order (`queue_order ?? seq`): adjacency for
-  // move up/down, in the same order the server dispatches it.
-  const movableQueueIds = useMemo(
-    () => successorQueue(messages).map((message) => message.id),
-    [messages],
-  );
   // Which answer gets retry, and which turn gets edit: only the final answer
   // and the final user turn offer the actions (degraded edit-resend).
   const lastActionable = useMemo(() => {
@@ -294,8 +276,7 @@ export function Transcript({
     }
     return { answerId, retryContent, turnId };
   }, [visibleEntries]);
-  const itemCount = visibleTimeline.reduce((total, group) => total + group.items.length, 0)
-    + actionableMessages.length;
+  const itemCount = visibleTimeline.reduce((total, group) => total + group.items.length, 0);
   // One marker per rendered turn: jumping is only offered to what is on screen.
   const minimapMarkers = useMemo(
     () =>
@@ -328,6 +309,7 @@ export function Transcript({
     readFollowState,
     restoreFollowState,
     settleRestoredFollow,
+    lastGestureAt,
   } = useFollowScroll();
   // Follow means the newest run, and the bounded window can be holding older
   // history instead: once the reader engages follow again — the "return to
@@ -378,9 +360,11 @@ export function Transcript({
     handledLocateRef.current = locateRequest.requestId;
     jumpToMarker(locateRequest.messageId);
   }, [jumpToMarker, locateRequest, timeline, transcriptWindow.mounted]);
-  // The session whose data this transcript currently holds. An empty restore
-  // state means there is nothing to snapshot or reinstate.
-  const viewSessionId = restoreState.status === "idle" ? null : restoreState.sessionId;
+  // The session whose data this transcript currently holds. A pane with no
+  // restore in flight still knows its own session, so its retained view is
+  // captured and reinstated under the right key.
+  const viewSessionId =
+    restoreState.status === "idle" ? sessionId : restoreState.sessionId;
   const currentViewSessionRef = useRef(viewSessionId);
   currentViewSessionRef.current = viewSessionId;
   const timelineFingerprint = useMemo(() => transcriptFingerprint(timeline), [timeline]);
@@ -408,12 +392,23 @@ export function Transcript({
       timelineFingerprint,
     );
   };
-  useEffect(() => {
-    registerSessionViewCapture(() => captureViewRef.current());
-    return () => registerSessionViewCapture(null);
-  }, []);
-  const prependHeightRef = useRef<number | null>(null);
-  const anchorRef = useRef<{ element: HTMLElement; offset: number } | null>(null);
+  useEffect(
+    () => registerSessionViewCapture(() => captureViewRef.current()),
+    [],
+  );
+  // The pending older-history correction: an element anchor, not a height
+  // baseline, because prepended rows only report their intrinsic estimate
+  // while they are off-screen.
+  const historyAnchorRef = useRef<{
+    element: HTMLElement;
+    offset: number;
+    armedAt: number;
+  } | null>(null);
+  const anchorRef = useRef<{
+    element: HTMLElement;
+    offset: number;
+    armedAt: number;
+  } | null>(null);
   const holdAnchor = useCallback(
     (element: HTMLElement) => {
       const transcript = transcriptRef.current;
@@ -425,6 +420,7 @@ export function Transcript({
       anchorRef.current = {
         element,
         offset: element.getBoundingClientRect().top - transcript.getBoundingClientRect().top,
+        armedAt: performance.now(),
       };
     },
     [showJump, transcriptRef],
@@ -492,24 +488,63 @@ export function Transcript({
   // ones below, so `scrollHeight` cannot measure it: its delta is what arrived
   // above minus what left below, and only what arrived above moves the reader.
   // The run at the top of the viewport survives the step, and it is measured.
-  const mountedAnchorRef = useRef<{ element: HTMLElement; offset: number } | null>(null);
-  const anchorTopRenderedRun = useCallback(() => {
+  const mountedAnchorRef = useRef<{
+    element: HTMLElement;
+    offset: number;
+    armedAt: number;
+  } | null>(null);
+  // Rows just outside the viewport still report their intrinsic estimate; a
+  // correction re-measures the anchor against them, and as they render at real
+  // height the residual has to be re-corrected on the next observer passes.
+  // The armed anchor converges that drift — bounded, and it stands down the
+  // moment a real scroll gesture lands after it was armed, so it can never
+  // fight the reader's own scrolling.
+  const settleAnchorRef = useRef<{
+    element: HTMLElement;
+    offset: number;
+    armedAt: number;
+    until: number;
+  } | null>(null);
+  const armSettleAnchor = useCallback(
+    (anchor: { element: HTMLElement; offset: number; armedAt: number }) => {
+      settleAnchorRef.current = {
+        ...anchor,
+        until: performance.now() + ANCHOR_SETTLE_MS,
+      };
+    },
+    [],
+  );
+  /**
+   * An element anchor: the topmost rendered run and its offset from the
+   * viewport top. Positions are laid-out values, so the correction stays
+   * honest while `content-visibility:auto` lets off-screen rows report their
+   * intrinsic estimate — a `scrollHeight` delta would carry that error.
+   */
+  const captureTopRunAnchor = useCallback(() => {
     const transcript = transcriptRef.current;
     if (!transcript) {
-      return;
+      return null;
     }
     const top = transcript.getBoundingClientRect().top;
     const run = [
       ...transcript.querySelectorAll<HTMLElement>("[data-run-ordinal]"),
     ].find((section) => section.getBoundingClientRect().top >= top);
-    if (!run) {
-      return;
-    }
-    mountedAnchorRef.current = {
-      element: run,
-      offset: run.getBoundingClientRect().top - top,
-    };
+    return run
+      ? {
+          element: run,
+          offset: run.getBoundingClientRect().top - top,
+          // A real scroll gesture after this moment is the reader taking over;
+          // a pending correction must not fight it.
+          armedAt: performance.now(),
+        }
+      : null;
   }, [transcriptRef]);
+  const anchorTopRenderedRun = useCallback(() => {
+    const anchor = captureTopRunAnchor();
+    if (anchor) {
+      mountedAnchorRef.current = anchor;
+    }
+  }, [captureTopRunAnchor]);
   // Correcting after the commit rather than from the ResizeObserver: a step that
   // reveals as much as it releases can leave the content height unchanged, and
   // the observer would never fire for it.
@@ -520,7 +555,11 @@ export function Transcript({
     }
     mountedAnchorRef.current = null;
     const transcript = transcriptRef.current;
-    if (!transcript || !anchor.element.isConnected) {
+    if (
+      !transcript ||
+      !anchor.element.isConnected ||
+      lastGestureAt() > anchor.armedAt
+    ) {
       return;
     }
     const delta = anchoredScrollDelta({
@@ -531,9 +570,19 @@ export function Transcript({
     if (delta === 0) {
       return;
     }
-    transcript.scrollTop += delta;
+    transcript.scrollTo({
+      top: transcript.scrollTop + delta,
+      behavior: "instant",
+    });
     recordScrollPosition(transcript.scrollTop);
-  }, [recordScrollPosition, transcriptRef, transcriptWindow.mounted]);
+    armSettleAnchor(anchor);
+  }, [
+    armSettleAnchor,
+    lastGestureAt,
+    recordScrollPosition,
+    transcriptRef,
+    transcriptWindow.mounted,
+  ]);
 
   useEffect(() => {
     const transcript = transcriptRef.current;
@@ -546,25 +595,54 @@ export function Transcript({
         // the viewport offset it had, so the reader does not drift.
         const anchor = anchorRef.current;
         anchorRef.current = null;
-        if (anchor.element.isConnected) {
+        if (
+          anchor.element.isConnected &&
+          lastGestureAt() <= anchor.armedAt
+        ) {
           const delta =
             anchor.element.getBoundingClientRect().top -
             transcript.getBoundingClientRect().top -
             anchor.offset;
-          transcript.scrollTop += delta;
+          transcript.scrollTo({
+            top: transcript.scrollTop + delta,
+            behavior: "instant",
+          });
           recordScrollPosition(transcript.scrollTop);
           return;
         }
       }
-      if (prependHeightRef.current !== null) {
-        // An older server page changes the control row above the reader without
-        // changing which runs are rendered: keep the reading position and tell
-        // the follow state machine where the scroller landed, so the correction
-        // is not mistaken for the user scrolling up.
-        transcript.scrollTop += transcript.scrollHeight - prependHeightRef.current;
-        prependHeightRef.current = null;
-        recordScrollPosition(transcript.scrollTop);
-        return;
+      if (settleAnchorRef.current !== null) {
+        // The post-prepend correction converges here: every height change above
+        // the anchor (a row swapping its estimate for its real height) fires
+        // the observer again, and each pass pulls the anchor back to where the
+        // reader left it. The write is `instant`: the stylesheet's smooth
+        // scrolling would animate it, and rows crossing the viewport during the
+        // animation render at real height, which lands the correction short.
+        //
+        // The anchor is dropped — not applied — once it expires or the reader
+        // scrolled after it was armed: a stale anchor would otherwise drag the
+        // viewport back to a position the reader already left.
+        const anchor = settleAnchorRef.current;
+        const expired = performance.now() > anchor.until;
+        const tookOver = lastGestureAt() > anchor.armedAt;
+        if (expired || tookOver || !anchor.element.isConnected) {
+          settleAnchorRef.current = null;
+        } else {
+          const delta =
+            anchor.element.getBoundingClientRect().top -
+            transcript.getBoundingClientRect().top -
+            anchor.offset;
+          if (Math.abs(delta) > 1) {
+            transcript.scrollTo({
+              top: transcript.scrollTop + delta,
+              behavior: "instant",
+            });
+            recordScrollPosition(transcript.scrollTop);
+          } else {
+            settleAnchorRef.current = null;
+          }
+          return;
+        }
       }
       // The minimap only earns its lane once the transcript actually scrolls.
       // React bails out when the boolean is unchanged, so repeated observer
@@ -673,30 +751,42 @@ export function Transcript({
     }
     // The older page landed. A cursor page never changes the rendered run set —
     // the window is anchored from the tail — but the control row above the
-    // reader does change, so correct before paint with the same baseline
-    // mechanism the mount-growth path uses.
+    // reader does change, so correct before paint with the same element anchor
+    // the mount-growth path uses, then hand the residual to the observer.
     olderHistoryRunsRef.current = null;
     const transcript = transcriptRef.current;
-    const baseline = prependHeightRef.current;
-    prependHeightRef.current = null;
-    if (!transcript || baseline === null) {
+    const anchor = historyAnchorRef.current;
+    historyAnchorRef.current = null;
+    if (
+      !transcript ||
+      !anchor ||
+      !anchor.element.isConnected ||
+      lastGestureAt() > anchor.armedAt
+    ) {
       return;
     }
-    const delta = transcript.scrollHeight - baseline;
-    if (delta > 0) {
-      transcript.scrollTop += delta;
+    const delta =
+      anchor.element.getBoundingClientRect().top -
+      transcript.getBoundingClientRect().top -
+      anchor.offset;
+    if (delta !== 0) {
+      transcript.scrollTo({
+        top: transcript.scrollTop + delta,
+        behavior: "instant",
+      });
       recordScrollPosition(transcript.scrollTop);
     }
-  }, [recordScrollPosition, timeline.length]);
+    armSettleAnchor(anchor);
+  }, [armSettleAnchor, lastGestureAt, recordScrollPosition, timeline.length]);
 
   useEffect(() => {
     if (olderHistory.loading || olderHistoryRunsRef.current === null) {
       return;
     }
     // No prepend followed the request (a failure, or an empty page): drop the
-    // baseline so later growth is never misread as this page arriving.
+    // anchor so later growth is never misread as this page arriving.
     olderHistoryRunsRef.current = null;
-    prependHeightRef.current = null;
+    historyAnchorRef.current = null;
   }, [olderHistory.loading, timeline.length]);
 
   function loadOlderRuns() {
@@ -707,10 +797,9 @@ export function Transcript({
   }
 
   function loadOlderHistory() {
-    const transcript = transcriptRef.current;
-    if (transcript) {
-      prependHeightRef.current = transcript.scrollHeight;
-    }
+    // While follow is pinned the tail owns the position; correcting for the
+    // prepended page would fight it.
+    historyAnchorRef.current = showJump ? captureTopRunAnchor() : null;
     olderHistoryRunsRef.current = timeline.length;
     void onLoadOlderHistory?.();
   }
@@ -767,7 +856,7 @@ export function Transcript({
           (restoreState.status === "complete" || restoreState.status === "idle") ? (
             <p className="transcript-empty">{t("chat.emptyTranscript")}</p>
           ) : null}
-          {visibleEntries.map(({ group, entries }) => (
+          {visibleEntries.map(({ group, entries }, groupIndex) => (
           <section
             key={group.id}
             className="transcript-run"
@@ -775,18 +864,16 @@ export function Transcript({
             data-run-ordinal={group.runOrdinal ?? undefined}
             data-inherited={group.inherited ? "true" : undefined}
           >
-            <header className="transcript-run__header">
-              <span className="transcript-run__label">
-                <span>
-                  {group.runOrdinal
-                    ? t("chat.turn", { n: group.runOrdinal })
-                    : t("chat.currentTurn")}
-                </span>
-                {group.inherited ? (
+            {/* A run earns no chrome of its own; a forked group is the one
+                exception — inherited history must never read as this session's
+                own work. */}
+            {group.inherited ? (
+              <header className="transcript-run__header">
+                <span className="transcript-run__label">
                   <small>{t("workspace.forked")}</small>
-                ) : null}
-              </span>
-            </header>
+                </span>
+              </header>
+            ) : null}
             {entries.map((entry) =>
               entry.kind === "activity" ? (
                 <ActivityGroup
@@ -800,6 +887,8 @@ export function Transcript({
                   onApprovalDetail={onApprovalDetail}
                   onInputSubmit={onInputSubmit}
                 />
+              ) : entry.kind === "compaction" ? (
+                <CompactionDivider key={entry.id} compaction={entry.compaction} />
               ) : (
                 <MessageBubble
                   key={entry.id}
@@ -834,36 +923,50 @@ export function Transcript({
                 />
               ),
             )}
+            {/* §5.6: the receipt is the last row of a finished turn — quiet
+                facts, never a card for a run still in flight. */}
+            {groupIndex === visibleEntries.length - 1 && busy
+              ? null
+              : (() => {
+                  const outcome = runGroupOutcome(group);
+                  return outcome ? (
+                    <p className="turn-outcome" data-run-id={group.runId ?? undefined}>
+                      {[
+                        outcome.actions > 0
+                          ? outcome.actions === 1
+                            ? t("chat.receiptAction")
+                            : t("chat.receiptActions", { n: outcome.actions })
+                          : null,
+                        outcome.durationMs !== null
+                          ? formatReceiptDuration(outcome.durationMs)
+                          : null,
+                        outcome.tokens !== null
+                          ? t("chat.receiptTokens", {
+                              n: formatReceiptTokens(outcome.tokens),
+                            })
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </p>
+                  ) : null;
+                })()}
           </section>
           ))}
-          {actionableMessages.map((message) => {
-            const queueIndex = movableQueueIds.indexOf(message.id);
-            return (
-              <QueuedMessage
-                key={message.id}
-                message={message}
-                attachments={message.attachments ?? []}
-                loadAttachment={loadAttachment}
-                busy={messageBusy !== null}
-                canPromote={canPromote}
-                editing={message.id === editingQueuedMessageId}
-                movable={{
-                  up: queueIndex > 0,
-                  down: queueIndex >= 0 && queueIndex < movableQueueIds.length - 1,
-                }}
-                onPromote={onPromoteMessage}
-                onRevoke={onRevokeMessage}
-                onConfirmStranded={onConfirmStrandedSuccessor}
-                onEdit={onEditQueuedMessage}
-                onMove={onMoveQueuedMessage}
-              />
-            );
-          })}
+          {/* §5.3: one lane owns "what is it doing right now" for the whole
+              running turn; idle renders nothing at all. */}
+          <RuntimeStatusLane busy={busy} phase={activityPhase} />
         </div>
       </div>
       {showJump && itemCount > 0 ? (
-        <button type="button" className="return-to-latest" onClick={jumpToLatest}>
-          {t("chat.returnToLatest")}
+        <button
+          type="button"
+          className="return-to-latest"
+          onClick={jumpToLatest}
+          aria-label={t("chat.returnToLatest")}
+          title={t("chat.returnToLatest")}
+        >
+          <ArrowDownIcon />
         </button>
       ) : null}
       <ConversationMinimap
@@ -878,219 +981,9 @@ export function Transcript({
   );
 }
 
-function QueuedMessage({
-  message,
-  busy,
-  canPromote,
-  editing,
-  movable,
-  attachments = [],
-  loadAttachment,
-  onPromote,
-  onRevoke,
-  onConfirmStranded,
-  onEdit,
-  onMove,
-}: {
-  message: ProductMessage;
-  busy: boolean;
-  canPromote: boolean;
-  /** The message is loaded into the composer for replacement: lock other ops. */
-  editing: boolean;
-  movable: { up: boolean; down: boolean };
-  attachments?: readonly ProductMessageAttachmentRef[];
-  loadAttachment?: (attachmentId: string) => Promise<Blob>;
-  onPromote: (messageId: string, delivery: ProductMessageDelivery) => void;
-  onRevoke: (messageId: string) => void;
-  onConfirmStranded?: (messageId: string) => Promise<FollowupConfirmationResult>;
-  onEdit?: (messageId: string, content: string) => void;
-  onMove?: (messageId: string, direction: "up" | "down") => void;
-}) {
-  const { t } = useCopy();
-  const promotable = message.status === "queued" && canPromote;
-  const revocable = message.status === "queued" || message.status === "needs_attention";
-  // A stranded successor is always `needs_attention` and therefore already
-  // `revocable`, so this flag only decides whether the retry is among the
-  // actions — it does not open the actions row.
-  const recoverable =
-    onConfirmStranded !== undefined && isStrandedSuccessor(message);
-  const [recovery, dispatchRecovery] = useReducer(
-    reduceFollowupRecovery,
-    IDLE_FOLLOWUP_RECOVERY,
-  );
-  const recoveryNotice = followupRecoveryNotice(recovery, t);
-  const recoveryBusy = recovery.status === "retrying";
-  // Only queued successor messages take part in edit and adjacent reorder; an
-  // intervention targets the running turn and its order is not negotiable.
-  const reorderable =
-    message.status === "queued" && message.requested_delivery === "successor";
-  const editable = reorderable && !editing;
-
-  /**
-   * The retry is dispatched before the request leaves and the answer is the only
-   * thing that can settle it, so nothing is reported until the server has
-   * answered (`apps/web/chat/followup-recovery.ts`).
-   */
-  async function retryStranded() {
-    if (!onConfirmStranded || recovery.status === "retrying") {
-      return;
-    }
-    dispatchRecovery({ type: "retry" });
-    const result = await onConfirmStranded(message.id);
-    dispatchRecovery(
-      result.ok
-        ? { type: "accepted", controlStatus: result.controlStatus }
-        : { type: "failed", reason: result.reason },
-    );
-  }
-
-  return (
-    <article
-      className="chat-bubble queued-message"
-      data-role="user"
-      data-status={message.status}
-      data-delivery={message.requested_delivery}
-      data-editing={editing || undefined}
-    >
-      <div className="message-byline">
-        <strong>{t("chat.you")}</strong>
-        <span>{messageStatusLabel(message, t)}</span>
-      </div>
-      <RichText content={message.content} />
-      <AttachmentRow attachments={attachments} loadAttachment={loadAttachment} />
-      {message.reason ? <p className="queued-message__reason">{message.reason}</p> : null}
-      {promotable || revocable || editable ? (
-        <div className="queued-message__actions">
-          {editable && onEdit ? (
-            <button
-              type="button"
-              className="secondary"
-              disabled={busy}
-              onClick={() => onEdit(message.id, message.content)}
-            >
-              {t("chat.queuedEdit")}
-            </button>
-          ) : null}
-          {editable && onMove && movable.up ? (
-            <button
-              type="button"
-              className="icon-button"
-              disabled={busy}
-              aria-label={t("chat.queuedMoveUp")}
-              title={t("chat.queuedMoveUp")}
-              onClick={() => onMove(message.id, "up")}
-            >
-              <ArrowUpIcon />
-            </button>
-          ) : null}
-          {editable && onMove && movable.down ? (
-            <button
-              type="button"
-              className="icon-button"
-              disabled={busy}
-              aria-label={t("chat.queuedMoveDown")}
-              title={t("chat.queuedMoveDown")}
-              onClick={() => onMove(message.id, "down")}
-            >
-              <ArrowDownIcon />
-            </button>
-          ) : null}
-          {promotable ? (
-            // Two delivery intents, stated explicitly: neither interrupts the
-            // running turn by accident, and the interrupt is the one that says
-            // so. The endpoint takes the intent in the body, so the buttons
-            // differ only in the delivery they ask for.
-            <>
-              <button
-                type="button"
-                className="secondary"
-                disabled={busy}
-                title={t("chat.promoteSuccessorHint")}
-                onClick={() => onPromote(message.id, "successor")}
-              >
-                <ArrowUpIcon />
-                {t("chat.promoteSuccessor")}
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                disabled={busy}
-                title={t("chat.interjectHint")}
-                onClick={() => onPromote(message.id, "current_run")}
-              >
-                {t("chat.interject")}
-              </button>
-            </>
-          ) : null}
-          {recoverable ? (
-            // F.5: the successor was abandoned, so the reader's one action is to
-            // ask the server to try it again. Disabled while the request is
-            // unsettled — the label says which — and the result is the server's,
-            // never an assumption.
-            <button
-              type="button"
-              className="secondary"
-              disabled={busy || recoveryBusy}
-              aria-busy={recoveryBusy || undefined}
-              title={t("chat.retryStrandedHint")}
-              onClick={() => void retryStranded()}
-            >
-              <RotateCounterClockwiseIcon />
-              {followupRecoveryActionLabel(recovery, t)}
-            </button>
-          ) : null}
-          {revocable ? (
-            <button type="button" className="icon-button" disabled={busy} onClick={() => onRevoke(message.id)} aria-label={t("chat.revokeTitle")} title={t("chat.revokeTitle")}>
-              <Cross2Icon />
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-      {recoveryNotice ? (
-        <p
-          className="queued-message__recovery"
-          data-tone={recoveryNotice.tone}
-          role={recoveryNotice.tone === "error" ? "alert" : "status"}
-        >
-          {recoveryNotice.text}
-        </p>
-      ) : null}
-    </article>
-  );
-}
-
-function messageStatusLabel(
-  message: ProductMessage,
-  t: (path: string) => string,
-): string {
-  switch (message.status) {
-    case "queued":
-      // The ledger row says where the message is headed, not just that it waits.
-      return `${t("inspector.statusQueued")} · ${deliveryLabel(message.requested_delivery, t)}`;
-    case "intervention_requested":
-      return t("chat.statusJoiningTurn");
-    case "applied_current_run":
-      return t("chat.statusJoinedTurn");
-    case "claimed_successor":
-      return t("chat.statusNextTurn");
-    case "needs_attention":
-      return t("workspace.needsAttention");
-    case "revoked":
-      return t("chat.revoke");
-  }
-}
-
-function deliveryLabel(
-  delivery: ProductMessage["requested_delivery"],
-  t: (path: string) => string,
-): string {
-  return delivery === "current_run"
-    ? t("chat.deliveryThisTurn")
-    : t("chat.deliveryNextTurn");
-}
-
 /**
  * One message's durable attachment references (R8).
+ * Exported for the composer-stack queue rows, which carry the same references.
  *
  * The row renders the server-verified facts and nothing else, and it loads
  * bytes on request through the authenticated transport rather than linking to
@@ -1100,7 +993,7 @@ function deliveryLabel(
  * reference the server marked as degraded says the model never saw it — the
  * transcript must not imply a model saw an image it did not.
  */
-function AttachmentRow({
+export function AttachmentRow({
   attachments,
   loadAttachment,
 }: {
@@ -1265,40 +1158,24 @@ function MessageBubble({
 }) {
   const { t } = useCopy();
   return (
-    <div className="transcript-item" data-kind="message">
-      <div className="transcript-item__meta" aria-hidden="true">
-        <span data-state={message.status} />
-      </div>
-      <div className="transcript-item__content">
-        <article
-          className="chat-bubble"
-          data-role={message.role}
-          data-status={message.status}
-          // Anchor for the conversation minimap: one marker per turn message.
-          data-message-id={message.id}
-        >
-          <div className="message-byline">
-            <strong>
-              {message.role === "user" ? t("chat.you") : t("chat.assistant")}
-            </strong>
-            <span>
-              {message.status === "streaming"
-                ? t("chat.responding")
-                : message.aborted === true
-                  ? t("chat.aborted")
-                  : ""}
-            </span>
-          </div>
+    <div className="transcript-item" data-kind="message" data-role={message.role}>
+      <article
+        className="chat-bubble"
+        data-role={message.role}
+        data-status={message.status}
+        // Anchor for the conversation minimap: one marker per turn message.
+        data-message-id={message.id}
+      >
           <RichText content={message.content} />
           <AttachmentRow attachments={attachments} loadAttachment={loadAttachment} />
           {message.aborted === true ? (
             // R2b smart stop: the text above is what the user had already read
-            // when they stopped the turn. The byline keeps the compact status
-            // tag; this is the reserved smart-stop copy that says what happened
-            // to that text. It stays out of the body, which must remain exactly
-            // the model's text for copying, editing, and forking.
+            // when they stopped the turn. The compact status tag prefixes the
+            // reserved smart-stop copy that says what happened to that text.
+            // It stays out of the body, which must remain exactly the model's
+            // text for copying, editing, and forking.
             <p className="message-abort-note">
-              {t("chat.smartStopPartialAbort")}
+              <strong>{t("chat.aborted")}</strong> {t("chat.smartStopPartialAbort")}
             </p>
           ) : null}
           <MessageActions
@@ -1313,7 +1190,6 @@ function MessageBubble({
             <MessageEvidence message={message} />
           ) : null}
         </article>
-      </div>
     </div>
   );
 }
@@ -1423,57 +1299,84 @@ function ActivityGroup({
       </article>
     );
 
+  // The header's single-line preview names the newest work inside the fold —
+  // only while something is still in flight, because a settled group's header
+  // already says everything its receipt needs.
+  const previewTool = inFlight ? bodyTools.at(-1) ?? entry.tools.at(-1) : undefined;
+  const previewText = previewTool
+    ? buildToolPresentation(previewTool, false).title
+    : null;
+
   return (
     <div className="transcript-item" data-kind="activity">
-      <div className="transcript-item__meta" aria-hidden="true">
-        <span data-state={inFlight ? "running" : "done"} />
-      </div>
-      <div className="transcript-item__content">
-        <div
-          className="activity-group"
-          data-open={open && foldable ? "true" : undefined}
-        >
-          {blockingTools.map(renderTool)}
-          {waitingInputs.map(renderInput)}
-          {foldable ? (
-            <>
-              <button
-                type="button"
-                className="activity-group__head"
-                aria-controls={bodyId}
-                aria-expanded={open}
-                onClick={(event) => onToggle(entry.id, event.currentTarget, open)}
-              >
-                <CodeIcon />
-                <strong>
-                  {t("chat.activitySummary", { n: bodyTools.length })}
-                </strong>
-                {entry.tools.length + entry.inputs.length >
-                bodyTools.length + settledInputs.length ? (
-                  <span className="activity-group__hint">
-                    {t("chat.activityBlocking", {
-                      n:
-                        entry.tools.length +
-                        entry.inputs.length -
-                        bodyTools.length -
-                        settledInputs.length,
-                    })}
-                  </span>
-                ) : null}
-                {elapsedLabel ? (
-                  <span className="activity-group__elapsed">{elapsedLabel}</span>
-                ) : null}
-                <ChevronDownIcon data-open={open} />
-              </button>
-              {open ? (
-                <div className="activity-group__body" id={bodyId}>
-                  {bodyTools.map(renderTool)}
-                  {settledInputs.map(renderInput)}
-                </div>
+      <div
+        className="activity-group"
+        data-open={open && foldable ? "true" : undefined}
+        data-running={inFlight ? "true" : undefined}
+      >
+        {blockingTools.map(renderTool)}
+        {waitingInputs.map(renderInput)}
+        {foldable ? (
+          <>
+            <button
+              type="button"
+              className="activity-group__head"
+              aria-controls={bodyId}
+              aria-expanded={open}
+              onClick={(event) => onToggle(entry.id, event.currentTarget, open)}
+            >
+              <CodeIcon />
+              <strong>
+                {t("chat.activitySummary", { n: bodyTools.length })}
+              </strong>
+              {entry.tools.length + entry.inputs.length >
+              bodyTools.length + settledInputs.length ? (
+                <span className="activity-group__hint">
+                  {t("chat.activityBlocking", {
+                    n:
+                      entry.tools.length +
+                      entry.inputs.length -
+                      bodyTools.length -
+                      settledInputs.length,
+                  })}
+                </span>
               ) : null}
-            </>
-          ) : null}
-        </div>
+              {elapsedLabel ? (
+                <span className="activity-group__elapsed">{elapsedLabel}</span>
+              ) : null}
+              {previewText ? (
+                <span className="activity-group__preview">{previewText}</span>
+              ) : null}
+              <ChevronDownIcon data-open={open} />
+            </button>
+            {open ? (
+              <div className="activity-group__body" id={bodyId}>
+                {bodyTools.map(renderTool)}
+                {settledInputs.map(renderInput)}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** A hairline-flanked divider marking where the prompt was compacted. */
+function CompactionDivider({
+  compaction,
+}: {
+  compaction: import("../lib/rove-types").PromptCompactionState;
+}) {
+  const { t } = useCopy();
+  return (
+    <div className="transcript-item" data-kind="compaction">
+      <div className="transcript-compaction" role="separator">
+        <span>
+          {compaction.auto_triggered
+            ? t("chat.compactionDividerAuto")
+            : t("chat.compactionDivider")}
+        </span>
       </div>
     </div>
   );
@@ -1544,38 +1447,92 @@ function ToolCard({ tool }: { tool: ToolCallView }) {
   const [open, setOpen] = useState(
     tool.status === "running" || tool.status === "error" || Boolean(tool.mutations?.length),
   );
+  const [copied, setCopied] = useState(false);
+  const copyResetRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (copyResetRef.current !== null) {
+        window.clearTimeout(copyResetRef.current);
+      }
+    },
+    [],
+  );
   const detailId = `tool-detail-${tool.timelineId ?? tool.id}`.replace(/[^A-Za-z0-9_-]/gu, "-");
   // Body blocks are built only while open, so a collapsed card stays cheap.
   const presentation = buildToolPresentation(tool, open);
   // The runtime's own measurement of an MCP call. A live arrival span is not a
   // substitute here: it also covers queueing on this client.
   const durationBadge = durationBadgeLabel(tool.protocolMetadata?.duration_ms);
+  const copyPayload = tool.output ?? tool.details;
+
+  async function copyToolPayload() {
+    try {
+      await navigator.clipboard.writeText(copyPayload);
+      setCopied(true);
+      if (copyResetRef.current !== null) {
+        window.clearTimeout(copyResetRef.current);
+      }
+      copyResetRef.current = window.setTimeout(() => {
+        setCopied(false);
+        copyResetRef.current = null;
+      }, 1_500);
+    } catch {
+      setCopied(false);
+    }
+  }
+
   return (
     <article className="tool-card" data-status={tool.status}>
-      <button
-        type="button"
-        className="tool-card__head"
-        aria-controls={detailId}
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <CodeIcon />
-        <span>
+      {/* One compact line: icon, the named object, a mono summary, the state
+          (dot + text, spinner while running), duration, caret. The payload
+          copy rides the row and only surfaces on hover/focus. */}
+      <div className="tool-card__row">
+        <button
+          type="button"
+          className="tool-card__head"
+          aria-controls={detailId}
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <CodeIcon />
           <strong>{presentation.title}</strong>
-          {presentation.subtitle ? <small>{presentation.subtitle}</small> : null}
-        </span>
-        {presentation.chips.map((chip) => (
-          <span className="tool-card__chip" data-tone={chip.tone} key={chip.label}>
-            {toolChipLabel(chip.label, t)}
+          {presentation.subtitle ? (
+            <code className="tool-card__summary">{presentation.subtitle}</code>
+          ) : null}
+          <span className="tool-card__state" data-status={tool.status}>
+            {tool.status === "running" ? (
+              <span className="tool-card__spinner" aria-hidden="true" />
+            ) : (
+              <i className="tool-card__state-dot" aria-hidden="true" />
+            )}
+            <span>{toolStatusLabel(tool.status, t)}</span>
           </span>
-        ))}
-        {durationBadge ? (
-          <span className="tool-card__duration">{durationBadge}</span>
-        ) : null}
-        <ChevronDownIcon data-open={open} />
-      </button>
+          {durationBadge ? (
+            <span className="tool-card__duration">{durationBadge}</span>
+          ) : null}
+          <ChevronDownIcon data-open={open} />
+        </button>
+        <button
+          type="button"
+          className="tool-card__copy icon-button"
+          aria-label={copied ? t("chat.messageCopied") : t("chat.toolCopy")}
+          title={copied ? t("chat.messageCopied") : t("chat.toolCopy")}
+          onClick={() => void copyToolPayload()}
+        >
+          {copied ? <CheckIcon /> : <CopyIcon />}
+        </button>
+      </div>
       {open ? (
         <div className="tool-card__details" id={detailId}>
+          {presentation.chips.length > 0 ? (
+            <div className="tool-card__chips">
+              {presentation.chips.map((chip) => (
+                <span className="tool-card__chip" data-tone={chip.tone} key={chip.label}>
+                  {toolChipLabel(chip.label, t)}
+                </span>
+              ))}
+            </div>
+          ) : null}
           {presentation.blocks.map((block, index) => (
             <ToolBlockView block={block} key={index} />
           ))}
@@ -1583,6 +1540,23 @@ function ToolCard({ tool }: { tool: ToolCallView }) {
       ) : null}
     </article>
   );
+}
+
+/** The one-word state next to the row's dot: data, but the words are ours. */
+function toolStatusLabel(
+  status: ToolCallView["status"],
+  t: (path: string) => string,
+): string {
+  switch (status) {
+    case "running":
+      return t("chat.toolStateRunning");
+    case "waiting":
+      return t("chat.toolStateWaiting");
+    case "error":
+      return t("chat.toolStateError");
+    default:
+      return t("chat.toolStateDone");
+  }
 }
 
 /**

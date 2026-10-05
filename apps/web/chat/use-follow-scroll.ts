@@ -44,6 +44,12 @@ export function useFollowScroll(): {
   restoreFollowState: (state: { pinned: boolean; scrollTop: number }) => void;
   /** Re-derive follow from where a restored position actually landed. */
   settleRestoredFollow: () => void;
+  /**
+   * When the last real scroll gesture (wheel/touch/key/pointer) began. A
+   * pending scroll correction armed before that moment belongs to an earlier
+   * viewport and must not keep correcting against the reader's own scroll.
+   */
+  lastGestureAt: () => number;
 } {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
@@ -249,6 +255,8 @@ export function useFollowScroll(): {
     }
   }, [cancelFollow, scheduleFollowScroll]);
 
+  const lastGestureAt = useCallback(() => lastGestureAtRef.current, []);
+
   return {
     scrollRef,
     showJump,
@@ -262,5 +270,6 @@ export function useFollowScroll(): {
     readFollowState,
     restoreFollowState,
     settleRestoredFollow,
+    lastGestureAt,
   };
 }
