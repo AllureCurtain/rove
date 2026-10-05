@@ -1122,6 +1122,35 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   color: var(--v2-ink);
 }
 
+.product-app-frame[data-ui-version="v2"] .chat-pane {
+  position: relative;
+}
+
+/* §5.1: the pane stack is the transcript's box. Every retained session keeps
+   one pane mounted inside it; the composer dock overlays the stack's bottom
+   reserve rather than taking a row of its own. */
+.product-app-frame[data-ui-version="v2"] .chat-transcript-stack {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* A retained pane is hidden, not unmounted: DOM, scroll position and
+   disclosure state survive the session switch intact. */
+.product-app-frame[data-ui-version="v2"] .session-pane[data-visible="false"] {
+  visibility: hidden;
+}
+
 .product-app-frame[data-ui-version="v2"] .chat-transcript-frame {
   position: relative;
   flex: 1;
@@ -1133,9 +1162,117 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   min-height: 0;
   gap: 0;
   overscroll-behavior: contain;
-  padding: 22px 16px 38px;
-  scroll-padding-bottom: 38px;
+  padding: 22px 16px calc(var(--composer-dock-height, 0px) + 10px);
+  scroll-padding-bottom: calc(var(--composer-dock-height, 0px) + 10px);
   scroll-behavior: smooth;
+  /* Scroll anchoring is owned by the follow/fold machinery; the browser's
+     own anchor fights it, and the gutter keeps the bar from relayouting
+     content when it appears. Both edges: the docked composer centers itself
+     on the pane, so the gutter must be symmetric or the reading column sits
+     half a scrollbar off the composer's edge. */
+  overflow-anchor: none;
+  scrollbar-gutter: stable both-edges;
+  /* The dock is transparent: rows dissolving into the composer reserve read
+     as a mask, not a solid panel. */
+  mask-image: linear-gradient(
+    to bottom,
+    #000 0,
+    #000 calc(100% - var(--composer-dock-height, 0px) - 40px),
+    transparent calc(100% - 12px)
+  );
+}
+
+/* §6: the composer docks over the transcript's bottom reserve. The dock
+   itself is transparent and dead to the pointer outside the shell, so rows
+   fading underneath stay readable. */
+.product-app-frame[data-ui-version="v2"] .chat-composer-dock {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer-dock > * {
+  pointer-events: auto;
+}
+
+/* §5.5: the switch progress is a 2px bar across the top of the transcript
+   region — progress, not a spinner, and only while a cold restore runs. */
+.product-app-frame[data-ui-version="v2"] .session-switch-progress {
+  position: absolute;
+  top: 0;
+  inset-inline: 0;
+  height: 2px;
+  overflow: hidden;
+  z-index: 7;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-switch-progress::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 34%;
+  border-radius: 999px;
+  background: var(--v2-signal);
+  content: "";
+  animation: session-switch-slide var(--motion-duration-pulse) var(--motion-ease-in-out) infinite;
+}
+
+@keyframes session-switch-slide {
+  0% {
+    left: -34%;
+  }
+
+  100% {
+    left: 100%;
+  }
+}
+
+/* The settle veil is opaque and transcript-scoped: the composer stays usable
+   underneath it. Skeleton rows stack upward from the bottom because that is
+   where a session opens; user rows sit right like the real bubbles. */
+.product-app-frame[data-ui-version="v2"] .session-settle-veil {
+  position: absolute;
+  inset: 0;
+  background: var(--v2-bg);
+  opacity: 1;
+  z-index: 6;
+  transition: opacity var(--motion-duration-slow) var(--motion-ease-standard);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-settle-veil[data-fading] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-skeleton {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 14px;
+  height: 100%;
+  width: 100%;
+  max-width: var(--reading-column-max);
+  margin-inline: auto;
+  padding: 22px 16px calc(var(--composer-dock-height, 0px) + 14px);
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-skeleton-row {
+  height: 42px;
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-sunken);
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-skeleton-row[data-role="user"] {
+  align-self: flex-end;
+  height: 34px;
+  border-radius: var(--v2-radius-xl);
+  border-end-end-radius: var(--v2-radius-xs);
+  background: color-mix(in srgb, var(--v2-ink) 7%, transparent);
 }
 
 /* Design §3.3: one reading measure for the conversation. The transcript column
@@ -1332,128 +1469,53 @@ html[data-reading-resizing="true"] * {
   min-width: 0;
 }
 
+/* A run owns no chrome of its own — the fork badge is the one exception, so
+   inherited history never reads as the session's own work. */
 .product-app-frame[data-ui-version="v2"] .transcript-run__header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  width: min(100%, 854px);
-  margin: 0 auto 12px;
-  border-bottom: 1px solid var(--v2-border);
+  gap: 8px;
+  margin: 0 0 4px;
   color: var(--v2-ink-3);
-  padding: 0 0 7px 104px;
   font-size: 10px;
-}
-
-.product-app-frame[data-ui-version="v2"] .transcript-run__header code {
-  overflow: hidden;
-  max-width: 180px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.product-app-frame[data-ui-version="v2"] .transcript-run__label {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-}
-
-.product-app-frame[data-ui-version="v2"] .transcript-run[data-inherited="true"] .transcript-run__header {
-  border-bottom-style: dashed;
 }
 
 .product-app-frame[data-ui-version="v2"] .transcript-run[data-inherited="true"] .transcript-run__label small {
   overflow: hidden;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-xs);
   color: var(--v2-ink-3);
+  padding: 1px 6px;
   font-family: var(--font-mono);
   font-size: 9px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* One row per rendered entry. `content-visibility:auto` with the 140px
+   intrinsic size keeps long transcripts cheap; the clip margin lets the
+   hover affordances spill past the row bounds without being cut. */
 .product-app-frame[data-ui-version="v2"] .transcript-item {
-  display: grid;
-  grid-template-columns: 76px minmax(0, 760px);
-  justify-content: center;
-  gap: 18px;
+  display: flex;
   min-width: 0;
+  padding: 6px 0;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 140px;
+  overflow-clip-margin: 8px;
 }
 
-.product-app-frame[data-ui-version="v2"] .transcript-item__meta {
-  position: relative;
-  display: grid;
-  align-content: start;
-  justify-items: end;
-  min-width: 0;
-  padding: 3px 8px 24px 0;
-  color: var(--v2-ink-3);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  text-align: right;
+.product-app-frame[data-ui-version="v2"] .transcript-item[data-role="user"] {
+  justify-content: flex-end;
 }
 
-.product-app-frame[data-ui-version="v2"] .transcript-item__meta::after {
-  position: absolute;
-  top: 11px;
-  right: -10px;
-  bottom: -1px;
-  width: 1px;
-  background: var(--v2-border-strong);
-  content: "";
+/* Activity folds are a single line collapsed; their intrinsic estimate is
+   much smaller than a message row's. */
+.product-app-frame[data-ui-version="v2"] .transcript-item[data-kind="activity"] {
+  contain-intrinsic-size: auto 40px;
 }
 
-.product-app-frame[data-ui-version="v2"] .transcript-run:last-child .transcript-item:last-child .transcript-item__meta::after {
-  bottom: calc(100% - 11px);
-}
-
-.product-app-frame[data-ui-version="v2"] .transcript-item__meta > span {
-  position: absolute;
-  z-index: 1;
-  top: 6px;
-  right: -14px;
-  width: 9px;
-  height: 9px;
-  border: 2px solid var(--v2-surface);
-  border-radius: 50%;
-  background: var(--v2-ink-3);
-  box-shadow: 0 0 0 1px var(--v2-border-strong);
-}
-
-.product-app-frame[data-ui-version="v2"] .transcript-item__meta > span[data-state="complete"],
-.product-app-frame[data-ui-version="v2"] .transcript-item__meta > span[data-state="submitted"] {
-  background: var(--v2-success);
-}
-
-.product-app-frame[data-ui-version="v2"] .transcript-item__meta > span[data-state="waiting"] {
-  background: var(--v2-warning);
-}
-
-.product-app-frame[data-ui-version="v2"] .transcript-item__meta > span[data-state="running"],
-.product-app-frame[data-ui-version="v2"] .transcript-item__meta > span[data-state="streaming"] {
-  background: var(--v2-signal);
-  box-shadow: 0 0 0 3px var(--v2-signal-soft);
-  animation: product-v2-pulse var(--motion-duration-pulse) var(--motion-ease-in-out) infinite;
-}
-
-.product-app-frame[data-ui-version="v2"] .transcript-item__meta > span[data-state="error"],
-.product-app-frame[data-ui-version="v2"] .transcript-item__meta > span[data-state="rejected"] {
-  background: var(--v2-danger);
-}
-
-.product-app-frame[data-ui-version="v2"] .transcript-item__meta code {
-  overflow: hidden;
-  width: 100%;
-  color: var(--v2-ink-3);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.product-app-frame[data-ui-version="v2"] .transcript-item__content {
-  min-width: 0;
-  padding-bottom: 24px;
-}
-
+/* Assistant turns are bare markdown prose on the shared content band — no
+   bubble, no card, no per-message role label. */
 .product-app-frame[data-ui-version="v2"] .chat-bubble {
   width: 100%;
   max-width: none;
@@ -1461,23 +1523,34 @@ html[data-reading-resizing="true"] * {
   border: 0;
   border-radius: 0;
   background: transparent;
-  padding: 2px 2px 0;
+  padding: 4px 0 10px;
   box-shadow: none;
   white-space: normal;
 }
 
+/* The user turn is the one bubble: right-aligned, capped, tinted fill, and a
+   smaller corner on the sender's side. */
 .product-app-frame[data-ui-version="v2"] .chat-bubble[data-role="user"] {
-  border: 1px solid var(--v2-border);
-  border-radius: var(--v2-radius-md);
-  background: var(--v2-surface-sunken);
-  padding: 13px 15px;
-  box-shadow: var(--v2-shadow-sm);
+  width: max-content;
+  max-width: min(82%, 600px);
+  border: 0;
+  border-radius: var(--v2-radius-xl);
+  border-end-end-radius: var(--v2-radius-xs);
+  background: color-mix(in srgb, var(--v2-ink) 7%, transparent);
+  padding: 10px 15px;
+  box-shadow: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-bubble[data-role="user"] .message-actions {
+  justify-content: flex-end;
 }
 
 .product-app-frame[data-ui-version="v2"] .chat-bubble[data-status="streaming"] {
   border-style: solid;
 }
 
+/* Queued rows keep their ledger context (status + delivery), which is the
+   byline's remaining job — transcript messages no longer carry one. */
 .product-app-frame[data-ui-version="v2"] .message-byline {
   display: flex;
   align-items: center;
@@ -1498,6 +1571,37 @@ html[data-reading-resizing="true"] * {
   margin: 8px 0 0;
   color: var(--v2-ink-3);
   font-size: 12px;
+}
+
+/* Compaction divider: a centred, hairline-flanked label between prose. */
+.product-app-frame[data-ui-version="v2"] .transcript-item[data-kind="compaction"] {
+  contain-intrinsic-size: auto 24px;
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-compaction {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-compaction::before,
+.product-app-frame[data-ui-version="v2"] .transcript-compaction::after {
+  flex: 1;
+  height: 1px;
+  background: var(--v2-border);
+  content: "";
+}
+
+/* Turn receipt: quiet mono facts at the end of a finished run. */
+.product-app-frame[data-ui-version="v2"] .turn-outcome {
+  margin: 0 0 10px;
+  color: var(--v2-ink-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .product-app-frame[data-ui-version="v2"] .transcript-empty,
@@ -1521,17 +1625,104 @@ html[data-reading-resizing="true"] * {
   font-size: 12px;
 }
 
+/* §5.3 runtime status lane: reserved for the whole running turn so an
+   indicator swap never shifts the rows the reader is on. Idle renders no
+   lane at all. */
+.product-app-frame[data-ui-version="v2"] .transcript-runtime-status {
+  display: flow-root;
+  min-height: 34px;
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 0 4px;
+  color: var(--v2-ink-2);
+  font-size: 12.5px;
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-status-indicator__dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  width: 18px;
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-status-indicator__dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: currentColor;
+  animation: runtime-status-dot var(--motion-duration-pulse) var(--motion-ease-in-out) infinite;
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-status-indicator__dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-status-indicator__dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-status-indicator[data-phase="info"] {
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-status-indicator[data-phase="warning"] {
+  color: var(--v2-warning);
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-status-indicator[data-phase="accent"] {
+  color: var(--v2-purple);
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-status-indicator__elapsed {
+  color: var(--v2-ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes runtime-status-dot {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.25);
+  }
+}
+
 .product-app-frame[data-ui-version="v2"] .return-to-latest {
   position: absolute;
   right: 18px;
   bottom: 12px;
   z-index: 5;
-  min-height: 34px;
-  border-color: var(--v2-border-strong);
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  border: 1px solid var(--v2-border-strong);
+  border-radius: 999px;
   background: var(--v2-surface-raised);
   color: var(--v2-ink-2);
   box-shadow: var(--v2-shadow-md);
-  font-size: 11px;
+  animation: return-to-latest-in var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+@keyframes return-to-latest-in {
+  from {
+    opacity: 0;
+    transform: scale(0.88);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 @keyframes product-v2-pulse {
@@ -1547,8 +1738,16 @@ html[data-reading-resizing="true"] * {
   }
 }
 
-/* Transcript evidence and rich content */
-.product-app-frame[data-ui-version="v2"] .tool-card,
+/* Transcript evidence and rich content. Tool calls are one compact row each;
+   approvals and inputs keep a card surface because they are blocking
+   interactions, not log lines. */
+.product-app-frame[data-ui-version="v2"] .tool-card {
+  width: 100%;
+  min-width: 0;
+  margin: 3px 0;
+  padding: 0;
+}
+
 .product-app-frame[data-ui-version="v2"] .approval-card,
 .product-app-frame[data-ui-version="v2"] .input-card {
   width: 100%;
@@ -1561,37 +1760,51 @@ html[data-reading-resizing="true"] * {
   box-shadow: var(--v2-shadow-sm);
 }
 
-.product-app-frame[data-ui-version="v2"] .tool-card[data-status="waiting"],
 .product-app-frame[data-ui-version="v2"] .approval-card {
   border-color: color-mix(in srgb, var(--v2-warning) 42%, var(--v2-border));
   background: color-mix(in srgb, var(--v2-warning-soft) 58%, var(--v2-surface-raised));
 }
 
-.product-app-frame[data-ui-version="v2"] .tool-card[data-status="error"] {
-  border-color: color-mix(in srgb, var(--v2-danger) 38%, var(--v2-border));
-  background: color-mix(in srgb, var(--v2-danger-soft) 52%, var(--v2-surface-raised));
+/* The head is a one-line row: icon, named object, mono summary, state
+   (dot + text, spinner while running), duration, caret. */
+.product-app-frame[data-ui-version="v2"] .tool-card__row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
 }
 
 .product-app-frame[data-ui-version="v2"] .tool-card__head {
   display: flex;
-  flex-wrap: wrap;
+  flex: 1;
   align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-height: 50px;
+  gap: 5px;
+  min-width: 0;
+  min-height: 24px;
   border: 0;
-  border-radius: 0;
+  border-radius: var(--v2-radius-sm);
   background: transparent;
-  color: var(--v2-ink-2);
-  padding: 8px 10px;
+  color: var(--v2-ink-3);
+  padding: 2px 4px;
+  font-size: 12.5px;
   text-align: left;
 }
 
-.product-app-frame[data-ui-version="v2"] .tool-card__head:hover:not(:disabled) {
+.product-app-frame[data-ui-version="v2"] .tool-card__head:hover:not(:disabled),
+.product-app-frame[data-ui-version="v2"] .tool-card__head:focus-visible {
   background: var(--v2-surface-hover);
+  color: var(--v2-ink);
 }
 
 .product-app-frame[data-ui-version="v2"] .tool-card__head > svg:first-child,
+.product-app-frame[data-ui-version="v2"] .approval-card__head > svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--v2-ink-3);
+  padding: 0;
+}
+
 .product-app-frame[data-ui-version="v2"] .approval-card__head > svg {
   width: 28px;
   height: 28px;
@@ -1601,30 +1814,146 @@ html[data-reading-resizing="true"] * {
   padding: 6px;
 }
 
-.product-app-frame[data-ui-version="v2"] .tool-card__head > span:nth-child(2),
-.product-app-frame[data-ui-version="v2"] .approval-card__head > span {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.product-app-frame[data-ui-version="v2"] .tool-card__head strong,
-.product-app-frame[data-ui-version="v2"] .approval-card__head strong {
+.product-app-frame[data-ui-version="v2"] .tool-card__head strong {
   overflow: hidden;
-  color: var(--v2-ink);
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.product-app-frame[data-ui-version="v2"] .tool-card__head small,
-.product-app-frame[data-ui-version="v2"] .approval-card__head small {
-  overflow: hidden;
-  color: var(--v2-ink-3);
-  font-size: 11px;
+  color: var(--v2-ink-2);
+  font-size: 12.5px;
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__head:hover strong {
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--v2-ink-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__state {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__state-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__state[data-status="done"] .tool-card__state-dot {
+  background: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__state[data-status="error"] .tool-card__state-dot {
+  background: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__state[data-status="error"],
+.product-app-frame[data-ui-version="v2"] .tool-card[data-status="error"] .tool-card__state {
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__spinner {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--v2-ink-3);
+  border-top-color: transparent;
+  border-radius: 999px;
+  animation: tool-row-spin var(--motion-duration-spin) linear infinite;
+}
+
+@keyframes tool-row-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__duration {
+  flex: none;
+  color: var(--v2-ink-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The payload copy rides the row, surfaced only on hover/focus. */
+.product-app-frame[data-ui-version="v2"] .tool-card__copy {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0;
+  opacity: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__copy svg {
+  width: 12px;
+  height: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__row:hover .tool-card__copy,
+.product-app-frame[data-ui-version="v2"] .tool-card__row:focus-within .tool-card__copy,
+.product-app-frame[data-ui-version="v2"] .tool-card__copy:focus-visible {
+  opacity: 1;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__head svg[data-open] {
+  flex: none;
+  opacity: 0.65;
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__head:hover svg[data-open],
+.product-app-frame[data-ui-version="v2"] .tool-card__head svg[data-open="true"] {
+  opacity: 1;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__head svg[data-open="true"] {
+  transform: rotate(180deg);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__details {
+  display: grid;
+  gap: 12px;
+  margin: 4px 0 6px;
+  padding: 4px 0 8px 22px;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__chip {
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-xs);
+  color: var(--v2-ink-3);
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__chip[data-tone="warn"],
+.product-app-frame[data-ui-version="v2"] .tool-card__chip[data-tone="warning"] {
+  border-color: color-mix(in srgb, var(--v2-warning) 38%, var(--v2-border));
+  color: var(--v2-warning);
 }
 
 .product-app-frame[data-ui-version="v2"] .tool-card__outcome {
@@ -1635,35 +1964,6 @@ html[data-reading-resizing="true"] * {
   padding: 4px 7px;
   font-size: 10px;
   font-weight: 650;
-}
-
-.product-app-frame[data-ui-version="v2"] .tool-card__outcome[data-status="complete"] {
-  border-color: color-mix(in srgb, var(--v2-success) 28%, var(--v2-border));
-  background: var(--v2-success-soft);
-  color: var(--v2-success);
-}
-
-.product-app-frame[data-ui-version="v2"] .tool-card__outcome[data-status="running"] {
-  border-color: color-mix(in srgb, var(--v2-signal) 28%, var(--v2-border));
-  background: var(--v2-signal-soft);
-  color: var(--v2-signal-strong);
-}
-
-.product-app-frame[data-ui-version="v2"] .tool-card__outcome[data-status="error"] {
-  border-color: color-mix(in srgb, var(--v2-danger) 28%, var(--v2-border));
-  background: var(--v2-danger-soft);
-  color: var(--v2-danger);
-}
-
-.product-app-frame[data-ui-version="v2"] .tool-card__head svg[data-open="true"] {
-  transform: rotate(180deg);
-}
-
-.product-app-frame[data-ui-version="v2"] .tool-card__details {
-  display: grid;
-  gap: 14px;
-  border-top: 1px solid var(--v2-border);
-  padding: 12px;
 }
 
 .product-app-frame[data-ui-version="v2"] .tool-card__details section {
@@ -1794,6 +2094,29 @@ html[data-reading-resizing="true"] * {
 .product-app-frame[data-ui-version="v2"] .approval-card__head > svg {
   background: var(--v2-warning-soft);
   color: var(--v2-warning);
+}
+
+.product-app-frame[data-ui-version="v2"] .approval-card__head > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .approval-card__head strong {
+  overflow: hidden;
+  color: var(--v2-ink);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .approval-card__head small {
+  overflow: hidden;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .product-app-frame[data-ui-version="v2"] .approval-card > p,
@@ -2170,21 +2493,105 @@ html[data-reading-resizing="true"] * {
   white-space: pre;
 }
 
+/* §6: the shared content band — queue rows and the shell share the
+   transcript's reading measure. */
+.product-app-frame[data-ui-version="v2"] .composer-stack {
+  display: grid;
+  gap: 8px;
+  width: min(calc(100% - 32px), var(--reading-column-max));
+  margin: 0 0 14px;
+}
+
+/* §6.3: the server-persisted FIFO above the shell — compact rows, one line of
+   text each; the queue head is the next-up row (elevated surface + accent
+   edge). */
+.product-app-frame[data-ui-version="v2"] .composer-queue {
+  display: grid;
+  gap: 6px;
+}
+
+.product-app-frame[data-ui-version="v2"] .queued-message {
+  display: grid;
+  gap: 4px;
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-sunken);
+  padding: 6px 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .queued-message[data-next-up] {
+  background: var(--v2-surface-raised);
+  box-shadow:
+    var(--v2-shadow-sm),
+    inset 2px 0 0 var(--v2-signal);
+}
+
+.product-app-frame[data-ui-version="v2"] .queued-message__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .queued-message__status {
+  flex: none;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .queued-message__text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--v2-ink-2);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .queued-message__actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.product-app-frame[data-ui-version="v2"] .queued-message__actions .secondary {
+  min-height: 24px;
+  padding: 2px 8px;
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .queued-message__actions .icon-button {
+  min-width: 24px;
+  min-height: 24px;
+}
+
+.product-app-frame[data-ui-version="v2"] .queued-message__reason {
+  margin: 0;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 /* Composer and real Preferences control */
 .product-app-frame[data-ui-version="v2"] .chat-composer {
   position: relative;
   display: grid;
   gap: 8px;
-  /* Same reading measure as the transcript content box (design §3.3). */
-  align-self: center;
-  width: calc(100% - 32px);
-  max-width: var(--reading-column-max);
-  margin: 0 0 14px;
-  border: 1px solid var(--v2-border-strong);
-  border-radius: var(--v2-radius-md);
+  width: 100%;
+  /* §6: 20px-radius elevated shell, shadow-only — no stroke. */
+  border: 0;
+  border-radius: var(--v2-radius-xl);
   background: var(--v2-surface-raised);
   box-shadow: var(--v2-shadow-md);
   padding: 9px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer:focus-within {
+  /* §6: focus deepens the elevation — a soft halo, not a stroke. */
+  box-shadow: var(--v2-shadow-md), 0 0 0 4px var(--v2-signal-soft);
 }
 
 .product-app-frame[data-ui-version="v2"] .chat-composer__meta {
@@ -2225,6 +2632,56 @@ html[data-reading-resizing="true"] * {
   flex: none;
   min-height: 34px;
   margin-bottom: 2px;
+}
+
+/* §6.1: send and stop share one 28px round slot — send reads as the accent
+   fill, stop as the tinted fill. */
+.product-app-frame[data-ui-version="v2"] .chat-composer__slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  align-self: flex-end;
+  margin-bottom: 6px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__slot[data-slot="send"] {
+  background: var(--v2-signal);
+  color: var(--v2-surface-raised);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__slot[data-slot="send"]:disabled {
+  opacity: 0.45;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__slot[data-slot="send"]:not(:disabled):hover {
+  background: var(--v2-signal-strong);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__slot[data-slot="stop"] {
+  background: var(--v2-danger-soft);
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__slot[data-slot="stop"]:hover {
+  background: var(--v2-danger);
+  color: var(--v2-surface-raised);
+}
+
+/* §6.2: the send-key hint is persistent furniture — it survives a typed
+   draft, unlike placeholder copy. */
+.product-app-frame[data-ui-version="v2"] .chat-composer__sendkey-hint {
+  overflow: hidden;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .product-app-frame[data-ui-version="v2"] .chat-composer__controls {
@@ -3516,6 +3973,225 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
   border-radius: var(--v2-radius-md);
 }
 
+/* ── Home surface (design §9.1) ───────────────────────────────────────────
+   The middle column when no session is on screen: hero mark + prompt, the
+   home-variant composer, the inline workspace switcher, recent sessions, and
+   the collapsed manual path entry. */
+.product-app-frame[data-ui-version="v2"] .home-surface {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 40px 24px;
+  overflow-y: auto;
+  background: var(--v2-bg);
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__hero {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  text-align: center;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__mark {
+  width: 40px;
+  height: 40px;
+  font-size: 20px;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__hero h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__lead {
+  margin: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--v2-ink-3);
+  font-size: 13px;
+}
+
+/* The dotted-underline project name that opens the picker menu. */
+.product-app-frame[data-ui-version="v2"] .home-surface__switcher {
+  position: relative;
+  display: inline-block;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__switcher-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 2px;
+  border: 0;
+  border-bottom: 1px dotted var(--v2-ink-3);
+  border-radius: 0;
+  background: none;
+  color: var(--v2-ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__switcher-button:hover {
+  color: var(--v2-signal);
+  border-bottom-color: var(--v2-signal);
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__switcher-menu {
+  position: absolute;
+  z-index: 6;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: grid;
+  min-width: 180px;
+  padding: 4px;
+  border: 1px solid var(--v2-rail-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-md);
+  text-align: left;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__switcher-menu button {
+  justify-content: flex-start;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--v2-radius-xs, var(--v2-radius-sm));
+  background: none;
+  color: var(--v2-ink);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__switcher-menu button:hover,
+.product-app-frame[data-ui-version="v2"] .home-surface__switcher-menu button:focus-visible {
+  background: var(--v2-surface-hover);
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__switcher-menu button[aria-checked="true"] {
+  color: var(--v2-signal);
+  font-weight: 600;
+}
+
+/* The home variant keeps the session composer's own box and row; the surface
+   only owns its measure. */
+.product-app-frame[data-ui-version="v2"] .home-surface .chat-composer {
+  width: min(640px, 100%);
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__send-hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  color: var(--v2-ink-3);
+  font-size: 12.5px;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__recents {
+  width: min(560px, 100%);
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__recents h2 {
+  margin: 0 0 6px;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__recents ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__recent {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--v2-radius-sm);
+  background: none;
+  color: var(--v2-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__recent:hover,
+.product-app-frame[data-ui-version="v2"] .home-surface__recent:focus-visible {
+  background: var(--v2-surface-hover);
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__recent strong {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__recent span {
+  flex-shrink: 0;
+  color: var(--v2-ink-3);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__manual {
+  width: min(560px, 100%);
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__manual summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--v2-ink-3);
+  font-size: 12.5px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__manual summary::-webkit-details-marker {
+  display: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__manual summary::before {
+  content: "▸";
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__manual[open] summary::before {
+  content: "▾";
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__manual summary:hover {
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .home-surface__manual-body {
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface);
+}
+
 /* Shared operational states and dialogs */
 .product-app-frame[data-ui-version="v2"] .boot-state,
 .product-app-frame[data-ui-version="v2"] .route-state,
@@ -3580,13 +4256,6 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
      or `.product-inspector { width: 268px }` here only survived as dead code
      while the panel still carried an inline width, and it silently defeated the
      budget once the panel started filling its track. */
-  .product-app-frame[data-ui-version="v2"] .transcript-item {
-    grid-template-columns: 62px minmax(0, 700px);
-  }
-
-  .product-app-frame[data-ui-version="v2"] .transcript-run__header {
-    padding-left: 90px;
-  }
 }
 
 /* Drawer layout. The 960px boundary mirrors `DRAWER_MAX_WIDTH` /
@@ -3781,58 +4450,15 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
   }
 
   .product-app-frame[data-ui-version="v2"] .chat-transcript {
-    padding: 16px 10px 28px;
-  }
-
-  .product-app-frame[data-ui-version="v2"] .transcript-run__header {
-    width: 100%;
-    padding-left: 22px;
-  }
-
-  .product-app-frame[data-ui-version="v2"] .transcript-item {
-    grid-template-columns: 14px minmax(0, 1fr);
-    gap: 8px;
-  }
-
-  .product-app-frame[data-ui-version="v2"] .transcript-item__meta {
-    grid-column: 2;
-    grid-row: 1;
-    display: flex;
-    justify-content: flex-start;
-    padding: 0 0 5px;
-    text-align: left;
-  }
-
-  .product-app-frame[data-ui-version="v2"] .transcript-item__meta::after {
-    top: 11px;
-    right: auto;
-    bottom: -100%;
-    left: -13px;
-  }
-
-  .product-app-frame[data-ui-version="v2"] .transcript-item__meta > span {
-    top: 5px;
-    right: auto;
-    left: -17px;
-  }
-
-  .product-app-frame[data-ui-version="v2"] .transcript-item__meta code {
-    width: auto;
-    max-width: 180px;
-  }
-
-  .product-app-frame[data-ui-version="v2"] .transcript-item__content {
-    grid-column: 2;
-    grid-row: 2;
-    padding-bottom: 20px;
+    padding: 16px 10px calc(var(--composer-dock-height, 0px) + 8px);
   }
 
   .product-app-frame[data-ui-version="v2"] .tool-card__outcome {
     display: none;
   }
 
-  .product-app-frame[data-ui-version="v2"] .tool-card__head {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+  .product-app-frame[data-ui-version="v2"] .tool-card__state {
+    display: none;
   }
 
   .product-app-frame[data-ui-version="v2"] .tool-facts > div {
@@ -3843,11 +4469,12 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
     flex: 1;
   }
 
-  .product-app-frame[data-ui-version="v2"] .chat-composer {
-    align-self: center;
-    width: calc(100% - 20px);
-    max-width: var(--reading-column-max);
+  .product-app-frame[data-ui-version="v2"] .composer-stack {
+    width: min(calc(100% - 20px), var(--reading-column-max));
     margin: 0 0 8px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .chat-composer {
     padding: 8px;
   }
 
@@ -3985,6 +4612,12 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
     margin: 0;
   }
 
+  /* The mutex slot stays a 28px round button even when the row collapses. */
+  .product-app-frame[data-ui-version="v2"] .chat-composer__row > .chat-composer__slot {
+    width: 28px;
+    justify-self: end;
+  }
+
   .product-app-frame[data-ui-version="v2"] .input-card .chat-composer__row {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -4010,9 +4643,12 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
   }
 
   .product-app-frame[data-ui-version="v2"] .status-dot,
-  .product-app-frame[data-ui-version="v2"] .transcript-item__meta > span {
+  .product-app-frame[data-ui-version="v2"] .runtime-status-indicator__dots i,
+  .product-app-frame[data-ui-version="v2"] .tool-card__spinner,
+  .product-app-frame[data-ui-version="v2"] .transcript-skeleton-row {
     opacity: 1;
     transform: none;
+    animation: none;
   }
 }
 
@@ -4593,48 +5229,94 @@ body.is-resizing-column .product-app-frame[data-ui-version="v2"] .product-sideba
 }
 
 
+/* A folded run of tool calls is one quiet disclosure row, not a card —
+   blocking cards (approvals, pending inputs) live outside it. */
 .product-app-frame[data-ui-version="v2"] .activity-group {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
+  min-width: 0;
 }
 
 .product-app-frame[data-ui-version="v2"] .activity-group__head {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--v2-border);
+  min-height: 26px;
+  padding: 2px 4px;
+  border: 0;
   border-radius: var(--v2-radius-sm);
-  background: var(--v2-surface-sunken);
-  color: var(--v2-ink-2);
+  background: transparent;
+  color: var(--v2-ink-3);
   cursor: pointer;
+  font-size: 12.5px;
   text-align: left;
 }
 
+.product-app-frame[data-ui-version="v2"] .activity-group__head:hover,
+.product-app-frame[data-ui-version="v2"] .activity-group__head:focus-visible {
+  background: var(--v2-surface-hover);
+  color: var(--v2-ink-2);
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__head > svg:first-child {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group[data-running="true"] .activity-group__head > svg:first-child {
+  color: var(--v2-signal-strong);
+}
+
 .product-app-frame[data-ui-version="v2"] .activity-group__head strong {
-  font-size: 12px;
-  font-weight: 650;
+  flex: none;
+  color: var(--v2-ink-2);
+  font-size: 12.5px;
+  font-weight: 550;
 }
 
 .product-app-frame[data-ui-version="v2"] .activity-group__hint {
+  flex: none;
   color: var(--v2-ink-3);
   font-size: 11px;
 }
 
+/* The live preview is a mono ellipsis naming the newest in-flight tool —
+   only rendered while work is running. */
+.product-app-frame[data-ui-version="v2"] .activity-group__preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--v2-ink-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .product-app-frame[data-ui-version="v2"] .activity-group__elapsed {
+  flex: none;
   margin-left: auto;
   color: var(--v2-ink-3);
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
   font-variant-numeric: tabular-nums;
 }
 
 .product-app-frame[data-ui-version="v2"] .activity-group__head svg[data-open] {
-  margin-left: auto;
+  flex: none;
+  margin-left: 4px;
+  opacity: 0.65;
   transform: rotate(0deg);
   transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__head:hover svg[data-open],
+.product-app-frame[data-ui-version="v2"] .activity-group__head svg[data-open="true"] {
+  opacity: 1;
 }
 
 .product-app-frame[data-ui-version="v2"] .activity-group__head svg[data-open="true"] {
@@ -4644,55 +5326,8 @@ body.is-resizing-column .product-app-frame[data-ui-version="v2"] .product-sideba
 .product-app-frame[data-ui-version="v2"] .activity-group__body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding-left: 12px;
-  border-left: 2px solid var(--v2-border);
-}
-
-.product-app-frame[data-ui-version="v2"] .activity-group__hint + svg,
-.product-app-frame[data-ui-version="v2"] .activity-group__head > svg:last-child {
-  margin-left: auto;
-}
-
-/* The elapsed value takes the free space, so the chevron sits next to it. */
-.product-app-frame[data-ui-version="v2"] .activity-group__elapsed + svg:last-child {
-  margin-left: 6px;
-}
-
-/* ─── Composer waiting line (activity phase, W4) ─── */
-
-.product-app-frame[data-ui-version="v2"] .chat-composer__phase {
-  margin: 0;
-  padding: 0 2px;
-  color: var(--v2-ink-3);
-  font-size: 12px;
-}
-
-.product-app-frame[data-ui-version="v2"] .chat-composer__phase::before {
-  content: "";
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin-right: 6px;
-  border-radius: 999px;
-  background: var(--v2-rail-signal, var(--v2-ink-3));
-  animation: activity-phase-pulse var(--motion-duration-activity-pulse) var(--motion-ease-in-out) infinite;
-}
-
-@keyframes activity-phase-pulse {
-  0%,
-  100% {
-    opacity: 0.35;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .product-app-frame[data-ui-version="v2"] .chat-composer__phase::before {
-    animation: none;
-  }
+  gap: 0;
+  padding-left: 20px;
 }
 
 /* ─── Context usage ring (W4) ─── */

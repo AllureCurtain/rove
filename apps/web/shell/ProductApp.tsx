@@ -17,6 +17,7 @@ import {
 } from "react";
 
 import { Composer } from "../chat/Composer";
+import { QueuedPromptStack } from "../chat/QueuedPromptStack";
 import type {
   ComposerCommand,
   ComposerFileSuggestion,
@@ -39,6 +40,8 @@ import { reorderedQueueIds } from "../chat/queue-order";
 import { transcriptLocateTarget } from "../chat/transcript-locate";
 import { CopyProvider, useCopy } from "../copy/CopyProvider";
 import { Transcript } from "../chat/Transcript";
+import { SessionSettleVeil } from "../chat/SessionSettleVeil";
+import { IDLE_PHASE } from "../chat/activity-phase";
 import { RunInspector } from "../inspector/RunInspector";
 import { useWorkPanel } from "../inspector/use-work-panel";
 import {
@@ -52,7 +55,10 @@ import {
   createComposerDraftStore,
   type ComposerDraftStore,
 } from "../state/composer-draft-store";
-import { selectTranscriptTimeline } from "../lib/rove-state";
+import {
+  selectTranscriptTimeline,
+  type TranscriptRunGroup,
+} from "../lib/rove-state";
 import { installScrollbarReveal } from "../lib/scrollbar-reveal";
 import { DRAWER_MEDIA_QUERY } from "../lib/viewport-breakpoints";
 import {
@@ -85,7 +91,7 @@ import {
   VISIBLE_SETTINGS_SECTIONS,
 } from "../settings/sections";
 import { createSettingsPlatformClient } from "../settings/settings-platform-client";
-import { EmptyState } from "../sidebar/EmptyState";
+import { HomeSurface } from "../sidebar/HomeSurface";
 import { sessionSubtitle } from "../sidebar/session-labels";
 import { WorkspaceTree } from "../sidebar/WorkspaceTree";
 import {
@@ -100,9 +106,11 @@ import {
   useServerProductState,
 } from "../state/use-server-product-state";
 import { useSessionContinuity } from "../state/use-session-continuity";
+import { providerSelectionProblem } from "../state/turn-request";
 import { useProductReviews } from "../state/use-product-reviews";
 import type {
   ProductAttachmentUpload,
+  ProductMessage,
   ProductMessageAttachmentRequest,
   ProductMessageDelivery,
 } from "../product/product-api-types";
@@ -117,6 +125,21 @@ import { useSidebarWidth } from "./use-sidebar-width";
 import { useFontScalePreference } from "../settings/use-font-scale";
 
 export type { UiSkin };
+
+/** §5.1: how many visited sessions keep their transcript pane mounted. */
+const RETAINED_TRANSCRIPT_PANES = 4;
+
+/**
+ * §9.1: an armed home send has this long to land on its new session before it
+ * is dropped — a send that never attached must not surprise a later visit.
+ */
+const HOME_SEND_WINDOW_MS = 15_000;
+
+/** §9.1: the home draft lives under a fixed pseudo-session id per workspace. */
+const HOME_COMPOSER_SESSION = "home";
+
+/** §9.1: how many sessions the home surface offers as its recent list. */
+const HOME_RECENT_SESSION_LIMIT = 5;
 
 /** Strip Windows long-path prefixes so roots read as ordinary paths. */
 function formatDisplayPath(path: string): string {
@@ -426,6 +449,19 @@ function ServerProductApp({ draftStore }: {
     return map;
   }, [server.catalog]);
 
+  // §9.1: the home surface's recents are cross-workspace — the past stays one
+  // click away regardless of which project the hero is targeting.
+  const homeRecentSessions = useMemo(() => {
+    const known = new Set(
+      server.catalog.workspaces.map((workspace) => workspace.id),
+    );
+    return server.catalog.sessions
+      .filter((session) => known.has(session.workspaceId))
+      .slice()
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, HOME_RECENT_SESSION_LIMIT);
+  }, [server.catalog]);
+
   const connectionLabel =
     server.connection === "ok"
       ? t("connection.ok")
@@ -486,6 +522,22 @@ function ServerProductApp({ draftStore }: {
   // W3: a queued message has been loaded into the composer for replacement.
   // The next send revokes the original first; a failed revoke keeps both.
   const [editingQueuedMessageId, setEditingQueuedMessageId] = useState<string | null>(null);
+  /**
+   * §9.1: a home-surface send arms this before the new session's route lands.
+   * The send fires once the catalog points at the session and its transcript
+   * read has resolved, so an empty restore can never overwrite the message —
+   * and it expires rather than landing on a session the user has since left.
+   */
+  const [pendingHomeSend, setPendingHomeSend] = useState<{
+    workspaceId: string;
+    sessionId: string;
+    message: string;
+    attachments: ProductMessageAttachmentRequest[];
+    issuedAt: number;
+  } | null>(null);
+  // §9.2: a submit attempted while the home send is blocked escalates the
+  // persistent hint into an assertive inline message.
+  const [homeSendAlerted, setHomeSendAlerted] = useState(false);
   // W5: the outcome of the last smart stop, shown once above the transcript.
   const [stopNotice, setStopNotice] = useState<string | null>(null);
   // R2b: the identity of every message that had already settled in the session
@@ -527,6 +579,121 @@ function ServerProductApp({ draftStore }: {
   const transcriptRestoreState = awaitingInitialRestore
     ? ({ status: "loading", sessionId: activeSession.id } as const)
     : continuity.restoreState;
+
+  /**
+   * §5.1/§5.5: a session route that already resolves in the catalog keeps the
+   * chat pane mounted while `catalog.active` catches up. The pane stack, the
+   * settle veil and the composer own the switch; swapping the surface for a
+   * route loader would throw away exactly the DOM retention exists to keep.
+   */
+  const routeSession =
+    routing.route.kind === "session"
+      ? findSession(server.catalog, routing.route.sessionId)
+      : undefined;
+  const displaySession = routeSession ?? activeSession;
+  const displayWorkspace = routeSession
+    ? (findWorkspace(server.catalog, routeSession.workspaceId) ?? activeWorkspace)
+    : activeWorkspace;
+  /** Fork/branch act on the catalog's active session: only while the route's
+      session and the active pointer agree are they safe to offer. */
+  const paneSettled =
+    displaySession != null && displaySession.id === activeSession?.id;
+
+  /**
+   * §5.1: the last N visited sessions keep their transcript pane mounted. A
+   * retained pane freezes the data it last rendered — the point of retention is
+   * the DOM (scroll, disclosure, window state), not a second live feed. The
+   * active pane always renders the live stream; a revisited pane goes back to
+   * live the moment it is active again.
+   */
+  const activeTimeline = useMemo(
+    () => selectTranscriptTimeline(continuity.runState),
+    [continuity.runState],
+  );
+  const activeMessages = continuity.messages;
+  const [paneOrder, setPaneOrder] = useState<string[]>([]);
+  const paneDataRef = useRef(
+    new Map<
+      string,
+      { timeline: TranscriptRunGroup[]; messages: ProductMessage[] }
+    >(),
+  );
+  useEffect(() => {
+    if (!displaySession || transcriptRestoreState.status === "loading") {
+      // A restore in flight would write the emptied pre-load timeline over the
+      // pane's retained snapshot, defeating the warm switch below.
+      return;
+    }
+    paneDataRef.current.set(displaySession.id, {
+      timeline: activeTimeline,
+      messages: activeMessages,
+    });
+  }, [displaySession, activeTimeline, activeMessages, transcriptRestoreState.status]);
+  useEffect(() => {
+    if (!displaySession) {
+      return;
+    }
+    setPaneOrder((current) => {
+      const next = [
+        displaySession.id,
+        ...current.filter((id) => id !== displaySession.id),
+      ].slice(0, RETAINED_TRANSCRIPT_PANES);
+      return next.length === current.length &&
+        next.every((id, index) => id === current[index])
+        ? current
+        : next;
+    });
+  }, [displaySession]);
+  useEffect(() => {
+    for (const id of [...paneDataRef.current.keys()]) {
+      if (!paneOrder.includes(id)) {
+        paneDataRef.current.delete(id);
+      }
+    }
+  }, [paneOrder]);
+  // The active session leads the list even before the ordering effect lands,
+  // so a fresh switch never renders a frame with no visible pane.
+  const paneIds = displaySession
+    ? [
+        displaySession.id,
+        ...paneOrder.filter((id) => id !== displaySession.id),
+      ].slice(0, RETAINED_TRANSCRIPT_PANES)
+    : paneOrder;
+
+  // §5.5: a cold switch veils the transcript while the restore is in flight;
+  // the composer dock is never covered. A retained pane whose frozen content
+  // is already on screen keeps showing it — the warm case is the point of
+  // retention, and a veil over correct DOM would be noise.
+  const restoring = transcriptRestoreState.status === "loading";
+  const warmingPane =
+    restoring &&
+    (paneDataRef.current.get(displaySession?.id ?? "")?.timeline.length ?? 0) > 0;
+  const sessionSwitching = restoring && !warmingPane;
+
+  // §6: the composer docks over the transcript's bottom reserve. The
+  // transcript reads the dock's measured height so the last row is never
+  // parked underneath it.
+  const composerDockRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const dock = composerDockRef.current;
+    const pane = dock?.closest(".chat-pane");
+    if (!dock || !(pane instanceof HTMLElement)) {
+      return;
+    }
+    const write = () => {
+      pane.style.setProperty(
+        "--composer-dock-height",
+        `${Math.ceil(dock.getBoundingClientRect().height)}px`,
+      );
+    };
+    write();
+    const observer = new ResizeObserver(write);
+    observer.observe(dock);
+    return () => {
+      observer.disconnect();
+      pane.style.removeProperty("--composer-dock-height");
+    };
+  }, []);
   const composerPrerequisiteUnavailable =
     awaitingInitialRestore ||
     continuity.restoreState.status === "loading" ||
@@ -724,6 +891,114 @@ function ServerProductApp({ draftStore }: {
     }
   }
 
+  /**
+   * §9.1: the home composer's send is a session creation followed by the send
+   * itself. The message is armed for the session before navigation begins, so
+   * the route change and the send stay one gesture — the pending effect below
+   * fires it once the new session is focused and restored.
+   */
+  async function handleHomeSend(
+    message: string,
+    attachments: ProductMessageAttachmentRequest[],
+  ): Promise<boolean> {
+    const workspace = displayWorkspace;
+    if (!workspace) {
+      setHomeSendAlerted(true);
+      return false;
+    }
+    const activeBefore = { ...server.catalogRef.current.active };
+    const navigationIntent = routing.captureNavigationIntent();
+    const session = await server.createSession(workspace.id);
+    const activeNow = server.catalogRef.current.active;
+    if (
+      !session ||
+      !routing.isNavigationIntentCurrent(navigationIntent) ||
+      activeNow.workspaceId !== activeBefore.workspaceId ||
+      activeNow.sessionId !== activeBefore.sessionId
+    ) {
+      return false;
+    }
+    setPendingHomeSend({
+      workspaceId: workspace.id,
+      sessionId: session.id,
+      message,
+      attachments,
+      issuedAt: Date.now(),
+    });
+    routing.navigateSession(workspace.id, session.id);
+    return true;
+  }
+
+  // §9.2: the home send is blocked when there is nowhere to land it or no
+  // satisfiable provider selection — the surface renders the matching hint
+  // and the direct action that resolves it.
+  const homeModelBlocked =
+    providerSelectionProblem(server.selection, server.profiles) !== null;
+  const homeSendBlocked = !displayWorkspace || homeModelBlocked;
+  const homeSendBlock = !displayWorkspace
+    ? {
+        reason: t("home.noWorkspaceHint"),
+        action: "workspace" as const,
+        alerted: homeSendAlerted,
+      }
+    : homeModelBlocked
+      ? {
+          reason: t("home.modelRequired"),
+          action: "providers" as const,
+          alerted: homeSendAlerted,
+        }
+      : null;
+  useEffect(() => {
+    if (!homeSendBlocked) {
+      setHomeSendAlerted(false);
+    }
+  }, [homeSendBlocked]);
+
+  useEffect(() => {
+    const pending = pendingHomeSend;
+    if (!pending) {
+      return;
+    }
+    const expired =
+      Date.now() - pending.issuedAt > HOME_SEND_WINDOW_MS;
+    if (server.catalog.active.sessionId === pending.sessionId) {
+      const restore = continuity.restoreState;
+      if (
+        restore.status === "loading" &&
+        "sessionId" in restore &&
+        restore.sessionId === pending.sessionId
+      ) {
+        // Let the transcript read land first: a fresh session's restore is
+        // near-instant, and sending after it can never be overwritten by it.
+        return;
+      }
+      setPendingHomeSend(null);
+      void continuity.send(pending.message, pending.attachments);
+      return;
+    }
+    // The session never became active — the user moved to another route or
+    // the window expired — so the armed send is dropped rather than fired
+    // late. The freshly-pushed session route takes a render to land, so a
+    // route still pointing at the arming workspace is not "elsewhere".
+    const movedElsewhere =
+      routing.route.kind === "settings" ||
+      routing.route.kind === "invalid" ||
+      routing.route.kind === "root" ||
+      (routing.route.kind === "workspace" &&
+        routing.route.workspaceId !== pending.workspaceId) ||
+      (routing.route.kind === "session" &&
+        routing.route.sessionId !== pending.sessionId);
+    if (movedElsewhere || expired) {
+      setPendingHomeSend(null);
+    }
+  }, [
+    pendingHomeSend,
+    server.catalog.active.sessionId,
+    continuity.restoreState,
+    continuity.send,
+    routing.route,
+  ]);
+
   async function handleForkSession() {
     if (!activeWorkspace || !activeSession) {
       return;
@@ -818,6 +1093,7 @@ function ServerProductApp({ draftStore }: {
   async function handleSendWithQueueEdit(
     message: string,
     attachments: ProductMessageAttachmentRequest[],
+    delivery?: ProductMessageDelivery,
   ): Promise<boolean> {
     if (editingQueuedMessageId) {
       const originalId = editingQueuedMessageId;
@@ -829,7 +1105,7 @@ function ServerProductApp({ draftStore }: {
       }
       setEditingQueuedMessageId(null);
     }
-    return continuity.send(message, attachments);
+    return continuity.send(message, attachments, delivery);
   }
 
   /**
@@ -994,23 +1270,26 @@ function ServerProductApp({ draftStore }: {
     void continuity.send(content);
   }
 
-  async function findComposerFiles(
-    query: string,
-  ): Promise<ComposerFileSuggestion[]> {
-    if (!activeWorkspace) {
-      return [];
-    }
-    const response = await server.productClient.listWorkspaceFiles(
-      activeWorkspace.id,
-      { prefix: query, limit: COMPOSER_FILE_SOURCE_LIMIT },
-    );
-    return response.entries
-      .slice(0, COMPOSER_FILE_SOURCE_LIMIT)
-      .map((entry) => ({
-        path: entry.path,
-        directory: entry.kind === "directory",
-      }));
-  }
+  // useCallback: the composer runs its file-menu effect off this reference —
+  // an unstable one would re-fire the effect on every stream-driven render.
+  const findComposerFiles = useCallback(
+    async (query: string): Promise<ComposerFileSuggestion[]> => {
+      if (!activeWorkspace) {
+        return [];
+      }
+      const response = await server.productClient.listWorkspaceFiles(
+        activeWorkspace.id,
+        { prefix: query, limit: COMPOSER_FILE_SOURCE_LIMIT },
+      );
+      return response.entries
+        .slice(0, COMPOSER_FILE_SOURCE_LIMIT)
+        .map((entry) => ({
+          path: entry.path,
+          directory: entry.kind === "directory",
+        }));
+    },
+    [activeWorkspace, server.productClient],
+  );
 
   /**
    * The composer's slash menu shares the command palette's actions instead of
@@ -1615,13 +1894,13 @@ function ServerProductApp({ draftStore }: {
                 connection state only appears while it is abnormal. */}
             <ConversationTopBar
               title={
-                activeSession?.title ??
-                activeWorkspace?.displayName ??
+                displaySession?.title ??
+                displayWorkspace?.displayName ??
                 t("nav.workspace")
               }
               subtitle={
-                activeWorkspace
-                  ? `${activeWorkspace.displayName} / ${formatDisplayPath(activeWorkspace.rootPath)}`
+                displayWorkspace
+                  ? `${displayWorkspace.displayName} / ${formatDisplayPath(displayWorkspace.rootPath)}`
                   : undefined
               }
               titleRef={sessionTitleRef}
@@ -1662,21 +1941,10 @@ function ServerProductApp({ draftStore }: {
                 error={routing.routeError}
                 onReturn={routing.returnHome}
               />
-            ) : routing.routePending ? (
-              <RouteLoadingView />
-            ) : !activeWorkspace ? (
-              <EmptyState
-                recents={workspaces.slice(0, 6)}
-                onOpenWorkspace={(path, kind) => void handleOpenWorkspace(path, kind)}
-                onOpenRecent={routing.navigateWorkspace}
-                onOpenProviders={() => routing.openSettings("providers")}
-              />
-            ) : !activeSession ? (
-              <WorkspaceSessionEmpty
-                workspaceName={activeWorkspace.displayName}
-                onNewSession={() => void handleNewSession(activeWorkspace.id)}
-              />
-            ) : (
+            ) : displaySession && displayWorkspace ? (
+              /* A session route that resolves keeps the chat pane mounted
+                 through the pending window — the pane stack and the settle
+                 veil own the transition, not a full-screen loader. */
               <div className="chat-pane">
                 {stopNotice ? <p className="shell-alert" role="status">{stopNotice}</p> : null}
                 {branchRequest ? (
@@ -1711,64 +1979,122 @@ function ServerProductApp({ draftStore }: {
                     waiting row's degraded "compacting" phase is also shown, so
                     the manual action and the automatic one are read together. */}
                 <CompactionPanel
-                  sessionId={activeSession.id}
-                  sessionStatus={activeSession.status}
+                  sessionId={displaySession.id}
+                  sessionStatus={displaySession.status}
                   busy={busy}
                   client={server.productClient}
                 />
-                <Transcript
-                  timeline={selectTranscriptTimeline(continuity.runState)}
-                  messages={continuity.messages}
-                  messageBusy={continuity.controlBusy}
-                  canPromote={controlAvailable}
-                  approvalBusy={continuity.approvalBusy}
-                  approvalError={continuity.approvalError}
-                  onApprovalDetail={(tool, trigger) => {
-                    const { activeJobId, activeRunId } = continuity.runState;
-                    if (activeJobId && activeRunId) panel.open("pending", {
-                      kind: "approval", jobId: activeJobId, runId: activeRunId, callId: tool.id,
-                    }, trigger);
-                  }}
-                  inputBusy={continuity.inputBusy}
-                  restoreState={transcriptRestoreState}
-                  olderHistory={{
-                    hasMore: continuity.hasOlderHistory,
-                    cursor: continuity.olderCursor,
-                    loading: continuity.olderHistoryLoading,
-                    error: continuity.olderHistoryError,
-                  }}
-                  onLoadOlderHistory={continuity.loadOlderHistory}
-                  onRetryRestore={() =>
-                    continuity.retryRestore(activeWorkspace.id, activeSession.id)
-                  }
-                  onStartNewSession={() =>
-                    void handleNewSession(activeWorkspace.id)
-                  }
-                  onApproval={continuity.approve}
-                  onInputSubmit={continuity.answer}
-                  onPromoteMessage={(messageId, delivery) =>
-                    void handlePromoteQueuedMessage(messageId, delivery)
-                  }
-                  onRevokeMessage={(messageId) => void continuity.revokeMessage(messageId)}
-                  onConfirmStrandedSuccessor={continuity.confirmFollowup}
-                  onEditQueuedMessage={handleEditQueuedMessage}
-                  onMoveQueuedMessage={(messageId, direction) =>
-                    void handleMoveQueuedMessage(messageId, direction)
-                  }
-                  onRetryMessage={handleRetryMessage}
-                  onEditMessage={handleEditTranscriptMessage}
-                  onForkSession={() => void handleForkSession()}
-                  forkAvailable={forkAvailable}
-                  onBranchMessage={handleRequestBranch}
-                  branchAvailable={branchAvailable}
-                  locateRequest={locateRequest}
-                  loadAttachment={handleLoadAttachment}
-                />
-                <Composer
+                {/* §5.1: one mounted transcript pane per retained session. A
+                    hidden pane keeps its DOM and viewport under
+                    `visibility:hidden` — never `display:none` — and is inert so
+                    neither focus nor assistive tech can reach it. */}
+                <div className="chat-transcript-stack">
+                  {paneIds.map((paneId) => {
+                    const visible = paneId === displaySession.id;
+                    const frozen = paneDataRef.current.get(paneId);
+                    // A warm switch renders the retained snapshot until the
+                    // restore lands — the veil above is only for cold opens.
+                    const data =
+                      visible && !warmingPane
+                        ? { timeline: activeTimeline, messages: activeMessages }
+                        : frozen;
+                    if (!data) {
+                      return null;
+                    }
+                    return (
+                      <div
+                        key={paneId}
+                        className="session-pane"
+                        data-visible={visible}
+                        inert={!visible}
+                        aria-hidden={!visible || undefined}
+                      >
+                        <Transcript
+                          sessionId={paneId}
+                          timeline={data.timeline}
+                          messages={data.messages}
+                          busy={visible && busy}
+                          activityPhase={visible ? continuity.activityPhase : IDLE_PHASE}
+                          approvalBusy={visible ? continuity.approvalBusy : null}
+                          approvalError={visible ? continuity.approvalError : null}
+                          onApprovalDetail={(tool, trigger) => {
+                            const { activeJobId, activeRunId } = continuity.runState;
+                            if (activeJobId && activeRunId) panel.open("pending", {
+                              kind: "approval", jobId: activeJobId, runId: activeRunId, callId: tool.id,
+                            }, trigger);
+                          }}
+                          inputBusy={visible ? continuity.inputBusy : null}
+                          restoreState={
+                            visible && !warmingPane
+                              ? transcriptRestoreState
+                              : { status: "idle" }
+                          }
+                          olderHistory={
+                            visible
+                              ? {
+                                  hasMore: continuity.hasOlderHistory,
+                                  cursor: continuity.olderCursor,
+                                  loading: continuity.olderHistoryLoading,
+                                  error: continuity.olderHistoryError,
+                                }
+                              : undefined
+                          }
+                          onLoadOlderHistory={
+                            visible ? continuity.loadOlderHistory : undefined
+                          }
+                          onRetryRestore={() =>
+                            continuity.retryRestore(displayWorkspace.id, displaySession.id)
+                          }
+                          onStartNewSession={() =>
+                            void handleNewSession(displayWorkspace.id)
+                          }
+                          onApproval={continuity.approve}
+                          onInputSubmit={continuity.answer}
+                          onRetryMessage={handleRetryMessage}
+                          onEditMessage={handleEditTranscriptMessage}
+                          onForkSession={() => void handleForkSession()}
+                          forkAvailable={visible && paneSettled && forkAvailable}
+                          onBranchMessage={handleRequestBranch}
+                          branchAvailable={visible && paneSettled && branchAvailable}
+                          locateRequest={visible ? locateRequest : null}
+                          loadAttachment={handleLoadAttachment}
+                        />
+                      </div>
+                    );
+                  })}
+                  {restoring ? (
+                    <div className="session-switch-progress" role="presentation" />
+                  ) : null}
+                  <SessionSettleVeil settling={sessionSwitching} />
+                </div>
+                {/* §6: the dock is transparent; the transcript's bottom fade is
+                    the reserve under it, measured as --composer-dock-height. */}
+                <div className="chat-composer-dock" ref={composerDockRef}>
+                  {/* §6: the composer stack is the shared content band — the
+                      persisted queue sits above the shell so the pending
+                      prompts are next to the input that adds to them. */}
+                  <div className="composer-stack">
+                  <QueuedPromptStack
+                    messages={activeMessages}
+                    busy={continuity.controlBusy}
+                    canPromote={controlAvailable}
+                    editingMessageId={editingQueuedMessageId}
+                    onPromote={(messageId, delivery) =>
+                      void handlePromoteQueuedMessage(messageId, delivery)
+                    }
+                    onRevoke={(messageId) => void continuity.revokeMessage(messageId)}
+                    onConfirmStranded={continuity.confirmFollowup}
+                    onEdit={handleEditQueuedMessage}
+                    onMove={(messageId, direction) =>
+                      void handleMoveQueuedMessage(messageId, direction)
+                    }
+                    loadAttachment={handleLoadAttachment}
+                  />
+                  <Composer
                   draftBinding={{
                     store: draftStore,
-                    workspaceId: activeWorkspace.id,
-                    productSessionId: activeSession.id,
+                    workspaceId: displayWorkspace.id,
+                    productSessionId: displaySession.id,
                   }}
                   disabled={composerDisabled}
                   sendPaused={composerSendPaused}
@@ -1786,12 +2112,11 @@ function ServerProductApp({ draftStore }: {
                   onLoadProviderModels={server.productClient.listProviderModels}
                   onModelConfigChange={server.changeSessionModelConfig}
                   controlError={continuity.controlError}
-                  activityPhase={continuity.activityPhase}
                   contextUsage={composerContextUsage}
                   commands={composerCommands}
                   findFiles={findComposerFiles}
                   queuedEditNotice={editingQueuedMessageId ? t("chat.queuedEditing") : null}
-                  reviewAvailable={activeWorkspace.kind === "repo"}
+                  reviewAvailable={displayWorkspace.kind === "repo"}
                   reviewBusy={reviews.creating}
                   reviewError={reviews.error}
                   onCreateReview={async (target) => {
@@ -1802,7 +2127,57 @@ function ServerProductApp({ draftStore }: {
                     return created;
                   }}
                 />
+                  </div>
+                </div>
               </div>
+            ) : routing.routePending ? (
+              <RouteLoadingView />
+            ) : (
+              /* §9.1: both empty cases share one home surface — no workspace at
+                 all and a workspace with no session yet differ only in what
+                 the hero's switcher selects and whether the send can fire. */
+              <HomeSurface
+                workspace={displayWorkspace ?? null}
+                workspaces={workspaces}
+                recentSessions={homeRecentSessions}
+                workspaceName={(workspaceId) =>
+                  findWorkspace(server.catalog, workspaceId)?.displayName
+                }
+                composer={
+                  <Composer
+                    variant="home"
+                    draftBinding={{
+                      store: draftStore,
+                      workspaceId: displayWorkspace?.id ?? "",
+                      productSessionId: HOME_COMPOSER_SESSION,
+                    }}
+                    placeholder={t("home.composerPlaceholder")}
+                    disabled={false}
+                    sendDisabled={homeSendBlocked}
+                    onSendBlocked={() => setHomeSendAlerted(true)}
+                    busy={false}
+                    error={null}
+                    profiles={server.profiles}
+                    modelConfig={null}
+                    modelConfigSaving={false}
+                    onSend={handleHomeSend}
+                    onCancel={() => undefined}
+                    onLoadProviderModels={
+                      server.productClient.listProviderModels
+                    }
+                    onModelConfigChange={async () => false}
+                    controlError={null}
+                    findFiles={displayWorkspace ? findComposerFiles : undefined}
+                  />
+                }
+                sendBlocked={homeSendBlock}
+                onSelectWorkspace={routing.navigateWorkspace}
+                onSelectSession={routing.navigateSession}
+                onOpenWorkspace={(path, kind) =>
+                  void handleOpenWorkspace(path, kind)
+                }
+                onOpenProviders={() => routing.openSettings("providers")}
+              />
             )}
           </main>
 
@@ -1950,21 +2325,4 @@ function RouteErrorView({
   );
 }
 
-function WorkspaceSessionEmpty({
-  workspaceName,
-  onNewSession,
-}: {
-  workspaceName: string;
-  onNewSession: () => void;
-}) {
-  const { t } = useCopy();
-  return (
-    <section className="route-state">
-      <h1>{workspaceName}</h1>
-      <p>{t("chat.startNewSession")}</p>
-      <button type="button" onClick={onNewSession}>
-        {t("nav.newSession")}
-      </button>
-    </section>
-  );
-}
+

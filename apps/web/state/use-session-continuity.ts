@@ -1039,6 +1039,15 @@ export function useSessionContinuity({
     async (
       message: string,
       attachments: ProductMessageAttachmentRequest[] = [],
+      /**
+       * §6.1: Alt+Enter asks for the `current_run` delivery. The send endpoint
+       * has no delivery field — a message created during a live turn always
+       * lands in the successor queue first — so an interjection is the send
+       * followed by the promote request the queue UI already exposes. If the
+       * promote is refused (the turn ended in between), the message stays
+       * queued as a successor rather than being lost.
+       */
+      delivery?: ProductMessageDelivery,
     ): Promise<boolean> => {
       const session = findSession(
         catalogRef.current,
@@ -1127,6 +1136,12 @@ export function useSessionContinuity({
 
       messageRequestsRef.current.delete(requestKey);
       upsertMessage(accepted);
+      if (delivery === "current_run" && accepted.status === "queued") {
+        // Composed interjection: the message is durable in the queue, and this
+        // second request asks for it to steer the live turn. `promoteMessage`
+        // already reports a refusal through controlError.
+        await promoteMessage(accepted.id, "current_run");
+      }
       if (autoTitle !== null) {
         // Read the title again rather than trusting the snapshot this call
         // started with: a rename that landed while the message was in flight
@@ -1168,6 +1183,7 @@ export function useSessionContinuity({
       catalogRef,
       markSession,
       productClient,
+      promoteMessage,
       reconcileAcceptedSuccessor,
       refreshMessages,
       setConnection,
