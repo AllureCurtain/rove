@@ -34,6 +34,10 @@ jobs:
         with:
           cache-on-failure: true
 
+      # rove-api depends on rfd, whose ashpd backend builds wayland-sys crates.
+      - name: Install system libraries (wayland for rfd/ashpd)
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev wayland-protocols
+
       - name: cargo fmt
         run: cargo fmt --all --check
 
