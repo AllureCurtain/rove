@@ -139,20 +139,36 @@ export function createSessionViewSnapshotStore(
   };
 }
 
-/** The shell's single transcript: one store, one registered capture. */
+/** The shell's transcripts: one store, one registered capture per pane. */
 export const sessionViewSnapshots = createSessionViewSnapshotStore();
 
-let activeCapture: (() => void) | null = null;
+let activeCaptures = new Set<() => void>();
 
 /**
- * The transcript registers how to read its current view. Capture is driven by
- * the data layer, which is the side that knows a reset is about to happen —
- * leaving the session, or replacing it with another one.
+ * Each retained transcript pane registers how to read its own view. Capture is
+ * driven by the data layer, which is the side that knows a reset is about to
+ * happen — leaving the session, or replacing it with another one — and every
+ * mounted pane captures itself, because a hidden pane keeps a live viewport
+ * worth preserving too.
+ *
+ * Passing `null` clears every registration; the per-pane return value is the
+ * unregister disposer and the one panes are expected to use.
  */
-export function registerSessionViewCapture(capture: (() => void) | null): void {
-  activeCapture = capture;
+export function registerSessionViewCapture(
+  capture: (() => void) | null,
+): () => void {
+  if (capture === null) {
+    activeCaptures.clear();
+    return () => {};
+  }
+  activeCaptures.add(capture);
+  return () => {
+    activeCaptures.delete(capture);
+  };
 }
 
 export function captureActiveSessionView(): void {
-  activeCapture?.();
+  for (const capture of activeCaptures) {
+    capture();
+  }
 }

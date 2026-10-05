@@ -1,4 +1,5 @@
 import type { ChatMessage, ToolCallView, TranscriptInputView, TranscriptTimelineItem } from "../lib/rove-state";
+import type { PromptCompactionState } from "../lib/rove-types";
 
 /**
  * One rendered row of a transcript.
@@ -12,6 +13,7 @@ import type { ChatMessage, ToolCallView, TranscriptInputView, TranscriptTimeline
 export type TranscriptEntry =
   | { kind: "turn"; id: string; message: ChatMessage }
   | { kind: "activity"; id: string; tools: ToolCallView[]; inputs: TranscriptInputView[] }
+  | { kind: "compaction"; id: string; compaction: PromptCompactionState }
   | { kind: "answer"; id: string; message: ChatMessage; streaming: boolean };
 
 export function buildTranscriptEntries(items: TranscriptTimelineItem[]): TranscriptEntry[] {
@@ -33,6 +35,16 @@ export function buildTranscriptEntries(items: TranscriptTimelineItem[]): Transcr
     }
     if (item.kind === "message") {
       flush();
+      // A compacted answer carries the compaction state it was produced from:
+      // it is written into the stream as a divider row, so a re-read later is
+      // not mistaken for part of the turn's own work.
+      if (item.message.promptCompaction) {
+        entries.push({
+          kind: "compaction",
+          id: `${item.entry.id}:compaction`,
+          compaction: item.message.promptCompaction,
+        });
+      }
       const last = index === items.length - 1;
       entries.push({
         kind: "answer",
