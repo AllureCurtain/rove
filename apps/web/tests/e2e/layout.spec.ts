@@ -390,17 +390,18 @@ test("work panel tab strip opens, closes and reopens tabs", async ({ page }) => 
   await openWorkPanel(page);
 
   const strip = page.getByRole("tablist", { name: "详情页签" });
-  const statusTab = strip.getByRole("tab", { name: "运行", exact: true });
+  const changesTab = strip.getByRole("tab", { name: "变更", exact: true });
   const filesTab = strip.getByRole("tab", { name: "文件", exact: true });
   const launcherTab = strip.getByRole("tab", { name: "打开页签", exact: true });
   const openTabButton = page.getByRole("button", { name: "打开一个页签", exact: true });
 
-  // A fresh session starts with exactly the run status tab.
-  await expect(statusTab).toHaveAttribute("aria-selected", "true");
+  // A fresh session opens on the evidence view: exactly the changes tab
+  // (design §8, "default tab is the evidence view, not a status dump").
+  await expect(changesTab).toHaveAttribute("aria-selected", "true");
   await expect(strip.getByRole("tab")).toHaveCount(1);
   await expect(page.getByRole("tabpanel")).toHaveAttribute(
     "aria-labelledby",
-    "inspector-tab-status",
+    "inspector-tab-changes",
   );
 
   // `+` opens a launcher page; choosing a kind replaces that page.
@@ -415,14 +416,14 @@ test("work panel tab strip opens, closes and reopens tabs", async ({ page }) => 
 
   // Roving tabindex: only the selected tab is tabbable, arrows move selection.
   await expect(filesTab).toHaveAttribute("tabindex", "0");
-  await expect(statusTab).toHaveAttribute("tabindex", "-1");
-  await statusTab.focus();
+  await expect(changesTab).toHaveAttribute("tabindex", "-1");
+  await changesTab.focus();
   await page.keyboard.press("ArrowRight");
   await expect(filesTab).toBeFocused();
   await expect(filesTab).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("ArrowLeft");
-  await expect(statusTab).toBeFocused();
-  await expect(statusTab).toHaveAttribute("aria-selected", "true");
+  await expect(changesTab).toBeFocused();
+  await expect(changesTab).toHaveAttribute("aria-selected", "true");
 
   // Delete closes the focused tab and focuses the neighbour. Focus is asserted
   // first, because tab focus moves in a frame after the arrow key.
@@ -431,23 +432,23 @@ test("work panel tab strip opens, closes and reopens tabs", async ({ page }) => 
   await expect(filesTab).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Delete");
   await expect(filesTab).toHaveCount(0);
-  await expect(statusTab).toHaveAttribute("aria-selected", "true");
-  await expect(statusTab).toBeFocused();
+  await expect(changesTab).toHaveAttribute("aria-selected", "true");
+  await expect(changesTab).toBeFocused();
 
   // Middle-click closes a tab too.
   await openTabButton.click();
-  await panel.getByRole("button", { name: "变更", exact: true }).click();
-  const changesTab = strip.getByRole("tab", { name: "变更", exact: true });
-  await expect(changesTab).toHaveAttribute("aria-selected", "true");
-  await changesTab.click({ button: "middle" });
-  await expect(changesTab).toHaveCount(0);
+  await panel.getByRole("button", { name: "运行", exact: true }).click();
+  const statusTab = strip.getByRole("tab", { name: "运行", exact: true });
+  await expect(statusTab).toHaveAttribute("aria-selected", "true");
+  await statusTab.click({ button: "middle" });
+  await expect(statusTab).toHaveCount(0);
 
   // The explicit close button works, and an empty strip keeps a way back.
   await openTabButton.click();
   await panel.getByRole("button", { name: "文件", exact: true }).click();
   await strip.getByRole("button", { name: "关闭 文件", exact: true }).click();
   await expect(filesTab).toHaveCount(0);
-  await strip.getByRole("button", { name: "关闭 运行", exact: true }).click();
+  await strip.getByRole("button", { name: "关闭 变更", exact: true }).click();
   await expect(strip.getByRole("tab")).toHaveCount(0);
   await expect(page.getByText("没有打开的页签，用 + 打开一个。", { exact: true })).toBeVisible();
   // An empty strip must not leave invalid ARIA behind: `tablist` requires owned

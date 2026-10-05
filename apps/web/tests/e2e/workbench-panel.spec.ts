@@ -138,10 +138,22 @@ test("narrow panel traps focus and Escape returns to the actual details trigger"
   await expect(dialog).toBeVisible();
   const close = dialog.getByRole("button", { name: "关闭详情", exact: true });
   await expect(close).toBeFocused();
+  // The strip's `+` launcher sits before the close button in the header now,
+  // so Shift+Tab steps back to it instead of wrapping.
   await close.press("Shift+Tab");
-  await expect(dialog.getByRole("button", { name: "拒绝", exact: true })).toBeFocused();
+  await expect(
+    dialog.getByRole("button", { name: "打开一个页签", exact: true }),
+  ).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(close).toBeFocused();
+  // The trap still wraps at both ends: past the strip's leading tab lands on
+  // the body's last control, and forward from there returns to the tab.
+  const firstTab = dialog.getByRole("tab").first();
+  await firstTab.focus();
+  await firstTab.press("Shift+Tab");
+  await expect(dialog.getByRole("button", { name: "拒绝", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(firstTab).toBeFocused();
   await page.screenshot({ path: testInfo.outputPath("approval-narrow.png") });
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
@@ -209,9 +221,14 @@ test("opening a file does not discard pending pagination or leave loading stuck"
   await files.getByRole("button", { name: "加载更多", exact: true }).click();
   await pending;
   await files.getByRole("button", { name: "first.txt 12 B", exact: true }).click();
-  await expect(files.getByText("selected file content", { exact: true })).toBeVisible();
+  // A file open switches to its own `file` tab (design §8); the browser stays
+  // mounted hidden so the pending page keeps loading.
+  const viewer = page.getByRole("region", { name: "first.txt", exact: true });
+  await expect(viewer.getByText("selected file content", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "文件", exact: true }).click();
   release();
   await expect(files.getByRole("button", { name: "second.txt 12 B", exact: true })).toBeVisible();
   await expect(files.getByRole("button", { name: "加载更多", exact: true })).toBeEnabled();
-  await expect(files.getByText("selected file content", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "first.txt", exact: true }).click();
+  await expect(viewer.getByText("selected file content", { exact: true })).toBeVisible();
 });
