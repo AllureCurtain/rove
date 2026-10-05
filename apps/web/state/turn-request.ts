@@ -31,22 +31,37 @@ export class ProviderSelectionError extends Error {
  * a profile the catalog no longer contains, so the user is not shown an
  * optimistic turn that is guaranteed to fail.
  */
-export function assertProviderSelectionIsSatisfiable(
+/**
+ * Non-throwing form of the check below: the home surface needs the verdict to
+ * disable its send ahead of time, not an exception on the submit path.
+ */
+export function providerSelectionProblem(
   selection: ActiveProviderSelection | null | undefined,
   profiles: ProviderProfileRecord[],
-): void {
+): ProviderSelectionError | null {
   if (!selection || selection.mode !== "profile") {
-    return;
+    return null;
   }
   if (!selection.profileId) {
-    throw new ProviderSelectionError(
+    return new ProviderSelectionError(
       "The selected provider profile is missing. Choose a provider in Settings.",
     );
   }
   if (!profiles.some((profile) => profile.id === selection.profileId)) {
-    throw new ProviderSelectionError(
+    return new ProviderSelectionError(
       "The selected provider profile is no longer available. Choose another provider in Settings.",
     );
+  }
+  return null;
+}
+
+export function assertProviderSelectionIsSatisfiable(
+  selection: ActiveProviderSelection | null | undefined,
+  profiles: ProviderProfileRecord[],
+): void {
+  const problem = providerSelectionProblem(selection, profiles);
+  if (problem) {
+    throw problem;
   }
 }
 

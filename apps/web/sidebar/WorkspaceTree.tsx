@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  FormEvent,
   type KeyboardEvent,
   type ReactNode,
   useEffect,
@@ -17,20 +16,16 @@ import {
   DotsHorizontalIcon,
   Cross2Icon,
   DrawingPinFilledIcon,
-  FileIcon,
   GearIcon,
   MagnifyingGlassIcon,
   Pencil1Icon,
   PlusIcon,
 } from "@radix-ui/react-icons";
 
-import {
-  desktopWorkspacePickerAvailable,
-  selectDesktopWorkspace,
-} from "../platform/desktop-commands";
 import { useCopy } from "../copy/CopyProvider";
 import { useArmedDelete } from "../shell/use-armed-delete";
 import type { SessionRecord, WorkspaceKind, WorkspaceRecord } from "../state/product-types";
+import { OpenWorkspaceDialog } from "./OpenWorkspaceDialog";
 import { SessionHoverCard } from "./SessionHoverCard";
 import { orderSessions, type SessionPin } from "./session-order";
 import { resolveSessionRows } from "./session-server-search";
@@ -1001,144 +996,4 @@ function forkPointLabel(
     ? `event ${session.forkPointSeq}`
     : t("inspector.notAvailable");
   return `${parentAvailable ? t("workspace.forkPrefix") : t("workspace.parentRemoved")} · ${source} · ${sequence}`;
-}
-
-function OpenWorkspaceDialog({
-  onOpen,
-  onCancel,
-}: {
-  onOpen: (path: string, kind: WorkspaceKind) => void;
-  onCancel: () => void;
-}) {
-  const { t } = useCopy();
-  const [path, setPath] = useState("");
-  const [kind, setKind] = useState<WorkspaceKind>("folder");
-  const [error, setError] = useState<string | null>(null);
-  const [nativePickerAvailable, setNativePickerAvailable] = useState(false);
-  const [pickerBusy, setPickerBusy] = useState(false);
-
-  useEffect(() => {
-    setNativePickerAvailable(desktopWorkspacePickerAvailable());
-  }, []);
-
-  function handleSubmit(event: FormEvent) {
-    event.preventDefault();
-    const trimmed = path.trim();
-    if (!trimmed) {
-      setError(t("empty.pathRequired"));
-      return;
-    }
-    setError(null);
-    onOpen(trimmed, kind);
-  }
-
-  async function browseWorkspace() {
-    setPickerBusy(true);
-    setError(null);
-    try {
-      const selected = await selectDesktopWorkspace();
-      if (selected) {
-        setPath(selected);
-      }
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("workspace.openPickerFailed"));
-    } finally {
-      setPickerBusy(false);
-    }
-  }
-
-  function handleKeyDown(event: KeyboardEvent<HTMLFormElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      onCancel();
-      return;
-    }
-    if (event.key !== "Tab") {
-      return;
-    }
-    event.stopPropagation();
-    const focusable = Array.from(
-      event.currentTarget.querySelectorAll<HTMLElement>(
-        "button:not([disabled]), input:not([disabled]), select:not([disabled])",
-      ),
-    );
-    const first = focusable[0];
-    const last = focusable.at(-1);
-    if (!first || !last) {
-      return;
-    }
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
-
-  return (
-    <div className="modal-backdrop" role="presentation">
-      <form
-        className="modal-card"
-        onSubmit={handleSubmit}
-        onKeyDown={handleKeyDown}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="open-workspace-title"
-      >
-        <h2 id="open-workspace-title">{t("empty.open")}</h2>
-        <p className="modal-card__lede">
-          {t("workspace.openDescription")}
-        </p>
-        <div className="field">
-          <label htmlFor="workspace-path">{t("empty.absolutePath")}</label>
-          <div className="workspace-path-control">
-            <input
-              id="workspace-path"
-              value={path}
-              onChange={(event) => setPath(event.target.value)}
-              placeholder="C:\\projects\\my-app"
-              autoFocus
-              aria-invalid={error ? "true" : undefined}
-              aria-describedby={error ? "workspace-path-error" : undefined}
-            />
-            {nativePickerAvailable ? (
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => void browseWorkspace()}
-                disabled={pickerBusy}
-              >
-                <FileIcon aria-hidden="true" />
-                {pickerBusy ? t("common.loading") : t("empty.browse")}
-              </button>
-            ) : null}
-          </div>
-        </div>
-        <div className="field">
-          <label htmlFor="workspace-kind">{t("empty.kind")}</label>
-          <select
-            id="workspace-kind"
-            value={kind}
-            onChange={(event) => setKind(event.target.value as WorkspaceKind)}
-          >
-            <option value="folder">{t("empty.folder")}</option>
-            <option value="repo">{t("empty.repo")}</option>
-          </select>
-        </div>
-        {error ? (
-          <div className="chat-error" id="workspace-path-error" role="alert">
-            {error}
-          </div>
-        ) : null}
-        <div className="modal-actions">
-          <button type="button" className="secondary" onClick={onCancel}>
-            {t("common.cancel")}
-          </button>
-          <button type="submit">{t("empty.open")}</button>
-        </div>
-      </form>
-    </div>
-  );
 }
