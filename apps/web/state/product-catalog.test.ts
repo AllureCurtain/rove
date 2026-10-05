@@ -81,13 +81,20 @@ describe("product catalog", () => {
       workspaceId: "ws_server",
       sessionId: "sess_server",
     });
-    expect(catalog.sessions).toHaveLength(1);
+    // Archived sessions stay in the catalog — the rail's archived group reads
+    // them; the flag, not the status field, carries the state.
+    expect(catalog.sessions).toHaveLength(2);
     expect(catalog.sessions[0]).toMatchObject({
       status: "running",
+      archived: false,
       activeJobId: "job-2",
       activeRunId: "run-2",
       runtimeOrdinal: 2,
       hasDurableTurn: true,
+    });
+    expect(catalog.sessions[1]).toMatchObject({
+      id: "sess_archived",
+      archived: true,
     });
   });
 
@@ -197,6 +204,7 @@ describe("product catalog", () => {
           workspaceId: "ws_server",
           title: "Stale",
           status: "running",
+          archived: false,
           createdAt: "2026-07-26T00:00:00.000Z",
           updatedAt: "2026-07-26T00:00:00.000Z",
           hasDurableTurn: true,

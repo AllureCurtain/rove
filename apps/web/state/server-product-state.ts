@@ -70,13 +70,12 @@ async function listWorkspaceSessions(
   const sessions: ProductSession[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < MAX_SESSION_PAGES_PER_WORKSPACE; page += 1) {
-    // Archived sessions are dropped by every consumer of this catalog, so we
-    // ask the server not to send them rather than paying to transfer and
-    // discard them.
+    // The rail keeps archived sessions for its archived group (§7.1), so the
+    // catalog loads them rather than asking the server to drop them.
     const response = await client.listSessions(workspaceId, {
       cursor,
       limit: MAX_PRODUCT_SESSION_PAGE_LIMIT,
-      includeArchived: false,
+      includeArchived: true,
     });
     sessions.push(...response.sessions);
     if (!response.next_cursor) {
@@ -111,9 +110,7 @@ export function mergeWorkspaceSnapshot(
   sessions: ProductSession[],
 ): ProductCatalog {
   const workspaceRecord = fromProductWorkspace(workspace);
-  const sessionRecords = sessions
-    .filter((session) => session.status !== "archived")
-    .map(fromProductSession);
+  const sessionRecords = sessions.map(fromProductSession);
   return {
     ...catalog,
     workspaces: [
