@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Cross2Icon,
   DoubleArrowRightIcon,
   MoonIcon,
   PinRightIcon,
@@ -42,6 +43,7 @@ import { CopyProvider, useCopy } from "../copy/CopyProvider";
 import { Transcript } from "../chat/Transcript";
 import { SessionSettleVeil } from "../chat/SessionSettleVeil";
 import { IDLE_PHASE } from "../chat/activity-phase";
+import { ExportPanel } from "../inspector/ExportPanel";
 import { RunInspector } from "../inspector/RunInspector";
 import { useWorkPanel } from "../inspector/use-work-panel";
 import {
@@ -243,6 +245,9 @@ function ServerProductApp({ draftStore }: {
   const peekCloseTimerRef = useRef<number | null>(null);
   // The command palette is shell chrome: open state only, the entries are data.
   const [commandOpen, setCommandOpen] = useState(false);
+  // Evidence export is a per-session action on the rail's session menu
+  // (design §8/A11): it opens a modal instead of occupying a work-panel tab.
+  const [exportSessionId, setExportSessionId] = useState<string | null>(null);
 
   // ── Shared three-column width budget (design §5.0) ──
   const [shellNode, setShellNode] = useState<HTMLDivElement | null>(null);
@@ -257,11 +262,13 @@ function ServerProductApp({ draftStore }: {
     sidebarWidth: number;
     navCollapsed: boolean;
     requestedPanelWidth: number;
+    panelMaximized: boolean;
     layout: WorkPanelLayout | null;
   }>({
     sidebarWidth: sidebar.width,
     navCollapsed: false,
     requestedPanelWidth: panel.width,
+    panelMaximized: panel.maximized,
     layout: null,
   });
   // A callback ref rather than a mount-time effect: `.product-body` only exists
@@ -279,6 +286,7 @@ function ServerProductApp({ draftStore }: {
         sidebarWidth: snapshot.sidebarWidth,
         sidebarCollapsed: snapshot.navCollapsed,
         requestedPanelWidth: snapshot.requestedPanelWidth,
+        maximized: snapshot.panelMaximized,
       });
       const previous = snapshot.layout;
       shellWidthRef.current = next;
@@ -311,6 +319,11 @@ function ServerProductApp({ draftStore }: {
       : (inspectorCollapsed ? 0 : panel.width) +
         (navCollapsed ? 0 : sidebar.width) +
         MAIN_PANE_MIN_WIDTH;
+  // Maximized is a panel mode (design §8): the conversation column yields its
+  // width to the panel entirely and the resize handle is disabled. It never
+  // applies to the mobile drawer, where the panel is already full-width.
+  const panelMaximized =
+    panel.maximized && !inspectorCollapsed && !mobileLayout;
   const panelLayout = useMemo(
     () =>
       workPanelLayout({
@@ -318,8 +331,9 @@ function ServerProductApp({ draftStore }: {
         sidebarWidth: sidebar.width,
         sidebarCollapsed: navCollapsed,
         requestedPanelWidth: panel.width,
+        maximized: panelMaximized,
       }),
-    [measuredShellWidth, navCollapsed, panel.width, sidebar.width],
+    [measuredShellWidth, navCollapsed, panel.width, panelMaximized, sidebar.width],
   );
   // The rail yields first: when the panel request cannot coexist with the
   // conversation floor, collapse the rail instead of squeezing the chat. The
@@ -345,6 +359,7 @@ function ServerProductApp({ draftStore }: {
       sidebarWidth: sidebar.width,
       navCollapsed,
       requestedPanelWidth: panel.width,
+      panelMaximized,
       layout: panelLayout,
     };
   });
@@ -1820,6 +1835,7 @@ function ServerProductApp({ draftStore }: {
           data-workspace-open={workspaceOpen}
           data-inspector-open={mobileLayout && !inspectorCollapsed}
           data-nav-collapsed={navCollapsed}
+          data-panel-maximized={panelMaximized || undefined}
           style={
             {
               "--sidebar-nav-width": `${sidebar.width}px`,
@@ -1889,6 +1905,7 @@ function ServerProductApp({ draftStore }: {
             }
             onDeleteSession={handleDeleteSession}
             onBranchSession={(sessionId) => void handleBranchSession(sessionId)}
+            onExportSession={(session) => setExportSessionId(session.id)}
             onRevealWorkspace={
               desktopRevealInFolderAvailable() ? handleRevealWorkspace : undefined
             }
@@ -1972,12 +1989,15 @@ function ServerProductApp({ draftStore }: {
                 panel has a focus target to return to. It lives inside <main>
                 so it tracks the conversation's right edge rather than the
                 panel's own header. */}
-            {activeWorkspace && activeSession && !routing.routeError ? (
+            {activeWorkspace && !routing.routeError ? (
               <button
                 ref={inspectorButtonRef}
                 type="button"
                 className="ghost icon-button work-panel-toggle"
                 onClick={panel.toggle}
+                // Design §8: the toggle stays mounted but is disabled until a
+                // session exists, so it never opens a sessionless panel.
+                disabled={!activeSession}
                 aria-pressed={!inspectorCollapsed}
                 aria-label={
                   inspectorCollapsed
@@ -2300,6 +2320,7 @@ function ServerProductApp({ draftStore }: {
               onApproval={continuity.approve}
               productSessionId={activeSession.id}
               workspaceId={activeWorkspace.id}
+              workspaceRootPath={activeWorkspace.rootPath}
               collapsed={inspectorCollapsed}
               onToggle={panel.toggle}
               runState={continuity.runState}
@@ -2321,11 +2342,9 @@ function ServerProductApp({ draftStore }: {
                 void reviews.loadFindings(reviewId, cursor);
               }}
               onOpenReviewFinding={(path, line) => {
-                // A finding opens its file, so the files tab takes the target.
-                panel.open("files", { kind: "file", path, line });
+                // A finding opens its file as that file's own tab (design §8).
+                panel.openFile(path, line);
               }}
-              fileFocusPath={panel.target?.kind === "file" ? panel.target.path : undefined}
-              fileFocusLine={panel.target?.kind === "file" ? panel.target.line : undefined}
             />
             </>
           ) : null}
@@ -2336,6 +2355,12 @@ function ServerProductApp({ draftStore }: {
               aria-label={t("common.close")}
               tabIndex={-1}
               onClick={workspaceOpen ? closeWorkspaceDrawer : closeInspector}
+            />
+          ) : null}
+          {exportSessionId ? (
+            <SessionExportDialog
+              sessionId={exportSessionId}
+              onClose={() => setExportSessionId(null)}
             />
           ) : null}
         </div>
@@ -2407,6 +2432,60 @@ function RouteLoadingView() {
       <h1>{t("boot.loading")}</h1>
       <p>{t("boot.checking")}</p>
     </section>
+  );
+}
+
+/** Modal host for evidence export (design §8): close button, backdrop, Escape. */
+function SessionExportDialog({
+  sessionId,
+  onClose,
+}: {
+  sessionId: string;
+  onClose: () => void;
+}) {
+  const { t } = useCopy();
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    closeRef.current?.focus();
+  }, []);
+  return (
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <div
+        className="modal-card export-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="export-dialog-title"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          }
+        }}
+      >
+        <div className="inspector-section__heading">
+          <h2 id="export-dialog-title">{t("settings.export.title")}</h2>
+          <button
+            type="button"
+            className="ghost icon-button"
+            onClick={onClose}
+            ref={closeRef}
+            aria-label={t("common.close")}
+          >
+            <Cross2Icon />
+          </button>
+        </div>
+        <ExportPanel sessionId={sessionId} />
+      </div>
+    </div>
   );
 }
 

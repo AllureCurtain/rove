@@ -29,7 +29,6 @@ export function ExportPanel({ sessionId }: { sessionId: string }) {
 
   return (
     <section className="inspector-section" aria-label={t("settings.export.title")}>
-      <h3>{t("settings.export.title")}</h3>
       <p className="inspector-empty-line">{t("settings.export.desc")}</p>
       <div className="evidence-export-controls">
         <label>

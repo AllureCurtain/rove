@@ -118,6 +118,7 @@ export function SessionRail({
   onArchiveSession,
   onDeleteSession,
   onBranchSession,
+  onExportSession,
   onRevealWorkspace,
   queueCounts,
   version,
@@ -156,6 +157,11 @@ export function SessionRail({
   /** Resolves true when the removed row was the active session. */
   onDeleteSession: (sessionId: string) => Promise<boolean>;
   onBranchSession: (sessionId: string) => void;
+  /**
+   * Evidence export is a row-menu action (design §8/A11): the host opens the
+   * export dialog for this session.
+   */
+  onExportSession?: (session: SessionRecord) => void;
   /**
    * Desktop-only: reveal the project root in the OS file manager. Absent in
    * the browser build, where the menu hides the item instead of dead-ending.
@@ -532,6 +538,9 @@ export function SessionRail({
         onArchive={(sessionId, archived) => onArchiveSession(sessionId, archived)}
         onDelete={(sessionId) => void onDeleteSession(sessionId)}
         onBranch={(sessionId) => onBranchSession(sessionId)}
+        onExport={
+          onExportSession ? () => onExportSession(session) : undefined
+        }
         onBatchArchive={handleBatchArchive}
         onBatchDelete={() => void handleBatchDelete()}
         onClearSelection={() => setSelection(EMPTY_SELECTION)}
