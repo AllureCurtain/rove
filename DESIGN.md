@@ -29,7 +29,7 @@ This file covers only visual and component rules; information architecture, defa
 ## Typography and spacing
 
 - Fonts: only `--font-ui` and `--font-mono`.
-- Radii: only `--radius-sm` / `--radius-md` / `--radius-lg` / `--radius-pill`.
+- Radii: only `--radius-sm` / `--radius-md` / `--radius-lg` / `--radius-xl` / `--radius-pill`.
 - Shell dimensions use tokens: `--sidebar-width` (left rail, resizable 240–520px, default 275px), `--inspector-width`, `--topbar-height` (46px; shared by the conversation top bar and the work-panel header).
 - Motion:
   - Durations only via `var(--motion-duration-*)`; easings only via `var(--motion-ease-*)`, `linear`, or `steps(...)`.

@@ -35,9 +35,9 @@ Purpose: a graphical interface for managing workspaces, sessions, and settings.
 Steps:
 
 1. Run `powershell -ExecutionPolicy Bypass -File scripts/dev.ps1` at the repo root. For a real model, set the key env var first and add `-Provider`.
-2. Open <http://localhost:3000> and pick a folder or repository as the workspace.
-3. In Settings → Providers, create a profile, fill in the env var name holding the key, test the connection, then activate.
-4. Create a session and type a task. You can keep sending messages while it runs: they queue, and can be promoted to the front or withdrawn.
+2. Open <http://localhost:3000>. The home surface lets you pick the workspace inline and jump back into a recent session; typing a task there creates the session and sends the message.
+3. In Settings → Providers, create a profile, fill in the env var name holding the key, test the connection, then activate. Without a provider the composer still takes drafts, but sending stays disabled until one is configured.
+4. In a session, Enter sends and Shift+Enter inserts a newline (the send key is configurable under Settings → Keyboard); Ctrl/Cmd+Enter also sends, and Alt+Enter steers a running turn. You can keep sending messages while it runs: they queue above the composer, and can be promoted to the front or withdrawn. The send button turns into Stop while a run is live.
 5. The work panel on the right stays closed until you open it — use the floating button at the top-right corner of the conversation (or `Ctrl+.`); it shows files, diffs, artifacts, and usage, and remembers whether it was open. You can also export evidence (JSON, HTML, Markdown).
 
 Note: the browser never sees your key. Refreshing the page restores the conversation, and incomplete recovery is stated explicitly. Settings → General also offers a skin selector (graphite or warm).

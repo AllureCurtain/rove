@@ -4,7 +4,7 @@ Updated: 2026-10-05
 
 ## In progress
 
-- Web console rebuild per `docs/web-console-design.md` v2, one PR per phase: P0 skin and shell is on branch `feat/console-p0-graphite-shell` (graphite skin, 46px column chrome, closed-by-default work panel, allocated-width collapse, persisted rail/panel preferences); P1 conversation surface, P2 sidebar, P3 work panel, and P4 polish remain
+- Web console rebuild per `docs/web-console-design.md` v2, one PR per phase: P0 skin and shell merged (PR #4); P1 conversation surface is on branch `feat/console-p1-conversation-surface` (transcript presentation, retained session panes + settle veil, composer stack with send/stop slot and durable queue, home surface with shared workspace-open flow); P2 sidebar, P3 work panel, and P4 polish remain
 
 ## Next up
 
