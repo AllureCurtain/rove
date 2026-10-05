@@ -779,6 +779,7 @@ async function openWorkspace(
       new URL(response.url()).pathname === "/api/product/sessions" &&
       response.status() === 201,
   );
+  await page.locator(".home-surface__manual summary").click();
   await page.getByLabel("绝对路径").fill(workspaceRoot);
   await page.getByRole("button", { name: "Open workspace", exact: true }).click();
 

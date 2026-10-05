@@ -8,6 +8,7 @@ async function openComposer(
 ) {
   const api = await installMockProductApi(page, options);
   await page.goto("/");
+  await page.getByText("手动输入路径").click();
   await page.getByLabel("绝对路径").fill("D:/tmp/rove-composer-demo");
   await page.getByRole("button", { name: "打开工作区", exact: true }).click();
   const composer = page.getByRole("textbox", { name: /输入消息/ });
@@ -15,7 +16,7 @@ async function openComposer(
   return { api, composer };
 }
 
-for (const shortcut of ["Control+Enter", "Meta+Enter"]) {
+for (const shortcut of ["Enter", "Control+Enter", "Meta+Enter"]) {
   test(`${shortcut} sends the trimmed draft and clears it on success`, async ({ page }) => {
     const { api, composer } = await openComposer(page);
     await composer.fill("  keyboard message  ");
@@ -26,17 +27,37 @@ for (const shortcut of ["Control+Enter", "Meta+Enter"]) {
   });
 }
 
-test("Enter and Shift+Enter insert newlines without sending", async ({ page }) => {
+test("Shift+Enter inserts a newline while plain Enter sends", async ({ page }) => {
+  const { api, composer } = await openComposer(page);
+  await composer.fill("first");
+  await composer.press("Shift+Enter");
+  await composer.press("Shift+Enter");
+  await expect(composer).toHaveValue("first\n\n");
+  expect(api.jobs).toHaveLength(0);
+  // The send-key hint is persistent furniture: it stays readable while a
+  // draft is typed, unlike placeholder copy.
+  await expect(page.locator(".chat-composer__sendkey-hint")).toContainText("Enter 发送");
+  await expect(page.locator(".chat-composer__sendkey-hint")).toContainText("Shift+Enter 换行");
+  // A whitespace-only draft keeps the send slot disabled.
+  await composer.fill("   ");
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeDisabled();
+  expect(api.jobs).toHaveLength(0);
+});
+
+test("the mod-enter preference restores Enter for newlines", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("rove.ui-send-key", "mod-enter");
+  });
   const { api, composer } = await openComposer(page);
   await composer.fill("first");
   await composer.press("Enter");
   await composer.press("Shift+Enter");
   await expect(composer).toHaveValue("first\n\n");
   expect(api.jobs).toHaveLength(0);
-  await composer.fill("   ");
   await composer.press("Control+Enter");
-  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeDisabled();
-  expect(api.jobs).toHaveLength(0);
+  await expect(page.getByLabel("Conversation").getByText("first", { exact: false })).toBeVisible();
+  await expect(composer).toHaveValue("");
+  expect(api.jobs).toHaveLength(1);
 });
 
 test("IME confirmation never submits a draft", async ({ page }) => {
@@ -155,20 +176,57 @@ test("repeated shortcut keydown never sends", async ({ page }) => {
   expect(api.jobs).toHaveLength(0);
 });
 
-test("stop remains available while a run is busy and cancels it", async ({ page }) => {
+test("the slot is Stop while a run is busy with no draft, and cancels the run", async ({ page }) => {
   await openComposer(page, { mode: "approval" });
   const composer = page.getByRole("textbox", { name: /输入消息/ });
   await composer.fill("needs approval");
-  await composer.press("Control+Enter");
-  await expect(page.getByRole("button", { name: "停止" })).toBeVisible();
-  // Submission briefly disables editing; an active run does not, because users
-  // can prepare/send a successor message while Stop remains independently usable.
-  await expect(composer).toBeEnabled();
-  await composer.fill("keep this draft after stopping");
+  await composer.press("Enter");
+  // §6.1: send and stop share one slot; a busy run with an empty draft shows Stop.
   const stop = page.getByRole("button", { name: "停止", exact: true });
-  await expect(stop).toBeEnabled();
-  await stop.click();
-  await expect(page.getByRole("button", { name: "停止" })).toBeHidden();
+  await expect(stop).toBeVisible();
+  // Submission briefly disables editing; an active run does not, because users
+  // can prepare a successor message while the turn runs.
   await expect(composer).toBeEnabled();
-  await expect(composer).toHaveValue("keep this draft after stopping");
+  // A draft swaps the slot to Send: queue (Enter) and interject (Alt+Enter)
+  // are explicit choices, and the tooltip says so.
+  await composer.fill("queued while running");
+  const send = page.getByRole("button", { name: "发送", exact: true });
+  await expect(send).toBeVisible();
+  await expect(send).toHaveAttribute("title", /Alt\+Enter/u);
+  await expect(stop).toBeHidden();
+  // Enter queues the draft as a successor — it lands in the stack above the
+  // shell, and the slot returns to Stop once the draft leaves the composer.
+  await composer.press("Enter");
+  await expect(page.locator(".composer-queue .queued-message")).toContainText(
+    "queued while running",
+  );
+  await expect(stop).toBeVisible();
+  await stop.click();
+  await expect(stop).toBeHidden();
+  await expect(composer).toBeEnabled();
+});
+
+test("Alt+Enter interjects into the running turn", async ({ page }) => {
+  const { api } = await openComposer(page, { mode: "approval" });
+  const composer = page.getByRole("textbox", { name: /输入消息/ });
+  await composer.fill("start the run");
+  await composer.press("Enter");
+  await expect(page.getByRole("button", { name: "停止", exact: true })).toBeVisible();
+  await composer.fill("steer this turn");
+  const promoted = page.waitForResponse(
+    (response) =>
+      /\/api\/product\/sessions\/[^/]+\/messages\/[^/]+\/promote$/u.test(response.url()) &&
+      response.request().method() === "POST",
+  );
+  await composer.press("Alt+Enter");
+  await promoted;
+  await expect(composer).toHaveValue("");
+  // The row stays in the stack, now marked as joining the live turn.
+  await expect(page.locator(".composer-queue .queued-message")).toContainText(
+    "steer this turn",
+  );
+  await expect(page.locator(".composer-queue .queued-message")).toContainText(
+    "等待回合内接管",
+  );
+  expect(api.jobs).toHaveLength(1);
 });

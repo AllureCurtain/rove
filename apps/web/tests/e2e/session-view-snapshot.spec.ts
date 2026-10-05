@@ -9,13 +9,23 @@ import {
 } from "./product-api-mock";
 
 /**
- * Per-session view snapshots (design F1).
+ * Retained session panes (design §5.1) and per-session view snapshots (F1).
  *
- * The transcript is not remounted on a session switch, so the reader's viewport,
- * mount window and disclosure choices have to be captured before the data layer
- * resets and reinstated when the session comes back — unless the session moved
- * on in the meantime, in which case its newest turn is the honest landing.
+ * The last visited sessions keep their transcript mounted under
+ * `visibility:hidden`, so the reader's viewport, mount window and disclosure
+ * choices survive a switch in the DOM itself. The snapshot store still owns the
+ * reinstate decision for panes whose data was replaced — a session that moved
+ * on in the background opens at its newest turn, not where it was left.
+ *
+ * Every transcript locator below scopes to `data-visible="true"`: a hidden
+ * pane is still in the DOM by design, so unscoped queries match its rows too.
  */
+
+function visibleTranscript(page: Page) {
+  return page
+    .locator('.session-pane[data-visible="true"]')
+    .getByLabel("Conversation");
+}
 
 const NOW = "2026-09-26T00:00:00.000Z";
 const LONG_ANSWER = Array.from(
@@ -181,7 +191,7 @@ function appendTurn(transcript: MockTranscript, session: MockSession, answer: st
 
 async function openSession(page: Page, workspaceId: string, sessionId: string) {
   await page.goto(`/w/${workspaceId}/s/${sessionId}`);
-  await expect(page.getByLabel("Conversation")).toBeVisible();
+  await expect(visibleTranscript(page)).toBeVisible();
 }
 
 async function switchTo(page: Page, title: string) {
@@ -218,7 +228,7 @@ test("a session round trip restores the reading position and shows no other sess
   });
 
   await openSession(page, workspace.id, sessionA.id);
-  const scroller = page.getByLabel("Conversation");
+  const scroller = visibleTranscript(page);
   await expect(scroller.getByText("restored answer line 160")).toBeVisible();
   await scroller.hover();
   await page.mouse.wheel(0, -900);
@@ -231,6 +241,11 @@ test("a session round trip restores the reading position and shows no other sess
   await expect(page).toHaveURL(`/w/${workspace.id}/s/${sessionB.id}`);
   await expect(scroller.getByText("Session B question")).toBeVisible();
   await expect(scroller.getByText("restored answer line 160")).toHaveCount(0);
+  // §5.1: the session we just left stays mounted — hidden and inert, but its
+  // DOM (and its scroll position) is retained for the round trip.
+  const hiddenPane = page.locator('.session-pane[data-visible="false"]');
+  await expect(hiddenPane.getByText("restored answer line 160")).toBeAttached();
+  await expect(hiddenPane.getByText("restored answer line 160")).toBeHidden();
 
   await switchTo(page, "Session A");
   await expect(page).toHaveURL(`/w/${workspace.id}/s/${sessionA.id}`);
@@ -261,7 +276,7 @@ test("a session that advanced in the background opens at its newest turn", async
   });
 
   await openSession(page, workspace.id, sessionA.id);
-  const scroller = page.getByLabel("Conversation");
+  const scroller = visibleTranscript(page);
   await expect(scroller.getByText("restored answer line 160")).toBeVisible();
   await scroller.hover();
   await page.mouse.wheel(0, -900);
@@ -295,16 +310,112 @@ test("an expanded activity group stays expanded across a session round trip", as
   });
 
   await openSession(page, workspace.id, sessionA.id);
-  const head = page.locator("button.activity-group__head");
+  const head = page
+    .locator('.session-pane[data-visible="true"]')
+    .locator("button.activity-group__head");
   await expect(head).toHaveCount(1);
   await expect(head).toHaveAttribute("aria-expanded", "false");
   await head.click();
   await expect(head).toHaveAttribute("aria-expanded", "true");
 
   await switchTo(page, "Session B");
-  await expect(page.getByLabel("Conversation").getByText("Session B question")).toBeVisible();
+  await expect(visibleTranscript(page).getByText("Session B question")).toBeVisible();
   await switchTo(page, "Session A");
 
-  const returned = page.locator("button.activity-group__head");
+  const returned = page
+    .locator('.session-pane[data-visible="true"]')
+    .locator("button.activity-group__head");
   await expect(returned).toHaveAttribute("aria-expanded", "true");
+});
+
+test("a cold session switch veils the transcript while the composer stays usable", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const workspace = createMockWorkspace();
+  const sessionA = createMockSession("session-a", workspace.id, "Session A");
+  const sessionB = createMockSession("session-b", workspace.id, "Session B");
+  await installMockProductApi(page, {
+    workspaces: [workspace],
+    sessions: [sessionA, sessionB],
+    transcripts: {
+      [sessionA.id]: answerTranscript(workspace.id, sessionA, "Session A question", "Session A answer"),
+      [sessionB.id]: answerTranscript(workspace.id, sessionB, "Session B question", "Session B answer"),
+    },
+    activeWorkspaceId: workspace.id,
+    activeSessionId: sessionA.id,
+    // §5.5: the veil exists for the window while a cold restore is in flight.
+    transcriptDelayMs: { [sessionB.id]: 1200 },
+  });
+
+  await openSession(page, workspace.id, sessionA.id);
+  await expect(visibleTranscript(page).getByText("Session A question")).toBeVisible();
+
+  await switchTo(page, "Session B");
+  // The veil covers the transcript — never the composer — for the in-flight
+  // restore, and the 2px switch progress rides the top of the region.
+  await expect(page.locator(".session-settle-veil")).toBeVisible();
+  await expect(page.locator(".session-switch-progress")).toBeAttached();
+  const composer = page.getByRole("textbox", { name: /message|消息/i });
+  await expect(composer).toBeEnabled();
+  await composer.fill("still typing through the switch");
+  await expect(composer).toHaveValue("still typing through the switch");
+
+  await expect(visibleTranscript(page).getByText("Session B question")).toBeVisible();
+  await expect(page.locator(".session-settle-veil")).toHaveCount(0);
+  await expect(page.locator(".session-switch-progress")).toHaveCount(0);
+});
+
+test("the retained pane set is bounded and hidden panes are inert", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const workspace = createMockWorkspace();
+  const sessions = Array.from({ length: 6 }, (_value, index) =>
+    createMockSession(`session-${index}`, workspace.id, `Session ${index}`),
+  );
+  await installMockProductApi(page, {
+    workspaces: [workspace],
+    sessions,
+    transcripts: Object.fromEntries(
+      sessions.map((session) => [
+        session.id,
+        answerTranscript(
+          workspace.id,
+          session,
+          `Question ${session.id}`,
+          `Answer ${session.id}`,
+        ),
+      ]),
+    ),
+    activeWorkspaceId: workspace.id,
+    activeSessionId: sessions[0].id,
+  });
+
+  await openSession(page, workspace.id, sessions[0].id);
+  await expect(
+    visibleTranscript(page).getByText(`Question ${sessions[0].id}`),
+  ).toBeVisible();
+
+  // Walk through every session: the retained set is bounded, so the oldest
+  // pane is evicted once the cap is reached.
+  for (const session of sessions.slice(1)) {
+    await switchTo(page, `Session ${sessions.indexOf(session)}`);
+    await expect(
+      visibleTranscript(page).getByText(`Question ${session.id}`),
+    ).toBeVisible();
+  }
+  const panes = page.locator(".session-pane");
+  await expect(panes).toHaveCount(4);
+  // The evicted session left the DOM entirely; the retained ones stay mounted
+  // but unreachable: inert, aria-hidden, and out of the visible order.
+  await expect(
+    page.locator(`text=Question ${sessions[0].id}`),
+  ).toHaveCount(0);
+  const hidden = page.locator('.session-pane[data-visible="false"]');
+  await expect(hidden).toHaveCount(3);
+  for (let index = 0; index < 3; index += 1) {
+    await expect(hidden.nth(index)).toHaveAttribute("inert", "");
+    await expect(hidden.nth(index)).toHaveAttribute("aria-hidden", "true");
+  }
 });

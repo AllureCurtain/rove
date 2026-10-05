@@ -26,6 +26,7 @@ async function openComposer(
 ) {
   const api = await installMockProductApi(page, options);
   await page.goto("/");
+  await page.getByText("手动输入路径").click();
   await page.getByLabel("绝对路径").fill("D:/tmp/rove-attachments");
   await page.getByRole("button", { name: "打开工作区", exact: true }).click();
   const composer = page.getByRole("textbox", { name: /输入消息/ });
