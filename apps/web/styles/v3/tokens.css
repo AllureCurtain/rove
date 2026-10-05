@@ -57,6 +57,7 @@
   --cp-radius-sm: 6px;
   --cp-radius-md: 8px;
   --cp-radius-lg: 12px;
+  --cp-radius-xl: 18px;
 
   --cp-shadow-xs: 0 1px 2px rgba(60, 40, 20, 0.05);
   --cp-shadow-sm: 0 1px 2px rgba(60, 40, 20, 0.05), 0 2px 8px rgba(60, 40, 20, 0.06);
@@ -127,6 +128,8 @@
   --v2-shadow-md: var(--cp-shadow-md);
   --v2-radius-sm: var(--cp-radius-sm);
   --v2-radius-md: var(--cp-radius-md);
+  --v2-radius-lg: var(--cp-radius-lg);
+  --v2-radius-xl: var(--cp-radius-xl);
 
   /* Rail becomes warm ivory, not dark navy */
   --v2-rail: #f7f4ec;
@@ -285,6 +288,7 @@ html[data-theme="dark"] .product-app-frame[data-skin="warm"] {
   --cp-radius-sm: 6px;
   --cp-radius-md: 8px;
   --cp-radius-lg: 12px;
+  --cp-radius-xl: 18px;
 
   --cp-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
   --cp-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.04);
@@ -355,6 +359,8 @@ html[data-theme="dark"] .product-app-frame[data-skin="warm"] {
   --v2-shadow-md: var(--cp-shadow-md);
   --v2-radius-sm: var(--cp-radius-sm);
   --v2-radius-md: var(--cp-radius-md);
+  --v2-radius-lg: var(--cp-radius-lg);
+  --v2-radius-xl: var(--cp-radius-xl);
 
   /* Rail drops a tier below the page: near-white gray, borderless */
   --v2-rail: #f3f3f3;
