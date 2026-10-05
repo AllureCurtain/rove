@@ -48,10 +48,9 @@ export function productCatalogFromApi(
   const workspaceRecords = workspaces.map(fromProductWorkspace);
   const workspaceIds = new Set(workspaceRecords.map((workspace) => workspace.id));
   const sessionRecords = sessions
-    .filter(
-      (session) =>
-        session.status !== "archived" && workspaceIds.has(session.workspace_id),
-    )
+    // Archived sessions stay in the catalog: the rail files them under the
+    // archived group (design §7.1) instead of dropping the record.
+    .filter((session) => workspaceIds.has(session.workspace_id))
     .map(fromProductSession);
   const activeSession = sessionRecords.find(
     (session) =>
@@ -84,10 +83,7 @@ export function replaceServerSessions(
 ): ProductCatalog {
   const workspaceIds = new Set(catalog.workspaces.map((workspace) => workspace.id));
   const records = sessions
-    .filter(
-      (session) =>
-        session.status !== "archived" && workspaceIds.has(session.workspace_id),
-    )
+    .filter((session) => workspaceIds.has(session.workspace_id))
     .map(fromProductSession);
   const refreshedWorkspaceIdSet = new Set(refreshedWorkspaceIds);
   const nextSessions = [
@@ -242,6 +238,7 @@ export function createSession(
     createdAt: now,
     updatedAt: now,
     status: "idle",
+    archived: false,
     activeJobId: null,
     activeRunId: null,
     resumedFromRunId: null,
@@ -273,7 +270,9 @@ export function selectWorkspace(
   workspaceId: string,
 ): ProductCatalog {
   const sessions = catalog.sessions
-    .filter((session) => session.workspaceId === workspaceId)
+    .filter(
+      (session) => session.workspaceId === workspaceId && !session.archived,
+    )
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   return {
     ...catalog,
@@ -292,6 +291,7 @@ export function updateSession(
       SessionRecord,
       | "title"
       | "status"
+      | "archived"
       | "activeJobId"
       | "activeRunId"
       | "resumedFromRunId"
@@ -328,7 +328,9 @@ export function sessionsForWorkspace(
   workspaceId: string,
 ): SessionRecord[] {
   return catalog.sessions
-    .filter((session) => session.workspaceId === workspaceId)
+    .filter(
+      (session) => session.workspaceId === workspaceId && !session.archived,
+    )
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 

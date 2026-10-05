@@ -45,6 +45,7 @@ const SESSIONS: SessionRecord[] = [
     createdAt: "2026-10-03T08:00:00Z",
     updatedAt: "2026-10-04T09:30:00Z",
     status: "idle",
+    archived: false,
     hasDurableTurn: true,
     lastOutcome: "success",
     lastOutcomeAt: "2026-10-04T09:30:00Z",

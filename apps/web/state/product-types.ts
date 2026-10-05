@@ -34,6 +34,12 @@ export interface SessionRecord {
   createdAt: string;
   updatedAt: string;
   status: SessionStatus;
+  /**
+   * Archived sessions stay in the catalog so the rail can show them in their
+   * own zone (§7.1); the flag is separate from `status` because archiving does
+   * not erase the underlying run state.
+   */
+  archived: boolean;
   /** Last successful/known job for this product session (UI bookkeeping). */
   activeJobId?: string | null;
   activeRunId?: string | null;
@@ -135,6 +141,7 @@ export function fromProductSession(session: ProductSession): SessionRecord {
     createdAt: session.created_at,
     updatedAt: session.updated_at,
     status: session.status === "archived" ? "idle" : session.status,
+    archived: session.status === "archived",
     activeJobId: session.runtime_binding?.latest_job_id ?? null,
     activeRunId: session.runtime_binding?.latest_run_id ?? null,
     resumedFromRunId: null,

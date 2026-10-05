@@ -92,6 +92,12 @@ export function useServerProductState() {
     "unknown",
   );
   const [eventStreamAvailable, setEventStreamAvailable] = useState(false);
+  /**
+   * API build version for the rail footer (design §7.1). A footer fact, not
+   * load-bearing state: the read is fire-and-forget alongside boot and a
+   * failure leaves the slot empty rather than blocking the catalog.
+   */
+  const [apiVersion, setApiVersion] = useState<string | null>(null);
   const catalogRef = useRef(catalog);
   const preferencesRef = useRef(preferences);
   const sessionModelConfigRef = useRef(sessionModelConfig);
@@ -254,6 +260,16 @@ export function useServerProductState() {
         productClient,
         workspaceResponse.workspaces.map((workspace) => workspace.id),
       );
+      // Footer version read: deliberately outside the boot-critical path, so
+      // a runtime-info hiccup cannot hold the catalog hostage.
+      void productClient
+        .getRuntimeInfo()
+        .then((info) => {
+          if (bootGenerationRef.current === bootGeneration) {
+            setApiVersion(info.api_version);
+          }
+        })
+        .catch(() => undefined);
       if (
         bootGenerationRef.current !== bootGeneration ||
         catalogGenerationRef.current !== catalogGeneration ||
@@ -502,7 +518,7 @@ export function useServerProductState() {
         // A workspace that was just created holds at most a handful of adopted
         // sessions, and we only need one to open, so a single page suffices.
         let sessionResponse = await productClient.listSessions(workspace.id, {
-          includeArchived: false,
+          includeArchived: true,
         });
         let session = sessionResponse.sessions.find((item) => item.status !== "archived");
         if (!session) {
@@ -715,6 +731,53 @@ export function useServerProductState() {
     [beginCatalogMutation, finishCatalogMutation, patchCatalog, productClient],
   );
 
+  /**
+   * Renaming a workspace reuses the create-upsert: the store keys workspaces
+   * by canonical root, so the same root with a new `display_name` is an
+   * update, not a second entry — the same path `togglePin` already takes.
+   */
+  const renameWorkspace = useCallback(
+    async (workspaceId: string, displayName: string) => {
+      const workspace = catalogRef.current.workspaces.find(
+        (item) => item.id === workspaceId,
+      );
+      const name = displayName.trim();
+      if (!workspace || workspace.kind === "task" || !name) {
+        return;
+      }
+      const mutation = beginCatalogMutation();
+      if (mutation === null) {
+        throw new Error("Another catalog change is already in progress.");
+      }
+      try {
+        const saved = await productClient.createWorkspace({
+          root: workspace.rootPath,
+          kind: workspace.kind,
+          display_name: name,
+          pinned: workspace.pinned,
+        });
+        if (mutationGenerationRef.current !== mutation) {
+          return;
+        }
+        const record = fromProductWorkspace(saved);
+        patchCatalog((current) => ({
+          ...current,
+          workspaces: current.workspaces.map((item) =>
+            item.id === record.id ? record : item,
+          ),
+        }));
+      } catch (error) {
+        if (mutationGenerationRef.current === mutation) {
+          setCatalogError(describeError(error));
+        }
+        throw error;
+      } finally {
+        finishCatalogMutation(mutation);
+      }
+    },
+    [beginCatalogMutation, finishCatalogMutation, patchCatalog, productClient],
+  );
+
   const removeWorkspace = useCallback(
     async (workspaceId: string) => {
       const mutation = beginCatalogMutation();
@@ -787,6 +850,45 @@ export function useServerProductState() {
           sessionUpdateGenerationsRef.current.get(sessionId) === generation
         ) {
           setCatalogError(`Could not persist session title: ${describeError(error)}`);
+        }
+        throw error;
+      }
+    },
+    [patchCatalog, productClient],
+  );
+
+  /**
+   * Archive/restore follows the same in-flight guard as a rename: a stale
+   * response never overwrites a newer patch for the same session.
+   */
+  const setSessionArchived = useCallback(
+    async (sessionId: string, archived: boolean) => {
+      const generation =
+        (sessionUpdateGenerationsRef.current.get(sessionId) ?? 0) + 1;
+      sessionUpdateGenerationsRef.current.set(sessionId, generation);
+      try {
+        const saved = await productClient.updateSession(sessionId, {
+          archived,
+        });
+        if (
+          sessionUpdateGenerationsRef.current.get(sessionId) !== generation
+        ) {
+          return;
+        }
+        const record = fromProductSession(saved);
+        patchCatalog((current) => ({
+          ...current,
+          sessions: current.sessions.map((session) =>
+            session.id === record.id ? record : session,
+          ),
+        }));
+      } catch (error) {
+        if (
+          sessionUpdateGenerationsRef.current.get(sessionId) === generation
+        ) {
+          setCatalogError(
+            `Could not ${archived ? "archive" : "restore"} session: ${describeError(error)}`,
+          );
         }
         throw error;
       }
@@ -1112,11 +1214,14 @@ export function useServerProductState() {
     refreshSessionStatuses,
     openWorkspace,
     createSession,
+    apiVersion,
     forkSession,
     branchSessionAtMessage,
     togglePin,
+    renameWorkspace,
     removeWorkspace,
     updateSessionTitle,
+    setSessionArchived,
     deleteSession,
   };
 }
