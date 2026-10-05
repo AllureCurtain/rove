@@ -30,7 +30,7 @@ This file covers only visual and component rules; information architecture, defa
 
 - Fonts: only `--font-ui` and `--font-mono`.
 - Radii: only `--radius-sm` / `--radius-md` / `--radius-lg` / `--radius-pill`.
-- Shell dimensions use tokens: `--sidebar-width` (fixed 240px left rail), `--inspector-width`, `--topbar-height`.
+- Shell dimensions use tokens: `--sidebar-width` (left rail, resizable 240–520px, default 275px), `--inspector-width`, `--topbar-height` (46px; shared by the conversation top bar and the work-panel header).
 - Motion:
   - Durations only via `var(--motion-duration-*)`; easings only via `var(--motion-ease-*)`, `linear`, or `steps(...)`.
   - `pnpm lint:style-tokens` enforces this.
@@ -50,7 +50,7 @@ Every interactive component needs: default, hover, focus (keyboard-visible `--fo
 
 - Breakpoints: 480 / 760 / 960 / 1180px.
 - Below 960px the Inspector becomes a drawer, per `DRAWER_MAX_WIDTH` and `DRAWER_MEDIA_QUERY` in `lib/viewport-breakpoints.ts`.
-- The left rail collapses with a transform slide; do not animate the grid track, which would force a full-page relayout.
+- On desktop the rail and the work panel collapse by animating their allocated width (flex-basis) so neighbors move with them; below 960px both become fixed overlays and slide by transform instead.
 
 ## Accessibility
 

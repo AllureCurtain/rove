@@ -4,13 +4,13 @@ Updated: 2026-10-05
 
 ## In progress
 
-(none)
+- Web console rebuild per `docs/web-console-design.md` v2, one PR per phase: P0 skin and shell is on branch `feat/console-p0-graphite-shell` (graphite skin, 46px column chrome, closed-by-default work panel, allocated-width collapse, persisted rail/panel preferences); P1 conversation surface, P2 sidebar, P3 work panel, and P4 polish remain
 
 ## Next up
 
 Ordered by priority.
 
-1. Implement the Web console rebuild per `docs/web-console-design.md` v2, one PR per phase — P0 skin and shell, P1 conversation surface, P2 sidebar, P3 work panel, P4 polish
+1. ~~Implement the Web console rebuild per `docs/web-console-design.md` v2, one PR per phase — P0 skin and shell, P1 conversation surface, P2 sidebar, P3 work panel, P4 polish~~ moved to In progress
 2. F.4, TUI part: long sessions in the terminal can load earlier history on demand (CLI)
 3. F.5, TUI part: queued successor messages resume delivery after a TUI restart (CLI)
 4. Generate Web API types from `apps/api/openapi.json` instead of the hand-written `product-api-types.ts` and `rove-types.ts` (frontend)
