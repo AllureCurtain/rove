@@ -1,133 +1,53 @@
 "use client";
 
 import {
-  ChevronUpIcon,
+  ArchiveIcon,
   DownloadIcon,
-  ExternalLinkIcon,
   FileIcon,
-  ImageIcon,
 } from "@radix-ui/react-icons";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useCopy } from "../copy/CopyProvider";
 import { createProductApiClient } from "../product/product-client";
-import type {
-  ProductFileContentEnvelope,
-  ProductFileEntry,
-  ProductPreviewSession,
-} from "../product/product-api-types";
+import type { ProductFileEntry } from "../product/product-api-types";
+import { InspectorEmpty } from "./InspectorEmpty";
 
-function isHtmlPath(path: string): boolean {
-  return /\.(html|htm)$/i.test(path);
-}
-
+/**
+ * The directory browser tab (design §8): breadcrumb navigation plus a paged
+ * entry list. Opening a file delegates to the host, which spawns that file's
+ * own viewer tab — every opened file is its own tab, so the browser never
+ * loses its place while files are inspected.
+ */
 export function FilesPanel({
   workspaceId,
-  focusPath,
-  focusLine,
+  onOpenFile,
 }: {
   workspaceId: string;
-  focusPath?: string | null;
-  focusLine?: number | null;
+  onOpenFile?: (path: string) => void;
 }) {
   const { t } = useCopy();
   const client = useMemo(() => createProductApiClient(), []);
   const [prefix, setPrefix] = useState("");
   const [entries, setEntries] = useState<ProductFileEntry[]>([]);
-  // Listing and preview are independent: opening a file must not discard a page.
+  // Listing and download are independent: starting a download must not discard
+  // a page in flight.
   const requestRef = useRef(0);
-  const previewRequestRef = useRef(0);
   const downloadRequestRef = useRef(0);
   useEffect(() => () => {
     requestRef.current += 1;
-    previewRequestRef.current += 1;
     downloadRequestRef.current += 1;
   }, [workspaceId]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [scanLimited, setScanLimited] = useState(false);
-  const [content, setContent] = useState<ProductFileContentEnvelope | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [htmlPreview, setHtmlPreview] = useState<ProductPreviewSession | null>(null);
-  const [htmlPreviewBusy, setHtmlPreviewBusy] = useState(false);
-  const [htmlPreviewError, setHtmlPreviewError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    return () => {
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-    };
-  }, [previewUrl]);
-
-  // Closing the panel (or switching workspace) revokes the isolated preview
-  // token so the loopback origin stops resolving it (plan P5b / A8).
-  useEffect(() => {
-    return () => {
-      const open = htmlPreview;
-      if (open) {
-        void client
-          .closeWorkspacePreview(open.workspace_id, open.preview_id)
-          .catch(() => undefined);
-      }
-    };
-  }, [client, htmlPreview, workspaceId]);
-
-  async function openHtmlPreview(path: string) {
-    setHtmlPreviewBusy(true);
-    setHtmlPreviewError(null);
-    try {
-      const session = await client.createWorkspacePreview(workspaceId, { path });
-      if (session.workspace_id !== workspaceId) {
-        throw new Error("Preview session does not match this workspace.");
-      }
-      const previous = htmlPreview;
-      if (previous) {
-        void client
-          .closeWorkspacePreview(previous.workspace_id, previous.preview_id)
-          .catch(() => undefined);
-      }
-      setHtmlPreview(session);
-      // The preview URL embeds the session token. Open it only in a new
-      // isolated tab and never write it to logs or persistent state (A7).
-      window.open(session.url, "_blank", "noopener,noreferrer");
-    } catch (caught) {
-      setHtmlPreviewError(
-        caught instanceof Error ? caught.message : "Failed to open preview",
-      );
-    } finally {
-      setHtmlPreviewBusy(false);
-    }
-  }
-
-  async function closeHtmlPreview() {
-    const open = htmlPreview;
-    if (!open) {
-      return;
-    }
-    setHtmlPreviewBusy(true);
-    setHtmlPreviewError(null);
-    try {
-      await client.closeWorkspacePreview(open.workspace_id, open.preview_id);
-      setHtmlPreview(null);
-    } catch (caught) {
-      setHtmlPreviewError(
-        caught instanceof Error ? caught.message : "Failed to close preview",
-      );
-    } finally {
-      setHtmlPreviewBusy(false);
-    }
-  }
-
-  useEffect(() => {
     const request = ++requestRef.current;
-    previewRequestRef.current += 1;
-    downloadRequestRef.current += 1;
     const stale = () => requestRef.current !== request;
     async function load() {
       setLoading(true);
       setError(null);
-      setContent(null);
-      setPreviewUrl(null);
       try {
         const response = await client.listWorkspaceFiles(workspaceId, {
           prefix: prefix || undefined,
@@ -152,37 +72,120 @@ export function FilesPanel({
     return () => { requestRef.current += 1; };
   }, [client, workspaceId, prefix]);
 
-  useEffect(() => {
-    if (!focusPath) {
+  async function openFile(entry: ProductFileEntry) {
+    if (entry.kind === "directory") {
+      setPrefix(entry.path);
       return;
     }
-    const request = ++previewRequestRef.current;
-    const stale = () => previewRequestRef.current !== request;
-    async function loadFocusedFile() {
-      setError(null);
-      try {
-        const nextContent = await client.getWorkspaceFileContent(workspaceId, focusPath!);
-        const nextPreviewUrl =
-          nextContent.image && nextContent.preview_allowed
-            ? URL.createObjectURL(
-                await client.fetchWorkspaceFilePreview(workspaceId, focusPath!),
-              )
-            : null;
-        if (!stale()) {
-          setContent(nextContent);
-          setPreviewUrl(nextPreviewUrl);
-        } else if (nextPreviewUrl) {
-          URL.revokeObjectURL(nextPreviewUrl);
-        }
-      } catch (caught) {
-        if (!stale()) {
-          setError(caught instanceof Error ? caught.message : "Failed to open finding file");
-        }
+    onOpenFile?.(entry.path);
+  }
+
+  async function downloadFile(path: string) {
+    const request = ++downloadRequestRef.current;
+    const stale = () => downloadRequestRef.current !== request;
+    setError(null);
+    try {
+      await downloadBlob(
+        await client.fetchWorkspaceFileDownload(workspaceId, path),
+        filenameForPath(path),
+      );
+    } catch (caught) {
+      if (!stale()) {
+        setError(caught instanceof Error ? caught.message : "Failed to download file");
       }
     }
-    void loadFocusedFile();
-    return () => { previewRequestRef.current += 1; };
-  }, [client, focusPath, workspaceId]);
+  }
+
+  // Breadcrumb segments: every ancestor prefix is a button back up the tree.
+  const breadcrumbs = useMemo(() => {
+    const segments = prefix.split("/").filter(Boolean);
+    const crumbs: { label: string; path: string }[] = [];
+    segments.forEach((segment, index) => {
+      crumbs.push({ label: segment, path: segments.slice(0, index + 1).join("/") });
+    });
+    return crumbs;
+  }, [prefix]);
+
+  return (
+    <section className="inspector-section" aria-label={t("inspector.files")}>
+      <nav
+        className="evidence-breadcrumbs"
+        aria-label={t("inspector.filesBreadcrumbs")}
+      >
+        <button
+          type="button"
+          className="ghost evidence-breadcrumbs__crumb"
+          onClick={() => setPrefix("")}
+          aria-current={prefix === "" ? "location" : undefined}
+        >
+          {t("inspector.filesRoot")}
+        </button>
+        {breadcrumbs.map((crumb, index) => (
+          <span key={crumb.path} className="evidence-breadcrumbs__segment">
+            <span className="evidence-breadcrumbs__sep" aria-hidden="true">/</span>
+            <button
+              type="button"
+              className="ghost evidence-breadcrumbs__crumb"
+              onClick={() => setPrefix(crumb.path)}
+              aria-current={index === breadcrumbs.length - 1 ? "location" : undefined}
+            >
+              {crumb.label}
+            </button>
+          </span>
+        ))}
+      </nav>
+      {loading && entries.length === 0 ? (
+        <p className="inspector-empty-line">{t("inspector.filesLoading")}</p>
+      ) : null}
+      {error ? <p className="inspector-empty-line" role="alert">{t("chrome.loadError")}</p> : null}
+      {!loading && !error && entries.length === 0 ? (
+        <InspectorEmpty
+          title={t("inspector.filesEmpty")}
+          body={t("inspector.filesEmptyBody")}
+        />
+      ) : null}
+      <ul className="evidence-file-list">
+        {entries.map((entry) => (
+          <li key={entry.path}>
+            <button
+              type="button"
+              className="ghost evidence-file-list__open"
+              onClick={() => void openFile(entry)}
+            >
+              {entry.kind === "directory" ? (
+                <ArchiveIcon aria-hidden="true" />
+              ) : (
+                <FileIcon aria-hidden="true" />
+              )}
+              <span>{entry.path.slice(prefix ? prefix.length + 1 : 0) || entry.path}</span>
+              <small>{entry.kind === "directory" ? t("chrome.directory") : formatBytes(entry.size)}</small>
+            </button>
+            {entry.kind === "file" ? (
+              <button
+                type="button"
+                className="ghost icon-button"
+                onClick={() => void downloadFile(entry.path)}
+                aria-label={t("chrome.download", { name: entry.path })}
+                title={t("chrome.download", { name: entry.path })}
+              >
+                <DownloadIcon />
+              </button>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      {nextCursor ? (
+        <button type="button" className="ghost" onClick={() => void loadMore()} disabled={loading}>
+          {loading ? t("common.loading") : t("chrome.loadMore")}
+        </button>
+      ) : null}
+      {scanLimited ? (
+        <p className="inspector-empty-line" role="status">
+          {t("chrome.scanLimited")}
+        </p>
+      ) : null}
+    </section>
+  );
 
   async function loadMore() {
     if (!nextCursor || loading) return;
@@ -211,208 +214,6 @@ export function FilesPanel({
       }
     }
   }
-
-  async function openFile(entry: ProductFileEntry) {
-    if (entry.kind === "directory") {
-      setPrefix(entry.path);
-      return;
-    }
-    const request = ++previewRequestRef.current;
-    const stale = () => previewRequestRef.current !== request;
-    setContent(null);
-    setPreviewUrl(null);
-    setError(null);
-    try {
-      const nextContent = await client.getWorkspaceFileContent(workspaceId, entry.path);
-      const nextPreviewUrl =
-        nextContent.image && nextContent.preview_allowed
-          ? URL.createObjectURL(
-              await client.fetchWorkspaceFilePreview(workspaceId, entry.path),
-            )
-          : null;
-      if (!stale()) {
-        setContent(nextContent);
-        setPreviewUrl(nextPreviewUrl);
-      } else if (nextPreviewUrl) {
-        URL.revokeObjectURL(nextPreviewUrl);
-      }
-    } catch (caught) {
-      if (!stale()) {
-        setError(caught instanceof Error ? caught.message : "Failed to read file");
-      }
-    }
-  }
-
-  async function downloadFile(path: string) {
-    const request = ++downloadRequestRef.current;
-    const stale = () => downloadRequestRef.current !== request;
-    setError(null);
-    try {
-      await downloadBlob(
-        await client.fetchWorkspaceFileDownload(workspaceId, path),
-        filenameForPath(path),
-      );
-    } catch (caught) {
-      if (!stale()) {
-        setError(caught instanceof Error ? caught.message : "Failed to download file");
-      }
-    }
-  }
-
-  return (
-    <section className="inspector-section" aria-label={t("inspector.files")}>
-      <div className="inspector-section__heading">
-        <h3>{t("inspector.files")}</h3>
-        {prefix ? (
-          <button
-            type="button"
-            className="ghost icon-button"
-            onClick={() => {
-              const parts = prefix.split("/").filter(Boolean);
-              parts.pop();
-              setPrefix(parts.join("/"));
-            }}
-            aria-label={t("inspector.filesParent")}
-            title={t("inspector.filesParent")}
-          >
-            <ChevronUpIcon />
-          </button>
-        ) : null}
-      </div>
-      <p className="inspector-empty-line"><code>{prefix || "/"}</code></p>
-      {loading && entries.length === 0 ? (
-        <p className="inspector-empty-line">{t("inspector.filesLoading")}</p>
-      ) : null}
-      {error ? <p className="inspector-empty-line" role="alert">{t("chrome.loadError")}</p> : null}
-      <ul className="evidence-file-list">
-        {entries.map((entry) => (
-          <li key={entry.path}>
-            <button
-              type="button"
-              className="ghost evidence-file-list__open"
-              onClick={() => void openFile(entry)}
-            >
-              <FileIcon aria-hidden="true" />
-              <span>{entry.path}</span>
-              <small>{entry.kind === "directory" ? t("chrome.directory") : formatBytes(entry.size)}</small>
-            </button>
-            {entry.kind === "file" ? (
-              <button
-                type="button"
-                className="ghost icon-button"
-                onClick={() => void downloadFile(entry.path)}
-                aria-label={t("chrome.download", { name: entry.path })}
-                title={t("chrome.download", { name: entry.path })}
-              >
-                <DownloadIcon />
-              </button>
-            ) : null}
-          </li>
-        ))}
-      </ul>
-      {nextCursor ? (
-        <button type="button" className="ghost" onClick={() => void loadMore()} disabled={loading}>
-          {loading ? t("common.loading") : t("chrome.loadMore")}
-        </button>
-      ) : null}
-      {scanLimited ? (
-        <p className="inspector-empty-line" role="status">
-          {t("chrome.scanLimited")}
-        </p>
-      ) : null}
-      {content ? (
-        <div className="evidence-preview">
-          <div className="evidence-preview__heading">
-            <div>
-              <strong>{content.path}</strong>
-              <span>{content.mime} · {formatBytes(content.size)}{content.truncated ? ` · ${t("chrome.truncated")}` : ""}</span>
-            </div>
-            <button
-              type="button"
-              className="ghost icon-button"
-              onClick={() => void downloadFile(content.path)}
-              aria-label={t("chrome.download", { name: content.path })}
-              title={t("chrome.download", { name: content.path })}
-            >
-              <DownloadIcon />
-            </button>
-            {isHtmlPath(content.path) ? (
-              htmlPreview ? (
-                <button
-                  type="button"
-                  className="ghost icon-button"
-                  onClick={() => void closeHtmlPreview()}
-                  disabled={htmlPreviewBusy}
-                  aria-label={t("chrome.previewHtmlClose")}
-                  title={t("chrome.previewHtmlClose")}
-                  data-testid="close-html-preview"
-                >
-                  {t("chrome.previewHtmlClose")}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="ghost icon-button"
-                  onClick={() => void openHtmlPreview(content.path)}
-                  disabled={htmlPreviewBusy}
-                  aria-label={t("chrome.previewHtmlOpen")}
-                  title={t("chrome.previewHtmlOpen")}
-                  data-testid="open-html-preview"
-                >
-                  <ExternalLinkIcon />
-                </button>
-              )
-            ) : null}
-          </div>
-          {isHtmlPath(content.path) ? (
-            <p className="inspector-empty-line" role="status">
-              {htmlPreview
-                ? t("chrome.previewHtmlActive")
-                : t("chrome.previewHtmlHint")}
-            </p>
-          ) : null}
-          {htmlPreviewError ? (
-            <p className="inspector-empty-line" role="alert">
-              {htmlPreviewError}
-            </p>
-          ) : null}
-          {content.validation_error ? (
-            <p className="inspector-empty-line" role="alert">{t("chrome.invalidContent")}</p>
-          ) : null}
-          {content.text !== undefined ? (
-            <pre className="evidence-preview__text" data-focus-line={focusLine ?? undefined}>
-              {(() => {
-                const lines = content.text.split("\n");
-                return lines.map((line, index) => (
-                  <span
-                    key={`${content.path}-${index}`}
-                    data-line={index + 1}
-                    data-focused={focusLine === index + 1 ? "true" : undefined}
-                  >
-                    {line || " "}{index < lines.length - 1 ? "\n" : ""}
-                  </span>
-                ));
-              })()}
-            </pre>
-          ) : null}
-          {content.image && content.preview_allowed ? (
-            <figure className="evidence-preview__image">
-              <img
-                src={previewUrl ?? undefined}
-                alt={content.path}
-              />
-              <figcaption>
-                <ImageIcon aria-hidden="true" /> {content.image.width} × {content.image.height} {content.image.format}
-              </figcaption>
-            </figure>
-          ) : null}
-          {content.text === undefined && !content.image && !content.validation_error ? (
-            <p className="inspector-empty-line">{t("chrome.previewUnavailable")}</p>
-          ) : null}
-        </div>
-      ) : null}
-    </section>
-  );
 }
 
 async function downloadBlob(blob: Blob, filename: string): Promise<void> {

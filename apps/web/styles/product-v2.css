@@ -3043,33 +3043,44 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
   transition: none;
 }
 
+/* The work-panel header is one 46px raised dock row (design §8): the tab strip
+   on the left, the strip's own actions — new tab, maximize, close — on the
+   right. It shares the conversation top bar's height and surface. */
 .product-app-frame[data-ui-version="v2"] .inspector-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 var(--topbar-height);
+  height: var(--topbar-height);
   min-height: var(--topbar-height);
-  padding: 0 12px;
-  border-color: var(--v2-border);
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--v2-border);
   background: var(--v2-surface-raised);
 }
 
-.product-app-frame[data-ui-version="v2"] .inspector-header h2 {
-  color: var(--v2-ink);
-  font-size: 13px;
-  font-weight: 700;
-  text-transform: none;
+.product-app-frame[data-ui-version="v2"] .inspector-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
 }
 
-
-
-.product-app-frame[data-ui-version="v2"] .inspector-open-tab {
+.product-app-frame[data-ui-version="v2"] .inspector-open-tab,
+.product-app-frame[data-ui-version="v2"] .inspector-maximize {
   flex: 0 0 auto;
   width: 24px;
   height: 26px;
-  margin-bottom: 2px;
   color: var(--v2-ink-3);
 }
 
-.product-app-frame[data-ui-version="v2"] .inspector-open-tab:hover {
+.product-app-frame[data-ui-version="v2"] .inspector-open-tab:hover,
+.product-app-frame[data-ui-version="v2"] .inspector-maximize:hover {
   background: var(--v2-surface);
   color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-maximize[aria-pressed="true"] {
+  color: var(--v2-signal);
 }
 
 .product-app-frame[data-ui-version="v2"] .inspector-body {
@@ -3078,23 +3089,58 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
   overscroll-behavior: contain;
 }
 
-/* Work panel tab strip: the set of tabs is dynamic and closable, so the strip
-   scrolls instead of dividing a fixed count across fixed columns. The launcher
-   sits at the trailing edge. */
-.product-app-frame[data-ui-version="v2"] .inspector-tabs-row {
-  display: flex;
-  align-items: flex-end;
-  gap: 4px;
-  padding: 8px 8px 0 12px;
-  border-bottom: 1px solid var(--v2-border);
-  background: var(--v2-surface-raised);
+/* Every open tab mounts a pane (design §8: hidden panes keep state); `hidden`
+   is the whole contract, so re-declare it against any inherited display. */
+.product-app-frame[data-ui-version="v2"] .inspector-pane {
+  min-width: 0;
 }
 
+.product-app-frame[data-ui-version="v2"] .inspector-pane[hidden] {
+  display: none;
+}
+
+/* The one empty state every tab shares (design §8): icon + title + one line. */
+.product-app-frame[data-ui-version="v2"] .inspector-empty {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  margin: 28px auto 0;
+  max-width: 220px;
+  text-align: center;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-empty__icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-empty__title {
+  color: var(--v2-ink-2);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-empty__body {
+  margin: 0;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/* Work panel tab strip (design §8): the set of tabs is dynamic and closable,
+   so the strip scrolls horizontally inside the 46px header instead of dividing
+   a fixed count across fixed columns. The launcher lives in the header's
+   action cluster, outside the tablist. */
 .product-app-frame[data-ui-version="v2"] .inspector-tabs {
   display: flex;
   flex: 1 1 auto;
-  align-items: flex-end;
+  align-items: center;
   gap: 2px;
+  height: 32px;
   min-width: 0;
   overflow-x: auto;
   overscroll-behavior-x: contain;
@@ -3105,17 +3151,26 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
   display: none;
 }
 
+/* Tabs are bounded cells (design §8: 92–180px): icon + truncated label +
+   a close control that only surfaces on hover, focus, or selection. */
 .product-app-frame[data-ui-version="v2"] .inspector-tab {
+  position: relative;
   display: flex;
   align-items: center;
-  flex: 0 0 auto;
-  min-width: 0;
+  flex: 0 1 auto;
+  min-width: 92px;
+  max-width: 180px;
+  height: 28px;
 }
 
 .product-app-frame[data-ui-version="v2"] .inspector-tabs .tab-button {
-  min-height: 30px;
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
-  max-width: 132px;
+  min-height: 28px;
+  height: 28px;
   padding: 0 4px;
   overflow: hidden;
   border: 0;
@@ -3129,9 +3184,51 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
   white-space: nowrap;
 }
 
+.product-app-frame[data-ui-version="v2"] .inspector-tabs .tab-button svg {
+  flex: 0 0 auto;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-tabs .inspector-tab__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .product-app-frame[data-ui-version="v2"] .inspector-tabs .tab-button--active {
   border-bottom-color: var(--v2-signal);
   color: var(--v2-ink);
+}
+
+/* Drag reorder (design §8): a 2px indicator marks the edge a drop lands on,
+   and the dragged source dims while it is in flight. */
+.product-app-frame[data-ui-version="v2"] .inspector-tab[data-drag-edge="before"]::before,
+.product-app-frame[data-ui-version="v2"] .inspector-tab[data-drag-edge="after"]::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--v2-signal);
+  pointer-events: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-tab[data-drag-edge="before"]::before {
+  left: -2px;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-tab[data-drag-edge="after"]::after {
+  right: -2px;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-tab[data-drag-source="true"] {
+  opacity: 0.45;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-tabs[data-dragging="true"],
+.product-app-frame[data-ui-version="v2"] .inspector-tabs[data-dragging="true"] * {
+  cursor: grabbing;
+  user-select: none;
 }
 
 /* Close affordance stays out of the way until the tab is hovered, focused or
@@ -3139,8 +3236,9 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
 .product-app-frame[data-ui-version="v2"] .inspector-tab-close {
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 30px;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 28px;
   border: 0;
   border-radius: 4px;
   background: transparent;
@@ -3276,6 +3374,21 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
   padding-inline: 6px;
   background: var(--v2-signal-soft);
   color: var(--v2-ink);
+}
+
+/* The file viewer's gutter: right-aligned numbers that never select. */
+.product-app-frame[data-ui-version="v2"] .evidence-preview__line-number {
+  display: inline-block;
+  min-width: 34px;
+  padding-right: 10px;
+  color: var(--v2-ink-3);
+  text-align: right;
+  user-select: none;
+}
+
+/* Markdown files render as Markdown in the file viewer (design §8). */
+.product-app-frame[data-ui-version="v2"] .evidence-preview__markdown {
+  min-width: 0;
 }
 
 .product-app-frame[data-ui-version="v2"] .inspector-section {
@@ -3613,10 +3726,56 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
 }
 
 .product-app-frame[data-ui-version="v2"] .evidence-preview__heading {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 28px;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-preview__heading > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Breadcrumb directory navigation in the files browser (design §8). */
+.product-app-frame[data-ui-version="v2"] .evidence-breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin-top: 8px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-breadcrumbs__segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-breadcrumbs__sep {
+  color: var(--v2-ink-3);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-breadcrumbs__crumb {
+  min-width: 0;
+  padding: 2px 4px;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-breadcrumbs__crumb:hover {
+  color: var(--v2-ink);
+  background: var(--v2-surface);
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-breadcrumbs__crumb[aria-current="location"] {
+  color: var(--v2-ink);
+  font-weight: 650;
+  text-decoration: none;
 }
 
 .product-app-frame[data-ui-version="v2"] .evidence-preview__heading strong,
@@ -3677,40 +3836,90 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
   font-size: 9px;
 }
 
+/* Review surface (design §8): the header reads "N changes +a −d" and each
+   changed file is one collapsible card. */
+.product-app-frame[data-ui-version="v2"] .evidence-diff-summary {
+  margin-inline: auto;
+  color: var(--v2-ink-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 .product-app-frame[data-ui-version="v2"] .evidence-diff-list {
   display: grid;
-  gap: 12px;
-}
-
-.product-app-frame[data-ui-version="v2"] .evidence-diff-list article {
-  min-width: 0;
-  border-bottom: 1px solid var(--v2-border);
-  padding-bottom: 10px;
-}
-
-.product-app-frame[data-ui-version="v2"] .evidence-diff-list header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
-  align-items: start;
 }
 
-.product-app-frame[data-ui-version="v2"] .evidence-diff-list header strong,
-.product-app-frame[data-ui-version="v2"] .evidence-diff-list header span {
-  display: block;
+.product-app-frame[data-ui-version="v2"] .evidence-diff-card {
   min-width: 0;
-  overflow-wrap: anywhere;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-raised);
+  overflow: hidden;
 }
 
-.product-app-frame[data-ui-version="v2"] .evidence-diff-list header strong {
-  color: var(--v2-ink-2);
-  font-size: 10px;
+.product-app-frame[data-ui-version="v2"] .evidence-diff-card__summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px 8px;
+  cursor: pointer;
+  list-style: none;
 }
 
-.product-app-frame[data-ui-version="v2"] .evidence-diff-list header span,
-.product-app-frame[data-ui-version="v2"] .evidence-diff-list header small {
+.product-app-frame[data-ui-version="v2"] .evidence-diff-card__summary::-webkit-details-marker {
+  display: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-diff-card__summary::before {
+  content: "▸";
+  flex: 0 0 auto;
   color: var(--v2-ink-3);
   font-size: 9px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-diff-card[open] .evidence-diff-card__summary::before {
+  content: "▾";
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-diff-card__summary:hover {
+  background: var(--v2-surface);
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-diff-card__path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--v2-ink-2);
+  font-size: 10px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-diff-card__stats {
+  flex: 0 0 auto;
+  color: var(--v2-ink-3);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-diff-card__summary small {
+  flex: 0 0 auto;
+  color: var(--v2-ink-3);
+  font-size: 9px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-diff-card__summary small[data-tone="ok"] {
+  color: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-diff-card__body {
+  border-top: 1px solid var(--v2-border);
+  padding: 8px;
 }
 
 .product-app-frame[data-ui-version="v2"] .canonical-event-list {
@@ -4769,6 +4978,13 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
   background: var(--v2-signal);
 }
 
+/* Maximize disables the handle (design §8): it reads as disabled, not hidden,
+   so its position stays stable for the restore. */
+.product-app-frame[data-ui-version="v2"] .inspector-resize[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.4;
+}
+
 /* While dragging, the whole window shows the resize cursor and suppresses
    selection; the flag is set by `usePanelResize`. */
 html[data-work-panel-resizing],
@@ -4800,6 +5016,18 @@ html[data-work-panel-resizing] * {
     var(--work-panel-request, 0px),
     max(0px, calc(100% - var(--pane-floor)))
   );
+}
+
+/* Maximized work panel (design §8): the middle column hides and the floor no
+   longer applies, so the resolved width is the whole client area minus the
+   rail. The conversation subtree stays mounted (`display: none`, not unmount)
+   so a restore loses nothing. */
+.product-app-frame[data-ui-version="v2"] .product-body[data-panel-maximized]:not([data-settings="true"]) {
+  --pane-floor: 0px;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-body[data-panel-maximized]:not([data-settings="true"]) .product-main {
+  display: none;
 }
 
 /* The handle is a real separator: it must not steal the rail's width budget.

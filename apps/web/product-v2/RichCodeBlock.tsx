@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { useCopy } from "../copy/CopyProvider";
 
-const STEEL_THEME: PrismTheme = {
+export const STEEL_THEME: PrismTheme = {
   plain: { color: "var(--text)", backgroundColor: "transparent" },
   styles: [
     { types: ["comment", "prolog", "doctype", "cdata"], style: { color: "var(--muted)" } },
@@ -113,7 +113,7 @@ export default function RichCodeBlock({
   );
 }
 
-function normalizeLanguage(language: string): string {
+export function normalizeLanguage(language: string): string {
   const normalized = language.trim().toLowerCase();
   const aliases: Record<string, string> = {
     csharp: "csharp",

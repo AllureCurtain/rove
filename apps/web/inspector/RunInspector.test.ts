@@ -5,6 +5,14 @@ import { describe, expect, it, vi } from "vitest";
 import { CopyProvider } from "../copy/CopyProvider";
 import { createWorkbenchState, isTerminalRunCanceled } from "../lib/rove-state";
 import { RunInspector, resolveInspectorPhase } from "./RunInspector";
+import type { WorkPanelTabsState } from "./work-panel-tabs";
+
+// These tests read the run-status pane, which is no longer the default tab
+// (design §8: the panel opens on the evidence view), so they seed it directly.
+const STATUS_TABS: WorkPanelTabsState = {
+  tabs: [{ id: "status", kind: "status" }],
+  activeId: "status",
+};
 
 describe("resolveInspectorPhase", () => {
   it("returns empty when no run has started", () => {
@@ -74,6 +82,7 @@ describe("resolveInspectorPhase", () => {
           collapsed: false,
           onToggle: vi.fn(),
           runState: state,
+          initialTabs: STATUS_TABS,
           restoreState: {
             status: "complete",
             sessionId: "product-session-01JEXACT000000000001",
@@ -117,6 +126,7 @@ describe("resolveInspectorPhase", () => {
           collapsed: false,
           onToggle: vi.fn(),
           runState: state,
+          initialTabs: STATUS_TABS,
           restoreState: {
             status: "complete",
             sessionId: "product-session-01JCANCEL000000000001",

@@ -41,6 +41,8 @@ export interface SessionRowActions {
   onArchive: (sessionId: string, archived: boolean) => void;
   onDelete: (sessionId: string) => void;
   onBranch: (sessionId: string) => void;
+  /** Evidence export (design §8/A11); absent while no host handles it. */
+  onExport?: (sessionId: string) => void;
   /** Batch variants used while the row is part of an active multi-select. */
   onBatchArchive?: (archived: boolean) => void;
   onBatchDelete?: () => void;
@@ -104,6 +106,7 @@ export function SessionRow({
   onArchive,
   onDelete,
   onBranch,
+  onExport,
   onBatchArchive,
   onBatchDelete,
   onClearSelection,
@@ -345,6 +348,14 @@ export function SessionRow({
             setMenu(null);
             onBranch(session.id);
           }}
+          onExport={
+            onExport
+              ? () => {
+                  setMenu(null);
+                  onExport(session.id);
+                }
+              : undefined
+          }
           onBatchArchive={(archived) => {
             setMenu(null);
             onBatchArchive?.(archived);
@@ -403,6 +414,7 @@ function SessionRowMenu({
   onTogglePin,
   onArchive,
   onBranch,
+  onExport,
   onBatchArchive,
   onBatchDelete,
   onDelete,
@@ -422,6 +434,7 @@ function SessionRowMenu({
   onTogglePin: () => void;
   onArchive: (archived: boolean) => void;
   onBranch: () => void;
+  onExport?: () => void;
   onBatchArchive: (archived: boolean) => void;
   onBatchDelete: () => void;
   onDelete: () => void;
@@ -601,6 +614,11 @@ function SessionRowMenu({
           >
             {copied ? t("common.copied") : t("workspace.sessionCopyLink")}
           </MenuItem>
+          {onExport ? (
+            <MenuItem onClick={onExport}>
+              {t("workspace.sessionExport")}
+            </MenuItem>
+          ) : null}
           <div className="session-row-menu__divider" role="separator" />
           <MenuItem
             disabled={disabled}
