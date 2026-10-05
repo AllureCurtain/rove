@@ -13,8 +13,9 @@ import {
  * The toast stack answers "something just happened"; the inbox answers "what
  * failed while I was not looking", and its rows are the only thing in the shell
  * that can take the reader back to the failure. These cases run in a browser
- * because the surface is a popover inside the top bar: it has to open above the
- * body rather than inside it, and a row has to be clickable where it is drawn.
+ * because the surface is a popover anchored in the rail's footer icon row: it
+ * has to open above the rail's clipped box, and a row has to be clickable where
+ * it is drawn.
  */
 
 const BELL = ".notification-inbox__bell";
@@ -105,7 +106,7 @@ test("an inbox row takes the reader to the session that failed", async ({ page }
 
   await page.locator(BELL).click();
   // The row is inside the shell frame, where the v2 tokens live, and it is drawn
-  // outside the top bar's own box; a clipped row could not be clicked here.
+  // outside the rail's clipped box; a clipped row could not be clicked here.
   await expect(page.locator(`.product-app-frame ${PANEL}`)).toBeVisible();
   await page.locator("button.notification-inbox__row").first().click();
 
@@ -155,8 +156,8 @@ test("a row whose session is gone says so instead of closing on nothing", async 
 });
 
 test("the list stays on screen at a phone width", async ({ page }) => {
-  // The bell is the third item from the right of the top bar, so a panel
-  // anchored to it runs off the left edge of a narrow viewport. Measured
+  // The bell lives in the rail footer; on a phone that means inside the
+  // navigation drawer, and its panel is a fixed bottom sheet. Measured
   // geometry, not visibility: a clipped panel still reports as visible.
   await page.setViewportSize({ width: 390, height: 844 });
   const workspace = createMockWorkspace();
@@ -168,8 +169,23 @@ test("the list stays on screen at a phone width", async ({ page }) => {
     activeSessionId: session.id,
   });
 
+  // The dev server's error overlay mounts a fixed-position hit target at the
+  // viewport's bottom-left corner — exactly where the open drawer's footer icon
+  // row is. It is tooling chrome, not part of the shell under test, and a
+  // stylesheet cannot reach inside its portal, so the node is removed.
+  await page.addInitScript(() => {
+    const removeOverlay = () => {
+      for (const el of document.querySelectorAll("nextjs-portal")) el.remove();
+    };
+    removeOverlay();
+    new MutationObserver(removeOverlay).observe(document, {
+      childList: true,
+      subtree: true,
+    });
+  });
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
   await expect(page.getByRole("heading", { name: "Active session" })).toBeVisible();
+  await page.getByRole("button", { name: "展开工作区列表" }).click();
   await page.locator(BELL).click();
 
   const box = await page.locator(PANEL).boundingBox();
@@ -250,6 +266,6 @@ test("an inbox with nothing in it says so", async ({ page }) => {
   await expect(panel.getByRole("button", { name: "清空" })).toBeDisabled();
 
   // A click outside dismisses it without touching the conversation.
-  await page.locator(".product-topbar__brand").click();
+  await page.locator(".conversation-topbar .ct-title").click();
   await expect(panel).toHaveCount(0);
 });

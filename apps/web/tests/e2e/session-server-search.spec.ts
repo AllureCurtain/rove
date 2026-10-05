@@ -29,7 +29,7 @@ test("a session only the server knows about appears in the search", async ({
     activeSessionId: loaded.id,
   });
   await page.goto(`/w/${workspace.id}/s/${loaded.id}`);
-  await expect(page.locator(".chat-pane__header h1")).toHaveText("Alpha work");
+  await expect(page.locator(".conversation-topbar h1")).toHaveText("Alpha work");
 
   const search = page.getByRole("searchbox", { name: "搜索工作区与会话" });
   await search.fill("checklist");
@@ -64,7 +64,7 @@ test("a failed server search leaves the local filter in charge", async ({
     activeSessionId: loaded.id,
   });
   await page.goto(`/w/${workspace.id}/s/${loaded.id}`);
-  await expect(page.locator(".chat-pane__header h1")).toHaveText("Alpha work");
+  await expect(page.locator(".conversation-topbar h1")).toHaveText("Alpha work");
 
   await page.getByRole("searchbox", { name: "搜索工作区与会话" }).fill("beta");
 

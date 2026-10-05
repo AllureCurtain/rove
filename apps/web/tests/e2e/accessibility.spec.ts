@@ -22,7 +22,7 @@ import {
  *
  * The rule set is stated rather than implied: WCAG 2.0 A/AA plus 2.1 A/AA, the
  * level this product commits to. Each tone is checked in every appearance the
- * product ships (`rove.ui-skin` warm/cool × light/dark), because a token is
+ * product ships (`rove.ui-skin` warm/graphite × light/dark), because a token is
  * only verified in the theme it was measured in.
  *
  * One violation is accepted, below, with its reason and the alternatives that
@@ -40,6 +40,21 @@ const WCAG_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 
 /** Where the shell keeps the chosen skin; the theme is `html[data-theme]`. */
 const UI_SKIN_STORAGE_KEY = "rove.ui-skin";
+
+/**
+ * The work panel is closed by default (design §3.3), so the checks that cover
+ * its tab strip seed the persisted open flag — the same state a reload
+ * restores after a user opens the panel.
+ */
+const WORK_PANEL_OPEN_STORAGE_KEY = "rove.ui-work-panel-open";
+
+/** Persist the work panel as open before the app boots. */
+async function seedPanelOpen(page: Page) {
+  await page.addInitScript(
+    (key) => window.localStorage.setItem(key, "1"),
+    WORK_PANEL_OPEN_STORAGE_KEY,
+  );
+}
 
 /**
  * The work-panel tab strip pairs each tab with its own close button inside the
@@ -117,8 +132,8 @@ const COMPOSER = /输入消息/u;
 const APPEARANCES = [
   { label: "warm skin, light theme", skin: "warm", theme: "light" },
   { label: "warm skin, dark theme", skin: "warm", theme: "dark" },
-  { label: "cool skin, light theme", skin: "cool", theme: "light" },
-  { label: "cool skin, dark theme", skin: "cool", theme: "dark" },
+  { label: "graphite skin, light theme", skin: "graphite", theme: "light" },
+  { label: "graphite skin, dark theme", skin: "graphite", theme: "dark" },
 ] as const;
 
 type Appearance = (typeof APPEARANCES)[number];
@@ -144,6 +159,7 @@ const SESSION = createMockSession("session-1", WORKSPACE.id, "Durable session");
 
 /** The shell with a restored 30-run transcript: rail, chat, transcript, inspector. */
 async function openRestoredSession(page: Page, sessions = [SESSION]) {
+  await seedPanelOpen(page);
   await installMockProductApi(page, {
     workspaces: [WORKSPACE],
     sessions,
@@ -157,12 +173,12 @@ async function openRestoredSession(page: Page, sessions = [SESSION]) {
 
 /** Put the shell into one shipped appearance before asserting on it. */
 async function applyAppearance(page: Page, appearance: Appearance) {
-  if (appearance.skin !== "warm") {
-    await page.addInitScript(
-      ([key, skin]) => window.localStorage.setItem(key, skin),
-      [UI_SKIN_STORAGE_KEY, appearance.skin] as const,
-    );
-  }
+  // The shipped default is graphite, so a warm check has to write its own key
+  // too; the skin under test must never depend on whichever default ships.
+  await page.addInitScript(
+    ([key, skin]) => window.localStorage.setItem(key, skin),
+    [UI_SKIN_STORAGE_KEY, appearance.skin] as const,
+  );
   await openRestoredSession(page, [SESSION, ...statusSessions(WORKSPACE.id)]);
   await expect(page.locator(".product-app-frame")).toHaveAttribute(
     "data-skin",
@@ -233,6 +249,7 @@ test("the Settings sections have no WCAG violations", async ({ page }) => {
 
 test("a live approval and its acknowledgement have no WCAG violations", async ({ page }) => {
   await page.setViewportSize(VIEWPORT);
+  await seedPanelOpen(page);
   await installMockProductApi(page, { mode: "approval" });
   await page.goto("/");
   await page.getByLabel("绝对路径").fill("D:/tmp/rove-a11y");

@@ -611,7 +611,7 @@ test.describe("real API product shell integration", () => {
       expectProductSessionRequest(parentTurn, parentSessionId);
       await expectTurnCompleted(page, `fake response: ${parentPrompt}`);
 
-      const parentTitle = await page.locator(".chat-pane__header h1").innerText();
+      const parentTitle = await page.locator(".conversation-topbar h1").innerText();
       const forkResponsePromise = page.waitForResponse(
         (response) =>
           response.request().method() === "POST" &&
@@ -619,7 +619,12 @@ test.describe("real API product shell integration", () => {
             `/api/product/sessions/${parentSessionId}/forks` &&
           response.status() === 201,
       );
-      await page.locator(".chat-pane__header").getByRole("button", { name: "复制会话" }).click();
+      // The fork affordance lives on the user message it branches from.
+      const parentBubble = page
+        .locator('article.chat-bubble[data-role="user"]')
+        .filter({ hasText: parentPrompt });
+      await parentBubble.hover();
+      await parentBubble.getByRole("button", { name: "复制会话" }).click();
       const forkResponse = await forkResponsePromise;
       const forkPayload = (await forkResponse.json()) as {
         session?: { id?: unknown };

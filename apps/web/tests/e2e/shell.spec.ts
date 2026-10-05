@@ -13,6 +13,9 @@ test("empty -> open workspace -> run -> complete on live shell mock", async ({
   await expect(page.getByRole("heading", { name: "打开工作区以开始" })).toBeVisible();
 
   await openWorkspace(page);
+  // The work panel is closed by default (design §3.3); the floating toggle
+  // opens it.
+  await page.getByRole("button", { name: "展开详情面板" }).click();
   await page.getByRole("textbox", { name: /输入消息/ }).fill("Summarize the runtime state");
   await page.getByRole("button", { name: "发送" }).click();
 
@@ -76,6 +79,7 @@ test("inspector shows empty then completed states during a run", async ({ page }
   await installMockProductApi(page);
   await page.goto("/");
   await openWorkspace(page);
+  await page.getByRole("button", { name: "展开详情面板" }).click();
 
   const inspector = page.getByLabel("详情");
   await expect(inspector.getByText("暂无进行中的运行")).toBeVisible();
