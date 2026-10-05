@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  ChevronLeftIcon,
   ChevronRightIcon,
   Cross2Icon,
   PlusIcon,
@@ -224,19 +223,17 @@ export function RunInspector({
   );
 
   if (collapsed) {
+    // The closed panel keeps its subtree mounted so the allocated-width
+    // collapse can animate, but at zero width it must be inert and out of the
+    // accessibility tree; the floating toggle reopens it (design §5.0).
     return (
-      <aside className="product-inspector" data-collapsed="true" aria-label={t("inspector.title")}>
-        <div className="inspector-header">
-          <button
-            type="button"
-            className="ghost icon-button"
-            onClick={onToggle}
-            aria-label={t("nav.expandInspector")}
-          >
-            <ChevronLeftIcon />
-          </button>
-        </div>
-      </aside>
+      <aside
+        className="product-inspector"
+        data-collapsed="true"
+        aria-label={t("inspector.title")}
+        aria-hidden="true"
+        inert
+      />
     );
   }
 
@@ -244,6 +241,7 @@ export function RunInspector({
     <aside
       className="product-inspector"
       aria-label={t("inspector.title")}
+      data-collapsed="false"
       data-phase={phase}
       data-open={dialogOpen}
       aria-modal={dialogOpen ? true : undefined}

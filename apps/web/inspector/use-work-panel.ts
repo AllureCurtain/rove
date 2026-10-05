@@ -10,7 +10,6 @@ import {
   workPanelMinimumFor,
 } from "./work-panel-layout";
 
-import { matchesDrawerLayout } from "../lib/viewport-breakpoints";
 import {
   activateWorkPanelTab,
   closeWorkPanelTab,
@@ -40,6 +39,36 @@ interface PanelSelection {
  * (`workPanelLayout`), so a wide stored value can never squeeze the chat.
  */
 const STORAGE_KEY = "rove.ui-work-panel-width";
+/**
+ * Whether the panel is open is a UI preference too (design §5.0): the panel is
+ * closed by default and a reload restores exactly the state that was left.
+ * Only user-initiated toggles write it — the drawer's force-close on a narrow
+ * layout does not, or a phone visit would erase the desktop preference.
+ */
+const STORAGE_OPEN_KEY = "rove.ui-work-panel-open";
+
+function readStoredPanelOpen(): boolean | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const raw = window.localStorage.getItem(STORAGE_OPEN_KEY);
+    return raw === "1" ? true : raw === "0" ? false : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredPanelOpen(open: boolean): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(STORAGE_OPEN_KEY, open ? "1" : "0");
+  } catch {
+    // Optional preference; the in-memory state still applies.
+  }
+}
 
 function readStoredPanelWidth(): number {
   if (typeof window === "undefined") {
@@ -71,7 +100,8 @@ const initialSelection = (): PanelSelection => ({
   tabs: defaultWorkPanelTabs(),
   target: null,
   width: WORK_PANEL_DEFAULT_WIDTH,
-  collapsed: matchesDrawerLayout(),
+  // Closed by default (design §5.0); a stored "open" restores after mount.
+  collapsed: true,
   returnFocus: null,
 });
 
@@ -86,17 +116,29 @@ export function useWorkPanel(
   const [, render] = useState(0);
   const selection = selections.current.get(key) ?? initialSelection();
 
-  // Restore after mount so the server and the first client render agree.
+  // Restore after mount so the server and the first client render agree. The
+  // stored open flag seeds a session the shell has not visited yet; a selection
+  // that already exists keeps the state the user set this visit and only takes
+  // the persisted width.
   useEffect(() => {
-    const stored = readStoredPanelWidth();
-    if (stored === WORK_PANEL_DEFAULT_WIDTH) {
-      return;
-    }
+    const storedWidth = readStoredPanelWidth();
+    const storedOpen = readStoredPanelOpen();
     const current = selections.current.get(key);
-    if (current && current.width === stored) {
+    if (current) {
+      if (storedWidth !== WORK_PANEL_DEFAULT_WIDTH && current.width !== storedWidth) {
+        selections.current.set(key, { ...current, width: storedWidth });
+        render((value) => value + 1);
+      }
       return;
     }
-    selections.current.set(key, { ...(current ?? initialSelection()), width: stored });
+    if (storedWidth === WORK_PANEL_DEFAULT_WIDTH && storedOpen === null) {
+      return;
+    }
+    selections.current.set(key, {
+      ...initialSelection(),
+      width: storedWidth,
+      collapsed: storedOpen === null ? true : !storedOpen,
+    });
     render((value) => value + 1);
   }, [key]);
 
@@ -115,9 +157,11 @@ export function useWorkPanel(
       target,
       returnFocus: trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null),
     });
+    writeStoredPanelOpen(true);
   }
   function close() {
     update({ collapsed: true });
+    writeStoredPanelOpen(false);
     const trigger = selection.returnFocus;
     // The control that opened the panel can unmount while the panel is open
     // (a settled approval card drops its detail button). Fall back to a stable
@@ -167,6 +211,13 @@ export function useWorkPanel(
       setWidth(next);
     },
     setCollapsed: (collapsed: boolean) => update({ collapsed }),
+    /**
+     * Re-apply the persisted open preference after a layout-forced close (the
+     * narrow drawer hides the panel without touching the preference, so coming
+     * back to a wide layout restores what the user actually left).
+     */
+    restoreOpenPreference: () =>
+      update({ collapsed: !(readStoredPanelOpen() ?? false) }),
     toggle: () => selection.collapsed ? open() : close(),
   };
 }

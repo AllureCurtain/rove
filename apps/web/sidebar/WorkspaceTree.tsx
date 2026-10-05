@@ -3,6 +3,7 @@
 import {
   FormEvent,
   type KeyboardEvent,
+  type ReactNode,
   useEffect,
   useMemo,
   useRef,
@@ -18,7 +19,6 @@ import {
   DrawingPinFilledIcon,
   FileIcon,
   GearIcon,
-  LockClosedIcon,
   MagnifyingGlassIcon,
   Pencil1Icon,
   PlusIcon,
@@ -79,6 +79,7 @@ export function WorkspaceTree({
   onOverlayPointerEnter,
   onOverlayPointerLeave,
   onOpenSettings,
+  footerActions,
   railCollapsed,
   onToggleCollapsed,
   searchSessions,
@@ -105,6 +106,12 @@ export function WorkspaceTree({
   onOverlayPointerEnter?: () => void;
   onOverlayPointerLeave?: () => void;
   onOpenSettings?: () => void;
+  /**
+   * Icon-row content for the footer (design §3.1): the shell passes the
+   * notification inbox, the theme toggle and any other chrome that used to
+   * live in the removed page-level top bar.
+   */
+  footerActions?: ReactNode;
   /** Persist a renamed session title; rejects when the server refused. */
   onRenameSession?: (sessionId: string, title: string) => Promise<boolean>;
   /** Collapsed rail: the subtree stays mounted but inert and aria-hidden. */
@@ -507,13 +514,18 @@ export function WorkspaceTree({
         )}
       </div>
       <footer className="product-sidebar__footer">
-        <div className="workspace-boundary">
-          <LockClosedIcon />
-          <span><strong>{t("workspace.label")}</strong><small>{t("workspace.known")}</small></span>
-        </div>
+        {/* Icon row (design §3.1): the chrome the shell hands down — inbox,
+            theme — then the rail's own settings entry last. */}
+        {footerActions}
         {onOpenSettings ? (
-          <button type="button" className="ghost" onClick={onOpenSettings}>
-            <GearIcon /> {t("nav.settings")}
+          <button
+            type="button"
+            className="ghost icon-button"
+            onClick={onOpenSettings}
+            aria-label={t("nav.settings")}
+            title={t("nav.settings")}
+          >
+            <GearIcon />
           </button>
         ) : null}
       </footer>
