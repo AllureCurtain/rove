@@ -9,6 +9,12 @@ on:
   pull_request:
     branches: [main]
 
+# A new push to the same PR/branch cancels the previous in-flight run; only the
+# latest commit's result matters.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0

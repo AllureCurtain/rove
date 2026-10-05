@@ -31,6 +31,7 @@ Ordered by priority.
 
 Keep only the last 10 entries.
 
+- 2026-10-05 CI: concurrency groups cancel superseded runs per ref; rust job installs libwayland-dev + wayland-protocols for rfd/ashpd
 - 2026-10-04 GitHub-facing cleanup for open-sourcing: renamed the env files to the standard .env.example/.env pair, standardized on rebase merge (repo now rebase-only + auto-delete-branch), aligned the PR template with the coding-standard minimal skeleton, added SECURITY.md
 - 2026-10-04 CI speedup: `Swatinem/rust-cache` caches the registry + `target/`; routine clippy/test exclude `rove-desktop`, which moved to a separate paths-gated workflow
 - 2026-10-04 Open-source cleanup: removed the v1 skin runtime switch (`ROVE_PRODUCT_UI_VERSION`, `uiVersion`, `data-presentation`) and the `/dev/product-ui-v2` design mock; added MIT `LICENSE`; removed stale `.gitignore` entries
@@ -39,5 +40,4 @@ Keep only the last 10 entries.
 - 2026-10-01 Fixed local MSVC linker discovery: removed the stale registry `CachePath` override + rebuilt the VS instance directory; cargo now builds directly from Git Bash / pwsh / a clean PATH (`scripts/fix-vs-registration.ps1`)
 - 2026-10-01 Added `scripts/msvc-env.ps1`: one-command loading of the VS build environment when cargo cannot find the MSVC linker (Git's GNU link.exe wins / vswhere cannot find the installation)
 - 2026-10-01 Structural refactor phase 1 done: test build after a runtime change went from 146s to about 66s; phase 2 (splitting runtime) evaluated and deferred
-- 2026-10-01 Split `apps/api/src/lib.rs` from 7419 lines into 10 responsibility modules; lib.rs is down to 613 lines
 - 2026-10-01 Extracted ProductStore into the `rove-product-store` crate; lib test unit time for api-only changes went from 26s to 10s
