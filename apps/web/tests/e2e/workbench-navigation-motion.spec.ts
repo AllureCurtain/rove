@@ -33,32 +33,32 @@ test("left navigation resizes by pointer, keyboard, and persists the preference"
   await expect(handle).toBeVisible();
   await expect(rail).not.toHaveAttribute("data-collapsed", "true");
 
-  // The grid column transitions, so the committed width is read from the
+  // The column width is animated, so the committed width is read from the
   // handle's own value and the rendered width is polled until it settles.
   const railWidth = () => rail.boundingBox().then((box) => Math.round(box!.width));
-  await expect.poll(railWidth).toBe(240);
+  await expect.poll(railWidth).toBe(275);
 
   // Keyboard stepping: one arrow is 16px, Shift is 32px (design §3.3).
   await handle.focus();
   await page.keyboard.press("ArrowRight");
-  await expect(handle).toHaveAttribute("aria-valuenow", "256");
-  await expect.poll(railWidth).toBe(256);
+  await expect(handle).toHaveAttribute("aria-valuenow", "291");
+  await expect.poll(railWidth).toBe(291);
   await page.keyboard.press("Shift+ArrowRight");
-  await expect(handle).toHaveAttribute("aria-valuenow", "288");
-  await expect.poll(railWidth).toBe(288);
+  await expect(handle).toHaveAttribute("aria-valuenow", "323");
+  await expect.poll(railWidth).toBe(323);
 
   // End jumps to the upper bound and Home back to the lower bound.
   await page.keyboard.press("End");
-  await expect(handle).toHaveAttribute("aria-valuenow", "360");
-  await expect.poll(railWidth).toBe(360);
+  await expect(handle).toHaveAttribute("aria-valuenow", "520");
+  await expect.poll(railWidth).toBe(520);
   await page.keyboard.press("Home");
-  await expect(handle).toHaveAttribute("aria-valuenow", "200");
-  await expect.poll(railWidth).toBe(200);
+  await expect(handle).toHaveAttribute("aria-valuenow", "240");
+  await expect.poll(railWidth).toBe(240);
 
   // The choice survives a reload because it is a UI preference.
   await page.reload();
   await expect(page.getByText("Answer", { exact: true })).toBeVisible();
-  await expect.poll(railWidth).toBe(200);
+  await expect.poll(railWidth).toBe(240);
 });
 
 test("collapsing the rail moves its entries to the header and restores them", async ({
@@ -87,9 +87,14 @@ test("collapsing the rail moves its entries to the header and restores them", as
   // The subtree stays mounted rather than unmounting.
   await expect(rail.locator(".session-item").first()).toBeAttached();
 
-  // Collapsed, the header carries the new-session entry and the expand control.
+  // Collapsed, the conversation topbar grows a lead expand control and still
+  // carries the new-task action (design §7.3).
+  const topbar = page.locator(".conversation-topbar");
   await expect(
-    page.locator(".product-topbar__collapsed").getByRole("button", { name: "新会话" }),
+    topbar.locator(".ct-lead").getByRole("button", { name: "展开工作区列表" }),
+  ).toBeVisible();
+  await expect(
+    topbar.getByRole("button", { name: "新任务" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "展开工作区列表" }).click();
   await expect(rail).not.toHaveAttribute("data-collapsed", "true");

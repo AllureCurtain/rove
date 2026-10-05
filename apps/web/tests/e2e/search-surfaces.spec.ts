@@ -323,7 +323,7 @@ test("a workspace hit opens the session it came from", async ({ page }) => {
   await view.getByRole("button", { name: "打开会话" }).click();
 
   // The hit names another session; opening it is the jump this scope offers.
-  await expect(page.locator(".chat-pane__header h1")).toHaveText(
+  await expect(page.locator(".conversation-topbar h1")).toHaveText(
     "Release checklist",
   );
   expect(page.url()).toContain(`/w/${workspace.id}/s/${other.id}`);

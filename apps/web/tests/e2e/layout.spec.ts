@@ -9,20 +9,38 @@ import {
 } from "./product-api-mock";
 
 /**
- * Top bar height used by the shell (`--topbar-height` in product-v2.css).
+ * The console has no page-level top bar: the three columns split the whole
+ * viewport, and the conversation carries its own 46px header in-flow
+ * (design §3.2).
  */
-const TOPBAR_HEIGHT = 52;
 /**
  * Design §5.0: the conversation column is the hard floor of the shared width
  * budget. Reaching it must shrink the panel, never the conversation.
  */
 const MAIN_PANE_MIN_WIDTH = 450;
 
+/** Rail geometry bounds (design §3.1 / `use-sidebar-width.ts`). */
+const RAIL_DEFAULT_WIDTH = 275;
+const RAIL_MIN_WIDTH = 240;
+const RAIL_MAX_WIDTH = 520;
+
+/** The floating toggle is the only way in to a closed work panel (§3.3). */
+async function openWorkPanel(page: Page) {
+  await page.getByRole("button", { name: "展开详情面板" }).click();
+  await expect(
+    page.locator("aside.product-inspector"),
+  ).not.toHaveAttribute("data-collapsed", "true");
+  // The open animation allocates width; poll rather than read one frame.
+  await expect
+    .poll(async () => (await box(page, "aside.product-inspector")).width)
+    .toBeCloseTo(WORK_PANEL_DEFAULT_WIDTH, 0);
+}
+
 /**
  * The three-column shell contract: rail | conversation | work panel share one
- * row, and each column fills the viewport below the top bar.
+ * row, and each column fills the viewport.
  *
- * Regression for the `sidebar-resize-handle` grid-track bug: as a grid item in
+ * Regression for the `sidebar-resize-handle` track bug: as a grid item in
  * column 2 it consumed the middle track, which pushed `<main>` into column 3
  * (auto-sized) and moved the inspector onto a second row, bottom-left. At
  * 1440x900 the rail, main and inspector were each only 424px tall, main started
@@ -32,7 +50,7 @@ const MAIN_PANE_MIN_WIDTH = 450;
 const DESKTOP_VIEWPORTS = [
   { width: 1440, height: 900, railExpanded: true },
   { width: 1280, height: 800, railExpanded: true },
-  // 1024 − 240 (rail) − 360 (panel) = 424 < 450, so the rail yields first
+  // 1024 − 275 (rail) − 360 (panel) = 389 < 450, so the rail yields first
   // instead of the conversation being squeezed (design §5.0 priority order).
   { width: 1024, height: 768, railExpanded: false },
 ];
@@ -62,34 +80,37 @@ for (const viewport of DESKTOP_VIEWPORTS) {
     await page.goto(`/w/${workspace.id}/s/${session.id}`);
     await expect(page.getByText("Layout answer", { exact: true })).toBeVisible();
 
+    // The panel is closed by default (design §3.3); opening it is what spends
+    // the width budget and, at 1024px, takes the rail's column.
+    await openWorkPanel(page);
+
     const inspector = page.locator("aside.product-inspector");
     // Above 960px the panel is a column, not the modal drawer.
     await expect(inspector).not.toHaveAttribute("role", "dialog");
 
-    const rail = await box(page, ".product-sidebar");
     const main = await box(page, ".product-main");
     const panel = await box(page, "aside.product-inspector");
-    const expectedHeight = viewport.height - TOPBAR_HEIGHT;
 
-    // One row: every visible column starts under the top bar and fills the
-    // viewport height.
+    // One row: every column fills the viewport height; there is no page-level
+    // top bar above them.
     for (const [name, element] of [
       ["conversation", main],
       ["work panel", panel],
-      ...(viewport.railExpanded ? ([["rail", rail]] as const) : []),
     ] as const) {
-      expect(element.y, `${name} must start below the top bar`).toBeCloseTo(
-        TOPBAR_HEIGHT,
+      expect(element.y, `${name} must start at the top of the viewport`).toBeCloseTo(
+        0,
         0,
       );
       expect(
         element.height,
         `${name} must fill the viewport height`,
-      ).toBeCloseTo(expectedHeight, 0);
+      ).toBeCloseTo(viewport.height, 0);
     }
 
-    // No empty grid track between the rail and the conversation.
     if (viewport.railExpanded) {
+      const rail = await box(page, ".product-sidebar");
+      expect(rail.y).toBeCloseTo(0, 0);
+      expect(rail.height).toBeCloseTo(viewport.height, 0);
       expect(main.x, "conversation must start where the rail ends").toBeCloseTo(
         rail.x + rail.width,
         0,
@@ -100,6 +121,12 @@ for (const viewport of DESKTOP_VIEWPORTS) {
         "data-nav-collapsed",
         "true",
       );
+      await expect
+        .poll(async () => (await box(page, ".product-sidebar")).width, {
+          message: "the collapsed rail animates its allocated width to zero",
+        })
+        .toBeCloseTo(0, 0);
+      expect(main.x, "conversation starts at the viewport edge").toBeCloseTo(0, 0);
     }
     expect(
       main.x + main.width,
@@ -117,6 +144,7 @@ for (const viewport of DESKTOP_VIEWPORTS) {
 
     // The rail handle overlays the rail's trailing edge instead of taking a track.
     if (viewport.railExpanded) {
+      const rail = await box(page, ".product-sidebar");
       const handle = await box(page, ".sidebar-resize-handle");
       expect(
         handle.x,
@@ -128,7 +156,10 @@ for (const viewport of DESKTOP_VIEWPORTS) {
       ).toBeLessThan(main.x + 1);
     }
 
-    if (viewport.width - rail.width - panel.width >= MAIN_PANE_MIN_WIDTH) {
+    const railWidth = viewport.railExpanded
+      ? (await box(page, ".product-sidebar")).width
+      : 0;
+    if (viewport.width - railWidth - panel.width >= MAIN_PANE_MIN_WIDTH) {
       expect(
         main.width,
         "conversation must keep the design's 450px floor when there is room",
@@ -145,9 +176,50 @@ for (const viewport of DESKTOP_VIEWPORTS) {
 }
 
 /**
- * Design §5.0 priority order — conversation floor > panel request > rail — so at
- * 1024x768 the rail yields instead of the conversation dropping to 424px, and
- * reopening the rail spends the panel's column rather than the chat's.
+ * The panel is closed by default (design §3.3): nothing spends its column
+ * until the user opens it, and the rail keeps its own column meanwhile.
+ */
+test("the work panel starts closed and never squeezes the rail away on its own", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  const workspace = createMockWorkspace();
+  const session = createMockSession();
+  await installMockProductApi(page, {
+    workspaces: [workspace],
+    sessions: [session],
+    transcripts: {
+      [session.id]: completedTranscript(workspace, session, "Layout question", "Layout answer"),
+    },
+    activeWorkspaceId: workspace.id,
+    activeSessionId: session.id,
+  });
+  await page.goto(`/w/${workspace.id}/s/${session.id}`);
+  await expect(page.getByText("Layout answer", { exact: true })).toBeVisible();
+
+  const panel = page.locator("aside.product-inspector");
+  await expect(panel).toHaveAttribute("data-collapsed", "true");
+  // Collapsed panel: hidden from the accessibility tree and the pointer.
+  await expect(panel).toHaveAttribute("aria-hidden", "true");
+  await expect(panel).toHaveAttribute("inert", "");
+
+  // With the panel closed the rail keeps its column: 1024 − 275 = 749 ≥ 450.
+  await expect(page.locator(".product-body")).toHaveAttribute(
+    "data-nav-collapsed",
+    "false",
+  );
+  const rail = await box(page, ".product-sidebar");
+  const main = await box(page, ".product-main");
+  expect(rail.width).toBeCloseTo(RAIL_DEFAULT_WIDTH, 0);
+  expect(main.x).toBeCloseTo(rail.x + rail.width, 0);
+  expect(main.x + main.width).toBeCloseTo(1024, 0);
+});
+
+/**
+ * Design §5.0 priority order — conversation floor > panel request > rail — so
+ * opening the panel at 1024x768 collapses the rail instead of squeezing the
+ * conversation, and reopening the rail spends the panel's column rather than
+ * the chat's.
  */
 test("the rail yields before the conversation floor at 1024x768", async ({
   page,
@@ -167,25 +239,23 @@ test("the rail yields before the conversation floor at 1024x768", async ({
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
   await expect(page.getByText("Layout answer", { exact: true })).toBeVisible();
 
+  await openWorkPanel(page);
+
   const body = page.locator(".product-body");
   await expect(body).toHaveAttribute("data-nav-collapsed", "true");
-  const collapsedRail = await box(page, ".product-sidebar");
+  const rail = page.locator(".product-sidebar");
+  await expect
+    .poll(async () => (await rail.boundingBox())?.width ?? -1, {
+      message: "the collapsed rail animates its allocated width to zero",
+    })
+    .toBeCloseTo(0, 0);
   const main = await box(page, ".product-main");
   const panel = await box(page, "aside.product-inspector");
 
   expect(
     main.x,
     "the collapsed rail must not hold a column",
-  ).toBeLessThanOrEqual(1);
-  // The rail itself still has to leave the row: since F9 the track snaps in one
-  // frame and the rail slides out on its own transform, so its box is only gone
-  // once that slide has run.
-  await expect
-    .poll(async () => {
-      const settledRail = await box(page, ".product-sidebar");
-      return settledRail.x + settledRail.width;
-    })
-    .toBeLessThanOrEqual(1);
+  ).toBeCloseTo(0, 0);
   expect(
     main.width,
     "conversation keeps its 450px floor",
@@ -199,6 +269,11 @@ test("the rail yields before the conversation floor at 1024x768", async ({
   // Reopening the rail spends the panel's column, not the conversation's.
   await page.getByRole("button", { name: "展开工作区列表" }).click();
   await expect(body).toHaveAttribute("data-nav-collapsed", "false");
+  await expect
+    .poll(async () => (await rail.boundingBox())?.width ?? -1, {
+      message: "the rail animates its allocated width back open",
+    })
+    .toBeCloseTo(RAIL_DEFAULT_WIDTH, 0);
   const reopenedMain = await box(page, ".product-main");
   const reopenedPanel = await box(page, "aside.product-inspector");
   expect(
@@ -212,17 +287,14 @@ test("the rail yields before the conversation floor at 1024x768", async ({
 });
 
 /**
- * F9 (design §10): collapsing the rail must not animate the grid track.
+ * Design §4.4: collapsing the rail animates the allocated width itself.
  *
- * Animating `grid-template-columns` re-lays-out the conversation column on every
- * frame — measured at 1280x720 with a 30-run transcript, one collapse cost 15
- * layout passes and 22.5ms of layout plus 34.2ms of style recalculation, against
- * 2 passes / 1.9ms / 5.7ms once the track settles in one frame. The rail keeps
- * its own 240ms transform slide instead, which is why it also needs a stable
- * width: as a stretched grid item in a 0 track it would collapse in the same
- * frame and have nothing left to slide.
+ * The rail's `flex-basis` shrinks to zero while opacity fades and the column
+ * translates 8px, all on the same clock, so the conversation widens *with* the
+ * rail's exit. The subtree keeps its expanded width under `overflow: hidden`
+ * so labels never reflow mid-animation.
  */
-test("the rail's collapse snaps the track and slides the rail itself", async ({
+test("the rail's collapse animates the allocated width", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -256,51 +328,46 @@ test("the rail's collapse snaps the track and slides the rail itself", async ({
     };
   });
   expect(
-    motion.bodyTransition,
-    "the grid track must settle in one frame",
-  ).not.toContain("grid-template-columns");
-  expect(
     motion.railTransition,
-    "the rail keeps its own transform slide",
-  ).toContain("transform");
-  expect(motion.railWidth).toBe("240px");
+    "the rail animates its allocated width (flex-basis)",
+  ).toContain("flex-basis");
+  expect(motion.railTransition).toContain("transform");
+  expect(motion.railTransition).toContain("opacity");
+  expect(motion.railWidth).toBe(`${RAIL_DEFAULT_WIDTH}px`);
   expect(motion.railPosition).toBe("relative");
 
   const body = page.locator(".product-body");
+  const rail = page.locator("aside.product-sidebar");
   await page.getByRole("button", { name: "收起工作区列表" }).click();
   await expect(body).toHaveAttribute("data-nav-collapsed", "true");
 
-  // The conversation owns the row in the same frame the rail starts sliding, and
-  // the rail keeps a full-width box painted over it while it leaves.
+  // The conversation owns the row while the rail's own width animates away.
+  await expect
+    .poll(async () => (await rail.boundingBox())?.width ?? -1)
+    .toBeCloseTo(0, 0);
   const main = await box(page, ".product-main");
   expect(main.x, "conversation starts at the viewport edge").toBeCloseTo(0, 0);
   const collapsedRail = await page.evaluate(() => {
-    const rail = document.querySelector(".product-sidebar");
+    const element = document.querySelector(".product-sidebar");
     return {
-      width: rail ? getComputedStyle(rail).width : "",
-      zIndex: rail ? getComputedStyle(rail).zIndex : "",
-      ariaHidden: rail?.getAttribute("aria-hidden"),
-      inert: rail?.hasAttribute("inert") ?? false,
+      ariaHidden: element?.getAttribute("aria-hidden"),
+      inert: element?.hasAttribute("inert") ?? false,
     };
   });
-  expect(collapsedRail.width).toBe("240px");
-  expect(collapsedRail.zIndex).toBe("2");
-  // The off-screen rail leaves the accessibility tree and the tab order.
+  // The collapsed rail leaves the accessibility tree and the tab order while
+  // its subtree stays mounted for the animation.
   expect(collapsedRail.ariaHidden).toBe("true");
   expect(collapsedRail.inert).toBe(true);
 
-  // Reopening restores the rail's column, again without animating the track:
-  // the conversation starts at the rail's edge immediately, and the rail itself
-  // slides back in from the left.
+  // Reopening restores the rail's column with the same allocated-width
+  // animation running in reverse.
   await page.getByRole("button", { name: "展开工作区列表" }).click();
   await expect(body).toHaveAttribute("data-nav-collapsed", "false");
-  const reopenedRail = await box(page, ".product-sidebar");
-  const reopenedMain = await box(page, ".product-main");
-  expect(reopenedRail.width).toBeCloseTo(240, 0);
-  expect(reopenedMain.x).toBeCloseTo(reopenedRail.width, 0);
   await expect
-    .poll(async () => (await box(page, ".product-sidebar")).x)
-    .toBeCloseTo(0, 0);
+    .poll(async () => (await rail.boundingBox())?.width ?? -1)
+    .toBeCloseTo(RAIL_DEFAULT_WIDTH, 0);
+  const reopenedMain = await box(page, ".product-main");
+  expect(reopenedMain.x).toBeCloseTo(RAIL_DEFAULT_WIDTH, 0);
 });
 
 /**
@@ -320,6 +387,7 @@ test("work panel tab strip opens, closes and reopens tabs", async ({ page }) => 
     activeSessionId: session.id,
   });
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
+  await openWorkPanel(page);
 
   const strip = page.getByRole("tablist", { name: "详情页签" });
   const statusTab = strip.getByRole("tab", { name: "运行", exact: true });
@@ -457,10 +525,11 @@ for (const viewport of READING_COLUMN_VIEWPORTS) {
  * The rail handle must resize the rail it sits on.
  *
  * `settleWidth` used to measure from the handle's own rect, but the handle is
- * pinned to the rail's trailing edge and slides with the rail: grabbing a 240px
- * rail computed `240 - 236 = 4px`, which snapped the rail to its 200px minimum
- * on the first pointer move and then kept re-measuring from the moved handle.
- * Measured on the pre-fix build at 1440x900: a +40px drag left the rail at 200.
+ * pinned to the rail's trailing edge and slides with the rail: grabbing a
+ * default rail computed `default − ~236 = ~40px`, which snapped the rail to
+ * its minimum on the first pointer move and then kept re-measuring from the
+ * moved handle. Measured on the pre-fix build at 1440x900: a +40px drag left
+ * the rail at the old 200px minimum.
  */
 test("dragging the rail handle resizes the rail and keeps the columns", async ({
   page,
@@ -479,9 +548,12 @@ test("dragging the rail handle resizes the rail and keeps the columns", async ({
   });
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
   await expect(page.getByText("Rail answer", { exact: true })).toBeVisible();
+  await openWorkPanel(page);
 
   const before = await box(page, ".product-sidebar");
-  expect(before.width, "the rail starts at its 240px default").toBe(240);
+  expect(before.width, "the rail starts at its 275px default").toBe(
+    RAIL_DEFAULT_WIDTH,
+  );
 
   const handle = await box(page, ".sidebar-resize-handle");
   const startX = handle.x + handle.width / 2;
@@ -497,8 +569,10 @@ test("dragging the rail handle resizes the rail and keeps the columns", async ({
   expect(
     grown.width,
     "the rail must follow the pointer instead of snapping to its minimum",
-  ).toBeGreaterThanOrEqual(276);
-  expect(grown.width, "the drag must not overshoot").toBeLessThanOrEqual(284);
+  ).toBeGreaterThanOrEqual(RAIL_DEFAULT_WIDTH + 36);
+  expect(grown.width, "the drag must not overshoot").toBeLessThanOrEqual(
+    RAIL_DEFAULT_WIDTH + 44,
+  );
 
   // The columns must survive the resize: conversation still on the floor, panel
   // still on the first row and still flush with the viewport edge.
@@ -544,27 +618,27 @@ test("the rail handle resizes from the keyboard within its bounds", async ({
   const handle = page.getByRole("separator", { name: /导航宽度|sidebar width/ });
   await handle.focus();
   await handle.press("ArrowRight");
-  await expect(handle).toHaveAttribute("aria-valuenow", "256");
+  await expect(handle).toHaveAttribute("aria-valuenow", "291");
   await handle.press("Shift+ArrowRight");
-  await expect(handle).toHaveAttribute("aria-valuenow", "288");
+  await expect(handle).toHaveAttribute("aria-valuenow", "323");
   // The rail width is animated, so the rendered box converges rather than
   // snapping: poll it instead of reading a frame of the easing tail.
   await expect
     .poll(async () => (await box(page, ".product-sidebar")).width, {
       message: "the rail converges on the width the handle announced",
     })
-    .toBeCloseTo(288, 0);
+    .toBeCloseTo(323, 0);
   await handle.press("Home");
-  await expect(handle).toHaveAttribute("aria-valuenow", "200");
+  await expect(handle).toHaveAttribute("aria-valuenow", `${RAIL_MIN_WIDTH}`);
   await handle.press("ArrowLeft");
-  await expect(handle).toHaveAttribute("aria-valuenow", "200");
+  await expect(handle).toHaveAttribute("aria-valuenow", `${RAIL_MIN_WIDTH}`);
   await handle.press("End");
-  await expect(handle).toHaveAttribute("aria-valuenow", "360");
+  await expect(handle).toHaveAttribute("aria-valuenow", `${RAIL_MAX_WIDTH}`);
   await expect
     .poll(async () => (await box(page, ".product-sidebar")).width, {
       message: "End converges on the maximum rail width",
     })
-    .toBeCloseTo(360, 0);
+    .toBeCloseTo(RAIL_MAX_WIDTH, 0);
 });
 
 

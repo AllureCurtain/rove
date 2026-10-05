@@ -12,11 +12,11 @@ test("all eight settings sections expose a usable surface", async ({ page }) => 
 
   await expect(page.getByRole("button", { name: "浅色", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "中文", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "冷色精修", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "石墨单色", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "暖米色", exact: true }).click();
   await expect(page.locator(".product-app-frame")).toHaveAttribute("data-skin", "warm");
-  await page.getByRole("button", { name: "冷色精修", exact: true }).click();
-  await expect(page.locator(".product-app-frame")).toHaveAttribute("data-skin", "cool");
+  await page.getByRole("button", { name: "石墨单色", exact: true }).click();
+  await expect(page.locator(".product-app-frame")).toHaveAttribute("data-skin", "graphite");
 
   await page.getByRole("button", { name: "模型服务", exact: true }).click();
   await expect(page.getByRole("button", { name: "保存更改" })).toBeVisible();
@@ -540,6 +540,13 @@ test("memory management, runtime health, and critical shortcuts are live", async
   await expect(page.getByRole("textbox", { name: /输入消息/ })).toBeFocused();
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 
+  // The work panel is closed by default (design §3.3); the shortcut opens it,
+  // and a second press closes it again.
+  await page.keyboard.press("Control+.");
+  await expect(page.locator(".product-inspector").first()).toHaveAttribute(
+    "data-collapsed",
+    "false",
+  );
   await page.keyboard.press("Control+.");
   await expect(page.locator(".product-inspector").first()).toHaveAttribute(
     "data-collapsed",

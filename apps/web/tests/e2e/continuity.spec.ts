@@ -58,7 +58,7 @@ test("a deep session URL wins over stale server focus without a wrong-session fl
     observed.__productSessionHeadings = [];
     const start = () => {
       const record = () => {
-        const heading = document.querySelector(".chat-pane__header h1")?.textContent;
+        const heading = document.querySelector(".conversation-topbar h1")?.textContent;
         if (heading && !observed.__productSessionHeadings.includes(heading)) {
           observed.__productSessionHeadings.push(heading);
         }
@@ -213,7 +213,9 @@ test("removing the active workspace does not override a newer settings route", a
   await page.getByRole("menuitem", { name: "从列表移除工作区" }).click();
   await expect.poll(() => api.workspaces).toHaveLength(1);
   await page.getByRole("menuitem", { name: "确认移除工作区及其会话" }).click();
-  await page.getByRole("banner").getByRole("button", { name: "设置", exact: true }).click();
+  // The console has no page-level banner; settings lives in the rail's footer
+  // icon row (design §3.1).
+  await page.getByLabel("设置", { exact: true }).click();
 
   await expect(page).toHaveURL(/\/settings\/providers$/u);
   await expect.poll(() => api.workspaces).toHaveLength(0);
@@ -333,6 +335,7 @@ test("reload restores bubbles and the next turn resumes the exact product sessio
     latest_job_id: "job-restored-1",
     latest_run_id: "run-1",
   });
+  await page.getByRole("button", { name: "展开详情面板" }).click();
   await expect(page.getByLabel("详情").getByText("已完成")).toBeVisible();
 });
 
@@ -490,6 +493,7 @@ test("partial transcript remains distinct from a completed run and a run error",
   await expect(conversation.getByText("部分较早的消息未能恢复").first()).toBeVisible();
   await expect(conversation.getByText("Visible answer")).toBeVisible();
   await expect(conversation.getByText(/Expected event 3, observed 4/)).toBeVisible();
+  await page.getByRole("button", { name: "展开详情面板" }).click();
   await expect(page.getByLabel("详情").getByText("已完成", { exact: true })).toBeVisible();
   await expect(page.getByText("运行中断")).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: /输入消息/ })).toBeEnabled();

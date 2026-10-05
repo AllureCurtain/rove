@@ -111,7 +111,7 @@ test("the first message names a session the user never named", async ({
   await expect
     .poll(() => api.sessions.find((item) => item.id === fresh.id)?.title)
     .toBe(truncated);
-  await expect(page.locator(".chat-pane__header h1")).toHaveText(truncated);
+  await expect(page.locator(".conversation-topbar h1")).toHaveText(truncated);
 
   // A session the user did name keeps its title: the guard is the placeholder
   // template, which is the approximation the design records.
@@ -120,7 +120,7 @@ test("the first message names a session the user never named", async ({
   await expect(namedComposer).toBeEnabled();
   await namedComposer.fill("This must not rename anything");
   await namedComposer.press("Control+Enter");
-  await expect(page.locator(".chat-pane__header h1")).toHaveText("Keep this title");
+  await expect(page.locator(".conversation-topbar h1")).toHaveText("Keep this title");
   expect(api.sessions.find((item) => item.id === named.id)?.title).toBe(
     "Keep this title",
   );

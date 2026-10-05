@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import {
+  completedTranscript,
   createMockSession,
   createMockWorkspace,
   installMockProductApi,
@@ -186,12 +187,25 @@ test("a successful fork is announced", async ({ page }) => {
   await installMockProductApi(page, {
     workspaces: [workspace],
     sessions: [session],
+    transcripts: {
+      // The fork affordance lives on the user message it branches from.
+      [session.id]: completedTranscript(
+        workspace,
+        session,
+        "Fork question",
+        "Fork answer",
+      ),
+    },
     activeWorkspaceId: workspace.id,
     activeSessionId: session.id,
   });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  await page.locator(".chat-pane__header").getByRole("button", { name: "复制会话" }).click();
+  const userBubble = page
+    .locator('article.chat-bubble[data-role="user"]')
+    .filter({ hasText: "Fork question" });
+  await userBubble.hover();
+  await userBubble.getByRole("button", { name: "复制会话" }).click();
 
   const toast = page.locator(TOAST);
   await expect(toast).toHaveCount(1);
@@ -219,12 +233,24 @@ test("reduced motion shows toasts without the slide", async ({ page }) => {
   await installMockProductApi(page, {
     workspaces: [workspace],
     sessions: [session],
+    transcripts: {
+      [session.id]: completedTranscript(
+        workspace,
+        session,
+        "Fork question",
+        "Fork answer",
+      ),
+    },
     activeWorkspaceId: workspace.id,
     activeSessionId: session.id,
   });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  await page.locator(".chat-pane__header").getByRole("button", { name: "复制会话" }).click();
+  const userBubble = page
+    .locator('article.chat-bubble[data-role="user"]')
+    .filter({ hasText: "Fork question" });
+  await userBubble.hover();
+  await userBubble.getByRole("button", { name: "复制会话" }).click();
 
   const toast = page.locator(TOAST);
   await expect(toast).toHaveCount(1);
