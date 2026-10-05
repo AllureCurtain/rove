@@ -1,6 +1,6 @@
 # TODO
 
-Updated: 2026-10-04
+Updated: 2026-10-05
 
 ## In progress
 
@@ -10,7 +10,7 @@ Updated: 2026-10-04
 
 Ordered by priority.
 
-1. Implement the Web console P0 per `docs/web-console-design.md`: collapse the right inspector by default and persist its state; consolidate running facts into a single run stream
+1. Implement the Web console rebuild per `docs/web-console-design.md` v2, one PR per phase — P0 skin and shell, P1 conversation surface, P2 sidebar, P3 work panel, P4 polish
 2. F.4, TUI part: long sessions in the terminal can load earlier history on demand (CLI)
 3. F.5, TUI part: queued successor messages resume delivery after a TUI restart (CLI)
 4. Generate Web API types from `apps/api/openapi.json` instead of the hand-written `product-api-types.ts` and `rove-types.ts` (frontend)
@@ -31,6 +31,7 @@ Ordered by priority.
 
 Keep only the last 10 entries.
 
+- 2026-10-05 Promoted `docs/web-console-design.md` to v2 (active implementation contract): added the graphite skin, shell/sidebar/composer/work-panel specs, and the P0–P4 phase plan; kept the verified defect list as acceptance criteria
 - 2026-10-05 CI: concurrency groups cancel superseded runs per ref; rust job installs libwayland-dev + wayland-protocols for rfd/ashpd
 - 2026-10-04 GitHub-facing cleanup for open-sourcing: renamed the env files to the standard .env.example/.env pair, standardized on rebase merge (repo now rebase-only + auto-delete-branch), aligned the PR template with the coding-standard minimal skeleton, added SECURITY.md
 - 2026-10-04 CI speedup: `Swatinem/rust-cache` caches the registry + `target/`; routine clippy/test exclude `rove-desktop`, which moved to a separate paths-gated workflow
