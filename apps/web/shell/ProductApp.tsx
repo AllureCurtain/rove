@@ -1,6 +1,11 @@
 "use client";
 
-import { HamburgerMenuIcon } from "@radix-ui/react-icons";
+import {
+  DoubleArrowRightIcon,
+  MoonIcon,
+  PinRightIcon,
+  SunIcon,
+} from "@radix-ui/react-icons";
 import type { CSSProperties } from "react";
 
 import {
@@ -103,21 +108,15 @@ import type {
 } from "../product/product-api-types";
 import type { WorkspaceKind } from "../state/product-types";
 import { M1MigrationGate } from "./M1MigrationGate";
+import { ConversationTopBar } from "./ConversationTopBar";
 import { TopBar } from "./TopBar";
+import { useNavCollapsed } from "./use-nav-collapsed";
 import { UiSkinProvider, useUiSkin, type UiSkin } from "./ui-skin";
 import { SidebarResizeHandle } from "./SidebarResizeHandle";
 import { useSidebarWidth } from "./use-sidebar-width";
 import { useFontScalePreference } from "../settings/use-font-scale";
 
 export type { UiSkin };
-
-/**
- * The collapsed work panel track, aligned with the 40px the v2 skin gives
- * `.product-inspector[data-collapsed="true"]` (the undefined
- * `--work-panel-collapsed-width` variable it replaced always fell back to
- * this same number).
- */
-const WORK_PANEL_COLLAPSED_WIDTH_PX = 40;
 
 /** Strip Windows long-path prefixes so roots read as ordinary paths. */
 function formatDisplayPath(path: string): string {
@@ -185,9 +184,8 @@ function ServerProductApp({ draftStore }: {
     server.catalog.active.sessionId,
     inspectorButtonRef,
   );
-  // Left navigation width and collapse are UI-only layout state (design §3.1).
-  // The width persists as a UI preference; the collapse does not, so a reload
-  // always returns to the expanded rail.
+  // Left navigation width and collapse are UI-only layout state (design §3.1);
+  // both persist as local UI preferences.
   const sidebar = useSidebarWidth();
   // Warm the routes the header can reach in one click, off the boot path
   // (see `route-prefetch`).
@@ -199,7 +197,9 @@ function ServerProductApp({ draftStore }: {
     [server.catalog.active.workspaceId],
   );
   useIdleRoutePrefetch(prefetchTargets);
-  const [navCollapsed, setNavCollapsed] = useState(false);
+  // Persisted (design §3.1): a reload restores the rail as it was left.
+  const nav = useNavCollapsed();
+  const navCollapsed = nav.collapsed;
   // Focus target for the narrow-screen "select session, close rail" flow.
   const sessionTitleRef = useRef<HTMLHeadingElement>(null);
   const panelRef = useRef(panel);
@@ -282,7 +282,9 @@ function ServerProductApp({ draftStore }: {
   const measuredShellWidth =
     shellWidth > 0
       ? shellWidth
-      : panel.width + (navCollapsed ? 0 : sidebar.width) + MAIN_PANE_MIN_WIDTH;
+      : (inspectorCollapsed ? 0 : panel.width) +
+        (navCollapsed ? 0 : sidebar.width) +
+        MAIN_PANE_MIN_WIDTH;
   const panelLayout = useMemo(
     () =>
       workPanelLayout({
@@ -295,12 +297,20 @@ function ServerProductApp({ draftStore }: {
   );
   // The rail yields first: when the panel request cannot coexist with the
   // conversation floor, collapse the rail instead of squeezing the chat. The
-  // effect settles in one step because collapsing removes the condition.
+  // effect settles in one step because collapsing removes the condition. A
+  // closed panel holds no column, so it can never force the rail away.
   useEffect(() => {
-    if (!mobileLayout && shellWidth > 0 && panelLayout.shouldCollapseSidebar) {
-      setNavCollapsed(true);
+    if (
+      !mobileLayout &&
+      !inspectorCollapsed &&
+      shellWidth > 0 &&
+      panelLayout.shouldCollapseSidebar
+    ) {
+      nav.setCollapsed(true);
     }
-  }, [mobileLayout, panelLayout.shouldCollapseSidebar, shellWidth]);
+    // The hook's setter is stable; the effect only needs the flags it reads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mobileLayout, inspectorCollapsed, panelLayout.shouldCollapseSidebar, shellWidth]);
 
   // Keep the observer's snapshot of the budget inputs current. Declared after
   // `panelLayout` so it records the layout this render committed.
@@ -318,14 +328,18 @@ function ServerProductApp({ draftStore }: {
    * conversation: the panel gives up space first.
    */
   function expandRail() {
-    panel.setWidth(
-      workPanelWidthForSidebarReopen({
-        containerWidth: shellWidthRef.current || measuredShellWidth,
-        sidebarWidth: sidebar.width,
-        currentPanelWidth: panel.width,
-      }),
-    );
-    setNavCollapsed(false);
+    // A closed panel owns no column, so reopening the rail must not spend —
+    // or shrink — the stored panel width it will reopen with.
+    if (!inspectorCollapsed) {
+      panel.setWidth(
+        workPanelWidthForSidebarReopen({
+          containerWidth: shellWidthRef.current || measuredShellWidth,
+          sidebarWidth: sidebar.width,
+          currentPanelWidth: panel.width,
+        }),
+      );
+    }
+    nav.setCollapsed(false);
   }
 
   // Keep a stable ref to the panel for the *current* workspace/session. The
@@ -340,7 +354,14 @@ function ServerProductApp({ draftStore }: {
     const narrow = window.matchMedia(DRAWER_MEDIA_QUERY);
     const syncInspector = () => {
       setMobileLayout(narrow.matches);
-      panelRef.current.setCollapsed(narrow.matches);
+      if (narrow.matches) {
+        // The drawer layout force-closes the panel without writing the stored
+        // open preference; widening again restores it instead of re-opening a
+        // panel the user had shut.
+        panelRef.current.setCollapsed(true);
+      } else {
+        panelRef.current.restoreOpenPreference();
+      }
       if (!narrow.matches) {
         // The peek only exists on a narrow screen.
         cancelPeekClose();
@@ -640,6 +661,27 @@ function ServerProductApp({ draftStore }: {
 
   // A pending peek timer must not outlive the shell.
   useEffect(() => cancelPeekClose, []);
+
+  // The zone summons the rail under a stationary pointer, and a pointer that
+  // never moved into the rail may never raise pointerenter/pointerleave for it
+  // (the browser's recorded hit target is still the zone). While a peek is
+  // open, track the pointer position itself: inside the rail cancels the
+  // pending hide, anywhere else arms it.
+  useEffect(() => {
+    if (!workspacePeek) {
+      return;
+    }
+    const onPointerMove = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".product-sidebar")) {
+        cancelPeekClose();
+      } else {
+        schedulePeekClose();
+      }
+    };
+    document.addEventListener("pointermove", onPointerMove);
+    return () => document.removeEventListener("pointermove", onPointerMove);
+  }, [workspacePeek]);
 
   // Reveal-while-scrolling for every scroller in the shell (`data-scrolling`):
   // one capture-phase listener at the root, marking whichever element scrolled
@@ -1351,62 +1393,25 @@ function ServerProductApp({ draftStore }: {
 
   return (
     <div className="product-root">
-      <TopBar
-        connectionLabel={connectionLabel}
-        connectionTone={
-          busy ? "working" : continuity.runState.error ? "error" : connectionTone
-        }
-        theme={server.theme}
-        onToggleTheme={() =>
-          server.changeTheme(server.theme === "dark" ? "light" : "dark")
-        }
-        onOpenSettings={() => routing.openSettings("providers")}
-        showSettingsBack={routing.viewSettings}
-        onBackToChat={routing.backToChat}
-        workspaceButtonRef={routing.viewSettings ? undefined : workspaceButtonRef}
-        onToggleWorkspace={
-          routing.viewSettings
-            ? undefined
-            : () => {
-                // A deliberate open is the modal one: it may trap focus, and it
-                // hands focus back to this button when it closes.
-                cancelPeekClose();
-                setWorkspacePeek(false);
-                setWorkspaceOpen((value) => !value);
-              }
-        }
-        // When the rail is collapsed its entries move to the header so they
-        // stay reachable (design §3.1).
-        collapsedActions={
-          navCollapsed && !routing.viewSettings ? (
-            <>
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => {
-                  if (server.catalog.active.workspaceId) {
-                    void handleNewSession(server.catalog.active.workspaceId);
-                  } else {
-                    expandRail();
-                  }
-                }}
-              >
-                {t("nav.newSession")}
-              </button>
-              <button
-                type="button"
-                className="ghost icon-button"
-                onClick={expandRail}
-                aria-label={t("nav.expandWorkspace")}
-                title={t("nav.expandWorkspace")}
-              >
-                <HamburgerMenuIcon />
-              </button>
-            </>
-          ) : null
-        }
-        notifications={<NotificationInbox onOpenTarget={openInboxTarget} />}
-      />
+      {/* The page-level bar only exists outside the console: the boot and
+          settings surfaces keep it, while the console itself is three columns
+          whose chrome lives in the column headers (design §3.2). */}
+      {routing.viewSettings ? (
+        <TopBar
+          connectionLabel={connectionLabel}
+          connectionTone={
+            busy ? "working" : continuity.runState.error ? "error" : connectionTone
+          }
+          theme={server.theme}
+          onToggleTheme={() =>
+            server.changeTheme(server.theme === "dark" ? "light" : "dark")
+          }
+          onOpenSettings={() => routing.openSettings("providers")}
+          showSettingsBack
+          onBackToChat={routing.backToChat}
+          notifications={<NotificationInbox onOpenTarget={openInboxTarget} />}
+        />
+      ) : null}
 
       {routing.viewSettings ? (
         <div className="product-body" data-settings="true">
@@ -1455,13 +1460,11 @@ function ServerProductApp({ draftStore }: {
             {
               "--sidebar-nav-width": `${sidebar.width}px`,
               // Design §5.0 shared width budget: `workPanelLayout` owns the
-              // answer (it knows the rail's actual state), and the CSS keeps a
-              // viewport-level safety net against a stale measurement. Deriving
-              // the cap from the rail's *expanded* width here instead would let
-              // CSS and JS disagree whenever the rail is collapsed.
-              "--work-panel-track": inspectorCollapsed
-                ? `minmax(0, ${WORK_PANEL_COLLAPSED_WIDTH_PX}px)`
-                : `min(var(--work-panel-preview, ${panelLayout.panelWidth}px), calc(100% - var(--pane-floor)))`,
+              // answer (it knows the rail's actual state), and the CSS resolves
+              // `min(request, container − floor − rail)` as a safety net
+              // against a stale measurement. A drag writes `--work-panel-preview`
+              // on the root element, so it wins over the committed width here.
+              "--work-panel-request": `var(--work-panel-preview, ${panelLayout.panelWidth}px)`,
             } as CSSProperties
           }
         >
@@ -1514,11 +1517,38 @@ function ServerProductApp({ draftStore }: {
             onCloseMobile={closeWorkspaceDrawer}
             onOpenSettings={() => {
               setWorkspaceOpen(false);
-              routing.openSettings("general");
+              routing.openSettings("providers");
             }}
+            // Footer icon row (design §3.1): the chrome that used to live in the
+            // page-level top bar — inbox and theme — beside the rail's own
+            // settings entry.
+            footerActions={
+              <>
+                <NotificationInbox onOpenTarget={openInboxTarget} />
+                <button
+                  type="button"
+                  className="ghost icon-button"
+                  onClick={() =>
+                    server.changeTheme(server.theme === "dark" ? "light" : "dark")
+                  }
+                  aria-label={
+                    server.theme === "dark"
+                      ? t("theme.toLight")
+                      : t("theme.toDark")
+                  }
+                  title={
+                    server.theme === "dark"
+                      ? t("theme.toLight")
+                      : t("theme.toDark")
+                  }
+                >
+                  {server.theme === "dark" ? <SunIcon /> : <MoonIcon />}
+                </button>
+              </>
+            }
             railCollapsed={navCollapsed}
             onToggleCollapsed={() =>
-              navCollapsed ? expandRail() : setNavCollapsed(true)
+              navCollapsed ? expandRail() : nav.setCollapsed(true)
             }
             searchSessions={server.searchSessions}
           />
@@ -1552,6 +1582,76 @@ function ServerProductApp({ draftStore }: {
             className="product-main"
             inert={mobileLayout && (workspaceOpen || !inspectorCollapsed) ? true : undefined}
           >
+            {/* The floating work-panel toggle (design §5.0/§8): the panel is
+                closed by default, so this control is the only way in, and it
+                stays mounted — pressed state swaps the icon — so closing the
+                panel has a focus target to return to. It lives inside <main>
+                so it tracks the conversation's right edge rather than the
+                panel's own header. */}
+            {activeWorkspace && activeSession && !routing.routeError ? (
+              <button
+                ref={inspectorButtonRef}
+                type="button"
+                className="ghost icon-button work-panel-toggle"
+                onClick={panel.toggle}
+                aria-pressed={!inspectorCollapsed}
+                aria-label={
+                  inspectorCollapsed
+                    ? t("nav.expandInspector")
+                    : t("nav.collapseInspector")
+                }
+                title={
+                  inspectorCollapsed
+                    ? t("nav.expandInspector")
+                    : t("nav.collapseInspector")
+                }
+              >
+                {inspectorCollapsed ? <PinRightIcon /> : <DoubleArrowRightIcon />}
+              </button>
+            ) : null}
+            {/* The conversation top bar (design §3.2): the middle column's own
+                46px header. It carries the session title, the rail-expand lead
+                while the rail is collapsed, and the compact action tile; the
+                connection state only appears while it is abnormal. */}
+            <ConversationTopBar
+              title={
+                activeSession?.title ??
+                activeWorkspace?.displayName ??
+                t("nav.workspace")
+              }
+              subtitle={
+                activeWorkspace
+                  ? `${activeWorkspace.displayName} / ${formatDisplayPath(activeWorkspace.rootPath)}`
+                  : undefined
+              }
+              titleRef={sessionTitleRef}
+              railLeadVisible={navCollapsed && !mobileLayout}
+              onExpandRail={mobileLayout ? undefined : expandRail}
+              onToggleWorkspace={
+                mobileLayout
+                  ? () => {
+                      // A deliberate open is the modal one: it may trap focus,
+                      // and it hands focus back to this button when it closes.
+                      cancelPeekClose();
+                      setWorkspacePeek(false);
+                      setWorkspaceOpen((value) => !value);
+                    }
+                  : undefined
+              }
+              workspaceButtonRef={workspaceButtonRef}
+              connectionLabel={connectionLabel}
+              connectionAbnormal={server.connection !== "ok"}
+              onNewTask={() => {
+                if (server.catalog.active.workspaceId) {
+                  void handleNewSession(server.catalog.active.workspaceId);
+                } else {
+                  expandRail();
+                }
+              }}
+              newTaskDisabled={server.catalogMutationBusy}
+              onSearch={() => setSearchOverlay("all")}
+              searchDisabled={!activeWorkspace && !activeSession}
+            />
             {server.catalogError ? (
               <div className="shell-alert" role="alert">
                 {t("chrome.settingsError")}
@@ -1578,41 +1678,6 @@ function ServerProductApp({ draftStore }: {
               />
             ) : (
               <div className="chat-pane">
-                <div className="chat-pane__header">
-                  <div>
-                    <h1 ref={sessionTitleRef} tabIndex={-1}>{activeSession.title}</h1>
-                    <p>
-                      {activeWorkspace.displayName} / {formatDisplayPath(activeWorkspace.rootPath)}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => void handleForkSession()}
-                    disabled={!forkAvailable}
-                  >
-                    {/*
-                      The same server-derived operation as a message row's fork
-                      button, so it says the same words (design F7 item 3).
-                    */}
-                    {t("chat.forkSession")}
-                  </button>
-                  <button
-                    ref={inspectorButtonRef}
-                    type="button"
-                    className="secondary"
-                    onClick={panel.toggle}
-                    aria-label={
-                      inspectorCollapsed
-                        ? t("nav.expandInspector")
-                        : t("nav.collapseInspector")
-                    }
-                  >
-                    {inspectorCollapsed
-                      ? t("inspector.title")
-                      : t("common.close")}
-                  </button>
-                </div>
                 {stopNotice ? <p className="shell-alert" role="status">{stopNotice}</p> : null}
                 {branchRequest ? (
                   <div
@@ -1745,6 +1810,7 @@ function ServerProductApp({ draftStore }: {
           activeSession &&
           !routing.routeError &&
           !routing.routePending ? (
+            <>
             <RunInspector
               key={`${activeWorkspace.id}:${activeSession.id}`}
               panel={panel}
@@ -1781,9 +1847,8 @@ function ServerProductApp({ draftStore }: {
               fileFocusPath={panel.target?.kind === "file" ? panel.target.path : undefined}
               fileFocusLine={panel.target?.kind === "file" ? panel.target.line : undefined}
             />
-          ) : (
-            <div />
-          )}
+            </>
+          ) : null}
           {mobileLayout && (workspaceOpen || !inspectorCollapsed) ? (
             <button
               type="button"

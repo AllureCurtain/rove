@@ -22,6 +22,11 @@
   --v2-surface-raised: #fcfdfd;
   --v2-surface-sunken: #e4eaee;
   --v2-surface-hover: #d9e3e9;
+  /* Tinted recessed tier: toolbar action tile, tool rows, chips (design §4.2).
+   * `--v2-tile` is translucent so it sits on any base; `--v2-tile-deep` is the
+   * opaque equivalent for surfaces that must not composite. */
+  --v2-tile: rgba(22, 35, 43, 0.05);
+  --v2-tile-deep: #e6ecef;
   --v2-ink: #16232b;
   --v2-ink-2: #34444e;
   --v2-ink-3: #5f7280;
@@ -44,6 +49,10 @@
   --v2-warning-soft: #f0eae0;
   --v2-danger: #a7443c; /* 5.94:1 | 4.99:1 | 4.89:1 */
   --v2-danger-soft: #f3e9e8;
+  --v2-info: #4f6674;
+  --v2-info-soft: #e4eaee;
+  --v2-purple: #7a4fd0;
+  --v2-purple-soft: #efe9f8;
   --v2-rail: #f4f7f8;
   --v2-rail-raised: #fcfdfd;
   --v2-rail-hover: #e4eaee;
@@ -80,7 +89,7 @@
   --motion-duration-collapse: 180ms;
   --motion-ease-in-out: ease-in-out;
   --motion-ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
-  --sidebar-nav-width: 240px;
+  --sidebar-nav-width: 275px;
 
   --bg: var(--v2-bg);
   --bg-elevated: var(--v2-surface);
@@ -116,7 +125,7 @@
   --radius-lg: var(--v2-radius-md);
   --sidebar-width: 248px;
   --inspector-width: 304px;
-  --topbar-height: 52px;
+  --topbar-height: 46px;
   /* Design §3.3: the conversation's reading measure. */
   --reading-column-max: 840px;
 
@@ -139,6 +148,8 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   --v2-surface-raised: #1d272d;
   --v2-surface-sunken: #0c1216;
   --v2-surface-hover: #263139;
+  --v2-tile: rgba(237, 243, 245, 0.06);
+  --v2-tile-deep: #1d272d;
   --v2-ink: #edf3f5;
   --v2-ink-2: #bdc9ce;
   --v2-ink-3: #8f9ea6;
@@ -155,6 +166,10 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   --v2-warning-soft: #383831;
   --v2-danger: #ed8179; /* 4.72:1 on its wash */
   --v2-danger-soft: #383337;
+  --v2-info: #a8bcc6;
+  --v2-info-soft: #22303a;
+  --v2-purple: #c9a5f5;
+  --v2-purple-soft: #2f2a3d;
   --v2-rail: #090e11;
   --v2-rail-raised: #12191e;
   --v2-rail-hover: #1d282e;
@@ -278,8 +293,8 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 .product-app-frame[data-ui-version="v2"] .product-topbar {
   position: relative;
   z-index: 60;
-  flex: 0 0 52px;
-  height: 52px;
+  flex: 0 0 var(--topbar-height);
+  height: var(--topbar-height);
   min-width: 0;
   gap: 16px;
   padding: 0 12px;
@@ -348,7 +363,6 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 
 .product-app-frame[data-ui-version="v2"] .product-body {
   min-width: 0;
-  grid-template-columns: 248px minmax(0, 1fr) auto;
   overflow: hidden;
   background: var(--v2-bg);
 }
@@ -359,21 +373,37 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 
 .product-app-frame[data-ui-version="v2"] .product-sidebar {
   min-width: 0;
-  /* F9: the rail keeps a stable width and its own stacking order so it can slide
-     out over the conversation after the grid track snaps instead of animating.
-     The `max-width: 960px` drawer block is the same specificity and later, so it
+  /* The rail is a flex item that owns its allocated width (design §4.4): a
+     collapse animates flex-basis — the real space it occupies — together with
+     opacity and a small translation, instead of snapping a track and sliding
+     out on a transform alone. The subtree pins its own width so nothing
+     reflows mid-animation, and `overflow: hidden` clips it while the column
+     shrinks. The `max-width: 960px` drawer block is later in the sheet, so it
      still turns this rail into a fixed overlay there. */
   position: relative;
   z-index: 2;
-  width: var(--sidebar-nav-width);
+  flex: 0 0 var(--sidebar-nav-width);
+  overflow: hidden;
   color: var(--v2-rail-ink);
   border-color: var(--v2-rail-border);
   background: var(--v2-rail);
+  transition:
+    flex-basis var(--motion-duration-slide) var(--motion-ease-out),
+    opacity var(--motion-duration-slide) var(--motion-ease-out),
+    transform var(--motion-duration-slide) var(--motion-ease-out);
+}
+
+/* The subtree keeps the expanded width for the whole collapse animation so
+   labels never reflow under the shrinking column (design §4.4). */
+@media (min-width: 961px) {
+  .product-app-frame[data-ui-version="v2"] .product-sidebar > * {
+    min-width: var(--sidebar-nav-width);
+  }
 }
 
 .product-app-frame[data-ui-version="v2"] .product-sidebar__header {
-  min-height: 56px;
-  padding: 12px 12px 10px 14px;
+  min-height: var(--topbar-height);
+  padding: 6px 12px 6px 14px;
   border-color: var(--v2-rail-border);
 }
 
@@ -443,6 +473,22 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 
 .product-app-frame[data-ui-version="v2"] .product-sidebar__footer {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--v2-rail-border);
+}
+
+/* In the footer the inbox opens upward, like the icon row it now lives in.
+   `position: fixed` because the rail clips overflow: an absolute panel would
+   lose everything wider than the rail's own column. */
+.product-app-frame[data-ui-version="v2"] .product-sidebar__footer .notification-inbox__panel {
+  position: fixed;
+  top: auto;
+  right: auto;
+  bottom: calc(var(--topbar-height) + 8px);
+  left: 10px;
 }
 
 .product-app-frame[data-ui-version="v2"] .product-sidebar button.secondary,
@@ -950,91 +996,130 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   font-size: 11px;
 }
 
-.product-app-frame[data-ui-version="v2"] .product-sidebar__footer {
-  display: grid;
-  gap: 8px;
-  padding: 10px 12px 12px;
-  border-top: 1px solid var(--v2-rail-border);
-}
-
-.product-app-frame[data-ui-version="v2"] .workspace-boundary {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-  padding: 8px;
-  border: 1px solid var(--v2-rail-border);
-  border-radius: var(--v2-radius-sm);
-  background: var(--v2-rail-raised);
-  color: var(--v2-rail-signal);
-}
-
-.product-app-frame[data-ui-version="v2"] .workspace-boundary > span {
-  display: grid;
-  min-width: 0;
-}
-
-.product-app-frame[data-ui-version="v2"] .workspace-boundary strong,
-.product-app-frame[data-ui-version="v2"] .workspace-boundary small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.product-app-frame[data-ui-version="v2"] .workspace-boundary strong {
-  color: var(--v2-rail-ink);
-  font-size: 11px;
-}
-
-.product-app-frame[data-ui-version="v2"] .workspace-boundary small {
-  color: var(--v2-rail-muted);
-  font-size: 10px;
-}
-
-.product-app-frame[data-ui-version="v2"] .product-sidebar__footer > button {
-  justify-content: flex-start;
-  min-height: 36px;
-  color: var(--v2-rail-muted);
-  padding-inline: 8px;
-  font-size: 11px;
-}
-
 .product-app-frame[data-ui-version="v2"] .product-main {
-  min-width: 0;
+  flex: 1 1 0;
+  min-width: var(--pane-floor, 450px);
+  position: relative;
   background: var(--v2-surface);
 }
 
-.product-app-frame[data-ui-version="v2"] .chat-pane__header {
-  min-height: 60px;
-  padding: 0 16px 0 20px;
-  border-color: var(--v2-border);
+/* ─── Conversation top bar (design §3.2) ───
+   The middle column's own 46px header: rail-expand lead, session title, and
+   the compact action tile. The trailing corner stays free for the floating
+   work-panel toggle. */
+.product-app-frame[data-ui-version="v2"] .conversation-topbar {
+  display: flex;
+  flex: 0 0 var(--topbar-height);
+  align-items: center;
+  gap: 8px;
+  height: var(--topbar-height);
+  min-width: 0;
+  padding: 0 calc(28px + 16px) 0 0;
+  border-bottom: 1px solid var(--v2-border);
   background: var(--v2-surface-raised);
 }
 
-.product-app-frame[data-ui-version="v2"] .chat-pane__header h1 {
+/* The lead lane grows to a 36px slot while the rail is collapsed, tracking the
+   rail's own allocated-width animation; `visibility` keeps it out of the
+   accessibility tree and pointer path while it has no width. */
+.product-app-frame[data-ui-version="v2"] .ct-lead {
+  display: flex;
+  flex: 0 0 0;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  visibility: hidden;
+  transition:
+    flex-basis var(--motion-duration-slide) var(--motion-ease-out),
+    visibility 0s linear var(--motion-duration-slide);
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-topbar[data-collapsed="true"] .ct-lead {
+  flex-basis: 36px;
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.product-app-frame[data-ui-version="v2"] .ct-left {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-topbar[data-collapsed="true"] .ct-left {
+  padding-left: 4px;
+}
+
+.product-app-frame[data-ui-version="v2"] .ct-title {
   overflow: hidden;
   margin: 0;
-  font-size: 15px;
-  line-height: 1.3;
-  text-overflow: ellipsis;
-  text-wrap: balance;
-  white-space: nowrap;
-}
-
-.product-app-frame[data-ui-version="v2"] .chat-pane__header p {
-  overflow: hidden;
-  margin-top: 2px;
-  color: var(--v2-ink-3);
-  font-size: 10px;
+  color: var(--v2-ink);
+  font-size: 13px;
+  font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.product-app-frame[data-ui-version="v2"] .chat-pane__header > button {
-  flex: none;
-  min-height: 30px;
+.product-app-frame[data-ui-version="v2"] .ct-right {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* Abnormal connection is the only connection state that earns a spot (design
+   §3.2): a healthy link is silence, not a badge. */
+.product-app-frame[data-ui-version="v2"] .ct-connection {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--v2-danger);
   font-size: 11px;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .ct-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.product-app-frame[data-ui-version="v2"] .ct-icon-btn {
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--v2-radius-sm);
+  background: transparent;
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .ct-icon-btn:hover:not(:disabled) {
+  background: var(--v2-surface-hover);
+  color: var(--v2-ink);
+}
+
+/* The floating work-panel toggle (design §5.0): a 28px control at the
+   top-right corner of the conversation, aligned with the top bar. */
+.product-app-frame[data-ui-version="v2"] .work-panel-toggle {
+  position: absolute;
+  top: 9px;
+  right: 10px;
+  z-index: 6;
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .work-panel-toggle:hover:not(:disabled) {
+  color: var(--v2-ink);
 }
 
 .product-app-frame[data-ui-version="v2"] .chat-transcript-frame {
@@ -2456,21 +2541,48 @@ html[data-reading-resizing="true"] * {
 
 /* Run evidence inspector */
 .product-app-frame[data-ui-version="v2"] .product-inspector {
-  /* The grid track owns the width (design §5.0 shared budget): the panel fills
-     its track so the track can shrink before the conversation drops below its
-     450px floor. An inline width here would make the panel unshrinkable. */
-  width: 100%;
+  /* The shared width budget owns the width (design §5.0): `--work-panel-resolved`
+     is `min(request, container − floor − rail)`, so a narrow shell shrinks the
+     panel before the conversation drops below its 450px floor. */
+  flex: 0 0 auto;
+  width: var(--work-panel-resolved, 0px);
   min-width: 0;
+  overflow: hidden;
   border-color: var(--v2-border);
   background: var(--v2-bg);
+  transition:
+    width var(--motion-duration-normal) var(--motion-ease-out),
+    opacity var(--motion-duration-normal) var(--motion-ease-out),
+    transform var(--motion-duration-normal) var(--motion-ease-out);
+}
+
+/* The subtree keeps the resolved width for the whole close animation so the
+   panel's tabs and rows never reflow under the shrinking column. */
+@media (min-width: 961px) {
+  .product-app-frame[data-ui-version="v2"] .product-inspector > *:not(.inspector-resize) {
+    min-width: var(--work-panel-resolved, 0px);
+  }
 }
 
 .product-app-frame[data-ui-version="v2"] .product-inspector[data-collapsed="true"] {
-  width: 40px;
+  width: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(8px);
+  border-left-width: 0;
+  transition:
+    width var(--motion-duration-fast) var(--motion-ease-in),
+    opacity var(--motion-duration-fast) var(--motion-ease-in),
+    transform var(--motion-duration-fast) var(--motion-ease-in);
+}
+
+/* The width slider is a drag: no width animation while a pointer owns it. */
+html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product-inspector {
+  transition: none;
 }
 
 .product-app-frame[data-ui-version="v2"] .inspector-header {
-  min-height: 60px;
+  min-height: var(--topbar-height);
   padding: 0 12px;
   border-color: var(--v2-border);
   background: var(--v2-surface-raised);
@@ -2483,10 +2595,7 @@ html[data-reading-resizing="true"] * {
   text-transform: none;
 }
 
-.product-app-frame[data-ui-version="v2"] .product-inspector[data-collapsed="true"] .inspector-header {
-  justify-content: center;
-  padding: 0 4px;
-}
+
 
 .product-app-frame[data-ui-version="v2"] .inspector-open-tab {
   flex: 0 0 auto;
@@ -3507,20 +3616,22 @@ html[data-reading-resizing="true"] * {
 @media (max-width: 960px) {
   .product-app-frame[data-ui-version="v2"] .product-body:not([data-settings="true"]) {
     position: relative;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr);
   }
 
+  /* The 450px floor only exists while there are columns to share; a single
+     drawer layout lets the conversation take the whole viewport. The display
+     is stated explicitly because the unscoped legacy layer hides `.product-main`
+     while an inspector is open — under v2 the inspector is a fixed dialog and
+     the main column stays mounted behind the scrim. */
   .product-app-frame[data-ui-version="v2"] .product-body:not([data-settings="true"]) .product-main {
-    display: flex !important;
-    grid-column: 1;
-    grid-row: 1;
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   .product-app-frame[data-ui-version="v2"] .product-sidebar {
     position: fixed;
-    top: 52px;
+    top: 0;
     bottom: 0;
     left: 0;
     z-index: 42;
@@ -3544,11 +3655,10 @@ html[data-reading-resizing="true"] * {
   .product-app-frame[data-ui-version="v2"] .product-inspector,
   .product-app-frame[data-ui-version="v2"] .product-inspector:not([data-collapsed="true"]) {
     position: fixed;
-    top: 52px;
+    top: 0;
     right: 0;
     bottom: 0;
     z-index: 42;
-    grid-column: auto;
     width: min(340px, 88vw);
     visibility: hidden;
     pointer-events: none;
@@ -3573,7 +3683,7 @@ html[data-reading-resizing="true"] * {
 
   .product-app-frame[data-ui-version="v2"] .product-mobile-scrim {
     position: fixed;
-    inset: 52px 0 0;
+    inset: 0;
     z-index: 40;
     display: block;
     width: 100%;
@@ -3616,22 +3726,39 @@ html[data-reading-resizing="true"] * {
     gap: 5px;
   }
 
-  /* The bell is the third item from the right, so anchoring the panel to it
-     pushes it off the left edge of a phone. On a narrow screen it becomes a
-     fixed sheet under the top bar instead; the frame's `overflow: hidden` does
-     not clip a fixed descendant, and the top bar carries no transform. */
-  .product-app-frame[data-ui-version="v2"] .notification-inbox__panel {
+  /* Anchoring the panel to its trigger pushes it off the edge of a phone, so
+     on a narrow screen it becomes a fixed sheet — under the page-level bar on
+     the settings surface, above the rail footer in the console. The frame's
+     `overflow: hidden` does not clip a fixed descendant. */
+  .product-app-frame[data-ui-version="v2"] .product-topbar .notification-inbox__panel {
     position: fixed;
-    top: calc(52px + 6px);
+    top: calc(var(--topbar-height) + 6px);
     right: 8px;
+    left: 8px;
+    bottom: auto;
+    width: auto;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .product-sidebar .notification-inbox__panel {
+    position: fixed;
+    top: auto;
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    width: auto;
+    max-height: min(60vh, 420px);
   }
 
   .product-app-frame[data-ui-version="v2"] button,
-  .product-app-frame[data-ui-version="v2"] button.icon-button {
+  .product-app-frame[data-ui-version="v2"] button.icon-button,
+  .product-app-frame[data-ui-version="v2"] .ct-icon-btn,
+  .product-app-frame[data-ui-version="v2"] .work-panel-toggle {
     min-height: 44px;
   }
 
-  .product-app-frame[data-ui-version="v2"] button.icon-button {
+  .product-app-frame[data-ui-version="v2"] button.icon-button,
+  .product-app-frame[data-ui-version="v2"] .ct-icon-btn,
+  .product-app-frame[data-ui-version="v2"] .work-panel-toggle {
     width: 44px;
     min-width: 44px;
   }
@@ -3641,17 +3768,16 @@ html[data-reading-resizing="true"] * {
     height: 26px;
   }
 
-  .product-app-frame[data-ui-version="v2"] .chat-pane__header {
-    min-height: 56px;
-    padding: 6px 9px 6px 12px;
+  /* The floating toggle grows to a 44px touch target like every icon button;
+     keep it inside the 46px bar so it does not overlap the transcript. */
+  .product-app-frame[data-ui-version="v2"] .work-panel-toggle {
+    top: 1px;
+    right: 4px;
   }
 
-  .product-app-frame[data-ui-version="v2"] .chat-pane__header p {
-    max-width: 62vw;
-  }
-
-  .product-app-frame[data-ui-version="v2"] .chat-pane__header > button {
-    min-height: 44px;
+  .product-app-frame[data-ui-version="v2"] .conversation-topbar {
+    gap: 4px;
+    padding-right: calc(44px + 8px);
   }
 
   .product-app-frame[data-ui-version="v2"] .chat-transcript {
@@ -4014,22 +4140,25 @@ html[data-work-panel-resizing] * {
 
 .product-app-frame[data-ui-version="v2"] .product-body:not([data-settings="true"]) {
   position: relative;
+  display: flex;
   /* Design §5.0 shared width budget: the conversation column holds a 450px
-     floor and the work panel yields first. `--work-panel-track` is set inline to
-     `min(requested, 100% − rail − floor)`, so a narrow container shrinks the
-     panel instead of overflowing or squeezing the conversation. */
+     floor and the work panel yields first. `--work-panel-request` is set inline
+     to the committed (or dragged preview) width, and `--work-panel-resolved`
+     caps it at `container − floor − rail`, so a narrow shell shrinks the panel
+     instead of overflowing or squeezing the conversation. Columns are flex
+     items whose width/flex-basis is what collapse animates (design §4.4). */
   --pane-floor: 450px;
-  grid-template-columns:
-    var(--sidebar-nav-width)
-    minmax(var(--pane-floor), 1fr)
-    var(--work-panel-track, auto);
-  /* F9: no `grid-template-columns` transition. Animating the track re-lays-out
-     the conversation column on every frame — measured at 1280x720 with a 30-run
-     transcript, one collapse cost 15 layout passes and 22.5ms of layout plus
-     34.2ms of style recalculation, against 2 passes / 1.9ms / 5.7ms when the
-     track snaps (script 60.8 → 41.5ms, task time 186.4 → 81.2ms per 700ms
-     window). The rail keeps its own transform + opacity slide below, which is a
-     compositor-friendly replacement for pushing the conversation across. */
+  --work-panel-resolved: min(
+    var(--work-panel-request, 0px),
+    max(0px, calc(100% - var(--pane-floor) - var(--sidebar-nav-width, 0px)))
+  );
+}
+
+.product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"]:not([data-settings="true"]) {
+  --work-panel-resolved: min(
+    var(--work-panel-request, 0px),
+    max(0px, calc(100% - var(--pane-floor)))
+  );
 }
 
 /* The handle is a real separator: it must not steal the rail's width budget.
@@ -4071,7 +4200,7 @@ body.is-resizing-column * {
   cursor: col-resize !important;
   user-select: none !important;
 }
-.product-app-frame[data-ui-version="v2"] .product-body:has(.sidebar-resize-handle:active) {
+.product-app-frame[data-ui-version="v2"] .product-body:has(.sidebar-resize-handle:active) .product-sidebar {
   transition: none;
 }
 
@@ -4154,67 +4283,46 @@ body.is-resizing-column * {
   transform-origin: top right;
 }
 
-/* Left rail collapse: the track settles instantly (F9, no transition), the rail
-   slides out over 240ms on its own transform, and its subtree stays mounted
-   (inert + aria-hidden, set in `sidebar/WorkspaceTree.tsx`).
-
-   The rail therefore needs a stable width of its own: as a stretched grid item
-   in a track that snaps to 0 it would collapse to nothing in the same frame and
-   have nothing left to slide. Holding the width also keeps it painted over the
-   conversation while it leaves, so it needs the stacking order too. Both live in
-   the rail's base rule above: the `max-width: 960px` drawer is the same
-   specificity and comes later, so it still owns the rail there. */
-.product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] {
-  /* Same shared budget with the rail collapsed (design §5.0); `auto` here would
-     make the panel track circular with the panel's 100% width. */
-  grid-template-columns:
-    0
-    minmax(var(--pane-floor), 1fr)
-    var(--work-panel-track, auto);
-}
+/* Left rail collapse (design §4.4): the allocated width itself animates —
+   flex-basis shrinks to zero while opacity fades and the column translates
+   8px, all on the same clock, so the conversation widens *with* the rail's
+   exit rather than jumping and watching a ghost slide out. The subtree keeps
+   its expanded width through the animation (the `min-width` pin in the rail's
+   base rule), and `inert` + `aria-hidden` — set in
+   `sidebar/WorkspaceTree.tsx` — take it out of the accessibility tree while
+   it is on its way out. */
 .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] .product-sidebar {
-  transform: translateX(-102%);
+  flex-basis: 0;
+  /* The trailing border owns a pixel of its own; collapse must remove it or
+     the "closed" rail still paints a hairline. */
+  border-right-width: 0;
   opacity: 0;
   pointer-events: none;
-  transition: transform var(--motion-duration-slide) var(--motion-ease-out),
-    opacity var(--motion-duration-slide) var(--motion-ease-out);
-}
-.product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="false"] .product-sidebar {
-  transform: translateX(0);
-  opacity: 1;
-  transition: transform var(--motion-duration-slide) var(--motion-ease-out),
-    opacity var(--motion-duration-slide) var(--motion-ease-out);
+  transform: translateX(-8px);
 }
 .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] .sidebar-resize-handle {
   display: none;
 }
-.product-app-frame[data-ui-version="v2"] .product-topbar__collapsed {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: 12px;
+
+/* Dragging the rail handle must not animate the width it is measuring. */
+body.is-resizing-column .product-app-frame[data-ui-version="v2"] .product-sidebar {
+  transition: none;
 }
 
 /* Narrow layouts: the rail is a drawer (mirrors `DRAWER_MAX_WIDTH` in
-   `lib/viewport-breakpoints.ts`), so it has no width to drag. */
+   `lib/viewport-breakpoints.ts`), so it has no width to drag and collapse
+   state does not reserve space. */
 @media (max-width: 960px) {
   .product-app-frame[data-ui-version="v2"] .sidebar-resize-handle {
     display: none;
   }
-  /* The rail is a fixed drawer here, so the grid keeps a single column and
-     the width preference does not reserve space. */
-  .product-app-frame[data-ui-version="v2"] .product-body:not([data-settings="true"]),
-  .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] {
-    grid-template-columns: minmax(0, 1fr);
-    transition: none;
+  .product-app-frame[data-ui-version="v2"] .product-sidebar {
+    flex: 0 0 auto;
+    transition:
+      transform var(--motion-duration-collapse) var(--motion-ease-emphasized),
+      visibility 0s linear var(--motion-duration-collapse);
   }
-  .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] .product-sidebar {
-    transform: translateX(-102%);
-  }
-  .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="false"] .product-sidebar {
-    transform: none;
-  }
-  .product-app-frame[data-ui-version="v2"] .product-topbar__collapsed {
+  .product-app-frame[data-ui-version="v2"] .conversation-topbar .ct-lead {
     display: none;
   }
 }
@@ -4271,36 +4379,10 @@ body.is-resizing-column * {
   animation: v2-rise-in var(--motion-duration-normal) var(--motion-ease-out);
 }
 
-/* Work panel: 200ms in, 150ms out, and no width transition while dragging. */
-.product-app-frame[data-ui-version="v2"] .product-inspector {
-  transition: opacity var(--motion-duration-normal) var(--motion-ease-out),
-    transform var(--motion-duration-normal) var(--motion-ease-out);
-}
-.product-app-frame[data-ui-version="v2"] .product-inspector[data-open="true"] {
-  animation: v2-panel-in var(--motion-duration-normal) var(--motion-ease-out);
-}
-@keyframes v2-panel-in {
-  from {
-    opacity: 0;
-    transform: translateX(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-.product-app-frame[data-ui-version="v2"] .product-inspector[data-collapsed="true"] {
-  transition: opacity var(--motion-duration-fast) var(--motion-ease-in),
-    transform var(--motion-duration-fast) var(--motion-ease-in);
-}
 /* Tab strip: only the tab background animates; content swaps instantly. */
 .product-app-frame[data-ui-version="v2"] .inspector-tabs .tab-button {
   transition: background-color var(--motion-duration-fast) var(--motion-ease-standard),
     color var(--motion-duration-fast) var(--motion-ease-standard);
-}
-/* The width slider is a range input: the rail itself must not animate width. */
-.product-app-frame[data-ui-version="v2"] .product-inspector[data-open="true"] {
-  transition-property: opacity, transform;
 }
 
 /* Command palette: a top-centred picker over a dim scrim, one input, and

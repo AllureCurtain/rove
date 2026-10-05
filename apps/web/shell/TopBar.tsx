@@ -2,14 +2,18 @@
 
 import {
   GearIcon,
-  HamburgerMenuIcon,
   MoonIcon,
   SunIcon,
 } from "@radix-ui/react-icons";
-import type { ReactNode, Ref } from "react";
+import type { ReactNode } from "react";
 
 import { useCopy } from "../copy/CopyProvider";
 
+/**
+ * The page-level bar used by the boot and settings surfaces (design §3.2). The
+ * console's own conversation top bar lives in `ConversationTopBar.tsx`, pinned
+ * to the middle column.
+ */
 export function TopBar({
   connectionLabel,
   connectionTone,
@@ -18,9 +22,6 @@ export function TopBar({
   onOpenSettings,
   showSettingsBack,
   onBackToChat,
-  workspaceButtonRef,
-  onToggleWorkspace,
-  collapsedActions,
   notifications,
 }: {
   connectionLabel: string;
@@ -30,10 +31,6 @@ export function TopBar({
   onOpenSettings: () => void;
   showSettingsBack?: boolean;
   onBackToChat?: () => void;
-  workspaceButtonRef?: Ref<HTMLButtonElement>;
-  onToggleWorkspace?: () => void;
-  /** Shown when the left rail is collapsed, so its entries move up here. */
-  collapsedActions?: ReactNode;
   /** The notification inbox; it owns its own open/closed state. */
   notifications?: ReactNode;
 }) {
@@ -41,24 +38,9 @@ export function TopBar({
   return (
     <header className="product-topbar">
       <div className="product-topbar__brand">
-        {onToggleWorkspace ? (
-          <button
-            ref={workspaceButtonRef}
-            type="button"
-            className="ghost icon-button mobile-only"
-            onClick={onToggleWorkspace}
-            aria-label={t("nav.expandWorkspace")}
-            title={t("nav.workspace")}
-          >
-            <HamburgerMenuIcon />
-          </button>
-        ) : null}
         <span className="product-topbar__mark" aria-hidden="true">R</span>
-        <strong>rove</strong>
-        <span>local agent</span>
-        {collapsedActions ? (
-          <div className="product-topbar__collapsed">{collapsedActions}</div>
-        ) : null}
+        <strong>{t("chrome.brandName")}</strong>
+        <span>{t("chrome.brandTag")}</span>
       </div>
       <div className="product-topbar__meta">
         <span className="status-dot" data-tone={connectionTone === "idle" ? undefined : connectionTone} />

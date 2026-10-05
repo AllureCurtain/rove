@@ -676,32 +676,6 @@ textarea:focus {
   flex-direction: column;
 }
 
-.chat-pane__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-}
-
-.chat-pane__header h1 {
-  margin: 0;
-  font-size: 1rem;
-}
-
-.chat-pane__header > div {
-  min-width: 0;
-}
-
-.chat-pane__header p {
-  margin: 2px 0 0;
-  color: var(--muted);
-  font-size: 0.8rem;
-  font-family: var(--font-mono);
-  overflow-wrap: anywhere;
-}
-
 .chat-transcript {
   flex: 1;
   overflow: auto;
@@ -2300,12 +2274,6 @@ textarea:focus {
     grid-column: 1;
     width: 100%;
     border: 0;
-  }
-
-  .chat-pane__header {
-    align-items: flex-start;
-    flex-wrap: wrap;
-    padding: 10px 12px;
   }
 
   .chat-transcript {

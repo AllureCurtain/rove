@@ -12,9 +12,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * design default instead of failing.
  */
 
-export const SIDEBAR_MIN_WIDTH = 200;
-export const SIDEBAR_MAX_WIDTH = 360;
-export const SIDEBAR_DEFAULT_WIDTH = 240;
+export const SIDEBAR_MIN_WIDTH = 240;
+export const SIDEBAR_MAX_WIDTH = 520;
+export const SIDEBAR_DEFAULT_WIDTH = 275;
 /** Keyboard step per design §3.3. */
 export const SIDEBAR_KEYBOARD_STEP = 16;
 export const SIDEBAR_KEYBOARD_LARGE_STEP = 32;
