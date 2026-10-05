@@ -1,0 +1,31 @@
+[package]
+name = "rove-bench"
+version.workspace = true
+edition.workspace = true
+description = "Deterministic local benchmark suite and runner for Rove"
+default-run = "rove-bench"
+
+[[bin]]
+name = "rove-bench"
+path = "src/main.rs"
+
+[lib]
+name = "rove_bench"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+futures.workspace = true
+rove-app-bootstrap.workspace = true
+rove-models.workspace = true
+rove-runtime.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

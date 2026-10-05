@@ -1,0 +1,169 @@
+{
+    "job_id":  "01KTZN22EGTWBBRTHPA51A7SG7",
+    "run_id":  "01KTZN22EGFK83H2DJRSC0P55H",
+    "status":  "done",
+    "event_count":  13,
+    "events":  [
+                   {
+                       "seq":  1,
+                       "event":  {
+                                     "type":  "run_started",
+                                     "run_id":  "01KTZN22EGFK83H2DJRSC0P55H",
+                                     "job_id":  "01KTZN22EGTWBBRTHPA51A7SG7",
+                                     "user_message":  "{\"tool\":\"fs_write\",\"args\":{\"path\":\"rejected-api-smoke.txt\",\"content\":\"no\"}}"
+                                 }
+                   },
+                   {
+                       "seq":  2,
+                       "event":  {
+                                     "type":  "plan_created",
+                                     "plan":  {
+                                                  "goal":  "{\"tool\":\"fs_write\",\"args\":{\"path\":\"rejected-api-smoke.txt\",\"content\":\"no\"}}",
+                                                  "steps":  [
+                                                                {
+                                                                    "id":  "1",
+                                                                    "title":  "answer the request",
+                                                                    "done":  false
+                                                                }
+                                                            ],
+                                                  "current_step":  0
+                                              }
+                                 }
+                   },
+                   {
+                       "seq":  3,
+                       "event":  {
+                                     "type":  "plan_step_started",
+                                     "step":  {
+                                                  "id":  "1",
+                                                  "title":  "answer the request",
+                                                  "done":  false
+                                              },
+                                     "index":  0
+                                 }
+                   },
+                   {
+                       "seq":  4,
+                       "event":  {
+                                     "type":  "prompt_built",
+                                     "metadata":  {
+                                                      "prompt_hash":  "sha256:d6e9183689320d7f89acae708237e352ca2b3e0f40df92ef0e06961f06c41148",
+                                                      "stable_prefix_hash":  "sha256:7fa6db21c8b275f928a689df0f7df7a58a7d3ec8388331639078653dc4221b0d",
+                                                      "workspace_fingerprint":  "sha256:26ea150165676c75567b9479ecb6907901ae314f6d723e30d8c63a16ba50b366",
+                                                      "tool_signature":  "sha256:2cd1b22a9a9988805e64ad9ee38f1cc984f187ba32a3f955e0f86c4802ee55fd",
+                                                      "token_estimate":  67,
+                                                      "included_history_messages":  0,
+                                                      "dropped_history_messages":  0,
+                                                      "prompt_cache_key":  "sha256:b782195468d6a3f52e368bb9169ff7ec04def3c8f0eae2a8793acf9a7474de5b"
+                                                  }
+                                 }
+                   },
+                   {
+                       "seq":  5,
+                       "event":  {
+                                     "type":  "model_status",
+                                     "status":  "thinking",
+                                     "message":  "Model is thinking"
+                                 }
+                   },
+                   {
+                       "seq":  6,
+                       "event":  {
+                                     "type":  "llm_chunk",
+                                     "delta":  "{\"tool\":\"fs_write\",\"args\":{\"path\":\"rejected-api-smoke.txt\",\"content\":\"no\"}}"
+                                 }
+                   },
+                   {
+                       "seq":  7,
+                       "event":  {
+                                     "type":  "llm_message",
+                                     "full":  "{\"tool\":\"fs_write\",\"args\":{\"path\":\"rejected-api-smoke.txt\",\"content\":\"no\"}}",
+                                     "usage":  {
+                                                   "prompt_tokens":  0,
+                                                   "completion_tokens":  0,
+                                                   "total_tokens":  0,
+                                                   "cached_tokens":  0
+                                               }
+                                 }
+                   },
+                   {
+                       "seq":  8,
+                       "event":  {
+                                     "type":  "tool_call_started",
+                                     "call_id":  "01KTZN22NSJQKC8N9TMMG6RRA2",
+                                     "name":  "fs_write",
+                                     "args":  {
+                                                  "content":  "no",
+                                                  "path":  "rejected-api-smoke.txt"
+                                              }
+                                 }
+                   },
+                   {
+                       "seq":  9,
+                       "event":  {
+                                     "type":  "model_status",
+                                     "status":  "waiting_for_approval",
+                                     "message":  "Waiting for tool approval"
+                                 }
+                   },
+                   {
+                       "seq":  10,
+                       "event":  {
+                                     "type":  "tool_call_approval_needed",
+                                     "call_id":  "01KTZN22NSJQKC8N9TMMG6RRA2",
+                                     "name":  "fs_write",
+                                     "args":  {
+                                                  "content":  "no",
+                                                  "path":  "rejected-api-smoke.txt"
+                                              },
+                                     "reason":  "destructive tool requires explicit approval"
+                                 }
+                   },
+                   {
+                       "seq":  11,
+                       "event":  {
+                                     "type":  "tool_call_failed",
+                                     "call_id":  "01KTZN22NSJQKC8N9TMMG6RRA2",
+                                     "error":  {
+                                                   "code":  "permission_denied",
+                                                   "reason":  "destructive tool requires explicit approval"
+                                               },
+                                     "metadata":  {
+                                                      "status":  "error",
+                                                      "error_code":  "permission_denied",
+                                                      "security_event_type":  "approval_denied",
+                                                      "risk_level":  "high",
+                                                      "read_only":  false,
+                                                      "workspace_changed":  false
+                                                  }
+                                 }
+                   },
+                   {
+                       "seq":  12,
+                       "event":  {
+                                     "type":  "plan_step_failed",
+                                     "step":  {
+                                                  "id":  "1",
+                                                  "title":  "answer the request",
+                                                  "done":  false
+                                              },
+                                     "index":  0,
+                                     "reason":  "Permission denied: destructive tool requires explicit approval"
+                                 }
+                   },
+                   {
+                       "seq":  13,
+                       "event":  {
+                                     "type":  "run_completed",
+                                     "reason":  "final",
+                                     "output":  "Permission denied: destructive tool requires explicit approval"
+                                 }
+                   }
+               ],
+    "pending_approvals":  [
+
+                          ],
+    "pending_inputs":  [
+
+                       ]
+}

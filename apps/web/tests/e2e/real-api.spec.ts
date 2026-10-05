@@ -1,0 +1,1418 @@
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import {
+  expect,
+  test,
+  type APIRequestContext,
+  type Page,
+  type Request,
+} from "@playwright/test";
+
+import {
+  M1_BROWSER_MIGRATION_STATE_KEY,
+  M1_BROWSER_STORAGE_KEYS,
+} from "../../product/m1-storage-keys";
+import type {
+  ProductMessageStatus,
+  ProductSession,
+  ProductSessionsResponse,
+  ProductWorkspacesResponse,
+} from "../../product/product-api-types";
+
+const realApiEnabled = process.env.ROVE_REAL_API_E2E === "1";
+const advancedWorkbenchEnabled =
+  process.env.ROVE_REAL_API_WORKBENCH_SMOKE === "1";
+
+interface ProductPreferencesSnapshot {
+  schema_version: number;
+  revision: number;
+  theme: "light" | "dark" | "system";
+  default_approval_policy: "ask" | "auto" | "never";
+  active_workspace_id?: string;
+  active_session_id?: string;
+  provider_selection?: unknown;
+}
+
+interface ProductTranscriptSnapshot {
+  product_session_id: string;
+  status: "complete" | "partial";
+  segments: Array<{
+    inherited?: boolean;
+    source_product_session_id?: string;
+    binding: {
+      ordinal: number;
+      runtime_job_id: string;
+      runtime_run_id: string;
+      resumed_from_run_id?: string;
+    };
+  }>;
+}
+
+interface StartedTurn {
+  body: Record<string, unknown>;
+  requestPath: string;
+  messageId: string;
+  messageStatus: ProductMessageStatus;
+  jobId: string;
+  runId: string;
+  resumedFromRunId: string | null;
+}
+
+interface CreatedProductRecords {
+  workspaceIds: string[];
+  sessionIds: string[];
+  profileIds: string[];
+  jobIds: string[];
+}
+
+test.describe("real API product shell integration", () => {
+  test.skip(
+    !realApiEnabled,
+    "set ROVE_REAL_API_E2E=1 to run against a real rove-api server",
+  );
+  test.describe.configure({ mode: "serial" });
+
+  test("migrates browser state before mounting the live product catalog", async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(120_000);
+    const baseline = await readPreferences(request);
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "rove-live-migration-"));
+    const created = emptyCreatedRecords();
+    let primaryError: unknown | null = null;
+    let migrationPosts = 0;
+    let migrationStatus: number | null = null;
+    page.on("request", (browserRequest) => {
+      if (
+        browserRequest.method() === "POST" &&
+        new URL(browserRequest.url()).pathname ===
+          "/api/product/migrations/m1-browser"
+      ) {
+        migrationPosts += 1;
+      }
+    });
+    page.on("response", (response) => {
+      if (
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname ===
+          "/api/product/migrations/m1-browser"
+      ) {
+        migrationStatus = response.status();
+      }
+    });
+    try {
+      await detachActiveProductRoute(request, baseline);
+      await seedLegacyState(page, workspaceRoot);
+
+      await gotoWithReadiness(
+        page,
+        request,
+        "/w/live-legacy-workspace/s/live-legacy-session?inspector=open#latest",
+      );
+      await expect.poll(() => migrationStatus).toBe(200);
+      expect(
+        await registerProductRecordsForWorkspaceRoot(
+          request,
+          created,
+          workspaceRoot,
+        ),
+      ).toBe(1);
+      await page.waitForURL((url) => {
+        const match = url.pathname.match(/^\/w\/([^/]+)\/s\/([^/]+)$/);
+        return (
+          match?.[1] !== undefined &&
+          match[1] !== "live-legacy-workspace" &&
+          match?.[2] !== undefined &&
+          match[2] !== "live-legacy-session" &&
+          url.search === "?inspector=open" &&
+          url.hash === "#latest"
+        );
+      });
+      const routeMatch = new URL(page.url()).pathname.match(
+        /^\/w\/([^/]+)\/s\/([^/]+)$/,
+      );
+      expect(routeMatch).not.toBeNull();
+      const [, workspaceId, sessionId] = routeMatch!;
+      expect(workspaceId).not.toBe("live-legacy-workspace");
+      expect(sessionId).not.toBe("live-legacy-session");
+
+      await expect(page).toHaveURL(
+        `/w/${workspaceId}/s/${sessionId}?inspector=open#latest`,
+      );
+      await expect(
+        page.getByRole("heading", { name: "Live imported session" }),
+      ).toBeVisible();
+      await expect(page.getByText("Browser data imported (2 records).")).toBeVisible();
+      expect(migrationPosts).toBe(1);
+      await expect
+        .poll(() => browserValue(page, M1_BROWSER_MIGRATION_STATE_KEY))
+        .not.toBeNull();
+      await expect
+        .poll(() => browserValue(page, M1_BROWSER_STORAGE_KEYS.workspaces))
+        .not.toBeNull();
+
+      await page.reload();
+      await expect(
+        page.getByRole("heading", { name: "Live imported session" }),
+      ).toBeVisible();
+      await expect(page.getByText(/Browser data imported/iu)).toHaveCount(0);
+      expect(migrationPosts).toBe(1);
+    } catch (error) {
+      primaryError = error;
+    } finally {
+      await finalizeProductTest(
+        page,
+        request,
+        created,
+        baseline,
+        workspaceRoot,
+        primaryError,
+      );
+    }
+  });
+
+  test("runs exact A/B continuity, refresh, tools, cancellation, and Settings", async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(180_000);
+    const baseline = await readPreferences(request);
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "rove-real-api-e2e-"));
+    const created = emptyCreatedRecords();
+    let primaryError: unknown | null = null;
+
+    try {
+      await detachActiveProductRoute(request, baseline);
+      await page.goto("/");
+      await expect(
+        page.getByRole("heading", { name: "Open a workspace to start" }),
+      ).toBeVisible();
+
+      const firstSession = await openWorkspace(
+        page,
+        workspaceRoot,
+        created,
+      );
+      const workspaceId = firstSession.workspaceId;
+      const sessionA = firstSession.sessionId;
+      const routeA = productSessionRoute(workspaceId, sessionA);
+
+      const promptA1 = `real API A1 ${Date.now()}`;
+      const turnA1 = await sendMessage(page, request, sessionA, promptA1, created);
+      expectProductSessionRequest(turnA1, sessionA);
+      expect(turnA1.resumedFromRunId).toBeNull();
+      await expectTurnCompleted(page, `fake response: ${promptA1}`);
+
+      const sessionB = await createSession(page, workspaceId, created);
+      const promptB1 = `real API B1 ${Date.now()}`;
+      const turnB1 = await sendMessage(page, request, sessionB, promptB1, created);
+      expectProductSessionRequest(turnB1, sessionB);
+      expect(turnB1.resumedFromRunId).toBeNull();
+      await expectTurnCompleted(page, `fake response: ${promptB1}`);
+
+      await page.goto(routeA);
+      await expect(
+        page
+          .getByLabel("Conversation")
+          .getByText(`fake response: ${promptA1}`, { exact: true }),
+      ).toBeVisible();
+      const promptA2 = `real API A2 ${Date.now()}`;
+      const turnA2 = await sendMessage(page, request, sessionA, promptA2, created);
+      expectProductSessionRequest(turnA2, sessionA);
+      expect(turnA2.resumedFromRunId).toBe(turnA1.runId);
+      expect(turnA2.resumedFromRunId).not.toBe(turnB1.runId);
+      await expectTurnCompleted(page, `fake response: ${promptA2}`);
+
+      await page.reload();
+      await expect(page).toHaveURL(routeA);
+      const conversation = page.getByLabel("Conversation");
+      await expect(conversation.getByText(promptA1, { exact: true })).toBeVisible();
+      await expect(conversation.getByText(promptA2, { exact: true })).toBeVisible();
+      const promptA3 = `real API A3 ${Date.now()}`;
+      const turnA3 = await sendMessage(page, request, sessionA, promptA3, created);
+      expectProductSessionRequest(turnA3, sessionA);
+      expect(turnA3.resumedFromRunId).toBe(turnA2.runId);
+      await expectTurnCompleted(page, `fake response: ${promptA3}`);
+
+      const transcriptA = await readTranscript(request, sessionA);
+      const transcriptB = await readTranscript(request, sessionB);
+      expect(transcriptA.status).toBe("complete");
+      expect(transcriptA.segments).toHaveLength(3);
+      expect(transcriptA.segments.map((segment) => segment.binding.ordinal)).toEqual([
+        1, 2, 3,
+      ]);
+      expect(
+        transcriptA.segments.map((segment) => ({
+          jobId: segment.binding.runtime_job_id,
+          runId: segment.binding.runtime_run_id,
+        })),
+      ).toEqual([
+        { jobId: turnA1.jobId, runId: turnA1.runId },
+        { jobId: turnA2.jobId, runId: turnA2.runId },
+        { jobId: turnA3.jobId, runId: turnA3.runId },
+      ]);
+      expect(transcriptA.segments[1].binding.resumed_from_run_id).toBe(
+        turnA1.runId,
+      );
+      expect(transcriptA.segments[2].binding.resumed_from_run_id).toBe(
+        turnA2.runId,
+      );
+      expect(transcriptB.segments).toHaveLength(1);
+      expect(transcriptB.segments[0].binding.runtime_job_id).toBe(turnB1.jobId);
+      expect(transcriptB.segments[0].binding.runtime_run_id).toBe(turnB1.runId);
+
+      await page.goto("/settings/tools");
+      await page.getByRole("button", { name: "Never", exact: true }).click();
+      await expect
+        .poll(async () => (await readPreferences(request)).default_approval_policy)
+        .toBe("never");
+      await page.getByRole("button", { name: "Ask", exact: true }).click();
+      await expect
+        .poll(async () => (await readPreferences(request)).default_approval_policy)
+        .toBe("ask");
+      await page.getByLabel("Default maximum steps for new sessions").fill("1");
+      await Promise.all([
+        page.waitForResponse((response) => {
+          if (
+            response.request().method() !== "PUT" ||
+            new URL(response.url()).pathname !== "/api/product/preferences" ||
+            !response.ok()
+          ) {
+            return false;
+          }
+          try {
+            const body = response.request().postDataJSON() as {
+              provider_selection?: { max_steps?: number };
+            };
+            return body.provider_selection?.max_steps === 1;
+          } catch {
+            return false;
+          }
+        }),
+        page.getByRole("button", { name: "Save default" }).click(),
+      ]);
+
+      await page.goto("/settings/providers");
+      const profileId = await selectFakeRawProfile(page, created);
+      expect(profileId).toBeTruthy();
+      await page.goto(routeA);
+      await expect(
+        page
+          .getByLabel("Message composer")
+          .getByRole("button", { name: "Change session model settings" })
+          .getByText("fake-raw", { exact: true }),
+      ).not.toBeVisible();
+      await selectSessionModel(page, profileId, "fake-raw", 1);
+      await expect(
+        page
+          .getByLabel("Message composer")
+          .getByRole("button", { name: "Change session model settings" })
+          .getByText("fake-raw", { exact: true }),
+      ).toBeVisible();
+
+      await page.evaluate(() => {
+        window.localStorage.clear();
+        window.sessionStorage.clear();
+      });
+      await page.reload();
+      await expect(
+        page
+          .getByLabel("Message composer")
+          .getByRole("button", { name: "Change session model settings" })
+          .getByText("fake-raw", { exact: true }),
+      ).toBeVisible();
+
+      const outputName = `approved-${Date.now()}.txt`;
+      const outputContent = "ok from the real product shell";
+      const approvalTurn = await sendMessage(
+        page,
+        request,
+        sessionA,
+        JSON.stringify({
+          tool: "write_file",
+          args: { path: outputName, content: outputContent },
+        }),
+        created,
+      );
+      expectServerOwnedProductMessageRequest(approvalTurn);
+      const approval = page.getByLabel("Pending approval");
+      await expect(approval.getByText(/Approval needed.*write_file/u)).toBeVisible();
+      await Promise.all([
+        page.waitForResponse(
+          (response) =>
+            response.request().method() === "POST" &&
+            new URL(response.url()).pathname.includes("/api/jobs/") &&
+            new URL(response.url()).pathname.includes("/approvals/") &&
+            response.ok(),
+        ),
+        approval.getByRole("button", { name: "Approve" }).click(),
+      ]);
+      await expect(
+        page.getByLabel("Conversation").getByText(/write_file.*done/u),
+      ).toBeVisible({ timeout: 30_000 });
+      expect(await readFile(join(workspaceRoot, outputName), "utf8")).toBe(
+        outputContent,
+      );
+      await cancelCurrentRun(page, true);
+
+      const inputPrompt = "Which branch should the real product shell use?";
+      const inputTurn = await sendMessage(
+        page,
+        request,
+        sessionA,
+        JSON.stringify({
+          tool: "request_input",
+          args: { prompt: inputPrompt },
+        }),
+        created,
+      );
+      expectServerOwnedProductMessageRequest(inputTurn);
+      const inputCard = page.locator(".input-card").filter({ hasText: inputPrompt });
+      await expect(inputCard.getByText("Input requested")).toBeVisible();
+      await inputCard.getByRole("textbox", { name: inputPrompt }).fill("main");
+      await Promise.all([
+        page.waitForResponse(
+          (response) =>
+            response.request().method() === "POST" &&
+            new URL(response.url()).pathname.includes("/api/jobs/") &&
+            new URL(response.url()).pathname.includes("/inputs/") &&
+            response.ok(),
+        ),
+        inputCard.getByRole("button", { name: "Send" }).click(),
+      ]);
+      await expect(
+        page.getByLabel("Conversation").getByText("main", { exact: true }),
+      ).toBeVisible({ timeout: 30_000 });
+      await cancelCurrentRun(page, true);
+
+      const cancelPrompt = "Cancel this real product input";
+      const cancelTurn = await sendMessage(
+        page,
+        request,
+        sessionA,
+        JSON.stringify({
+          tool: "request_input",
+          args: { prompt: cancelPrompt },
+        }),
+        created,
+      );
+      expectServerOwnedProductMessageRequest(cancelTurn);
+      await expect(
+        page.locator(".input-card").filter({ hasText: cancelPrompt }),
+      ).toBeVisible();
+      await cancelCurrentRun(page);
+
+      await page.goto("/settings/providers");
+      await expect(
+        page.locator(".profile-row").filter({ hasText: "Real API fake raw" }),
+      ).toBeVisible();
+      await page.goto("/settings/memory");
+      await expect(page.getByRole("heading", { name: "Memory" })).toBeVisible();
+      await expect(
+        page.getByText("No durable memory topics are available."),
+      ).toBeVisible();
+      await page.goto("/settings/keyboard");
+      await expect(
+        page.getByRole("heading", { name: "Keyboard shortcuts" }),
+      ).toBeVisible();
+      await page.goto("/settings/about");
+      await expect(page.getByRole("heading", { name: "Resume health" })).toBeVisible();
+      await page.goto("/settings/general");
+      await page.getByRole("button", { name: "Dark", exact: true }).click();
+      await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+      await page.reload();
+      await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+
+      await page.goto(routeA);
+      await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+      await page.keyboard.press("/");
+      await expect(page.getByRole("textbox", { name: "Message" })).toBeFocused();
+    } catch (error) {
+      primaryError = error;
+    } finally {
+      await finalizeProductTest(
+        page,
+        request,
+        created,
+        baseline,
+        workspaceRoot,
+        primaryError,
+      );
+    }
+  });
+
+  test("promotes and revokes unified messages during an active run", async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(120_000);
+    const baseline = await readPreferences(request);
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "rove-real-api-controls-"));
+    const created = emptyCreatedRecords();
+    let primaryError: unknown | null = null;
+
+    try {
+      await detachActiveProductRoute(request, baseline);
+      await page.goto("/");
+      const { workspaceId, sessionId } = await openWorkspace(page, workspaceRoot, created);
+      const route = productSessionRoute(workspaceId, sessionId);
+
+      await page.goto("/settings/providers");
+      const profileId = await selectFakeRawProfile(page, created);
+      expect(profileId).toBeTruthy();
+      await page.goto(route);
+      await selectSessionModel(page, profileId, "fake-raw", 8);
+      await expect(
+        page
+          .getByLabel("Message composer")
+          .getByRole("button", { name: "Change session model settings" })
+          .getByText("fake-raw", { exact: true }),
+      ).toBeVisible();
+
+      const inputPrompt = "Which release branch should this control test use?";
+      const inputTurn = await sendMessage(
+        page,
+        request,
+        sessionId,
+        JSON.stringify({
+          tool: "request_input",
+          args: { prompt: inputPrompt },
+        }),
+        created,
+      );
+      expectProductSessionRequest(inputTurn, sessionId);
+      expectServerOwnedProductMessageRequest(inputTurn);
+      const inputCard = page.locator(".input-card").filter({ hasText: inputPrompt });
+      await expect(inputCard.getByText("Input requested")).toBeVisible();
+
+      const promotedText = "Prioritize the release notes after the input.";
+      const promotedTurn = await sendMessage(
+        page,
+        request,
+        sessionId,
+        promotedText,
+        created,
+      );
+      expectProductSessionRequest(promotedTurn, sessionId);
+      expect(promotedTurn.messageStatus).toBe("queued");
+      const promotedMessage = page
+        .locator(".queued-message")
+        .filter({ hasText: promotedText });
+      await expect(promotedMessage).toBeVisible();
+      const promoteResponse = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          new URL(response.url()).pathname ===
+            `/api/product/sessions/${sessionId}/messages/${promotedTurn.messageId}/promote` &&
+          response.ok(),
+      );
+      await promotedMessage
+        .getByRole("button", { name: "Apply to current run", exact: true })
+        .click();
+      const promotedMessageResponse = await promoteResponse;
+      expect((await promotedMessageResponse.json()).status).toBe(
+        "intervention_requested",
+      );
+      await expect(promotedMessage).toContainText("intervention requested");
+
+      const revokedText = "This queued message must be revoked before completion.";
+      const revokedTurn = await sendMessage(
+        page,
+        request,
+        sessionId,
+        revokedText,
+        created,
+      );
+      expectProductSessionRequest(revokedTurn, sessionId);
+      expect(revokedTurn.messageStatus).toBe("queued");
+      const revokedMessage = page
+        .locator(".queued-message")
+        .filter({ hasText: revokedText });
+      await expect(revokedMessage).toBeVisible();
+      const revokeResponse = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          new URL(response.url()).pathname ===
+            `/api/product/sessions/${sessionId}/messages/${revokedTurn.messageId}/revoke` &&
+          response.ok(),
+      );
+      await revokedMessage
+        .getByRole("button", { name: "Revoke message", exact: true })
+        .click();
+      expect((await (await revokeResponse).json()).status).toBe("revoked");
+      await expect(revokedMessage).toHaveCount(0);
+
+      await inputCard.getByRole("textbox", { name: inputPrompt }).fill("main");
+      await Promise.all([
+        page.waitForResponse(
+          (response) =>
+            response.request().method() === "POST" &&
+            new URL(response.url()).pathname.includes("/api/jobs/") &&
+            new URL(response.url()).pathname.includes("/inputs/") &&
+            response.ok(),
+        ),
+        inputCard.getByRole("button", { name: "Send" }).click(),
+      ]);
+      await expectTurnCompleted(page, "main");
+      await expect
+        .poll(async () => (await readMessages(request, sessionId)).find(
+          (message) => message.id === promotedTurn.messageId,
+        )?.status)
+        .toBe("applied_current_run");
+      await expect
+        .poll(async () => (await readMessages(request, sessionId)).find(
+          (message) => message.id === revokedTurn.messageId,
+        )?.status)
+        .toBe("revoked");
+    } catch (error) {
+      primaryError = error;
+    } finally {
+      await finalizeProductTest(
+        page,
+        request,
+        created,
+        baseline,
+        workspaceRoot,
+        primaryError,
+      );
+    }
+  });
+
+  test("forks a completed session through the live product shell and keeps continuation independent", async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(120_000);
+    const baseline = await readPreferences(request);
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "rove-real-api-fork-"));
+    const created = emptyCreatedRecords();
+    let primaryError: unknown | null = null;
+
+    try {
+      await detachActiveProductRoute(request, baseline);
+      await page.goto("/");
+      const { workspaceId, sessionId: parentSessionId } = await openWorkspace(
+        page,
+        workspaceRoot,
+        created,
+      );
+      const parentRoute = productSessionRoute(workspaceId, parentSessionId);
+      const parentPrompt = `fork parent ${Date.now()}`;
+      const parentTurn = await sendMessage(
+        page,
+        request,
+        parentSessionId,
+        parentPrompt,
+        created,
+      );
+      expectProductSessionRequest(parentTurn, parentSessionId);
+      await expectTurnCompleted(page, `fake response: ${parentPrompt}`);
+
+      const parentTitle = await page.locator(".chat-pane__header h1").innerText();
+      const forkResponsePromise = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          new URL(response.url()).pathname ===
+            `/api/product/sessions/${parentSessionId}/forks` &&
+          response.status() === 201,
+      );
+      await page.locator(".chat-pane__header").getByRole("button", { name: "复制会话" }).click();
+      const forkResponse = await forkResponsePromise;
+      const forkPayload = (await forkResponse.json()) as {
+        session?: { id?: unknown };
+      };
+      const childSessionId = forkPayload.session?.id;
+      if (typeof childSessionId !== "string" || !childSessionId) {
+        throw new Error("fork response did not include a child product session id");
+      }
+      created.sessionIds.push(childSessionId);
+      const childRoute = productSessionRoute(workspaceId, childSessionId);
+      await expect(page).toHaveURL(childRoute);
+      await expect(
+        page.getByRole("heading", { name: `Fork of ${parentTitle}` }),
+      ).toBeVisible();
+      const branches = page.getByLabel("Sessions and branches");
+      await expect(branches.locator('.session-branch[data-forked="true"]')).toHaveCount(1);
+      await expect(branches.locator(".session-item__lineage")).toContainText("Fork");
+
+      const childPrompt = `fork child ${Date.now()}`;
+      const childTurn = await sendMessage(
+        page,
+        request,
+        childSessionId,
+        childPrompt,
+        created,
+      );
+      expectProductSessionRequest(childTurn, childSessionId);
+      expect(childTurn.resumedFromRunId).toBeNull();
+      await expectTurnCompleted(page, `fake response: ${childPrompt}`);
+
+      const childTranscript = await readTranscript(request, childSessionId);
+      expect(childTranscript.status).toBe("complete");
+      expect(childTranscript.segments).toHaveLength(2);
+      expect(childTranscript.segments[0].inherited).toBe(true);
+      expect(childTranscript.segments[0].source_product_session_id).toBe(parentSessionId);
+      expect(childTranscript.segments[0].binding.runtime_run_id).toBe(parentTurn.runId);
+      expect(childTranscript.segments[1].inherited).toBeFalsy();
+      expect(childTranscript.segments[1].binding.runtime_run_id).toBe(childTurn.runId);
+      expect(childTranscript.segments[1].binding.ordinal).toBe(2);
+
+      await page.reload();
+      await expect(page).toHaveURL(childRoute);
+      await expect(
+        page.getByLabel("Conversation").getByText(parentPrompt, { exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByLabel("Conversation").getByText(childPrompt, { exact: true }),
+      ).toBeVisible();
+      await expect(branches.locator('.session-branch[data-forked="true"]')).toHaveCount(1);
+
+      await page.goto(parentRoute);
+      await expect(
+        page.getByLabel("Conversation").getByText(parentPrompt, { exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByLabel("Conversation").getByText(childPrompt, { exact: true }),
+      ).toHaveCount(0);
+    } catch (error) {
+      primaryError = error;
+    } finally {
+      await finalizeProductTest(
+        page,
+        request,
+        created,
+        baseline,
+        workspaceRoot,
+        primaryError,
+      );
+    }
+  });
+});
+
+test.describe("optional real API advanced workbench smoke", () => {
+  test.skip(
+    !realApiEnabled || !advancedWorkbenchEnabled,
+    "set ROVE_REAL_API_E2E=1 and ROVE_REAL_API_WORKBENCH_SMOKE=1 to run",
+  );
+
+  test("keeps the bounded advanced direct-run surface available", async ({ page }) => {
+    await page.goto("/dev/workbench");
+    const task = `advanced workbench smoke ${Date.now()}`;
+    const taskInput = page.getByLabel("Task");
+    await expect(taskInput).toHaveValue("inspect this workspace");
+    await taskInput.fill(task);
+    await expect(taskInput).toHaveValue(task);
+    await page.getByLabel("Model").fill("fake");
+    await page.getByLabel("Steps").fill("4");
+    await page.getByRole("button", { name: "Run" }).click();
+
+    await expect(
+      page.getByLabel("Run summary").getByText("Run completed").first(),
+    ).toBeVisible({ timeout: 20_000 });
+    await expect(
+      page.locator(".message-stream").getByText(`fake response: ${task}`, { exact: true }),
+    ).toBeVisible();
+  });
+});
+
+function emptyCreatedRecords(): CreatedProductRecords {
+  return { workspaceIds: [], sessionIds: [], profileIds: [], jobIds: [] };
+}
+
+async function seedLegacyState(page: Page, workspaceRoot: string) {
+  const values: Record<string, string> = {
+    [M1_BROWSER_STORAGE_KEYS.workspaces]: JSON.stringify([
+      {
+        id: "live-legacy-workspace",
+        rootPath: workspaceRoot,
+        kind: "folder",
+        displayName: "Live imported workspace",
+        pinned: false,
+        lastOpenedAt: "2026-07-27T00:00:00.000Z",
+      },
+    ]),
+    [M1_BROWSER_STORAGE_KEYS.sessions]: JSON.stringify([
+      {
+        id: "live-legacy-session",
+        workspaceId: "live-legacy-workspace",
+        title: "Live imported session",
+        createdAt: "2026-07-27T00:00:00.000Z",
+        updatedAt: "2026-07-27T00:00:00.000Z",
+        status: "idle",
+        hasDurableTurn: false,
+      },
+    ]),
+    [M1_BROWSER_STORAGE_KEYS.active]: JSON.stringify({
+      workspaceId: "live-legacy-workspace",
+      sessionId: "live-legacy-session",
+    }),
+  };
+  await page.addInitScript((entries) => {
+    for (const [key, value] of Object.entries(entries)) {
+      window.localStorage.setItem(key, value);
+    }
+  }, values);
+}
+
+async function openWorkspace(
+  page: Page,
+  workspaceRoot: string,
+  created: CreatedProductRecords,
+): Promise<{ workspaceId: string; sessionId: string }> {
+  const workspaceResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/product/workspaces" &&
+      response.status() === 201,
+  );
+  const sessionResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/product/sessions" &&
+      response.status() === 201,
+  );
+  await page.getByLabel("绝对路径").fill(workspaceRoot);
+  await page.getByRole("button", { name: "Open workspace", exact: true }).click();
+
+  const workspaceId = await responseId(await workspaceResponsePromise);
+  created.workspaceIds.push(workspaceId);
+  const sessionId = await responseId(await sessionResponsePromise);
+  created.sessionIds.push(sessionId);
+  await expect(page).toHaveURL(productSessionRoute(workspaceId, sessionId));
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+  return { workspaceId, sessionId };
+}
+
+async function createSession(
+  page: Page,
+  workspaceId: string,
+  created: CreatedProductRecords,
+): Promise<string> {
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/product/sessions" &&
+      response.status() === 201,
+  );
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const sessionId = await responseId(await responsePromise);
+  created.sessionIds.push(sessionId);
+  await expect(page).toHaveURL(productSessionRoute(workspaceId, sessionId));
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+  return sessionId;
+}
+
+async function responseId(response: { json(): Promise<unknown> }): Promise<string> {
+  const value = (await response.json()) as { id?: unknown };
+  if (typeof value.id !== "string" || !value.id) {
+    throw new Error("product create response did not include an id");
+  }
+  return value.id;
+}
+
+async function sendMessage(
+  page: Page,
+  request: APIRequestContext,
+  sessionId: string,
+  message: string,
+  created: CreatedProductRecords,
+): Promise<StartedTurn> {
+  const workspaceId = workspaceIdFromPage(page);
+  const beforeTranscript = await readTranscript(request, sessionId);
+  const beforeSession = await readProductSession(request, workspaceId, sessionId);
+  const beforeBinding = beforeSession.runtime_binding;
+  const beforeRunId =
+    beforeBinding?.latest_run_id ??
+    latestTranscriptBinding(beforeTranscript)?.runtime_run_id ??
+    null;
+  const requestPath = `/api/product/sessions/${encodeURIComponent(sessionId)}/messages`;
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === requestPath,
+  );
+  const composer = page.getByLabel("Message composer");
+  await composer.getByRole("textbox", { name: "Message" }).fill(message);
+  await composer
+    .getByRole("button", { name: "Send message", exact: true })
+    .click();
+  const response = await responsePromise;
+  expect(response.ok()).toBe(true);
+  const requestBody = jobBody(response.request());
+  expect(requestBody.content).toBe(message);
+  expect(typeof requestBody.idempotency_key).toBe("string");
+  const accepted = (await response.json()) as {
+    id?: unknown;
+    product_session_id?: unknown;
+    content?: unknown;
+    status?: unknown;
+  };
+  if (
+    typeof accepted.id !== "string" ||
+    typeof accepted.product_session_id !== "string" ||
+    typeof accepted.content !== "string" ||
+    typeof accepted.status !== "string"
+  ) {
+    throw new Error("product message response did not include its durable identity");
+  }
+  expect(accepted.product_session_id).toBe(sessionId);
+  expect(accepted.content).toBe(message);
+  if (!isProductMessageStatus(accepted.status)) {
+    throw new Error(`product message response contained an invalid status: ${accepted.status}`);
+  }
+  const activeBefore =
+    beforeSession.status === "running" || beforeSession.status === "needs_attention";
+  let binding: {
+    runtime_job_id: string;
+    runtime_run_id: string;
+    resumed_from_run_id?: string;
+  } | undefined = activeBefore && beforeBinding
+    ? {
+        runtime_job_id: beforeBinding.latest_job_id,
+        runtime_run_id: beforeBinding.latest_run_id,
+      }
+    : undefined;
+  if (!binding) {
+    await expect
+      .poll(
+        async () => {
+          const [transcript, session] = await Promise.all([
+            readTranscript(request, sessionId),
+            readProductSession(request, workspaceId, sessionId),
+          ]);
+          const candidate = latestTranscriptBinding(transcript);
+          const current = session.runtime_binding;
+          return candidate &&
+            current &&
+            candidate.runtime_run_id !== beforeRunId &&
+            current.latest_run_id === candidate.runtime_run_id
+            ? candidate.runtime_run_id
+            : null;
+        },
+        { timeout: 30_000, intervals: [100, 200, 400, 800, 1_000] },
+      )
+      .not.toBeNull();
+    const afterTranscript = await readTranscript(request, sessionId);
+    const afterSession = await readProductSession(request, workspaceId, sessionId);
+    const candidate = latestTranscriptBinding(afterTranscript);
+    if (!candidate || !afterSession.runtime_binding) {
+      throw new Error("product message was accepted without a durable run binding");
+    }
+    binding = afterSession.runtime_binding.latest_run_id === candidate.runtime_run_id
+      ? candidate
+      : undefined;
+  }
+  if (!binding) {
+    throw new Error("active product message did not have a current run binding");
+  }
+  const resumedFromRunId = activeBefore
+    ? null
+    : binding.resumed_from_run_id ?? null;
+  pushUnique(created.jobIds, binding.runtime_job_id);
+  return {
+    body: requestBody,
+    requestPath,
+    messageId: accepted.id,
+    messageStatus: accepted.status,
+    jobId: binding.runtime_job_id,
+    runId: binding.runtime_run_id,
+    resumedFromRunId,
+  };
+}
+
+function jobBody(request: Request): Record<string, unknown> {
+  const body: unknown = request.postDataJSON();
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("product job request did not contain a JSON object");
+  }
+  return body as Record<string, unknown>;
+}
+
+function expectProductSessionRequest(turn: StartedTurn, sessionId: string) {
+  expect(turn.requestPath).toBe(
+    `/api/product/sessions/${encodeURIComponent(sessionId)}/messages`,
+  );
+  expect(turn.body).not.toHaveProperty("product_session_id");
+  expect(typeof turn.body.content).toBe("string");
+  expect(typeof turn.body.idempotency_key).toBe("string");
+  expect(turn.body).not.toHaveProperty("resume");
+  expectServerOwnedProductMessageRequest(turn);
+}
+
+function expectServerOwnedProductMessageRequest(turn: StartedTurn) {
+  expect(turn.body).not.toHaveProperty("model");
+  expect(turn.body).not.toHaveProperty("max_steps");
+  expect(turn.body).not.toHaveProperty("provider");
+  expect(turn.body).not.toHaveProperty("approval");
+  expect(turn.body).not.toHaveProperty("resume");
+}
+
+async function expectTurnCompleted(page: Page, assistantText: string) {
+  await expect(
+    page.getByLabel("Conversation").getByText(assistantText, { exact: true }),
+  ).toBeVisible({ timeout: 30_000 });
+  await expectRunCompleted(page);
+}
+
+async function expectRunCompleted(page: Page) {
+  await expect(
+    page.getByLabel("Run inspector").getByText("Run completed", { exact: true }),
+  ).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+}
+
+async function cancelCurrentRun(page: Page, allowCompleted = false) {
+  await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname.endsWith("/cancel") &&
+        response.ok(),
+    ),
+    page.getByRole("button", { name: "Stop run" }).click(),
+  ]);
+  const inspector = page.getByLabel("Run inspector");
+  const status = inspector
+    .getByText("status", { exact: true })
+    .locator("xpath=following-sibling::strong");
+  await expect(status).toHaveText(
+    allowCompleted ? /Run (?:cancelled|completed)/u : "Run cancelled",
+    {
+    timeout: 30_000,
+    },
+  );
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+}
+
+async function readTranscript(
+  request: APIRequestContext,
+  sessionId: string,
+): Promise<ProductTranscriptSnapshot> {
+  const response = await request.get(
+    `/api/product/sessions/${encodeURIComponent(sessionId)}/transcript`,
+  );
+  expect(response.ok()).toBe(true);
+  const transcript = (await response.json()) as ProductTranscriptSnapshot;
+  expect(transcript.product_session_id).toBe(sessionId);
+  return transcript;
+}
+
+async function readProductSession(
+  request: APIRequestContext,
+  workspaceId: string,
+  sessionId: string,
+): Promise<ProductSession> {
+  const response = await request.get(
+    `/api/product/sessions?workspace_id=${encodeURIComponent(workspaceId)}`,
+  );
+  expect(response.ok()).toBe(true);
+  const body = (await response.json()) as ProductSessionsResponse;
+  const session = body.sessions.find((item) => item.id === sessionId);
+  if (!session) {
+    throw new Error(`product session ${sessionId} was not returned for its workspace`);
+  }
+  return session;
+}
+
+async function readMessages(
+  request: APIRequestContext,
+  sessionId: string,
+): Promise<Array<{ id: string; status: ProductMessageStatus }>> {
+  const response = await request.get(
+    `/api/product/sessions/${encodeURIComponent(sessionId)}/messages`,
+  );
+  expect(response.ok()).toBe(true);
+  const body = (await response.json()) as {
+    messages?: Array<{ id?: unknown; status?: unknown }>;
+  };
+  return (body.messages ?? []).flatMap((message) =>
+    typeof message.id === "string" && isProductMessageStatus(message.status)
+      ? [{ id: message.id, status: message.status }]
+      : [],
+  );
+}
+
+function latestTranscriptBinding(
+  transcript: ProductTranscriptSnapshot,
+): ProductTranscriptSnapshot["segments"][number]["binding"] | null {
+  for (const segment of [...transcript.segments].reverse()) {
+    if (segment.binding) {
+      return segment.binding;
+    }
+  }
+  return null;
+}
+
+function isProductMessageStatus(value: unknown): value is ProductMessageStatus {
+  return (
+    value === "queued" ||
+    value === "intervention_requested" ||
+    value === "applied_current_run" ||
+    value === "claimed_successor" ||
+    value === "needs_attention" ||
+    value === "revoked"
+  );
+}
+
+function workspaceIdFromPage(page: Page): string {
+  const match = new URL(page.url()).pathname.match(/^\/w\/([^/]+)\/s\/([^/]+)$/u);
+  if (!match) {
+    throw new Error(`expected a product session route, received ${page.url()}`);
+  }
+  return decodeURIComponent(match[1]!);
+}
+
+async function gotoWithReadiness(
+  page: Page,
+  request: APIRequestContext,
+  path: string,
+) {
+  let lastStatus: number | null = null;
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      const response = await request.get(path);
+      lastStatus = response.status();
+      if (lastStatus >= 200 && lastStatus < 400) {
+        await page.goto(path, { waitUntil: "domcontentloaded" });
+        return;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await page.waitForTimeout(500);
+  }
+  throw new Error(
+    `product route was not ready after bounded retries (status=${lastStatus}, error=${String(lastError)})`,
+  );
+}
+
+async function selectFakeRawProfile(
+  page: Page,
+  created: CreatedProductRecords,
+): Promise<string> {
+  await expect(page).toHaveURL(/\/settings\/providers$/u);
+  await page.getByLabel("名称").fill("Real API fake raw");
+  await page.getByLabel("类型").selectOption("fake");
+  await expect(page.getByLabel("API base")).toHaveValue("");
+  await page.getByLabel("Default model").fill("fake-raw");
+
+  await page.getByRole("button", { name: "Test", exact: true }).click();
+  await expect(page.getByText(/Test: pass/iu)).toBeVisible();
+  await page.getByRole("button", { name: "List models", exact: true }).click();
+  await expect(page.getByText(/Models \(\d+\):/u)).toBeVisible();
+
+  const profileResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        "/api/product/provider-profiles" &&
+      response.status() === 201,
+  );
+  const preferencesResponsePromise = page.waitForResponse((response) => {
+    if (
+      response.request().method() !== "PUT" ||
+      new URL(response.url()).pathname !== "/api/product/preferences" ||
+      !response.ok()
+    ) {
+      return false;
+    }
+    try {
+      const body = response.request().postDataJSON() as {
+        provider_selection?: { model?: string };
+      };
+      return body.provider_selection?.model === "fake-raw";
+    } catch {
+      return false;
+    }
+  });
+  await page.getByRole("button", { name: "Save profile" }).click();
+  const profileId = await responseId(await profileResponsePromise);
+  created.profileIds.push(profileId);
+  await preferencesResponsePromise;
+  await expect(
+    page.locator(".profile-row").filter({ hasText: "Real API fake raw" }),
+  ).toBeVisible();
+  return profileId;
+}
+
+async function selectSessionModel(
+  page: Page,
+  profileId: string,
+  model: string,
+  maxSteps: number,
+) {
+  const composer = page.getByLabel("Message composer");
+  await composer
+    .getByRole("button", { name: "Change session model settings" })
+    .click();
+  const dialog = composer.getByRole("dialog", { name: "Session model settings" });
+  await dialog.getByLabel("Session provider profile").selectOption(profileId);
+  await dialog.getByLabel("Session model").fill(model);
+  await dialog.getByLabel("Session max steps").fill(String(maxSteps));
+  await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.request().method() === "PUT" &&
+        new URL(response.url()).pathname.endsWith("/model-config") &&
+        response.ok(),
+    ),
+    dialog.getByRole("button", { name: "Save session model" }).click(),
+  ]);
+  await expect(dialog).toHaveCount(0);
+}
+
+async function readPreferences(
+  request: APIRequestContext,
+): Promise<ProductPreferencesSnapshot> {
+  const response = await request.get("/api/product/preferences");
+  expect(response.ok()).toBe(true);
+  return (await response.json()) as ProductPreferencesSnapshot;
+}
+
+async function detachActiveProductRoute(
+  request: APIRequestContext,
+  baseline: ProductPreferencesSnapshot,
+) {
+  const response = await request.put("/api/product/preferences", {
+    data: preferenceUpdate(baseline, baseline, {
+      active_workspace_id: null,
+      active_session_id: null,
+    }),
+  });
+  expect(response.ok()).toBe(true);
+}
+
+function preferenceUpdate(
+  current: ProductPreferencesSnapshot,
+  desired: ProductPreferencesSnapshot,
+  active: {
+    active_workspace_id: string | null;
+    active_session_id: string | null;
+  } = {
+    active_workspace_id: desired.active_workspace_id ?? null,
+    active_session_id: desired.active_session_id ?? null,
+  },
+) {
+  return {
+    schema_version: current.schema_version,
+    expected_revision: current.revision,
+    theme: desired.theme,
+    default_approval_policy: desired.default_approval_policy,
+    active_workspace_id: active.active_workspace_id,
+    active_session_id: active.active_session_id,
+    provider_selection: desired.provider_selection ?? null,
+  };
+}
+
+async function cleanupOrThrow(
+  request: APIRequestContext,
+  created: CreatedProductRecords,
+  baseline: ProductPreferencesSnapshot,
+  workspaceRoot: string,
+) {
+  await registerProductRecordsForWorkspaceRoot(request, created, workspaceRoot);
+  const cleaned = await removeProductRecords(request, created, baseline);
+  if (!cleaned) {
+    throw new Error(
+      `real API E2E cleanup failed; preserved temporary workspace ${workspaceRoot}`,
+    );
+  }
+  await rm(workspaceRoot, { recursive: true, force: true });
+}
+
+async function finalizeProductTest(
+  page: Page,
+  request: APIRequestContext,
+  created: CreatedProductRecords,
+  baseline: ProductPreferencesSnapshot,
+  workspaceRoot: string,
+  primaryError: unknown | null,
+) {
+  const errors: unknown[] = [];
+  if (primaryError !== null) {
+    errors.push(primaryError);
+  }
+  try {
+    await page.close();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    await cleanupOrThrow(request, created, baseline, workspaceRoot);
+  } catch (error) {
+    errors.push(error);
+  }
+
+  if (errors.length > 1) {
+    throw new AggregateError(
+      errors,
+      "real API E2E assertions, browser close, or cleanup failed",
+    );
+  }
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+}
+
+async function registerProductRecordsForWorkspaceRoot(
+  request: APIRequestContext,
+  created: CreatedProductRecords,
+  workspaceRoot: string,
+): Promise<number> {
+  const workspaceResponse = await request.get("/api/product/workspaces");
+  if (!workspaceResponse.ok()) {
+    throw new Error(
+      `could not discover real API E2E workspaces (${workspaceResponse.status()})`,
+    );
+  }
+  const workspaces = (await workspaceResponse.json()) as ProductWorkspacesResponse;
+  let resolvedWorkspaceRoot = workspaceRoot;
+  try {
+    resolvedWorkspaceRoot = await realpath(workspaceRoot);
+  } catch {
+    // Cleanup still attempts the original path when canonicalization is unavailable.
+  }
+  const expectedRoot = comparableWorkspaceRoot(resolvedWorkspaceRoot);
+  let matchedWorkspaces = 0;
+  for (const workspace of workspaces.workspaces) {
+    if (comparableWorkspaceRoot(workspace.canonical_root) !== expectedRoot) {
+      continue;
+    }
+    matchedWorkspaces += 1;
+    pushUnique(created.workspaceIds, workspace.id);
+    const sessionResponse = await request.get(
+      `/api/product/sessions?workspace_id=${encodeURIComponent(workspace.id)}`,
+    );
+    if (!sessionResponse.ok()) {
+      throw new Error(
+        `could not discover real API E2E sessions (${sessionResponse.status()})`,
+      );
+    }
+    const sessions = (await sessionResponse.json()) as ProductSessionsResponse;
+    for (const session of sessions.sessions) {
+      pushUnique(created.sessionIds, session.id);
+    }
+  }
+  return matchedWorkspaces;
+}
+
+function comparableWorkspaceRoot(value: string): string {
+  const normalized = value
+    .replace(/\\/gu, "/")
+    .replace(/^\/\/\?\//u, "")
+    .replace(/\/+$/u, "");
+  return process.platform === "win32"
+    ? normalized.toLocaleLowerCase("en-US")
+    : normalized;
+}
+
+function pushUnique(values: string[], value: string) {
+  if (!values.includes(value)) {
+    values.push(value);
+  }
+}
+
+async function removeProductRecords(
+  request: APIRequestContext,
+  created: CreatedProductRecords,
+  baseline: ProductPreferencesSnapshot,
+): Promise<boolean> {
+  try {
+    const current = await readPreferences(request);
+    const restored = await request.put("/api/product/preferences", {
+      data: preferenceUpdate(current, baseline),
+    });
+    if (!restored.ok()) {
+      return false;
+    }
+
+    if (!(await cancelCreatedJobs(request, created.jobIds))) {
+      return false;
+    }
+
+    for (const profileId of [...new Set(created.profileIds)].reverse()) {
+      const response = await request.delete(
+        `/api/product/provider-profiles/${encodeURIComponent(profileId)}`,
+      );
+      if (!response.ok()) {
+        return false;
+      }
+    }
+    for (const sessionId of [...new Set(created.sessionIds)].reverse()) {
+      const response = await request.delete(
+        `/api/product/sessions/${encodeURIComponent(sessionId)}`,
+      );
+      if (!response.ok()) {
+        return false;
+      }
+    }
+    for (const workspaceId of [...new Set(created.workspaceIds)].reverse()) {
+      const response = await request.delete(
+        `/api/product/workspaces/${encodeURIComponent(workspaceId)}`,
+      );
+      if (!response.ok()) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function cancelCreatedJobs(
+  request: APIRequestContext,
+  jobIds: string[],
+): Promise<boolean> {
+  for (const jobId of [...new Set(jobIds)].reverse()) {
+    let stateResponse = await request.get(
+      `/api/jobs/${encodeURIComponent(jobId)}/state`,
+    );
+    if (!stateResponse.ok()) {
+      return false;
+    }
+    let state = (await stateResponse.json()) as { status?: unknown };
+    if (state.status !== "running") {
+      continue;
+    }
+
+    const cancelled = await request.post(
+      `/api/jobs/${encodeURIComponent(jobId)}/cancel`,
+    );
+    if (!cancelled.ok()) {
+      return false;
+    }
+
+    let reachedTerminalState = false;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      stateResponse = await request.get(
+        `/api/jobs/${encodeURIComponent(jobId)}/state`,
+      );
+      if (!stateResponse.ok()) {
+        return false;
+      }
+      state = (await stateResponse.json()) as { status?: unknown };
+      if (state.status !== "running") {
+        reachedTerminalState = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!reachedTerminalState) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function productSessionRoute(workspaceId: string, sessionId: string): string {
+  return `/w/${encodeURIComponent(workspaceId)}/s/${encodeURIComponent(sessionId)}`;
+}
+
+async function browserValue(page: Page, key: string): Promise<string | null> {
+  return page.evaluate((storageKey) => window.localStorage.getItem(storageKey), key);
+}

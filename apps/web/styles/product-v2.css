@@ -1,0 +1,5249 @@
+/* rove product web — layer 2 of 3: v2 presentation and the shell layout.
+ *
+ * Loaded after `styles/product.css` and before `styles/v3/index.css` (see
+ * `app/layout.tsx`). Every rule in this file is scoped to
+ * `.product-app-frame[data-ui-version="v2"]`, the only presentation version
+ * shipped.
+ *
+ * The shell's width budget is owned by `shell/ProductApp.tsx` +
+ * `inspector/work-panel-layout.ts` and consumed here as
+ * `panelLayout.panelWidth`; this sheet must not re-derive a budget from other
+ * column widths. Responsive behaviour uses the 960px drawer boundary mirrored
+ * by `DRAWER_MAX_WIDTH` / `DRAWER_MEDIA_QUERY` in `lib/viewport-breakpoints.ts`.
+ */
+
+/* Product UI V2 presentation only. Runtime and product state remain owned by ProductApp. */
+.product-app-frame[data-ui-version="v2"] {
+  color-scheme: light;
+
+  --v2-canvas: #eef2f4;
+  --v2-bg: #f5f8fa;
+  --v2-surface: #f9fafb;
+  --v2-surface-raised: #fcfdfd;
+  --v2-surface-sunken: #e4eaee;
+  --v2-surface-hover: #d9e3e9;
+  --v2-ink: #16232b;
+  --v2-ink-2: #34444e;
+  --v2-ink-3: #5f7280;
+  --v2-border: rgba(22, 35, 43, 0.09);
+  --v2-border-strong: rgba(22, 35, 43, 0.16);
+  --v2-signal: #0c7094;
+  --v2-signal-strong: #0a688a;
+  /* Cool-skin tone block. Same two jobs as the warm skin in
+     `styles/v3/tokens.css`: a fill that carries `-on-signal` text, and small
+     text on its own `-soft` pill. `-soft` is opaque so a pill nested in a
+     tinted ancestor cannot composite past what the tone was measured against
+     (`tests/e2e/accessibility.spec.ts` measures both skins and both themes).
+     Ratios are against `-on-signal`, the `-soft` wash, and the darkest light
+     surface (`--v2-surface-sunken`). */
+  --v2-signal-soft: #e4f0f4;
+  --v2-on-signal: #f9fafb;
+  --v2-success: #2c724f; /* 5.79:1 | 4.84:1 | 4.77:1 */
+  --v2-success-soft: #e3ede8;
+  --v2-warning: #8d5b0e; /* 5.53:1 | 4.83:1 | 4.76:1 */
+  --v2-warning-soft: #f0eae0;
+  --v2-danger: #a7443c; /* 5.94:1 | 4.99:1 | 4.89:1 */
+  --v2-danger-soft: #f3e9e8;
+  --v2-rail: #f4f7f8;
+  --v2-rail-raised: #fcfdfd;
+  --v2-rail-hover: #e4eaee;
+  --v2-rail-ink: #16232b;
+  --v2-rail-muted: #5f7280;
+  --v2-rail-border: rgba(22, 35, 43, 0.1);
+  --v2-rail-signal: #0c7094;
+  --v2-focus: #0c7094;
+  --v2-shadow-sm: 0 1px 3px rgba(24, 44, 56, 0.07);
+  --v2-shadow-md: 0 18px 48px -28px rgba(24, 44, 56, 0.34);
+  --v2-overlay: rgba(8, 16, 21, 0.48);
+  --v2-radius-xs: 3px;
+  --v2-radius-sm: 5px;
+  --v2-radius-md: 8px;
+
+  /* Motion tokens (design §3.3). New components reference these instead of
+     writing literal durations. They are plain length/custom-property values,
+     so the existing global prefers-reduced-motion wildcard below already
+     neutralizes any transition or animation that consumes them. */
+  --motion-duration-fast: 150ms;
+  --motion-duration-normal: 200ms;
+  --motion-duration-slow: 300ms;
+  --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --motion-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  /* Loop periods and the two additional curves, added by the style-token
+     linter (F8): the linter rejects a literal duration or easing wherever one
+     of these tokens could be used instead, so a loop period belongs here too. */
+  --motion-duration-spin: 1s;
+  --motion-duration-pulse: 1.8s;
+  --motion-duration-activity-pulse: 1.6s;
+  --motion-duration-breathe: 900ms;
+  --motion-duration-slide: 240ms;
+  --motion-duration-collapse: 180ms;
+  --motion-ease-in-out: ease-in-out;
+  --motion-ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
+  --sidebar-nav-width: 240px;
+
+  --bg: var(--v2-bg);
+  --bg-elevated: var(--v2-surface);
+  --surface: var(--v2-surface);
+  --surface-strong: var(--v2-surface-raised);
+  --surface-soft: var(--v2-surface-sunken);
+  --surface-muted: var(--v2-surface-hover);
+  --text: var(--v2-ink);
+  --text-secondary: var(--v2-ink-2);
+  --muted: var(--v2-ink-3);
+  --border: var(--v2-border);
+  --border-strong: var(--v2-border-strong);
+  --accent: var(--v2-signal);
+  --accent-hover: var(--v2-signal-strong);
+  --accent-soft: var(--v2-signal-soft);
+  --accent-contrast: var(--v2-on-signal);
+  --accent-strong: var(--v2-signal-strong);
+  --success: var(--v2-success);
+  --success-soft: var(--v2-success-soft);
+  --warning: var(--v2-warning);
+  --warning-soft: var(--v2-warning-soft);
+  --error: var(--v2-danger);
+  --error-soft: var(--v2-danger-soft);
+  --focus-ring: var(--v2-focus);
+  --selection: var(--v2-signal-soft);
+  --overlay: var(--v2-overlay);
+  --scrollbar: var(--v2-border-strong);
+  --scrollbar-hover: color-mix(in srgb, var(--v2-ink-3) 44%, transparent);
+  --shadow-sm: var(--v2-shadow-sm);
+  --shadow-md: var(--v2-shadow-md);
+  --radius-sm: var(--v2-radius-sm);
+  --radius-md: var(--v2-radius-md);
+  --radius-lg: var(--v2-radius-md);
+  --sidebar-width: 248px;
+  --inspector-width: 304px;
+  --topbar-height: 52px;
+  /* Design §3.3: the conversation's reading measure. */
+  --reading-column-max: 840px;
+
+  width: 100%;
+  min-width: 0;
+  height: 100dvh;
+  min-height: 100vh;
+  overflow: hidden;
+  background: var(--v2-canvas);
+  color: var(--v2-ink);
+  font-size: calc(14px * var(--font-scale, 1));
+  letter-spacing: 0;
+}
+
+html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
+  color-scheme: dark;
+  --v2-canvas: #080d10;
+  --v2-bg: #0f1519;
+  --v2-surface: #151d22;
+  --v2-surface-raised: #1d272d;
+  --v2-surface-sunken: #0c1216;
+  --v2-surface-hover: #263139;
+  --v2-ink: #edf3f5;
+  --v2-ink-2: #bdc9ce;
+  --v2-ink-3: #8f9ea6;
+  --v2-border: rgba(237, 243, 245, 0.1);
+  --v2-border-strong: rgba(237, 243, 245, 0.18);
+  --v2-signal: #3fc5e8;
+  --v2-signal-strong: #69d8f2;
+  /* Cool-skin dark tones: light tone on an opaque dark wash of itself. */
+  --v2-signal-soft: #223d47;
+  --v2-on-signal: #071216;
+  --v2-success: #63c795; /* 5.66:1 on its wash */
+  --v2-success-soft: #263c3b;
+  --v2-warning: #e0a34a; /* 5.35:1 on its wash */
+  --v2-warning-soft: #383831;
+  --v2-danger: #ed8179; /* 4.72:1 on its wash */
+  --v2-danger-soft: #383337;
+  --v2-rail: #090e11;
+  --v2-rail-raised: #12191e;
+  --v2-rail-hover: #1d282e;
+  --v2-rail-ink: #e8eef1;
+  --v2-rail-muted: #8f9da5;
+  --v2-rail-border: rgba(232, 238, 241, 0.09);
+  --v2-rail-signal: #3fc5e8;
+  --v2-focus: #69d8f2;
+  --v2-shadow-sm: 0 1px 3px rgba(2, 7, 10, 0.34);
+  --v2-shadow-md: 0 18px 48px -28px rgba(2, 7, 10, 0.78);
+  --v2-overlay: rgba(3, 8, 11, 0.7);
+}
+
+.product-app-frame[data-ui-version="v2"] *,
+.product-app-frame[data-ui-version="v2"] *::before,
+.product-app-frame[data-ui-version="v2"] *::after {
+  letter-spacing: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] button {
+  min-height: 32px;
+  border-radius: var(--v2-radius-sm);
+  padding-inline: 11px;
+  box-shadow: none;
+  transition:
+    background-color var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+.product-app-frame[data-ui-version="v2"] button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.product-app-frame[data-ui-version="v2"] button:hover:not(:disabled) {
+  transform: none;
+}
+
+.product-app-frame[data-ui-version="v2"] button:focus-visible,
+.product-app-frame[data-ui-version="v2"] input:focus-visible,
+.product-app-frame[data-ui-version="v2"] select:focus-visible,
+.product-app-frame[data-ui-version="v2"] textarea:focus-visible,
+.product-app-frame[data-ui-version="v2"] a:focus-visible,
+.product-app-frame[data-ui-version="v2"] [tabindex]:focus-visible {
+  outline: 2px solid var(--v2-focus);
+  outline-offset: 2px;
+}
+
+.product-app-frame[data-ui-version="v2"] button.secondary,
+.product-app-frame[data-ui-version="v2"] button.ghost {
+  border-color: var(--v2-border);
+  background: var(--v2-surface-raised);
+  color: var(--v2-ink-2);
+}
+
+.product-app-frame[data-ui-version="v2"] button.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+.product-app-frame[data-ui-version="v2"] button.secondary:hover:not(:disabled),
+.product-app-frame[data-ui-version="v2"] button.ghost:hover:not(:disabled) {
+  background: var(--v2-surface-hover);
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] button.danger {
+  border-color: color-mix(in srgb, var(--v2-danger) 30%, var(--v2-border));
+  background: var(--v2-danger-soft);
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] button.icon-button {
+  width: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: var(--v2-radius-sm);
+}
+
+.product-app-frame[data-ui-version="v2"] button svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+.product-app-frame[data-ui-version="v2"] input,
+.product-app-frame[data-ui-version="v2"] select,
+.product-app-frame[data-ui-version="v2"] textarea {
+  border-color: var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-raised);
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] input::placeholder,
+.product-app-frame[data-ui-version="v2"] textarea::placeholder {
+  color: var(--v2-ink-3);
+  opacity: 1;
+}
+
+.product-app-frame[data-ui-version="v2"] code,
+.product-app-frame[data-ui-version="v2"] pre,
+.product-app-frame[data-ui-version="v2"] kbd {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.product-app-frame[data-ui-version="v2"] .mobile-only {
+  display: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-root {
+  height: 100dvh;
+  min-height: 0;
+  background: var(--v2-bg);
+}
+
+.product-app-frame[data-ui-version="v2"] .product-topbar {
+  position: relative;
+  z-index: 60;
+  flex: 0 0 52px;
+  height: 52px;
+  min-width: 0;
+  gap: 16px;
+  padding: 0 12px;
+  border-color: var(--v2-border);
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-sm);
+}
+
+.product-app-frame[data-ui-version="v2"] .product-topbar__brand {
+  min-width: 0;
+  gap: 9px;
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .product-topbar__brand strong {
+  font-size: 15px;
+  font-weight: 750;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-topbar__brand > span:not(.product-topbar__mark) {
+  color: var(--v2-ink-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-topbar__mark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border: 1px solid var(--v2-border-strong);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-ink);
+  color: var(--v2-surface-raised);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-topbar__meta {
+  min-width: 0;
+  gap: 8px;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-topbar__connection {
+  overflow: hidden;
+  max-width: 160px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .status-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .status-dot[data-tone="working"] {
+  background: var(--v2-signal);
+  box-shadow: 0 0 0 3px var(--v2-signal-soft);
+  animation: product-v2-pulse var(--motion-duration-pulse) var(--motion-ease-in-out) infinite;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-body {
+  min-width: 0;
+  grid-template-columns: 248px minmax(0, 1fr) auto;
+  overflow: hidden;
+  background: var(--v2-bg);
+}
+
+.product-app-frame[data-ui-version="v2"] .product-body[data-settings="true"] {
+  grid-template-columns: 256px minmax(0, 1fr);
+}
+
+.product-app-frame[data-ui-version="v2"] .product-sidebar {
+  min-width: 0;
+  /* F9: the rail keeps a stable width and its own stacking order so it can slide
+     out over the conversation after the grid track snaps instead of animating.
+     The `max-width: 960px` drawer block is the same specificity and later, so it
+     still turns this rail into a fixed overlay there. */
+  position: relative;
+  z-index: 2;
+  width: var(--sidebar-nav-width);
+  color: var(--v2-rail-ink);
+  border-color: var(--v2-rail-border);
+  background: var(--v2-rail);
+}
+
+.product-app-frame[data-ui-version="v2"] .product-sidebar__header {
+  min-height: 56px;
+  padding: 12px 12px 10px 14px;
+  border-color: var(--v2-rail-border);
+}
+
+.product-app-frame[data-ui-version="v2"] .product-sidebar__header h2 {
+  color: var(--v2-rail-muted);
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-new-session {
+  flex: 1;
+  min-width: 0;
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: 34px;
+  border-color: var(--v2-rail-border);
+  background: var(--v2-rail-raised);
+  color: var(--v2-rail-ink);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-search-scope {
+  margin: -4px 14px 12px;
+  color: var(--v2-rail-muted);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-search:focus-within {
+  outline: 2px solid var(--v2-rail-signal);
+  outline-offset: 2px;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-group__row > .icon-button,
+.product-app-frame[data-ui-version="v2"] .workspace-actions > .icon-button {
+  width: 28px;
+  min-width: 28px;
+  min-height: 32px;
+  padding: 4px;
+  border-color: transparent;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-actions {
+  position: relative;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-actions__menu {
+  position: absolute;
+  z-index: 5;
+  top: 100%;
+  right: 0;
+  display: grid;
+  width: max-content;
+  max-width: 230px;
+  padding: 4px;
+  border: 1px solid var(--v2-rail-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-rail);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 18%);
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-actions__menu button {
+  justify-content: flex-start;
+  min-height: 34px;
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-sidebar__footer {
+  flex-shrink: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-sidebar button.secondary,
+.product-app-frame[data-ui-version="v2"] .product-sidebar button.ghost {
+  border-color: var(--v2-rail-border);
+  background: var(--v2-rail-raised);
+  color: var(--v2-rail-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .product-sidebar button.ghost {
+  background: transparent;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-sidebar button:hover:not(:disabled) {
+  background: var(--v2-rail-hover);
+  color: var(--v2-rail-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-search {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin: 0 12px 10px;
+  border: 1px solid var(--v2-rail-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-rail-raised);
+  color: var(--v2-rail-muted);
+  padding: 0 9px;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-search input {
+  min-width: 0;
+  height: 32px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--v2-rail-ink);
+  padding: 0;
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-search input:focus-visible {
+  outline: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-search input::placeholder {
+  color: var(--v2-rail-muted);
+}
+
+.product-app-frame[data-ui-version="v2"] .product-sidebar__scroll {
+  padding: 0 8px 12px;
+  overscroll-behavior: contain;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-group {
+  margin-bottom: 6px;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-group__row {
+  gap: 3px;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-group__button {
+  min-width: 0;
+  min-height: 44px;
+  display: grid;
+  justify-items: stretch;
+  gap: 2px;
+  border-radius: var(--v2-radius-sm);
+  color: var(--v2-rail-ink);
+  padding: 5px 7px;
+  text-align: left;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-group__button:hover:not(:disabled),
+.product-app-frame[data-ui-version="v2"] .workspace-group__button[data-active="true"] {
+  background: var(--v2-rail-hover);
+  color: var(--v2-rail-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-group__button[data-active="true"] {
+  box-shadow: inset 2px 0 0 var(--v2-rail-signal);
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-group__title {
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-group__title > span:first-child {
+  overflow: hidden;
+  min-width: 0;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-group__path {
+  /* The group heading carries the group's status tint, which `--v2-rail-muted`
+     only reached 4.11:1 against in the cool light skin. Secondary ink holds on
+     both the plain and the tinted heading. */
+  color: var(--v2-ink-2);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-list {
+  position: relative;
+  gap: 2px;
+  margin: 3px 0 0 14px;
+  padding: 0 0 0 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-list::before {
+  position: absolute;
+  inset: 4px auto 4px 0;
+  width: 1px;
+  background: var(--v2-rail-border);
+  content: "";
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  min-height: 34px;
+  gap: 7px;
+  border-radius: var(--v2-radius-sm);
+  color: var(--v2-rail-muted);
+  padding: 5px 7px;
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__title {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+  text-align: left;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__title > span,
+.product-app-frame[data-ui-version="v2"] .session-item__lineage {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__lineage {
+  color: var(--v2-rail-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.25;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-branch[data-orphaned="true"] .session-item__lineage {
+  color: var(--v2-warning);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item:hover:not(:disabled),
+.product-app-frame[data-ui-version="v2"] .session-item[data-active="true"] {
+  border-color: transparent;
+  background: var(--v2-rail-raised);
+  color: var(--v2-rail-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item[data-active="true"] {
+  box-shadow: inset 2px 0 0 var(--v2-rail-signal);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__status {
+  width: 7px;
+  height: 7px;
+  margin-left: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__status[data-status="running"] {
+  background: var(--v2-rail-signal);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--v2-rail-signal) 18%, transparent);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__status[data-status="needs_attention"] {
+  background: var(--v2-warning);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-badge {
+  min-height: 18px;
+  border-radius: var(--v2-radius-xs);
+  padding-inline: 5px;
+  font-size: 10px;
+  text-transform: none;
+}
+
+/* Session hover card (design F4). Portaled inside the frame, so it keeps the
+   v2 tokens while escaping the sidebar's scroll clipping. Read-only surface:
+   the row itself owns every action. */
+.product-app-frame[data-ui-version="v2"] .session-hover-card {
+  position: fixed;
+  z-index: 40;
+  display: grid;
+  width: 320px;
+  max-height: min(70vh, 420px);
+  gap: 8px;
+  border: 1px solid var(--v2-border-strong);
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-md);
+  color: var(--v2-ink-2);
+  padding: 10px 12px;
+  font-size: 11px;
+  overflow: auto;
+  pointer-events: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-hover-card__title {
+  margin: 0;
+  color: var(--v2-ink);
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-hover-card__facts {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-hover-card__fact {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-hover-card__fact dt {
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-hover-card__fact dd {
+  margin: 0;
+  color: var(--v2-ink);
+  overflow-wrap: anywhere;
+}
+
+/* Toast stack (design F5). Top-centred and narrow enough to leave the composer
+   alone; the viewport ignores pointer events so it can never block a click,
+   while each toast takes them back so it can be hovered and dismissed. */
+.product-app-frame[data-ui-version="v2"] .toast-viewport {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: grid;
+  gap: 8px;
+  width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .toast {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  border: 1px solid var(--v2-border-strong);
+  border-left-width: 3px;
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-md);
+  color: var(--v2-ink);
+  padding: 10px 8px 10px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  pointer-events: auto;
+  animation: v2-toast-in var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.product-app-frame[data-ui-version="v2"] .toast--success {
+  border-left-color: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .toast--info {
+  border-left-color: var(--v2-rail-signal);
+}
+
+.product-app-frame[data-ui-version="v2"] .toast--error {
+  border-left-color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .toast__message {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.product-app-frame[data-ui-version="v2"] .toast__dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--v2-radius-xs);
+  background: transparent;
+  color: var(--v2-ink-3);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .toast__dismiss:hover {
+  background: var(--v2-surface);
+  color: var(--v2-ink);
+}
+
+/* Reduced motion shows and hides the toast without the slide. */
+.product-app-frame[data-ui-version="v2"] .toast-viewport[data-motion="reduced"] .toast {
+  animation: none;
+}
+
+@keyframes v2-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Notification inbox (design F5 §6.2). A non-modal popover anchored under the
+   bell in the top bar: the reader keeps the conversation behind it, which is
+   also why it dismisses on Escape and on a click outside. The panel is a plain
+   show/hide — no transition — so reduced motion needs nothing special. */
+.product-app-frame[data-ui-version="v2"] .notification-inbox {
+  position: relative;
+  display: inline-flex;
+}
+
+.product-app-frame[data-ui-version="v2"] .notification-inbox__bell {
+  position: relative;
+}
+
+.product-app-frame[data-ui-version="v2"] .notification-inbox__badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: var(--v2-radius-pill, 999px);
+  background: var(--v2-danger);
+  color: var(--v2-surface-raised);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 15px;
+  text-align: center;
+}
+
+.product-app-frame[data-ui-version="v2"] .notification-inbox__panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 1;
+  display: flex;
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(60vh, 420px);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--v2-border-strong);
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-md);
+}
+
+.product-app-frame[data-ui-version="v2"] .notification-inbox__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--v2-border);
+}
+
+.product-app-frame[data-ui-version="v2"] .notification-inbox__head h2 {
+  margin: 0;
+  color: var(--v2-ink);
+  font-size: 13px;
+}
+
+.product-app-frame[data-ui-version="v2"] .notification-inbox__lede {
+  margin: 2px 0 0;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .notification-inbox__empty {
+  margin: 0;
+  padding: 14px 12px;
+  color: var(--v2-ink-3);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .notification-inbox__list {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .notification-inbox__item + .notification-inbox__item {
+  margin-top: 2px;
+}
+
+.product-app-frame[data-ui-version="v2"] .notification-inbox__row {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  /* The global button rule centers its content; a row is a block of text, and a
+     row that can be clicked must not look different from one that cannot. */
+  align-items: stretch;
+  gap: 4px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--v2-radius-sm);
+  background: transparent;
+  color: var(--v2-ink);
+  font-size: 12px;
+  text-align: left;
+}
+
+.product-app-frame[data-ui-version="v2"] button.notification-inbox__row {
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] button.notification-inbox__row:hover {
+  border-color: var(--v2-border);
+  background: var(--v2-surface);
+}
+
+/* Unread means "arrived after the list was last opened"; nothing else marks it,
+   so the badge and these rows can never disagree. */
+.product-app-frame[data-ui-version="v2"] .notification-inbox__item[data-unread="true"] .notification-inbox__message {
+  font-weight: 650;
+}
+
+.product-app-frame[data-ui-version="v2"] .notification-inbox__message {
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.product-app-frame[data-ui-version="v2"] .notification-inbox__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .notification-inbox__meta time {
+  font-variant-numeric: tabular-nums;
+}
+
+.product-app-frame[data-ui-version="v2"] .notification-inbox__action {
+  color: var(--v2-rail-signal, var(--v2-signal));
+  font-weight: 600;
+}
+
+.product-app-frame[data-ui-version="v2"] .notification-inbox__bound {
+  margin: 0;
+  padding: 8px 12px;
+  border-top: 1px solid var(--v2-border);
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .notification-inbox__unresolved {
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--v2-border);
+  background: var(--v2-danger-soft);
+  color: var(--v2-danger);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-list__actions {
+  padding: 4px 0 8px 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-list__actions button {
+  min-height: 30px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--v2-rail-muted);
+  padding-inline: 8px;
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-group__parallel {
+  margin-left: 14px;
+  color: var(--v2-warning);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-sidebar__footer {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--v2-rail-border);
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-boundary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--v2-rail-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-rail-raised);
+  color: var(--v2-rail-signal);
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-boundary > span {
+  display: grid;
+  min-width: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-boundary strong,
+.product-app-frame[data-ui-version="v2"] .workspace-boundary small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-boundary strong {
+  color: var(--v2-rail-ink);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-boundary small {
+  color: var(--v2-rail-muted);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-sidebar__footer > button {
+  justify-content: flex-start;
+  min-height: 36px;
+  color: var(--v2-rail-muted);
+  padding-inline: 8px;
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-main {
+  min-width: 0;
+  background: var(--v2-surface);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-pane__header {
+  min-height: 60px;
+  padding: 0 16px 0 20px;
+  border-color: var(--v2-border);
+  background: var(--v2-surface-raised);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-pane__header h1 {
+  overflow: hidden;
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  text-wrap: balance;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-pane__header p {
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-pane__header > button {
+  flex: none;
+  min-height: 30px;
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-transcript-frame {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-transcript {
+  height: 100%;
+  min-height: 0;
+  gap: 0;
+  overscroll-behavior: contain;
+  padding: 22px 16px 38px;
+  scroll-padding-bottom: 38px;
+  scroll-behavior: smooth;
+}
+
+/* Design §3.3: one reading measure for the conversation. The transcript column
+   and the composer resolve the same box (column − 32px, capped at
+   `--reading-column-max`), so prose and composer share both edges. */
+.product-app-frame[data-ui-version="v2"] .chat-transcript__content {
+  width: 100%;
+  max-width: var(--reading-column-max);
+  margin-inline: auto;
+}
+
+/* Conversation minimap:
+   one marker per turn, in the gutter the reading column leaves beside itself.
+   The lane is measured against the *transcript frame*, not the viewport, because
+   the frame's width also depends on the rail and the work panel: a viewport query
+   would let the rail overlap prose whenever the panel is open. Below the reading
+   cap there is no dedicated gutter, so the rail stands down. */
+.product-app-frame[data-ui-version="v2"] .chat-transcript-frame {
+  container-type: inline-size;
+  container-name: transcript-frame;
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-minimap {
+  display: none;
+  position: absolute;
+  top: 50%;
+  /* Hug the reading column's right edge from outside it, and never leave the
+     frame: the container query below guarantees a lane wide enough for this. */
+  right: max(2px, calc((100% - min(100%, var(--reading-column-max))) / 2 - 26px));
+  z-index: 4;
+  max-height: 60%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  transform: translateY(-50%);
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-minimap::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* The rail needs a lane: at least 26px of offset plus its own 20px, on both sides
+   of the 840px reading cap — and no less. Measured evidence for the boundary: with
+   the work panel open the reading column is exactly the cap at a 1440 viewport
+   (frame 840, gutter 0), so the rail stays out of the way there and appears once
+   the pane is genuinely wider than the cap (frame >= 940 at a 1600 viewport). */
+@container transcript-frame (min-width: 940px) {
+  .product-app-frame[data-ui-version="v2"] .conversation-minimap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+  }
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-minimap__marker {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 14px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-minimap__marker > span {
+  display: block;
+  width: 11px;
+  height: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--v2-ink-3) 40%, transparent);
+  transition:
+    width var(--motion-duration-fast) var(--motion-ease-out),
+    background-color var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-minimap__marker[data-role="user"] > span {
+  background: color-mix(in srgb, var(--v2-ink) 52%, transparent);
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-minimap__marker:hover > span,
+.product-app-frame[data-ui-version="v2"] .conversation-minimap__marker:focus-visible > span {
+  width: 16px;
+  background: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-minimap__marker:focus-visible {
+  outline: 2px solid var(--v2-signal);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+/* Conversation reading band handles. Each handle straddles its band edge, so the
+   offset is half of the 12px hit area. At rest they are invisible: a short
+   capsule appears on hover, on keyboard focus, or while dragging, because a
+   transcript edge is not a place to keep permanent chrome. */
+.product-app-frame[data-ui-version="v2"] .chat-reading-handles {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  pointer-events: auto;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  background: transparent;
+  border: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle[data-side="left"] {
+  left: max(0px, calc((100% - min(100%, var(--reading-column-max))) / 2 - 6px));
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle[data-side="right"] {
+  right: max(0px, calc((100% - min(100%, var(--reading-column-max))) / 2 - 6px));
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 40px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--v2-ink-3) 34%, transparent);
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  transition:
+    opacity var(--motion-duration-fast) var(--motion-ease-out),
+    height var(--motion-duration-fast) var(--motion-ease-out),
+    background-color var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle:hover::before,
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle:focus-visible::before {
+  opacity: 1;
+  background: color-mix(in srgb, var(--v2-rail-signal) 72%, transparent);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle:focus-visible {
+  outline: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle:focus-visible::before {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--v2-rail-signal) 26%, transparent);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-reading-handle:active::before,
+html[data-reading-resizing="true"] .product-app-frame[data-ui-version="v2"] .chat-reading-handle::before {
+  opacity: 1;
+  height: 56px;
+  background: color-mix(in srgb, var(--v2-ink-3) 58%, transparent);
+}
+
+/* The band must track the pointer, not animate behind it. */
+html[data-reading-resizing="true"] .product-app-frame[data-ui-version="v2"] .chat-transcript__content,
+html[data-reading-resizing="true"] .product-app-frame[data-ui-version="v2"] .chat-composer {
+  transition: none;
+}
+
+html[data-reading-resizing="true"],
+html[data-reading-resizing="true"] * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+/* The rail is a drawer at this width, so the band is already the whole column. */
+@media (max-width: 960px) {
+  .product-app-frame[data-ui-version="v2"] .chat-reading-handles {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .product-app-frame[data-ui-version="v2"] .chat-reading-handle::before {
+    transition: none;
+  }
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-run {
+  display: block;
+  min-width: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-run__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: min(100%, 854px);
+  margin: 0 auto 12px;
+  border-bottom: 1px solid var(--v2-border);
+  color: var(--v2-ink-3);
+  padding: 0 0 7px 104px;
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-run__header code {
+  overflow: hidden;
+  max-width: 180px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-run__label {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-run[data-inherited="true"] .transcript-run__header {
+  border-bottom-style: dashed;
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-run[data-inherited="true"] .transcript-run__label small {
+  overflow: hidden;
+  color: var(--v2-ink-3);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-item {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 760px);
+  justify-content: center;
+  gap: 18px;
+  min-width: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-item__meta {
+  position: relative;
+  display: grid;
+  align-content: start;
+  justify-items: end;
+  min-width: 0;
+  padding: 3px 8px 24px 0;
+  color: var(--v2-ink-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: right;
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-item__meta::after {
+  position: absolute;
+  top: 11px;
+  right: -10px;
+  bottom: -1px;
+  width: 1px;
+  background: var(--v2-border-strong);
+  content: "";
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-run:last-child .transcript-item:last-child .transcript-item__meta::after {
+  bottom: calc(100% - 11px);
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-item__meta > span {
+  position: absolute;
+  z-index: 1;
+  top: 6px;
+  right: -14px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--v2-surface);
+  border-radius: 50%;
+  background: var(--v2-ink-3);
+  box-shadow: 0 0 0 1px var(--v2-border-strong);
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-item__meta > span[data-state="complete"],
+.product-app-frame[data-ui-version="v2"] .transcript-item__meta > span[data-state="submitted"] {
+  background: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-item__meta > span[data-state="waiting"] {
+  background: var(--v2-warning);
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-item__meta > span[data-state="running"],
+.product-app-frame[data-ui-version="v2"] .transcript-item__meta > span[data-state="streaming"] {
+  background: var(--v2-signal);
+  box-shadow: 0 0 0 3px var(--v2-signal-soft);
+  animation: product-v2-pulse var(--motion-duration-pulse) var(--motion-ease-in-out) infinite;
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-item__meta > span[data-state="error"],
+.product-app-frame[data-ui-version="v2"] .transcript-item__meta > span[data-state="rejected"] {
+  background: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-item__meta code {
+  overflow: hidden;
+  width: 100%;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-item__content {
+  min-width: 0;
+  padding-bottom: 24px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-bubble {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 2px 2px 0;
+  box-shadow: none;
+  white-space: normal;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-bubble[data-role="user"] {
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-sunken);
+  padding: 13px 15px;
+  box-shadow: var(--v2-shadow-sm);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-bubble[data-status="streaming"] {
+  border-style: solid;
+}
+
+.product-app-frame[data-ui-version="v2"] .message-byline {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 7px;
+}
+
+.product-app-frame[data-ui-version="v2"] .message-byline strong {
+  font-size: 13px;
+}
+
+.product-app-frame[data-ui-version="v2"] .message-byline span {
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .message-abort-note {
+  margin: 8px 0 0;
+  color: var(--v2-ink-3);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-empty,
+.product-app-frame[data-ui-version="v2"] .restore-notice {
+  width: min(100%, 760px);
+  margin: 0 auto 18px;
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-empty {
+  border: 1px dashed var(--v2-border-strong);
+  border-radius: var(--v2-radius-md);
+  color: var(--v2-ink-3);
+  padding: 20px;
+  text-align: center;
+}
+
+.product-app-frame[data-ui-version="v2"] .restore-notice {
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-signal-soft);
+  color: var(--v2-ink-2);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .return-to-latest {
+  position: absolute;
+  right: 18px;
+  bottom: 12px;
+  z-index: 5;
+  min-height: 34px;
+  border-color: var(--v2-border-strong);
+  background: var(--v2-surface-raised);
+  color: var(--v2-ink-2);
+  box-shadow: var(--v2-shadow-md);
+  font-size: 11px;
+}
+
+@keyframes product-v2-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.68;
+    transform: scale(0.86);
+  }
+}
+
+/* Transcript evidence and rich content */
+.product-app-frame[data-ui-version="v2"] .tool-card,
+.product-app-frame[data-ui-version="v2"] .approval-card,
+.product-app-frame[data-ui-version="v2"] .input-card {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-raised);
+  padding: 0;
+  box-shadow: var(--v2-shadow-sm);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card[data-status="waiting"],
+.product-app-frame[data-ui-version="v2"] .approval-card {
+  border-color: color-mix(in srgb, var(--v2-warning) 42%, var(--v2-border));
+  background: color-mix(in srgb, var(--v2-warning-soft) 58%, var(--v2-surface-raised));
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card[data-status="error"] {
+  border-color: color-mix(in srgb, var(--v2-danger) 38%, var(--v2-border));
+  background: color-mix(in srgb, var(--v2-danger-soft) 52%, var(--v2-surface-raised));
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 50px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--v2-ink-2);
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__head:hover:not(:disabled) {
+  background: var(--v2-surface-hover);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__head > svg:first-child,
+.product-app-frame[data-ui-version="v2"] .approval-card__head > svg {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-signal-soft);
+  color: var(--v2-signal-strong);
+  padding: 6px;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__head > span:nth-child(2),
+.product-app-frame[data-ui-version="v2"] .approval-card__head > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__head strong,
+.product-app-frame[data-ui-version="v2"] .approval-card__head strong {
+  overflow: hidden;
+  color: var(--v2-ink);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__head small,
+.product-app-frame[data-ui-version="v2"] .approval-card__head small {
+  overflow: hidden;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__outcome {
+  min-height: 22px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-xs);
+  color: var(--v2-ink-3);
+  padding: 4px 7px;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__outcome[data-status="complete"] {
+  border-color: color-mix(in srgb, var(--v2-success) 28%, var(--v2-border));
+  background: var(--v2-success-soft);
+  color: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__outcome[data-status="running"] {
+  border-color: color-mix(in srgb, var(--v2-signal) 28%, var(--v2-border));
+  background: var(--v2-signal-soft);
+  color: var(--v2-signal-strong);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__outcome[data-status="error"] {
+  border-color: color-mix(in srgb, var(--v2-danger) 28%, var(--v2-border));
+  background: var(--v2-danger-soft);
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__head svg[data-open="true"] {
+  transform: rotate(180deg);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__details {
+  display: grid;
+  gap: 14px;
+  border-top: 1px solid var(--v2-border);
+  padding: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__details section {
+  min-width: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__details h4 {
+  margin: 0 0 7px;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__details pre,
+.product-app-frame[data-ui-version="v2"] .approval-card pre {
+  max-height: 240px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink-2);
+  padding: 9px 10px;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-facts,
+.product-app-frame[data-ui-version="v2"] .message-evidence,
+.product-app-frame[data-ui-version="v2"] .inspector-facts {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-facts > div {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 10px;
+  border-bottom: 1px solid var(--v2-border);
+  padding: 7px 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-facts dt,
+.product-app-frame[data-ui-version="v2"] .tool-facts dd,
+.product-app-frame[data-ui-version="v2"] .message-evidence dt,
+.product-app-frame[data-ui-version="v2"] .message-evidence dd {
+  margin: 0;
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-facts dt,
+.product-app-frame[data-ui-version="v2"] .message-evidence dt {
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-facts dd,
+.product-app-frame[data-ui-version="v2"] .message-evidence dd {
+  min-width: 0;
+  color: var(--v2-ink-2);
+  overflow-wrap: anywhere;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-diff-summary {
+  margin: 8px 0 0;
+  color: var(--v2-ink-3);
+  padding-left: 18px;
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-mutations {
+  display: grid;
+  gap: 8px;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-mutation {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-mutation > header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  border-bottom: 1px solid var(--v2-border);
+  padding: 6px 8px;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-mutation > header strong {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-mutation > header span,
+.product-app-frame[data-ui-version="v2"] .tool-detail-note {
+  color: var(--v2-ink-3);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-detail-note {
+  margin: 0;
+  padding: 9px;
+}
+
+.product-app-frame[data-ui-version="v2"] .approval-card {
+  gap: 12px;
+  padding: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .approval-card__head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .approval-card__head > svg {
+  background: var(--v2-warning-soft);
+  color: var(--v2-warning);
+}
+
+.product-app-frame[data-ui-version="v2"] .approval-card > p,
+.product-app-frame[data-ui-version="v2"] .input-card p {
+  margin: 0;
+  color: var(--v2-ink-2);
+  font-size: 12px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.product-app-frame[data-ui-version="v2"] .field-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .input-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .input-card > div {
+  display: grid;
+  gap: 4px;
+}
+
+.product-app-frame[data-ui-version="v2"] .input-card > div strong {
+  color: var(--v2-ink);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .message-evidence {
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 1px;
+  margin-top: 12px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  overflow: hidden;
+  background: var(--v2-border);
+}
+
+.product-app-frame[data-ui-version="v2"] .message-evidence > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  background: var(--v2-surface-sunken);
+  padding: 7px 8px;
+}
+
+/* ─── Pruning facts in the message evidence (R9) ─── */
+
+.product-app-frame[data-ui-version="v2"] .message-evidence__digests summary {
+  cursor: pointer;
+  color: var(--v2-ink-2);
+  font-size: 11px;
+  list-style-position: inside;
+}
+
+.product-app-frame[data-ui-version="v2"] .message-evidence__digests summary:focus-visible {
+  outline: 2px solid var(--v2-focus);
+  outline-offset: 2px;
+  border-radius: var(--v2-radius-sm);
+}
+
+.product-app-frame[data-ui-version="v2"] .message-evidence__digests ul {
+  display: grid;
+  gap: 2px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .message-evidence__digests code {
+  color: var(--v2-ink-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text {
+  min-width: 0;
+  color: var(--v2-ink-2);
+  line-height: 1.62;
+  overflow-wrap: anywhere;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text > :first-child {
+  margin-top: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text > :last-child {
+  margin-bottom: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text h1,
+.product-app-frame[data-ui-version="v2"] .rich-text h2,
+.product-app-frame[data-ui-version="v2"] .rich-text h3,
+.product-app-frame[data-ui-version="v2"] .rich-text h4 {
+  margin: 1.35em 0 0.55em;
+  color: var(--v2-ink);
+  line-height: 1.3;
+  text-wrap: balance;
+}
+
+
+.product-app-frame[data-ui-version="v2"] .rich-text p,
+.product-app-frame[data-ui-version="v2"] .rich-text ul,
+.product-app-frame[data-ui-version="v2"] .rich-text ol,
+.product-app-frame[data-ui-version="v2"] .rich-text blockquote,
+.product-app-frame[data-ui-version="v2"] .rich-text table,
+.product-app-frame[data-ui-version="v2"] .rich-text figure {
+  margin: 0.8em 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text ul,
+.product-app-frame[data-ui-version="v2"] .rich-text ol {
+  padding-left: 22px;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text li + li {
+  margin-top: 0.28em;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text blockquote {
+  border-left: 2px solid var(--v2-signal);
+  background: var(--v2-signal-soft);
+  color: var(--v2-ink-2);
+  padding: 8px 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text a {
+  color: var(--v2-signal-strong);
+  text-underline-offset: 3px;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text :not(pre) > code {
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-xs);
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink);
+  padding: 1px 4px;
+  font-size: 0.9em;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text th,
+.product-app-frame[data-ui-version="v2"] .rich-text td {
+  min-width: 90px;
+  border: 1px solid var(--v2-border);
+  padding: 7px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text th {
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink);
+  font-weight: 650;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text__blocked-link,
+.product-app-frame[data-ui-version="v2"] .rich-text__limit {
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .blocked-image,
+.product-app-frame[data-ui-version="v2"] .mermaid-state,
+.product-app-frame[data-ui-version="v2"] .rich-render-loading {
+  display: grid;
+  gap: 3px;
+  min-height: 48px;
+  border: 1px dashed var(--v2-border-strong);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink-3);
+  padding: 10px 12px;
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .blocked-image strong,
+.product-app-frame[data-ui-version="v2"] .mermaid-state strong {
+  color: var(--v2-ink-2);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .mermaid-state[data-tone="error"] {
+  border-color: color-mix(in srgb, var(--v2-danger) 36%, var(--v2-border));
+  background: var(--v2-danger-soft);
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .mermaid-state pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .mermaid-diagram {
+  min-width: 0;
+  overflow: auto;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-raised);
+  padding: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .mermaid-diagram svg {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-code {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-code figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  border-bottom: 1px solid var(--v2-border);
+  color: var(--v2-ink-3);
+  padding: 0 7px 0 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-code figcaption > span:first-child {
+  margin-right: auto;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-code__copy-state {
+  min-width: 62px;
+  color: var(--v2-ink-3);
+  text-align: right;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-code__copy-state:not(:empty) {
+  color: var(--v2-signal-strong);
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-code pre {
+  max-height: 420px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px 0;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-code pre > div {
+  display: grid;
+  grid-template-columns: 42px minmax(max-content, 1fr);
+  min-height: 18px;
+  padding-right: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-code__line-number {
+  color: var(--v2-ink-3);
+  padding-right: 11px;
+  text-align: right;
+  user-select: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .diff-view {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+}
+
+.product-app-frame[data-ui-version="v2"] .diff-file + .diff-file {
+  border-top: 1px solid var(--v2-border-strong);
+}
+
+.product-app-frame[data-ui-version="v2"] .diff-file > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 34px;
+  background: var(--v2-surface-raised);
+  padding: 6px 9px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .diff-file > header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .diff-file > header span {
+  flex: none;
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .diff-hunk {
+  overflow-x: auto;
+}
+
+.product-app-frame[data-ui-version="v2"] .diff-hunk__header {
+  min-width: max-content;
+  background: var(--v2-signal-soft);
+  color: var(--v2-signal-strong);
+  padding: 5px 9px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .diff-line {
+  display: grid;
+  grid-template-columns: 42px 42px minmax(max-content, 1fr);
+  min-height: 20px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 20px;
+}
+
+.product-app-frame[data-ui-version="v2"] .diff-line > span {
+  border-right: 1px solid var(--v2-border);
+  color: var(--v2-ink-3);
+  padding-right: 7px;
+  text-align: right;
+  user-select: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .diff-line code {
+  padding: 0 9px;
+  white-space: pre;
+}
+
+.product-app-frame[data-ui-version="v2"] .diff-line[data-kind="add"] {
+  background: var(--v2-success-soft);
+}
+
+.product-app-frame[data-ui-version="v2"] .diff-line[data-kind="del"] {
+  background: var(--v2-danger-soft);
+}
+
+.product-app-frame[data-ui-version="v2"] .diff-view > figcaption {
+  border-top: 1px solid var(--v2-border);
+  color: var(--v2-ink-3);
+  padding: 7px 9px;
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .diff-view[data-fallback="true"] pre {
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  white-space: pre;
+}
+
+/* Composer and real Preferences control */
+.product-app-frame[data-ui-version="v2"] .chat-composer {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  /* Same reading measure as the transcript content box (design §3.3). */
+  align-self: center;
+  width: calc(100% - 32px);
+  max-width: var(--reading-column-max);
+  margin: 0 0 14px;
+  border: 1px solid var(--v2-border-strong);
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-md);
+  padding: 9px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__meta {
+  min-width: 0;
+  gap: 8px;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__meta span:first-child {
+  color: var(--v2-signal-strong);
+  font-weight: 650;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__row {
+  position: relative;
+  min-width: 0;
+  gap: 8px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer textarea {
+  min-height: 48px;
+  max-height: 116px;
+  resize: vertical;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  background: transparent;
+  padding: 4px 3px;
+  line-height: 1.5;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer textarea:focus-visible {
+  outline: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__row > button {
+  flex: none;
+  min-height: 34px;
+  margin-bottom: 2px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  border-top: 1px solid var(--v2-border);
+  padding-top: 7px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__controls > span {
+  overflow: hidden;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__review {
+  position: relative;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__review > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__review-form {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 4;
+  display: grid;
+  gap: 7px;
+  width: min(260px, calc(100vw - 32px));
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  padding: 10px;
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-md);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__review-form label {
+  color: var(--v2-ink-3);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__review-form select,
+.product-app-frame[data-ui-version="v2"] .chat-composer__review-form input {
+  width: 100%;
+  min-height: 30px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-xs);
+  background: var(--v2-bg);
+  color: var(--v2-ink);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__review-form .chat-error {
+  padding: 5px 6px;
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__modes {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 30px;
+  overflow: hidden;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+  padding: 2px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__modes button {
+  min-width: 76px;
+  min-height: 24px;
+  border: 0;
+  border-radius: var(--v2-radius-xs);
+  background: transparent;
+  color: var(--v2-ink-3);
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__modes button[data-active="true"] {
+  background: var(--v2-surface-raised);
+  color: var(--v2-ink);
+  box-shadow: var(--v2-shadow-sm);
+}
+
+.product-app-frame[data-ui-version="v2"] .control-queue {
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid var(--v2-border);
+  padding-top: 7px;
+}
+
+.product-app-frame[data-ui-version="v2"] .control-queue__header,
+.product-app-frame[data-ui-version="v2"] .control-queue__actions {
+  display: flex;
+  align-items: center;
+}
+
+.product-app-frame[data-ui-version="v2"] .control-queue__header {
+  justify-content: space-between;
+}
+
+.product-app-frame[data-ui-version="v2"] .control-queue__header strong {
+  color: var(--v2-ink-2);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.product-app-frame[data-ui-version="v2"] .control-queue .icon-button {
+  display: inline-grid;
+  width: 26px;
+  min-width: 26px;
+  min-height: 26px;
+  place-items: center;
+  padding: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .control-queue__empty,
+.product-app-frame[data-ui-version="v2"] .control-queue__more,
+.product-app-frame[data-ui-version="v2"] .control-queue__error {
+  margin: 0;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.product-app-frame[data-ui-version="v2"] .control-queue__error {
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .control-queue__list {
+  display: grid;
+  gap: 4px;
+  max-height: 152px;
+  margin: 0;
+  overflow: auto;
+  padding: 0;
+  list-style: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .control-queue__list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+  padding: 6px 7px;
+}
+
+.product-app-frame[data-ui-version="v2"] .control-queue__list li[data-status="abandoned"] {
+  border-color: color-mix(in srgb, var(--v2-warning) 42%, var(--v2-border));
+  background: var(--v2-warning-soft);
+}
+
+.product-app-frame[data-ui-version="v2"] .control-queue__list li > div:first-child {
+  min-width: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .control-queue__list span,
+.product-app-frame[data-ui-version="v2"] .control-queue__actions small {
+  color: var(--v2-ink-3);
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.product-app-frame[data-ui-version="v2"] .control-queue__list p {
+  display: -webkit-box;
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--v2-ink-2);
+  font-size: 10px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.product-app-frame[data-ui-version="v2"] .control-queue__actions {
+  justify-content: flex-end;
+  gap: 3px;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model {
+  position: relative;
+  min-width: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__trigger {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 7px;
+  width: min(220px, 100%);
+  min-height: 34px;
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__trigger > span {
+  display: grid;
+  min-width: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__trigger strong,
+.product-app-frame[data-ui-version="v2"] .quick-model__trigger small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__trigger strong {
+  color: var(--v2-ink-2);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__trigger small {
+  color: var(--v2-ink-3);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 25;
+  display: grid;
+  gap: 10px;
+  width: min(360px, calc(100vw - 32px));
+  border: 1px solid var(--v2-border-strong);
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-md);
+  padding: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__popover header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__popover header > strong {
+  font-size: 13px;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__popover > p {
+  margin: 0;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__popover label {
+  display: grid;
+  gap: 5px;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__popover label > span {
+  color: var(--v2-ink-3);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__popover .quick-model__inventory {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--v2-ink-3);
+  font-weight: 500;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__inventory small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__inventory small[data-tone="error"] {
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__result {
+  color: var(--v2-success);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__result[data-tone="error"] {
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-error,
+.product-app-frame[data-ui-version="v2"] .shell-alert {
+  border-color: color-mix(in srgb, var(--v2-danger) 40%, var(--v2-border));
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-danger-soft);
+  color: var(--v2-danger);
+  font-size: 11px;
+}
+
+/* Run evidence inspector */
+.product-app-frame[data-ui-version="v2"] .product-inspector {
+  /* The grid track owns the width (design §5.0 shared budget): the panel fills
+     its track so the track can shrink before the conversation drops below its
+     450px floor. An inline width here would make the panel unshrinkable. */
+  width: 100%;
+  min-width: 0;
+  border-color: var(--v2-border);
+  background: var(--v2-bg);
+}
+
+.product-app-frame[data-ui-version="v2"] .product-inspector[data-collapsed="true"] {
+  width: 40px;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-header {
+  min-height: 60px;
+  padding: 0 12px;
+  border-color: var(--v2-border);
+  background: var(--v2-surface-raised);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-header h2 {
+  color: var(--v2-ink);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-inspector[data-collapsed="true"] .inspector-header {
+  justify-content: center;
+  padding: 0 4px;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-open-tab {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 26px;
+  margin-bottom: 2px;
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-open-tab:hover {
+  background: var(--v2-surface);
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-body {
+  gap: 0;
+  padding: 0 14px 24px;
+  overscroll-behavior: contain;
+}
+
+/* Work panel tab strip: the set of tabs is dynamic and closable, so the strip
+   scrolls instead of dividing a fixed count across fixed columns. The launcher
+   sits at the trailing edge. */
+.product-app-frame[data-ui-version="v2"] .inspector-tabs-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 8px 8px 0 12px;
+  border-bottom: 1px solid var(--v2-border);
+  background: var(--v2-surface-raised);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-tab {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-tabs .tab-button {
+  min-height: 30px;
+  min-width: 0;
+  max-width: 132px;
+  padding: 0 4px;
+  overflow: hidden;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-tabs .tab-button--active {
+  border-bottom-color: var(--v2-signal);
+  color: var(--v2-ink);
+}
+
+/* Close affordance stays out of the way until the tab is hovered, focused or
+   selected, but is always present for keyboard and assistive technology. */
+.product-app-frame[data-ui-version="v2"] .inspector-tab-close {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 30px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--v2-ink-3);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-tab:hover .inspector-tab-close,
+.product-app-frame[data-ui-version="v2"] .inspector-tab:focus-within .inspector-tab-close,
+.product-app-frame[data-ui-version="v2"] .inspector-tab .tab-button--active + .inspector-tab-close {
+  opacity: 1;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-tab-close:hover {
+  background: var(--v2-surface);
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-launcher {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-launcher .secondary {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.product-app-frame[data-ui-version="v2"] .review-panel__select-label {
+  display: block;
+  margin: 0 0 6px;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .review-panel select {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-xs);
+  background: var(--v2-surface-raised);
+  color: var(--v2-ink);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .review-panel__details {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .review-panel__state {
+  margin: 0;
+  color: var(--v2-ink-2);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.product-app-frame[data-ui-version="v2"] .review-panel__state[data-tone="ok"] {
+  color: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .review-panel__state[data-tone="error"] {
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .review-panel__state[data-tone="working"] {
+  color: var(--v2-signal-strong);
+}
+
+.product-app-frame[data-ui-version="v2"] .review-finding-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .review-finding-list li {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--v2-border);
+  border-left: 3px solid var(--v2-signal);
+  border-radius: var(--v2-radius-xs);
+  padding: 9px;
+  background: var(--v2-surface-raised);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .review-finding-list li[data-severity="critical"],
+.product-app-frame[data-ui-version="v2"] .review-finding-list li[data-severity="high"] {
+  border-left-color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .review-finding-list__heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.product-app-frame[data-ui-version="v2"] .review-finding-list__heading strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.product-app-frame[data-ui-version="v2"] .review-finding-list__heading span {
+  flex: 0 0 auto;
+}
+
+.product-app-frame[data-ui-version="v2"] .review-finding-list p {
+  margin: 0;
+  color: var(--v2-ink-2);
+  overflow-wrap: anywhere;
+}
+
+.product-app-frame[data-ui-version="v2"] .review-finding-list p:nth-of-type(2) {
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-preview__text span {
+  display: block;
+  min-height: 1em;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-preview__text span[data-focused="true"] {
+  margin-inline: -6px;
+  padding-inline: 6px;
+  background: var(--v2-signal-soft);
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-section {
+  min-width: 0;
+  border-bottom: 1px solid var(--v2-border);
+  padding: 16px 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-section:last-child {
+  border-bottom: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-section h3 {
+  margin: 0 0 10px;
+  color: var(--v2-ink);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+  text-transform: none;
+  text-wrap: balance;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-section__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-section__heading h3 {
+  margin: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-section__heading > span {
+  min-height: 20px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-xs);
+  color: var(--v2-ink-3);
+  padding: 3px 6px;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-section__heading > span[data-tone="ok"] {
+  border-color: color-mix(in srgb, var(--v2-success) 30%, var(--v2-border));
+  background: var(--v2-success-soft);
+  color: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-section__heading > span[data-tone="working"] {
+  border-color: color-mix(in srgb, var(--v2-signal) 30%, var(--v2-border));
+  background: var(--v2-signal-soft);
+  color: var(--v2-signal-strong);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-section__heading > span[data-tone="error"] {
+  border-color: color-mix(in srgb, var(--v2-danger) 30%, var(--v2-border));
+  background: var(--v2-danger-soft);
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-kv {
+  display: grid;
+  gap: 0;
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-kv div {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  border-bottom: 1px solid var(--v2-border);
+  padding: 7px 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-kv div:last-child {
+  border-bottom: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-kv span {
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-kv strong {
+  min-width: 0;
+  color: var(--v2-ink-2);
+  font-size: 10px;
+  font-weight: 600;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-kv--metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-border);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-kv--metrics div {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2px;
+  min-width: 0;
+  border: 0;
+  background: var(--v2-surface-raised);
+  padding: 7px 8px;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-kv--metrics strong {
+  text-align: left;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-facts {
+  margin-top: 9px;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-facts > div {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  gap: 8px;
+  border-bottom: 1px solid var(--v2-border);
+  padding: 6px 0;
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-facts dt {
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-facts dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--v2-ink-2);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-footnote,
+.product-app-frame[data-ui-version="v2"] .inspector-empty-line {
+  margin: 8px 0 0;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-state {
+  margin-top: 14px;
+  border-radius: var(--v2-radius-sm);
+  padding: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-state strong {
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-state p {
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .plan-list,
+.product-app-frame[data-ui-version="v2"] .tool-list,
+.product-app-frame[data-ui-version="v2"] .mutation-list,
+.product-app-frame[data-ui-version="v2"] .evidence-ref-list,
+.product-app-frame[data-ui-version="v2"] .canonical-event-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .plan-list li,
+.product-app-frame[data-ui-version="v2"] .tool-list li,
+.product-app-frame[data-ui-version="v2"] .mutation-list li {
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-raised);
+  color: var(--v2-ink-2);
+  padding: 7px 8px;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.product-app-frame[data-ui-version="v2"] .plan-list li[data-done="true"] {
+  border-color: color-mix(in srgb, var(--v2-success) 24%, var(--v2-border));
+  color: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-list li strong,
+.product-app-frame[data-ui-version="v2"] .mutation-list li strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-list__detail,
+.product-app-frame[data-ui-version="v2"] .mutation-list li span {
+  display: block;
+  margin-top: 3px;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-ref-list li {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 7px;
+  border-bottom: 1px solid var(--v2-border);
+  padding: 6px 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-ref-list span {
+  color: var(--v2-ink-3);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-ref-list code {
+  min-width: 0;
+  color: var(--v2-ink-2);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-export-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-export-controls label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-export-controls select {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid var(--v2-border-strong);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-raised);
+  color: var(--v2-ink);
+  padding: 0 8px;
+  font: inherit;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-export-controls button {
+  min-height: 32px;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-file-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-file-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  min-height: 38px;
+  border-bottom: 1px solid var(--v2-border);
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-file-list li[data-availability="cleaned"],
+.product-app-frame[data-ui-version="v2"] .evidence-file-list li[data-availability="invalid"] {
+  opacity: 0.68;
+}
+
+.product-app-frame[data-ui-version="v2"] button.evidence-file-list__open {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 1px 7px;
+  min-width: 0;
+  padding: 6px 2px;
+  text-align: left;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-file-list__open svg {
+  grid-row: 1 / span 2;
+  align-self: center;
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-file-list__open span,
+.product-app-frame[data-ui-version="v2"] .evidence-file-list__open small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-file-list__open span {
+  color: var(--v2-ink-2);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-file-list__open small {
+  color: var(--v2-ink-3);
+  font-size: 9px;
+}
+
+.product-app-frame[data-ui-version="v2"] a.ghost.icon-button {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--v2-radius-sm);
+  color: var(--v2-ink-3);
+  text-decoration: none;
+}
+
+.product-app-frame[data-ui-version="v2"] a.ghost.icon-button:hover {
+  background: var(--v2-surface-hover);
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-preview {
+  min-width: 0;
+  margin-top: 10px;
+  border-top: 1px solid var(--v2-border);
+  padding-top: 9px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-preview__heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 8px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-preview__heading strong,
+.product-app-frame[data-ui-version="v2"] .evidence-preview__heading span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-preview__heading strong {
+  color: var(--v2-ink-2);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-preview__heading span {
+  margin-top: 2px;
+  color: var(--v2-ink-3);
+  font-size: 9px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-preview__text,
+.product-app-frame[data-ui-version="v2"] .evidence-diff-list__patch {
+  max-width: 100%;
+  max-height: 280px;
+  margin: 8px 0 0;
+  overflow: auto;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-raised);
+  color: var(--v2-ink-2);
+  padding: 8px;
+  font-size: 9px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-preview__image {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-preview__image img {
+  display: block;
+  width: 100%;
+  max-height: 280px;
+  object-fit: contain;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-raised);
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-preview__image figcaption {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--v2-ink-3);
+  font-size: 9px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-diff-list {
+  display: grid;
+  gap: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-diff-list article {
+  min-width: 0;
+  border-bottom: 1px solid var(--v2-border);
+  padding-bottom: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-diff-list header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-diff-list header strong,
+.product-app-frame[data-ui-version="v2"] .evidence-diff-list header span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-diff-list header strong {
+  color: var(--v2-ink-2);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .evidence-diff-list header span,
+.product-app-frame[data-ui-version="v2"] .evidence-diff-list header small {
+  color: var(--v2-ink-3);
+  font-size: 9px;
+}
+
+.product-app-frame[data-ui-version="v2"] .canonical-event-list {
+  counter-reset: canonical-events;
+}
+
+.product-app-frame[data-ui-version="v2"] .canonical-event-list li {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  min-width: 0;
+  padding-left: 14px;
+  counter-increment: canonical-events;
+}
+
+.product-app-frame[data-ui-version="v2"] .canonical-event-list li::before {
+  position: absolute;
+  top: 6px;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--v2-signal);
+  content: "";
+}
+
+.product-app-frame[data-ui-version="v2"] .canonical-event-list code,
+.product-app-frame[data-ui-version="v2"] .canonical-event-list span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .canonical-event-list code {
+  color: var(--v2-ink-2);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .canonical-event-list span {
+  color: var(--v2-ink-3);
+  font-size: 10px;
+}
+
+/* Settings use the same real clients and mutations as V1. */
+.product-app-frame[data-ui-version="v2"] .settings-nav {
+  gap: 3px;
+  border-color: var(--v2-rail-border);
+  background: var(--v2-rail);
+  padding: 18px 12px 14px;
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-nav h2 {
+  margin: 0 8px 14px;
+  color: var(--v2-rail-ink);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-nav button {
+  justify-content: flex-start;
+  min-height: 42px;
+  border: 0;
+  border-radius: var(--v2-radius-sm);
+  background: transparent;
+  color: var(--v2-rail-muted);
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-nav button:hover:not(:disabled),
+.product-app-frame[data-ui-version="v2"] .settings-nav button[data-active="true"] {
+  background: var(--v2-rail-raised);
+  color: var(--v2-rail-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-nav button[data-active="true"] {
+  box-shadow: inset 2px 0 0 var(--v2-rail-signal);
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-content {
+  min-height: 0;
+  background: var(--v2-bg);
+  padding: 28px max(24px, 5vw) 60px;
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-content > .shell-alert,
+.product-app-frame[data-ui-version="v2"] .settings-panel,
+.product-app-frame[data-ui-version="v2"] .settings-section {
+  width: min(920px, 100%);
+  margin-inline: auto;
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-panel,
+.product-app-frame[data-ui-version="v2"] .settings-section {
+  gap: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-panel > h1,
+.product-app-frame[data-ui-version="v2"] .settings-section > h2 {
+  margin: 0;
+  color: var(--v2-ink);
+  font-size: 22px;
+  line-height: 1.2;
+  text-wrap: balance;
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-panel > p.lede {
+  max-width: 62ch;
+  margin: 6px 0 24px;
+  color: var(--v2-ink-3);
+  font-size: 13px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-card {
+  gap: 12px;
+  border: 0;
+  border-top: 1px solid var(--v2-border-strong);
+  border-radius: 0;
+  background: transparent;
+  padding: 20px 0;
+  box-shadow: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-card:last-child {
+  border-bottom: 1px solid var(--v2-border-strong);
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-card h2 {
+  color: var(--v2-ink);
+  font-size: 13px;
+  line-height: 1.35;
+  text-wrap: balance;
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-segmented {
+  gap: 2px;
+  border-color: var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+  padding: 2px;
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-segmented button {
+  min-height: 30px;
+  border: 0;
+  border-radius: var(--v2-radius-xs);
+  background: transparent;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-segmented button[data-active="true"] {
+  background: var(--v2-surface-raised);
+  color: var(--v2-ink);
+  box-shadow: var(--v2-shadow-sm);
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-policy-grid {
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-border);
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-policy-grid > div {
+  border: 0;
+  background: var(--v2-surface-raised);
+  padding: 9px;
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-policy-grid strong {
+  color: var(--v2-ink-2);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-policy-grid span {
+  color: var(--v2-ink-3);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .field label,
+.product-app-frame[data-ui-version="v2"] .field > span {
+  color: var(--v2-ink-3);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.product-app-frame[data-ui-version="v2"] .field input,
+.product-app-frame[data-ui-version="v2"] .field select,
+.product-app-frame[data-ui-version="v2"] .field textarea {
+  min-height: 36px;
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .placeholder-note {
+  border-color: var(--v2-border-strong);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink-3);
+  padding: 12px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.product-app-frame[data-ui-version="v2"] .profile-list {
+  gap: 7px;
+}
+
+.product-app-frame[data-ui-version="v2"] .profile-row {
+  min-width: 0;
+  border-color: var(--v2-border);
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-raised);
+  padding: 10px 12px;
+  box-shadow: var(--v2-shadow-sm);
+}
+
+.product-app-frame[data-ui-version="v2"] .profile-row strong {
+  color: var(--v2-ink-2);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .profile-row span,
+.product-app-frame[data-ui-version="v2"] .settings-inline-note {
+  color: var(--v2-ink-3);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-inline-confirm {
+  border-radius: var(--v2-radius-sm);
+}
+
+.product-app-frame[data-ui-version="v2"] .settings-panel kbd {
+  border-radius: var(--v2-radius-xs);
+  background: var(--v2-surface-sunken);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .advanced-links {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.product-app-frame[data-ui-version="v2"] .advanced-link-card {
+  min-height: 70px;
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-raised);
+  color: var(--v2-ink);
+  font-size: 12px;
+  box-shadow: var(--v2-shadow-sm);
+}
+
+.product-app-frame[data-ui-version="v2"] .advanced-link-card span {
+  color: var(--v2-ink-3);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .advanced-benchmark {
+  margin-top: 16px;
+  border-radius: var(--v2-radius-md);
+}
+
+/* Shared operational states and dialogs */
+.product-app-frame[data-ui-version="v2"] .boot-state,
+.product-app-frame[data-ui-version="v2"] .route-state,
+.product-app-frame[data-ui-version="v2"] .empty-state {
+  background: var(--v2-bg);
+}
+
+.product-app-frame[data-ui-version="v2"] .boot-state h1,
+.product-app-frame[data-ui-version="v2"] .route-state h1,
+.product-app-frame[data-ui-version="v2"] .empty-state__card h1 {
+  font-size: 20px;
+}
+
+.product-app-frame[data-ui-version="v2"] .empty-state__card {
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-md);
+}
+
+.product-app-frame[data-ui-version="v2"] .recent-item {
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+}
+
+.product-app-frame[data-ui-version="v2"] .modal-backdrop {
+  z-index: 80;
+  background: var(--v2-overlay);
+}
+
+.product-app-frame[data-ui-version="v2"] .modal-card {
+  border-color: var(--v2-border-strong);
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-md);
+}
+
+.product-app-frame[data-ui-version="v2"] .modal-card h2 {
+  font-size: 16px;
+}
+
+.product-app-frame[data-ui-version="v2"] .modal-card__lede {
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .migration-gate {
+  background: var(--v2-bg);
+}
+
+.product-app-frame[data-ui-version="v2"] .migration-gate__content,
+.product-app-frame[data-ui-version="v2"] .migration-complete {
+  border-radius: var(--v2-radius-md);
+}
+
+.product-app-frame[data-ui-version="v2"] .product-mobile-scrim {
+  display: none;
+}
+
+@media (max-width: 1180px) {
+  /* The rail, panel and conversation widths are all owned by the shared width
+     budget rule below (design §5.0). Pinning `grid-template-columns: 224px …`
+     or `.product-inspector { width: 268px }` here only survived as dead code
+     while the panel still carried an inline width, and it silently defeated the
+     budget once the panel started filling its track. */
+  .product-app-frame[data-ui-version="v2"] .transcript-item {
+    grid-template-columns: 62px minmax(0, 700px);
+  }
+
+  .product-app-frame[data-ui-version="v2"] .transcript-run__header {
+    padding-left: 90px;
+  }
+}
+
+/* Drawer layout. The 960px boundary mirrors `DRAWER_MAX_WIDTH` /
+   `DRAWER_MEDIA_QUERY` in `lib/viewport-breakpoints.ts`; the rail becomes a
+   drawer and the work panel opens as a dialog at or below it. */
+/* Narrow-screen rail peek: a pointer at the left edge summons the rail, and the
+   rail hides again shortly after it leaves. The strip only exists for a fine
+   pointer, so a touch device never grows an invisible target at the transcript's
+   left edge. */
+.product-app-frame[data-ui-version="v2"] .sidebar-hover-zone {
+  display: none;
+}
+
+@media (max-width: 960px) and (hover: hover) and (pointer: fine) {
+  .product-app-frame[data-ui-version="v2"] .sidebar-hover-zone {
+    display: block;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 14px;
+    z-index: 41;
+    background: transparent;
+  }
+}
+
+@media (max-width: 960px) {
+  .product-app-frame[data-ui-version="v2"] .product-body:not([data-settings="true"]) {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .product-app-frame[data-ui-version="v2"] .product-body:not([data-settings="true"]) .product-main {
+    display: flex !important;
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .product-sidebar {
+    position: fixed;
+    top: 52px;
+    bottom: 0;
+    left: 0;
+    z-index: 42;
+    width: min(320px, 86vw);
+    visibility: hidden;
+    pointer-events: none;
+    box-shadow: var(--v2-shadow-md);
+    transform: translateX(-102%);
+    transition:
+      transform var(--motion-duration-collapse) var(--motion-ease-emphasized),
+      visibility 0s linear var(--motion-duration-collapse);
+  }
+
+  .product-app-frame[data-ui-version="v2"] .product-sidebar[data-open="true"] {
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateX(0);
+    transition-delay: 0s;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .product-inspector,
+  .product-app-frame[data-ui-version="v2"] .product-inspector:not([data-collapsed="true"]) {
+    position: fixed;
+    top: 52px;
+    right: 0;
+    bottom: 0;
+    z-index: 42;
+    grid-column: auto;
+    width: min(340px, 88vw);
+    visibility: hidden;
+    pointer-events: none;
+    border-left: 1px solid var(--v2-border);
+    box-shadow: var(--v2-shadow-md);
+    transform: translateX(102%);
+    transition:
+      transform var(--motion-duration-collapse) var(--motion-ease-emphasized),
+      visibility 0s linear var(--motion-duration-collapse);
+  }
+
+  .product-app-frame[data-ui-version="v2"] .product-inspector[data-collapsed="true"] {
+    display: none;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .product-inspector[data-open="true"] {
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateX(0);
+    transition-delay: 0s;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .product-mobile-scrim {
+    position: fixed;
+    inset: 52px 0 0;
+    z-index: 40;
+    display: block;
+    width: 100%;
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
+    background: var(--v2-overlay);
+    padding: 0;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .product-mobile-scrim:hover:not(:disabled) {
+    background: var(--v2-overlay);
+  }
+
+  .product-app-frame[data-ui-version="v2"] .mobile-only {
+    display: inline-grid;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .settings-content {
+    padding-inline: 28px;
+  }
+}
+
+@media (max-width: 760px) {
+  .product-app-frame[data-ui-version="v2"] .product-topbar {
+    gap: 8px;
+    padding: 0 8px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .product-topbar__brand {
+    gap: 7px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .product-topbar__brand > span:not(.product-topbar__mark),
+  .product-app-frame[data-ui-version="v2"] .product-topbar__connection {
+    display: none;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .product-topbar__meta {
+    gap: 5px;
+  }
+
+  /* The bell is the third item from the right, so anchoring the panel to it
+     pushes it off the left edge of a phone. On a narrow screen it becomes a
+     fixed sheet under the top bar instead; the frame's `overflow: hidden` does
+     not clip a fixed descendant, and the top bar carries no transform. */
+  .product-app-frame[data-ui-version="v2"] .notification-inbox__panel {
+    position: fixed;
+    top: calc(52px + 6px);
+    right: 8px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] button,
+  .product-app-frame[data-ui-version="v2"] button.icon-button {
+    min-height: 44px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] button.icon-button {
+    width: 44px;
+    min-width: 44px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .product-topbar__mark {
+    width: 26px;
+    height: 26px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .chat-pane__header {
+    min-height: 56px;
+    padding: 6px 9px 6px 12px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .chat-pane__header p {
+    max-width: 62vw;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .chat-pane__header > button {
+    min-height: 44px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .chat-transcript {
+    padding: 16px 10px 28px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .transcript-run__header {
+    width: 100%;
+    padding-left: 22px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .transcript-item {
+    grid-template-columns: 14px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .transcript-item__meta {
+    grid-column: 2;
+    grid-row: 1;
+    display: flex;
+    justify-content: flex-start;
+    padding: 0 0 5px;
+    text-align: left;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .transcript-item__meta::after {
+    top: 11px;
+    right: auto;
+    bottom: -100%;
+    left: -13px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .transcript-item__meta > span {
+    top: 5px;
+    right: auto;
+    left: -17px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .transcript-item__meta code {
+    width: auto;
+    max-width: 180px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .transcript-item__content {
+    grid-column: 2;
+    grid-row: 2;
+    padding-bottom: 20px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .tool-card__outcome {
+    display: none;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .tool-card__head {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .tool-facts > div {
+    grid-template-columns: 92px minmax(0, 1fr);
+  }
+
+  .product-app-frame[data-ui-version="v2"] .approval-card .field-actions button {
+    flex: 1;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .chat-composer {
+    align-self: center;
+    width: calc(100% - 20px);
+    max-width: var(--reading-column-max);
+    margin: 0 0 8px;
+    padding: 8px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .chat-composer__meta span:last-child {
+    flex-basis: 100%;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .chat-composer__controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .chat-composer__controls > span {
+    white-space: normal;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .quick-model,
+  .product-app-frame[data-ui-version="v2"] .quick-model__trigger {
+    width: 100%;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .quick-model__trigger {
+    min-height: 44px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .quick-model__popover {
+    position: fixed;
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    width: auto;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .product-body[data-settings="true"] {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .settings-nav {
+    display: flex;
+    min-height: auto;
+    flex: 0 0 auto;
+    flex-direction: row;
+    gap: 4px;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--v2-rail-border);
+    padding: 8px;
+    scroll-padding-inline: 8px;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .settings-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .settings-nav h2 {
+    display: none;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .settings-nav button {
+    flex: 0 0 auto;
+    min-height: 44px;
+    padding: 0 11px;
+    scroll-snap-align: start;
+    white-space: nowrap;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .settings-nav button[data-active="true"] {
+    box-shadow: inset 0 -2px 0 var(--v2-rail-signal);
+  }
+
+  .product-app-frame[data-ui-version="v2"] .settings-content {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 20px 14px 44px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .settings-panel > h1,
+  .product-app-frame[data-ui-version="v2"] .settings-section > h2 {
+    font-size: 18px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .settings-policy-grid,
+  .product-app-frame[data-ui-version="v2"] .field-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .profile-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .product-inspector,
+  .product-app-frame[data-ui-version="v2"] .product-inspector:not([data-collapsed="true"]) {
+    top: auto;
+    left: 0;
+    width: 100%;
+    max-height: min(620px, calc(100dvh - 84px));
+    border-top: 1px solid var(--v2-border);
+    border-left: 0;
+    transform: translateY(102%);
+  }
+
+  .product-app-frame[data-ui-version="v2"] .product-inspector[data-open="true"] {
+    transform: translateY(0);
+  }
+
+  .product-app-frame[data-ui-version="v2"] .modal-backdrop {
+    padding: 12px;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .modal-card {
+    max-height: calc(100dvh - 24px);
+    overflow: auto;
+    padding: 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .product-app-frame[data-ui-version="v2"] .product-topbar__brand strong {
+    display: none;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .chat-composer__row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .chat-composer__row > button {
+    width: 100%;
+    margin: 0;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .input-card .chat-composer__row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .product-app-frame[data-ui-version="v2"] .message-evidence,
+  .product-app-frame[data-ui-version="v2"] .inspector-kv--metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .diff-line {
+    grid-template-columns: 34px 34px minmax(max-content, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .product-app-frame[data-ui-version="v2"] *,
+  .product-app-frame[data-ui-version="v2"] *::before,
+  .product-app-frame[data-ui-version="v2"] *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .product-app-frame[data-ui-version="v2"] .status-dot,
+  .product-app-frame[data-ui-version="v2"] .transcript-item__meta > span {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Shared work panel: bounded selection controls, not permission state. */
+.product-app-frame[data-ui-version="v2"] .approval-detail {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.product-app-frame[data-ui-version="v2"] .approval-detail .approval-card {
+  min-width: 0;
+  padding: 12px;
+}
+.product-app-frame[data-ui-version="v2"] .approval-detail pre {
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.product-app-frame[data-ui-version="v2"] .approval-detail__identity {
+  color: var(--v2-muted);
+  font-size: 11px;
+}
+.product-app-frame[data-ui-version="v2"] .authorization-history {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--v2-border);
+}
+.product-app-frame[data-ui-version="v2"] .authorization-history h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.product-app-frame[data-ui-version="v2"] .authorization-history__limit {
+  margin: 0;
+  color: var(--v2-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.product-app-frame[data-ui-version="v2"] .authorization-history__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  table-layout: fixed;
+}
+.product-app-frame[data-ui-version="v2"] .authorization-history__table th {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--v2-border);
+  color: var(--v2-muted);
+  font-weight: 600;
+  text-align: left;
+}
+.product-app-frame[data-ui-version="v2"] .authorization-history__table td {
+  padding: 6px;
+  border-bottom: 1px solid var(--v2-border);
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+.product-app-frame[data-ui-version="v2"] .authorization-history__table td small {
+  display: block;
+  color: var(--v2-muted);
+  font-size: 10px;
+}
+.product-app-frame[data-ui-version="v2"] .authorization-history__table code {
+  font-size: 10px;
+}
+.product-app-frame[data-ui-version="v2"] .rich-text__link-status {
+  display: block;
+  margin-top: 4px;
+  color: var(--v2-muted);
+  font-size: 11px;
+}
+
+/* ─── Work panel divider (design §5.0 / §3.3) ───
+   An 8px hit area on the panel's leading edge, mirroring the rail handle. It is
+   absolutely positioned inside the panel so it never consumes a grid track
+   (the mistake that broke the whole shell when the rail handle did this). */
+
+.product-app-frame[data-ui-version="v2"] .product-inspector {
+  position: relative;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 8px;
+  margin-left: -4px;
+  z-index: 3;
+  cursor: col-resize;
+  background: transparent;
+  border: 0;
+  touch-action: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-resize::after {
+  content: "";
+  display: block;
+  width: 1px;
+  height: 100%;
+  margin: 0 auto;
+  background: var(--v2-border-strong);
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+.product-app-frame[data-ui-version="v2"] .inspector-resize:hover::after,
+.product-app-frame[data-ui-version="v2"] .inspector-resize:focus-visible::after {
+  width: 2px;
+  background: var(--v2-signal);
+}
+
+/* While dragging, the whole window shows the resize cursor and suppresses
+   selection; the flag is set by `usePanelResize`. */
+html[data-work-panel-resizing],
+html[data-work-panel-resizing] * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+/* ─── Left navigation width, collapse and motion (design §3.1 / §3.3) ─── */
+
+.product-app-frame[data-ui-version="v2"] .product-body:not([data-settings="true"]) {
+  position: relative;
+  /* Design §5.0 shared width budget: the conversation column holds a 450px
+     floor and the work panel yields first. `--work-panel-track` is set inline to
+     `min(requested, 100% − rail − floor)`, so a narrow container shrinks the
+     panel instead of overflowing or squeezing the conversation. */
+  --pane-floor: 450px;
+  grid-template-columns:
+    var(--sidebar-nav-width)
+    minmax(var(--pane-floor), 1fr)
+    var(--work-panel-track, auto);
+  /* F9: no `grid-template-columns` transition. Animating the track re-lays-out
+     the conversation column on every frame — measured at 1280x720 with a 30-run
+     transcript, one collapse cost 15 layout passes and 22.5ms of layout plus
+     34.2ms of style recalculation, against 2 passes / 1.9ms / 5.7ms when the
+     track snaps (script 60.8 → 41.5ms, task time 186.4 → 81.2ms per 700ms
+     window). The rail keeps its own transform + opacity slide below, which is a
+     compositor-friendly replacement for pushing the conversation across. */
+}
+
+/* The handle is a real separator: it must not steal the rail's width budget.
+   It therefore overlays the rail's trailing edge instead of occupying a grid
+   track. As a grid item in column 2 it consumed the middle track, which pushed
+   <main> into column 3 (auto-sized) and moved the inspector onto a second row —
+   measured at 1440x900: main at x=538 and the inspector at y=476 on the left,
+   with the rail, main and inspector all only 424px tall. */
+.product-app-frame[data-ui-version="v2"] .sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--sidebar-nav-width);
+  width: 8px;
+  margin-left: -4px;
+  z-index: 3;
+  cursor: col-resize;
+  background: transparent;
+  border: 0;
+  touch-action: none;
+}
+.product-app-frame[data-ui-version="v2"] .sidebar-resize-handle::after {
+  content: "";
+  display: block;
+  width: 1px;
+  height: 100%;
+  margin: 0 auto;
+  background: var(--v2-rail-border);
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.product-app-frame[data-ui-version="v2"] .sidebar-resize-handle:hover::after,
+.product-app-frame[data-ui-version="v2"] .sidebar-resize-handle:focus-visible::after {
+  background: var(--v2-rail-signal);
+}
+
+/* Dragging must not animate the width, and the whole document shows the intent. */
+body.is-resizing-column,
+body.is-resizing-column * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+.product-app-frame[data-ui-version="v2"] .product-body:has(.sidebar-resize-handle:active) {
+  transition: none;
+}
+
+/* Row color transitions: 150ms, but a selected row fills instantly so the
+   choice never lags behind the pointer. */
+.product-app-frame[data-ui-version="v2"] .session-item,
+.product-app-frame[data-ui-version="v2"] .workspace-group__button,
+.product-app-frame[data-ui-version="v2"] .workspace-group__disclosure,
+.product-app-frame[data-ui-version="v2"] .product-sidebar button.ghost,
+.product-app-frame[data-ui-version="v2"] .product-sidebar button.secondary {
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.product-app-frame[data-ui-version="v2"] .session-item[data-active="true"],
+.product-app-frame[data-ui-version="v2"] .workspace-group__button[data-active="true"] {
+  transition: none;
+}
+
+/* Leading session status icon: running spins, awaiting approval warns. */
+.product-app-frame[data-ui-version="v2"] .session-item__status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+}
+.product-app-frame[data-ui-version="v2"] .session-item__spinner {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--v2-rail-signal);
+  border-top-color: transparent;
+  animation: v2-session-spin var(--motion-duration-spin) linear infinite;
+  contain: layout paint style;
+  will-change: transform;
+}
+.product-app-frame[data-ui-version="v2"] .session-item__warning {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--v2-warning);
+}
+@keyframes v2-session-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Project group: 0fr -> 1fr with opacity, then the subtree unmounts. */
+.product-app-frame[data-ui-version="v2"] .workspace-sessions {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition: grid-template-rows var(--motion-duration-normal) var(--motion-ease-out),
+    opacity var(--motion-duration-normal) var(--motion-ease-out);
+}
+.product-app-frame[data-ui-version="v2"] .workspace-sessions > * {
+  min-height: 0;
+  overflow: hidden;
+}
+.product-app-frame[data-ui-version="v2"] .workspace-sessions[data-expanded="false"] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+
+/* Menus: 100ms fade + a small zoom on both enter and exit. */
+@keyframes v2-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.product-app-frame[data-ui-version="v2"] .workspace-actions__menu {
+  animation: v2-menu-in var(--motion-duration-fast) var(--motion-ease-out);
+  transform-origin: top right;
+}
+
+/* Left rail collapse: the track settles instantly (F9, no transition), the rail
+   slides out over 240ms on its own transform, and its subtree stays mounted
+   (inert + aria-hidden, set in `sidebar/WorkspaceTree.tsx`).
+
+   The rail therefore needs a stable width of its own: as a stretched grid item
+   in a track that snaps to 0 it would collapse to nothing in the same frame and
+   have nothing left to slide. Holding the width also keeps it painted over the
+   conversation while it leaves, so it needs the stacking order too. Both live in
+   the rail's base rule above: the `max-width: 960px` drawer is the same
+   specificity and comes later, so it still owns the rail there. */
+.product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] {
+  /* Same shared budget with the rail collapsed (design §5.0); `auto` here would
+     make the panel track circular with the panel's 100% width. */
+  grid-template-columns:
+    0
+    minmax(var(--pane-floor), 1fr)
+    var(--work-panel-track, auto);
+}
+.product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] .product-sidebar {
+  transform: translateX(-102%);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform var(--motion-duration-slide) var(--motion-ease-out),
+    opacity var(--motion-duration-slide) var(--motion-ease-out);
+}
+.product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="false"] .product-sidebar {
+  transform: translateX(0);
+  opacity: 1;
+  transition: transform var(--motion-duration-slide) var(--motion-ease-out),
+    opacity var(--motion-duration-slide) var(--motion-ease-out);
+}
+.product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] .sidebar-resize-handle {
+  display: none;
+}
+.product-app-frame[data-ui-version="v2"] .product-topbar__collapsed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 12px;
+}
+
+/* Narrow layouts: the rail is a drawer (mirrors `DRAWER_MAX_WIDTH` in
+   `lib/viewport-breakpoints.ts`), so it has no width to drag. */
+@media (max-width: 960px) {
+  .product-app-frame[data-ui-version="v2"] .sidebar-resize-handle {
+    display: none;
+  }
+  /* The rail is a fixed drawer here, so the grid keeps a single column and
+     the width preference does not reserve space. */
+  .product-app-frame[data-ui-version="v2"] .product-body:not([data-settings="true"]),
+  .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] {
+    grid-template-columns: minmax(0, 1fr);
+    transition: none;
+  }
+  .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] .product-sidebar {
+    transform: translateX(-102%);
+  }
+  .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="false"] .product-sidebar {
+    transform: none;
+  }
+  .product-app-frame[data-ui-version="v2"] .product-topbar__collapsed {
+    display: none;
+  }
+}
+
+/* ─── Composer pill, status bar, panel and scroll affordances (§3.3) ─── */
+
+/* Pending pill: 0fr -> 1fr over 180ms, so it grows instead of popping in. */
+.product-app-frame[data-ui-version="v2"] .chat-composer__meta {
+  display: grid;
+  grid-template-columns: 0fr;
+  transition: grid-template-columns var(--motion-duration-collapse) var(--motion-ease-out);
+}
+.product-app-frame[data-ui-version="v2"] .chat-composer__meta > * {
+  min-width: 0;
+  overflow: hidden;
+}
+.product-app-frame[data-ui-version="v2"] .chat-composer__meta:has(> *) {
+  grid-template-columns: 1fr;
+}
+
+/* Footer status bar: raising is slower than falling (300ms out / 200ms in). */
+.product-app-frame[data-ui-version="v2"] .chat-error,
+.product-app-frame[data-ui-version="v2"] .shell-alert {
+  transition: opacity var(--motion-duration-slow) var(--motion-ease-out),
+    max-height var(--motion-duration-slow) var(--motion-ease-out),
+    margin var(--motion-duration-slow) var(--motion-ease-out);
+  max-height: 220px;
+  overflow: hidden;
+}
+.product-app-frame[data-ui-version="v2"] .chat-error:empty,
+.product-app-frame[data-ui-version="v2"] .shell-alert:empty {
+  max-height: 0;
+  margin: 0;
+  padding: 0;
+  border-width: 0;
+  opacity: 0;
+  transition: opacity var(--motion-duration-normal) var(--motion-ease-in),
+    max-height var(--motion-duration-normal) var(--motion-ease-in),
+    margin var(--motion-duration-normal) var(--motion-ease-in);
+}
+
+/* Return-to-latest: 200ms scale + opacity entrance. */
+@keyframes v2-rise-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.product-app-frame[data-ui-version="v2"] .return-to-latest {
+  animation: v2-rise-in var(--motion-duration-normal) var(--motion-ease-out);
+}
+
+/* Work panel: 200ms in, 150ms out, and no width transition while dragging. */
+.product-app-frame[data-ui-version="v2"] .product-inspector {
+  transition: opacity var(--motion-duration-normal) var(--motion-ease-out),
+    transform var(--motion-duration-normal) var(--motion-ease-out);
+}
+.product-app-frame[data-ui-version="v2"] .product-inspector[data-open="true"] {
+  animation: v2-panel-in var(--motion-duration-normal) var(--motion-ease-out);
+}
+@keyframes v2-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.product-app-frame[data-ui-version="v2"] .product-inspector[data-collapsed="true"] {
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-in),
+    transform var(--motion-duration-fast) var(--motion-ease-in);
+}
+/* Tab strip: only the tab background animates; content swaps instantly. */
+.product-app-frame[data-ui-version="v2"] .inspector-tabs .tab-button {
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+/* The width slider is a range input: the rail itself must not animate width. */
+.product-app-frame[data-ui-version="v2"] .product-inspector[data-open="true"] {
+  transition-property: opacity, transform;
+}
+
+/* Command palette: a top-centred picker over a dim scrim, one input, and
+   grouped options that the arrows own. Fixed positioning so the palette covers
+   the viewport rather than the shell frame it is rendered inside. */
+.product-app-frame[data-ui-version="v2"] .command-palette-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: color-mix(in srgb, var(--v2-bg) 62%, transparent);
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette {
+  position: fixed;
+  top: 12vh;
+  left: 50%;
+  z-index: 51;
+  display: flex;
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(60vh, 520px);
+  flex-direction: column;
+  overflow: hidden;
+  transform: translateX(-50%);
+  border: 1px solid var(--v2-border-strong);
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-bg);
+  box-shadow: var(--v2-shadow-md);
+  animation: command-palette-in var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+@keyframes command-palette-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__input {
+  flex: none;
+  padding: 12px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--v2-border);
+  background: transparent;
+  color: var(--v2-ink);
+  font-size: 14px;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__input:focus-visible {
+  outline: 2px solid var(--v2-rail-signal);
+  outline-offset: -2px;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__group + .command-palette__group {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--v2-border);
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__group-title,
+.product-app-frame[data-ui-version="v2"] .command-palette__more {
+  margin: 4px 8px;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__more {
+  text-transform: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: var(--v2-radius-sm);
+  color: var(--v2-ink);
+  cursor: pointer;
+  /* A tap target: no double-tap-zoom delay on touch (Web Interface Guidelines). */
+  touch-action: manipulation;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__option[data-selected="true"] {
+  background: color-mix(in srgb, var(--v2-rail-signal) 16%, transparent);
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__option[data-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__option-title {
+  font-size: 13px;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__option-title mark {
+  background: transparent;
+  color: var(--v2-rail-signal);
+  font-weight: 600;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__option-subtitle,
+.product-app-frame[data-ui-version="v2"] .command-palette__option-note {
+  flex: none;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .command-palette__empty {
+  margin: 10px 8px;
+  color: var(--v2-ink-3);
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .product-app-frame[data-ui-version="v2"] .command-palette {
+    animation: none;
+  }
+}
+
+/* Nested scroll containment (Web Interface Guidelines): a scrollable pane inside
+   the shell must not chain its scroll to the frame behind it — a wheel at the end
+   of a code block or a modal body should stop there, and a trackpad swipe at the
+   end of a code block should not trigger browser back navigation. */
+.product-app-frame[data-ui-version="v2"] .approval-card pre,
+.product-app-frame[data-ui-version="v2"] .approval-detail pre,
+.product-app-frame[data-ui-version="v2"] .mermaid-state pre,
+.product-app-frame[data-ui-version="v2"] .mermaid-diagram,
+.product-app-frame[data-ui-version="v2"] .rich-code pre,
+.product-app-frame[data-ui-version="v2"] .diff-view[data-fallback="true"] pre,
+.product-app-frame[data-ui-version="v2"] .evidence-diff-list__patch,
+.product-app-frame[data-ui-version="v2"] .control-queue__list,
+.product-app-frame[data-ui-version="v2"] .modal-card {
+  overscroll-behavior: contain;
+}
+
+
+.product-app-frame[data-ui-version="v2"] .tool-card__chip {
+  border-radius: var(--v2-radius-pill, 999px);
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink-3);
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__chip[data-tone="ok"] {
+  background: var(--v2-success-soft, var(--v2-surface-sunken));
+  color: var(--v2-success, var(--v2-ink-2));
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__chip[data-tone="warn"] {
+  background: var(--v2-warning-soft, var(--v2-surface-sunken));
+  color: var(--v2-warning, var(--v2-ink-2));
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__chip[data-tone="danger"] {
+  background: var(--v2-danger-soft);
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__duration {
+  border-radius: var(--v2-radius-pill, 999px);
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink-3);
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__list {
+  margin: 0;
+  padding-left: 18px;
+  font-family: var(--v2-font-mono, monospace);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__truncated {
+  margin: 4px 0 0;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .message-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+  opacity: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-bubble:hover .message-actions,
+.product-app-frame[data-ui-version="v2"] .chat-bubble:focus-within .message-actions {
+  opacity: 1;
+}
+
+
+.product-app-frame[data-ui-version="v2"] .activity-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink-2);
+  cursor: pointer;
+  text-align: left;
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__head strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__hint {
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__elapsed {
+  margin-left: auto;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__head svg[data-open] {
+  margin-left: auto;
+  transform: rotate(0deg);
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__head svg[data-open="true"] {
+  transform: rotate(180deg);
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 12px;
+  border-left: 2px solid var(--v2-border);
+}
+
+.product-app-frame[data-ui-version="v2"] .activity-group__hint + svg,
+.product-app-frame[data-ui-version="v2"] .activity-group__head > svg:last-child {
+  margin-left: auto;
+}
+
+/* The elapsed value takes the free space, so the chevron sits next to it. */
+.product-app-frame[data-ui-version="v2"] .activity-group__elapsed + svg:last-child {
+  margin-left: 6px;
+}
+
+/* ─── Composer waiting line (activity phase, W4) ─── */
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__phase {
+  margin: 0;
+  padding: 0 2px;
+  color: var(--v2-ink-3);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__phase::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 999px;
+  background: var(--v2-rail-signal, var(--v2-ink-3));
+  animation: activity-phase-pulse var(--motion-duration-activity-pulse) var(--motion-ease-in-out) infinite;
+}
+
+@keyframes activity-phase-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .product-app-frame[data-ui-version="v2"] .chat-composer__phase::before {
+    animation: none;
+  }
+}
+
+/* ─── Context usage ring (W4) ─── */
+
+.product-app-frame[data-ui-version="v2"] .context-usage {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-pill, 999px);
+  background: transparent;
+  color: var(--v2-ink-2);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage__track {
+  stroke: var(--v2-border-strong, var(--v2-border));
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage__fill {
+  stroke: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage[data-tone="warn"] .context-usage__fill {
+  stroke: var(--v2-warning, var(--v2-ink-2));
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage[data-tone="danger"] .context-usage__fill,
+.product-app-frame[data-ui-version="v2"] .context-usage[data-tone="danger"] .context-usage__value {
+  stroke: var(--v2-danger);
+  color: var(--v2-danger);
+}
+
+/* ─── Composer trigger menu (W10) ─── */
+
+.product-app-frame[data-ui-version="v2"] .composer-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  right: auto;
+  min-width: 240px;
+  max-width: min(420px, 90%);
+  max-height: 264px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--v2-border-strong, var(--v2-border));
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-popover, 0 8px 24px rgba(0, 0, 0, 0.16));
+  z-index: 30;
+}
+
+.product-app-frame[data-ui-version="v2"] .composer-menu li[role="option"] {
+  padding: 6px 10px;
+  border-radius: calc(var(--v2-radius-sm, 6px) - 2px);
+  font-family: var(--v2-font-mono, monospace);
+  font-size: 12px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .composer-menu li[role="option"][data-active="true"] {
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .composer-menu__note {
+  padding: 6px 10px;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+/* ─── Paste attachments (W11) ─── */
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.product-app-frame[data-ui-version="v2"] .paste-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .paste-chip details {
+  flex: none;
+  max-width: 60%;
+}
+
+.product-app-frame[data-ui-version="v2"] .paste-chip summary {
+  cursor: pointer;
+  color: var(--v2-ink-2);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .paste-chip pre {
+  max-height: 160px;
+  overflow: auto;
+  margin: 6px 0 0;
+  font-family: var(--v2-font-mono, monospace);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .paste-chip__preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__paste-notice {
+  margin: 0;
+  color: var(--v2-warning, var(--v2-ink-2));
+  font-size: 11px;
+}
+
+/* ─── File attachments (R8 / F13) ─── */
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__file-input {
+  display: none;
+}
+
+/* The drop target is the whole composer: the outline is the only affordance a
+   drag needs, and it disappears the moment the drag leaves. */
+.product-app-frame[data-ui-version="v2"] .chat-composer[data-drop-active="true"] {
+  outline: 1px dashed var(--v2-focus, var(--v2-border-strong));
+  outline-offset: 4px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__drop-hint {
+  margin: 0;
+  color: var(--v2-ink-2);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .chat-composer__files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.product-app-frame[data-ui-version="v2"] .file-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .file-chip[data-status="failed"] {
+  border-color: var(--v2-danger, var(--v2-border-strong));
+}
+
+.product-app-frame[data-ui-version="v2"] .file-chip__name {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.product-app-frame[data-ui-version="v2"] .file-chip__meta {
+  flex: none;
+  color: var(--v2-ink-3);
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .file-chip__progress {
+  flex: 1;
+  min-width: 40px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--v2-border-strong, var(--v2-border));
+  /* Indeterminate: a sweeping segment, no percentage is known yet. */
+  background-image: linear-gradient(
+    90deg,
+    var(--v2-signal, var(--v2-ink-3)) 0%,
+    transparent 50%
+  );
+  background-repeat: no-repeat;
+  background-size: 40% 100%;
+  animation: file-chip-progress var(--motion-duration-slow) linear infinite;
+}
+
+@keyframes file-chip-progress {
+  from {
+    background-position: -40% 0;
+  }
+  to {
+    background-position: 140% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .product-app-frame[data-ui-version="v2"] .file-chip__progress {
+    animation: none;
+  }
+}
+
+.product-app-frame[data-ui-version="v2"] .file-chip__error,
+.product-app-frame[data-ui-version="v2"] .file-chip__warning {
+  flex: 1;
+  min-width: 0;
+  color: var(--v2-warning, var(--v2-ink-2));
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .file-chip__error {
+  color: var(--v2-danger, var(--v2-ink-2));
+}
+
+/* ─── Attachment references in the transcript (R8) ─── */
+
+.product-app-frame[data-ui-version="v2"] .message-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .message-attachment {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .message-attachment__image {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+}
+
+.product-app-frame[data-ui-version="v2"] .message-attachment__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .message-attachment__link:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.product-app-frame[data-ui-version="v2"] .message-attachment__missing,
+.product-app-frame[data-ui-version="v2"] .message-attachment__degraded {
+  color: var(--v2-warning, var(--v2-ink-3));
+}
+
+.product-app-frame[data-ui-version="v2"] .message-attachment__error {
+  color: var(--v2-danger, var(--v2-ink-2));
+}
+
+.product-app-frame[data-ui-version="v2"] .message-attachment[data-degraded="true"] {
+  border-left: 2px solid var(--v2-warning, var(--v2-border-strong));
+  padding-left: 6px;
+}
+
+/* ─── Editing queued message (W3) ─── */
+
+.product-app-frame[data-ui-version="v2"] .queued-message[data-editing="true"] {
+  outline: 1px dashed var(--v2-border-strong, var(--v2-border));
+  outline-offset: 2px;
+}
+
+/* ─── Recovering an abandoned successor (F.5) ─── */
+
+.product-app-frame[data-ui-version="v2"] .queued-message__recovery {
+  margin: 4px 0 0;
+  color: var(--v2-ink-2);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.product-app-frame[data-ui-version="v2"] .queued-message__recovery[data-tone="ok"] {
+  color: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .queued-message__recovery[data-tone="error"] {
+  color: var(--v2-danger);
+}
+
+/* ─── Sidebar session row actions (W7) and failure dot (W4.4) ─── */
+
+.product-app-frame[data-ui-version="v2"] .session-branch {
+  position: relative;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__pinmark {
+  flex: none;
+  color: var(--v2-rail-signal, var(--v2-ink-3));
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__actions {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: none;
+  gap: 2px;
+  padding: 1px 2px;
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-canvas);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-branch:hover .session-item__actions,
+.product-app-frame[data-ui-version="v2"] .session-item__actions:focus-within {
+  display: inline-flex;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--v2-danger);
+}
+
+/* R3: the dot reports the last finished turn, so it needs all three outcomes.
+   `cancelled` reuses the rail's muted tone because the v2 palette has no
+   general-purpose neutral surface colour. */
+.product-app-frame[data-ui-version="v2"] .session-item__dot[data-tone="success"] {
+  background: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__dot[data-tone="neutral"] {
+  background: var(--v2-rail-muted);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item--editing {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 6px;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item--editing input {
+  width: 100%;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__error {
+  margin: 0;
+  color: var(--v2-danger);
+  font-size: 11px;
+}
+
+/* ─── Settings: section breathe (W8.3) and keyboard overrides ─── */
+
+.settings-section-breathe {
+  position: relative;
+  border-radius: var(--v2-radius-sm, 8px);
+}
+
+.settings-section-breathe::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1px solid var(--v2-rail-signal, var(--v2-ink-3));
+  border-radius: inherit;
+  opacity: 0;
+  animation: settings-section-border-breathe var(--motion-duration-breathe) var(--motion-ease-in-out) 4;
+}
+
+@keyframes settings-section-border-breathe {
+  0%,
+  100% {
+    opacity: 0.12;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* No transition: land directly on the visible final state. */
+  .settings-section-breathe::after {
+    animation: none;
+    opacity: 0.5;
+  }
+}
+
+.keyboard-settings__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+kbd[data-recording="true"] {
+  color: var(--v2-rail-signal, var(--v2-ink-2));
+  border-style: dashed;
+}
+
+kbd[data-unbound="true"] {
+  color: var(--v2-ink-3);
+  border-style: dashed;
+}
+
+/* ─── Reader font scale (W8.2): the frame base and the reading surface ─── */
+
+
+.product-app-frame[data-ui-version="v2"] .rich-text h1 {
+  font-size: calc(18px * var(--font-scale, 1));
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text h2 {
+  font-size: calc(16px * var(--font-scale, 1));
+}
+
+.product-app-frame[data-ui-version="v2"] .rich-text h3,
+.product-app-frame[data-ui-version="v2"] .rich-text h4 {
+  font-size: calc(14px * var(--font-scale, 1));
+}
+
+/* ---------------------------------------------------------------------------
+ * R7 search surfaces (step 1 session messages, step 2 unified scopes).
+ *
+ * Both are overlays on the shell rather than routes: a hit is located in the
+ * transcript behind them, and a refused term keeps the session being read.
+ * ------------------------------------------------------------------------- */
+
+.product-app-frame[data-ui-version="v2"] .product-search-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 52;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search-scrim {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: color-mix(in srgb, var(--v2-bg) 62%, transparent);
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search {
+  position: absolute;
+  top: 10vh;
+  left: 50%;
+  display: flex;
+  width: min(720px, calc(100vw - 32px));
+  max-height: min(74vh, 640px);
+  flex-direction: column;
+  overflow: hidden;
+  transform: translateX(-50%);
+  border: 1px solid var(--v2-border-strong);
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-bg);
+  box-shadow: var(--v2-shadow-md);
+  animation: command-palette-in var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__header h2 {
+  margin: 0;
+  font-size: calc(15px * var(--font-scale, 1));
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__lede {
+  margin: 4px 0 0;
+  color: var(--v2-ink-3);
+  font-size: calc(12px * var(--font-scale, 1));
+  line-height: 1.5;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__form label {
+  color: var(--v2-ink-3);
+  font-size: calc(12px * var(--font-scale, 1));
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__form select,
+.product-app-frame[data-ui-version="v2"] .product-search__form input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface);
+  color: var(--v2-ink);
+  font-size: calc(13px * var(--font-scale, 1));
+  padding: 6px 8px;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__form select {
+  flex: 0 0 auto;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__scope-note {
+  margin: 0;
+  padding: 0 16px 8px;
+  color: var(--v2-warning);
+  font-size: calc(12px * var(--font-scale, 1));
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__notice {
+  margin: 0;
+  padding: 8px 16px;
+  border-top: 1px solid var(--v2-border);
+  background: var(--v2-warning-soft);
+  color: var(--v2-warning);
+  font-size: calc(12px * var(--font-scale, 1));
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__error {
+  margin: 0;
+  padding: 8px 16px;
+  border-top: 1px solid var(--v2-border);
+  background: var(--v2-danger-soft);
+  color: var(--v2-danger);
+  font-size: calc(12px * var(--font-scale, 1));
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__results {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__group h3 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 10px 4px 4px;
+  color: var(--v2-ink-2);
+  font-size: calc(12px * var(--font-scale, 1));
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__group h3 small {
+  color: var(--v2-ink-3);
+  font-weight: 400;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__group ul,
+.product-app-frame[data-ui-version="v2"] .product-search__results ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__hit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface);
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__hit-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--v2-ink-3);
+  font-size: calc(11px * var(--font-scale, 1));
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__snippet {
+  margin: 0;
+  /* The API bounded and redacted this window; wrapping only keeps it readable. */
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  color: var(--v2-ink);
+  font-size: calc(13px * var(--font-scale, 1));
+  line-height: 1.5;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__hit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__locate {
+  margin: 0;
+  color: var(--v2-ink-3);
+  font-size: calc(12px * var(--font-scale, 1));
+}
+
+.product-app-frame[data-ui-version="v2"] .product-search__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--v2-border);
+  color: var(--v2-ink-3);
+  font-size: calc(12px * var(--font-scale, 1));
+}

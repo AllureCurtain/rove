@@ -1,0 +1,782 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  MAX_PRUNED_PAYLOAD_DIGESTS,
+  MAX_PRUNING_DIGEST_BYTES,
+  MAX_PRUNING_POLICY_BYTES,
+  STREAM_EVENT_NAMES,
+  PRODUCT_EVENT_KINDS,
+  readPromptBuildMetadata,
+  readPromptPruningFacts,
+  type ProviderProfile,
+  type StreamEvent,
+} from "./rove-types";
+
+const streamEventFixtures: StreamEvent[] = [
+  {
+    type: "run_started",
+    run_id: "run-1",
+    job_id: "job-1",
+    user_message: "hello",
+  },
+  {
+    type: "agent_profile_activated",
+    identity: {
+      selector: { source: "builtin", agent_id: "legacy" },
+      agent_id: "legacy",
+      display_name: "Legacy Agent",
+      definition_version: "compat",
+      manifest_hash: "sha256:" + "a".repeat(64),
+      package_hash: "sha256:" + "b".repeat(64),
+      profile_hash: "sha256:" + "c".repeat(64),
+    },
+    resumed_from_snapshot: false,
+  },
+  {
+    type: "workspace_instructions_resolved",
+    bundle_hash: "sha256:" + "d".repeat(64),
+    layer_count: 1,
+    rejected_count: 0,
+    truncated: false,
+  },
+  {
+    type: "execution_strategy_selected",
+    policy: {
+      version: 1,
+      strategy: "plan_react",
+      selection_source: "max_steps_and_plan_flag",
+      budgets: { max_step_attempts: 20, max_model_turns_per_step: 4 },
+      evaluator_mode: "rule_first_model_on_ambiguity",
+      finalizer_policy: "deterministic",
+    },
+  },
+  {
+    type: "instruction_overlay_applied",
+    target_path: "apps/web/page.tsx",
+    scope: "apps/web",
+    source_path: "apps/web/AGENTS.md",
+    content_hash: "sha256:" + "f".repeat(64),
+    boundary: "tool_call",
+    call_id: "01JOVERLAY",
+  },
+  {
+    type: "procedures_selected",
+    profile_hash: "sha256:" + "c".repeat(64),
+    selected: [],
+    considered_count: 0,
+    excluded_count: 0,
+  },
+  {
+    type: "procedure_hydrated",
+    reference: {
+      id: "inspect.disk",
+      version: "1.0.0",
+      trust: "workspace_trusted",
+      source_path: "procedures/inspect.disk.md",
+      content_hash: "sha256:" + "e".repeat(64),
+    },
+    truncated: false,
+    dropped_bytes: 0,
+  },
+  {
+    type: "procedure_applied",
+    application: {
+      application_id: "app-1",
+      reference: {
+        id: "inspect.disk",
+        version: "1.0.0",
+        trust: "workspace_trusted",
+        source_path: "procedures/inspect.disk.md",
+        content_hash: "sha256:" + "e".repeat(64),
+      },
+      hydration_hash: "sha256:" + "h".repeat(64),
+      capability_snapshot_id: "snap-1",
+      risk_level: "low",
+      boundary: "step",
+    },
+  },
+  {
+    type: "procedure_deviation",
+    record_id: "rec-dev-1",
+    deviation: {
+      deviation_id: "dev-1",
+      reference: {
+        id: "mutate.files",
+        version: "1.0.0",
+        trust: "workspace_trusted",
+        source_path: "procedures/mutate.files.md",
+        content_hash: "sha256:" + "m".repeat(64),
+      },
+      reason: "capability_unavailable",
+      safe_summary: "Required tool not available",
+      material: true,
+    },
+  },
+  {
+    type: "execution_budget_updated",
+    phase: "step",
+    snapshot: {
+      limits: { max_step_attempts: 20, max_model_turns_per_step: 4 },
+      consumed: {
+        plan_steps: 1,
+        step_attempts: 1,
+        model_turns: 2,
+        tool_calls: 1,
+        plan_revisions: 0,
+        model_repairs: 0,
+        planner_turns: 1,
+        evaluator_turns: 0,
+        replanner_turns: 0,
+        finalization_turns: 0,
+        wall_time_ms: 1200,
+        total_tokens: 640,
+        cost_microunits: 0,
+      },
+      cost_enforced: false,
+    },
+  },
+  {
+    type: "execution_degraded",
+    record: {
+      degradation_id: "deg-1",
+      phase: "evaluator",
+      code: "evaluator_model_fallback",
+      safe_summary: "Deterministic rules were used because the evaluator failed.",
+      occurred_at: "2026-08-08T00:00:00Z",
+    },
+  },
+  {
+    type: "llm_chunk",
+    delta: "he",
+  },
+  {
+    type: "model_status",
+    status: "thinking",
+    message: "Model is thinking",
+  },
+  {
+    type: "provider_retry",
+    attempt: 2,
+    max_attempts: 4,
+    delay_ms: 2_000,
+    reason: "transient:request_failed",
+    phase: "model_call",
+  },
+  {
+    type: "llm_message",
+    full: "hello",
+    usage: {
+      prompt_tokens: 1,
+      completion_tokens: 2,
+      total_tokens: 3,
+    },
+    tool_calls: [
+      {
+        id: "toolu-1",
+        name: "echo",
+        args: { text: "hello" },
+      },
+    ],
+  },
+  {
+    type: "tool_call_started",
+    call_id: "call-1",
+    tool_use_id: "toolu-1",
+    name: "echo",
+    args: { text: "hello" },
+  },
+  {
+    type: "tool_call_approval_needed",
+    call_id: "call-1",
+    name: "write_file",
+    args: { path: "notes.md" },
+    reason: "destructive tool requires explicit approval",
+  },
+  {
+    type: "tool_call_completed",
+    call_id: "call-1",
+    result: {
+      call_id: "call-1",
+      output: "wrote notes.md",
+      mutations: [
+        {
+          path: "notes.md",
+          operation: "update",
+          diff: "-old\n+new",
+        },
+      ],
+    },
+  },
+  {
+    type: "tool_call_failed",
+    call_id: "call-1",
+    error: {
+      code: "invalid_args",
+      reason: "missing path",
+    },
+  },
+  {
+    type: "tool_artifact_stored",
+    call_id: "call-1",
+    artifact: {
+      artifact_id: "art_0123456789abcdef0123456789abcdef",
+      kind: "image",
+      mime_type: "image/png",
+      byte_length: 2048,
+      sha256: "a".repeat(64),
+      storage_ref:
+        "artifacts/art_0123456789abcdef0123456789abcdef/payload",
+      source: {
+        run_id: "run-1",
+        call_id: "call-1",
+        block_ordinal: 0,
+        captured_at: "2026-08-09T00:00:00Z",
+      },
+    },
+  },
+  {
+    type: "tool_artifact_rejected",
+    call_id: "call-1",
+    block_ordinal: 2,
+    reason: "artifact_single_bytes_exceeded",
+    observed_bytes: 9000000,
+  },
+  {
+    type: "mcp_server_degraded",
+    server_config_id: "monitoring",
+    required: false,
+    failure_code: "mcp_catalog_refresh_failed",
+  },
+  {
+    type: "mcp_capabilities_refreshed",
+    server_config_id: "monitoring",
+    snapshot_id: "sha256:catalog-v2",
+    added: ["mcp__monitoring__new"],
+    removed: [],
+    changed: ["mcp__monitoring__query"],
+  },
+  {
+    type: "input_needed",
+    input_id: "input-1",
+    prompt: "Which branch?",
+  },
+  {
+    type: "plan_created",
+    plan: {
+      goal: "test",
+      current_step: 0,
+      steps: [{ id: "1", title: "Inspect", done: false }],
+    },
+    plan_id: "plan-1",
+    plan_revision_id: "revision-0",
+    revision: 0,
+    plan_revision: {
+      plan_id: "plan-1",
+      revision_id: "revision-0",
+      revision: 0,
+      created_at: "2026-07-20T00:00:00Z",
+      decision_id: "initial-decision",
+      safe_reason_codes: ["planner_draft"],
+      remaining_steps: [{ id: "1", title: "Inspect", done: false }],
+      budget_snapshot: {
+        plan_steps: 0,
+        step_attempts: 0,
+        model_turns: 0,
+        tool_calls: 0,
+        plan_revisions: 0,
+        model_repairs: 0,
+        planner_turns: 0,
+        evaluator_turns: 0,
+        replanner_turns: 0,
+        finalization_turns: 0,
+        wall_time_ms: 0,
+        total_tokens: 0,
+        cost_microunits: 0,
+      },
+    },
+  },
+  {
+    type: "plan_step_started",
+    index: 0,
+    step: { id: "1", title: "Inspect", done: false },
+  },
+  {
+    type: "step_result",
+    record: {
+      record_id: "record-1",
+      plan_id: "plan-1",
+      plan_revision_id: "revision-0",
+      step_id: "1",
+      attempt: 1,
+      status: "failed",
+      started_at: "2026-07-20T00:00:00Z",
+      finished_at: "2026-07-20T00:00:01Z",
+      summary: "Step failed and may be replanned.",
+      completion_basis: "runtime_failure",
+      model_turns_used: 1,
+      tool_calls_used: 1,
+      token_usage: {
+        prompt_tokens: 1,
+        completion_tokens: 2,
+        total_tokens: 3,
+      },
+      error_code: "step_runtime_failure",
+      safe_error_summary: "The planned step ended with a runtime failure.",
+    },
+  },
+  {
+    type: "plan_decision",
+    record: {
+      trigger_step_record_id: "record-1",
+      decided_at: "2026-07-20T00:00:02Z",
+      decision: {
+        decision_id: "decision-1",
+        kind: "replace_remaining",
+        safe_reason_codes: ["recoverable_step_failure"],
+        safe_summary: "Replace the failed remaining work.",
+        remaining_work_requirements: ["Use a safe alternative."],
+      },
+    },
+  },
+  {
+    type: "plan_revised",
+    plan: {
+      goal: "test",
+      current_step: 0,
+      steps: [{ id: "2", title: "Inspect safely", done: false }],
+    },
+    revision: {
+      plan_id: "plan-1",
+      revision_id: "revision-1",
+      parent_revision_id: "revision-0",
+      revision: 1,
+      created_at: "2026-07-20T00:00:03Z",
+      trigger_step_record_id: "record-1",
+      decision_id: "decision-1",
+      safe_reason_codes: ["recoverable_step_failure"],
+      remaining_steps: [{ id: "2", title: "Inspect safely", done: false }],
+      budget_snapshot: {
+        plan_steps: 0,
+        step_attempts: 0,
+        model_turns: 0,
+        tool_calls: 0,
+        plan_revisions: 0,
+        model_repairs: 0,
+        planner_turns: 0,
+        evaluator_turns: 0,
+        replanner_turns: 0,
+        finalization_turns: 0,
+        wall_time_ms: 0,
+        total_tokens: 0,
+        cost_microunits: 0,
+      },
+    },
+  },
+  {
+    type: "finalization_started",
+    record: {
+      finalization_id: "fin-1",
+      phase: "started",
+      finish_reason: "completed",
+      mode: "deterministic",
+      started_at: "2026-08-08T00:00:01Z",
+    },
+  },
+  {
+    type: "finalization_completed",
+    record: {
+      finalization_id: "fin-1",
+      phase: "completed",
+      finish_reason: "completed",
+      outcome: "success",
+      mode: "deterministic",
+      started_at: "2026-08-08T00:00:01Z",
+      completed_at: "2026-08-08T00:00:02Z",
+      output: "Goal: ship\noutcome: success",
+      evidence_refs: ["tool_call:call-1"],
+    },
+  },
+  {
+    type: "prompt_compacted",
+    summary: "Earlier context summarized",
+    state: {
+      mode: "model_generated",
+      auto_triggered: true,
+      degraded: false,
+      consecutive_failures: 0,
+      circuit_open: false,
+      model: "fake",
+      prompt_version: "rove.compaction.v1",
+      source_message_count: 3,
+    },
+  },
+  {
+    type: "memory_flushed",
+    notes: ["Promoted durable memory before compaction"],
+  },
+  {
+    type: "prompt_built",
+    metadata: {
+      prompt_hash: "sha256:prompt",
+      stable_prefix_hash: "sha256:prefix",
+      workspace_fingerprint: "sha256:workspace",
+      tool_signature: "sha256:tools",
+      token_estimate: 42,
+      included_history_messages: 1,
+      dropped_history_messages: 0,
+      prompt_cache_key: "sha256:cache",
+    },
+  },
+  {
+    type: "run_completed",
+    reason: "final",
+    output: "done",
+  },
+  {
+    type: "steer_accepted",
+    id: "steer-1",
+    content: "Prioritize the release notes.",
+  },
+  {
+    type: "steer_applied",
+    id: "steer-1",
+  },
+  {
+    type: "steer_dropped",
+    id: "steer-2",
+    reason: "run completed before the steer reached a model turn",
+  },
+  {
+    type: "followup_queued",
+    id: "followup-1",
+    content: "Draft the release notes next.",
+  },
+  {
+    type: "followup_dequeued",
+    id: "followup-1",
+  },
+  {
+    type: "followup_abandoned",
+    id: "followup-2",
+    reason: "run cancelled",
+  },
+  { type: "message_queued", id: "message-1", content: "queued" },
+  { type: "message_intervention_requested", id: "message-1" },
+  { type: "message_applied_current_run", id: "message-1" },
+  { type: "message_claimed_successor", id: "message-2" },
+  { type: "message_needs_attention", id: "message-2", reason: "restart" },
+  { type: "message_revoked", id: "message-3" },
+];
+
+const providerProfileFixtures = [
+  { provider_type: "openai", api_base: "https://api.openai.com/v1" },
+  { provider_type: "openai-responses", api_base: "https://api.openai.com/v1" },
+  { provider_type: "anthropic", api_base: "https://api.anthropic.com" },
+  { provider_type: "ollama", api_base: "http://localhost:11434" },
+  { provider_type: "fake", api_base: "local" },
+] satisfies ProviderProfile[];
+
+describe("rove stream event types", () => {
+  it("lists every current runtime event name", () => {
+    expect(STREAM_EVENT_NAMES).toEqual(streamEventFixtures.map((event) => event.type));
+  });
+
+  it("lists every current product directory event kind", () => {
+    expect(PRODUCT_EVENT_KINDS).toEqual([
+      "session.created",
+      "session.updated",
+      "session.deleted",
+      "session.status_changed",
+      "workspace.created",
+      "workspace.updated",
+      "workspace.deleted",
+      "preferences.changed",
+      "control.queued",
+      "control.promoted",
+      "control.revoked",
+    ]);
+  });
+
+  it("keeps web provider profiles aligned with the API provider surface", () => {
+    expect(
+      providerProfileFixtures.map((profile) => profile.provider_type),
+    ).toEqual([
+      "openai",
+      "openai-responses",
+      "anthropic",
+      "ollama",
+      "fake",
+    ]);
+  });
+});
+
+/** The identity and counts every build publishes, as it arrives flat on the wire. */
+const BUILD_WIRE_FIELDS = {
+  prompt_hash: "sha256:prompt",
+  stable_prefix_hash: "sha256:prefix",
+  workspace_fingerprint: "sha256:workspace",
+  tool_signature: "sha256:tools",
+  token_estimate: 40_000,
+  included_history_messages: 6,
+  dropped_history_messages: 4,
+};
+
+describe("prompt-build decoding", () => {
+  it("fills the pruning members the runtime omitted, so no fact is a missing value", () => {
+    // A probe that only dropped older messages: the runtime skips the other four
+    // counts and the digest list, so three keys are the whole record.
+    const metadata = readPromptBuildMetadata({
+      ...BUILD_WIRE_FIELDS,
+      pruned_omitted_messages: 12,
+      pruned_omitted_bytes: 44_000,
+      pruning_policy: "rove.pruning.v1",
+    });
+
+    expect(metadata?.pruning).toEqual({
+      pruned_tool_results: 0,
+      pruned_payload_bytes: 0,
+      pruned_excerpt_bytes: 0,
+      pruned_omitted_messages: 12,
+      pruned_omitted_bytes: 44_000,
+      pruned_payload_digests: [],
+      pruning_policy: "rove.pruning.v1",
+    });
+  });
+
+  it("reads a build that pruned nothing as having no facts at all", () => {
+    const metadata = readPromptBuildMetadata({ ...BUILD_WIRE_FIELDS });
+
+    expect(metadata).not.toBeNull();
+    // Not an all-zero fact set: that would claim a measurement the server never
+    // made, and the panel shows or hides on exactly this distinction.
+    expect(metadata?.pruning).toBeUndefined();
+  });
+
+  it("treats an empty digest list as the absent list the runtime omits", () => {
+    expect(readPromptPruningFacts({ pruned_payload_digests: [] })).toBeUndefined();
+  });
+
+  it("withholds the whole fact set when a member is not one the schema accepts", () => {
+    // The live path has no schema to refuse the frame with, so it answers the same
+    // absence the restored path's refusal produces — it does not render the members
+    // that happen to be fine, because the panel prints the digest count and a
+    // filtered list would report a shorter list as the whole measurement.
+    expect(readPromptPruningFacts({ pruned_tool_results: "3" })).toBeUndefined();
+    expect(readPromptPruningFacts({ pruned_payload_bytes: 1.5 })).toBeUndefined();
+    expect(
+      readPromptPruningFacts({
+        pruned_omitted_messages: 12,
+        pruned_payload_digests: ["call-9:sha256:aaaa", 7],
+      }),
+    ).toBeUndefined();
+    expect(
+      readPromptPruningFacts({ pruned_payload_digests: [""] }),
+    ).toBeUndefined();
+    expect(
+      readPromptPruningFacts({ pruned_payload_digests: ["   "] }),
+    ).toBeUndefined();
+    expect(
+      readPromptPruningFacts({ pruned_payload_digests: ["call-1:sha256:aa\u0000"] }),
+    ).toBeUndefined();
+    expect(readPromptPruningFacts({ pruning_policy: "" })).toBeUndefined();
+    expect(readPromptPruningFacts({ pruning_policy: "rove.pruning.v1\u007f" })).toBeUndefined();
+    // A record that carries only an unusable member is not an all-zero fact set
+    // either: the absence has to survive both the member and the record.
+    expect(readPromptPruningFacts({ pruned_tool_results: -1 })).toBeUndefined();
+  });
+
+  it("refuses a build whose identity or counts are unusable", () => {
+    expect(readPromptBuildMetadata(null)).toBeNull();
+    expect(readPromptBuildMetadata({ ...BUILD_WIRE_FIELDS, prompt_hash: "" })).toBeNull();
+    // The restored path's schema reads every identity member with the same
+    // trim-non-empty rule, so a member of spaces cannot become an identity here.
+    expect(readPromptBuildMetadata({ ...BUILD_WIRE_FIELDS, prompt_hash: "   " })).toBeNull();
+    expect(
+      readPromptBuildMetadata({ ...BUILD_WIRE_FIELDS, token_estimate: -1 }),
+    ).toBeNull();
+    expect(readPromptBuildMetadata({ ...BUILD_WIRE_FIELDS, dropped_history_messages: "4" }))
+      .toBeNull();
+    expect(
+      readPromptBuildMetadata({ ...BUILD_WIRE_FIELDS, prompt_hash: "a".repeat(64) })
+        ?.prompt_hash,
+    ).toBe("a".repeat(64));
+  });
+
+  it("refuses the whole build when an optional identity member is unusable", () => {
+    // The strict schema reads `prompt_cache_key` with `nonEmpty`, so a record
+    // carrying an unusable one is refused *whole* there — the pruning facts beside
+    // it never render. Answering with the facts and no cache key would describe a
+    // record the restored path throws on, which is the disagreement this reader
+    // exists to remove; an optional member is still a member of the record.
+    expect(
+      readPromptBuildMetadata({
+        ...BUILD_WIRE_FIELDS,
+        pruning_policy: "rove.pruning.v1",
+        prompt_cache_key: "   ",
+      }),
+    ).toBeNull();
+    expect(
+      readPromptBuildMetadata({
+        ...BUILD_WIRE_FIELDS,
+        pruned_tool_results: 0,
+        prompt_cache_key: 7,
+      }),
+    ).toBeNull();
+    // Not carried is not the same as carried unusably: both paths read an absent
+    // or null member as no cache key at all, and a usable one as the key.
+    expect(
+      readPromptBuildMetadata({ ...BUILD_WIRE_FIELDS, prompt_cache_key: null })
+        ?.prompt_cache_key,
+    ).toBeUndefined();
+    expect(
+      readPromptBuildMetadata({ ...BUILD_WIRE_FIELDS, prompt_cache_key: "cache-1" })
+        ?.prompt_cache_key,
+    ).toBe("cache-1");
+  });
+
+  it("reads the nested fact set as the decoded shape of the record that carries it", () => {
+    // Only this shell produces a record with both shapes — it nests the facts and
+    // the projection then decodes its own output — and the wire record has no
+    // nested member, so the nested object wins where both appear. A nested value
+    // that is not an object (a string, a number) is not a decoded fact set and the
+    // flat members are read instead, which is the wire path.
+    expect(
+      readPromptBuildMetadata({
+        ...BUILD_WIRE_FIELDS,
+        pruned_tool_results: 5,
+        pruning: { pruned_tool_results: 3 },
+      })?.pruning?.pruned_tool_results,
+    ).toBe(3);
+    expect(
+      readPromptBuildMetadata({ ...BUILD_WIRE_FIELDS, pruned_tool_results: 5, pruning: {} })
+        ?.pruning,
+    ).toBeUndefined();
+    expect(
+      readPromptBuildMetadata({ ...BUILD_WIRE_FIELDS, pruned_tool_results: 5, pruning: [] })
+        ?.pruning,
+    ).toBeUndefined();
+    expect(
+      readPromptBuildMetadata({ ...BUILD_WIRE_FIELDS, pruned_tool_results: 5, pruning: "flat" })
+        ?.pruning?.pruned_tool_results,
+    ).toBe(5);
+  });
+
+  it("reads a count beyond the safe integer range as absent", () => {
+    // `Number.isSafeInteger` rather than `Number.isInteger`: a count past the safe
+    // range is not a measurement, and the strict restored path refuses it too, so
+    // the two decoders must not disagree about a number JavaScript cannot hold.
+    expect(
+      readPromptPruningFacts({ pruned_omitted_messages: 12 })?.pruned_omitted_messages,
+    ).toBe(12);
+    expect(
+      readPromptPruningFacts({ pruned_omitted_messages: 2 ** 53 }),
+    ).toBeUndefined();
+  });
+
+  it("pins the digest cap the two paths share", () => {
+    // The bounds live in one place, and this file is where a raised number has to
+    // be argued: the runtime's own policy caps the list at 8, so 64 is headroom
+    // for a policy revision and not a measurement.
+    expect(MAX_PRUNED_PAYLOAD_DIGESTS).toBe(64);
+    expect(MAX_PRUNING_DIGEST_BYTES).toBe(512);
+    expect(MAX_PRUNING_POLICY_BYTES).toBe(128);
+  });
+
+  it("withholds the facts of an unfittable payload instead of shortening it", () => {
+    // The schema refuses a digest list longer than the cap and a member longer than
+    // its byte bound; the live path answers the same absence. It must not truncate:
+    // the panel prints `pruned_payload_digests.length`, so a shortened list would
+    // read as a complete measurement of a payload this shell never saw whole.
+    const digests = Array.from(
+      { length: MAX_PRUNED_PAYLOAD_DIGESTS + 1 },
+      (_, index) => `call-${index}:sha256:aaaa`,
+    );
+    expect(
+      readPromptPruningFacts({
+        pruned_tool_results: 1,
+        pruned_payload_digests: digests,
+      }),
+    ).toBeUndefined();
+    expect(
+      readPromptPruningFacts({
+        pruned_tool_results: 1,
+        pruned_payload_digests: [
+          ...digests.slice(0, MAX_PRUNED_PAYLOAD_DIGESTS),
+          "x".repeat(MAX_PRUNING_DIGEST_BYTES + 1),
+        ],
+      }),
+    ).toBeUndefined();
+    expect(
+      readPromptPruningFacts({
+        pruning_policy: "p".repeat(MAX_PRUNING_POLICY_BYTES + 1),
+      }),
+    ).toBeUndefined();
+    // The same record with the fixable member removed is describable, so the
+    // withhold is about the member and not about the record being large.
+    expect(
+      readPromptPruningFacts({
+        pruned_tool_results: 1,
+        pruned_payload_digests: digests.slice(0, MAX_PRUNED_PAYLOAD_DIGESTS),
+      })?.pruned_payload_digests,
+    ).toHaveLength(MAX_PRUNED_PAYLOAD_DIGESTS);
+  });
+
+  it("counts the digest bound in UTF-8 bytes, like the schema does", () => {
+    // A bound counted in code units would let a multi-byte identity through here
+    // and refuse it on the restored path.
+    const multiByte = "日".repeat(200); // 600 bytes, 200 code units
+    expect(
+      readPromptPruningFacts({
+        pruned_payload_digests: [multiByte],
+        pruned_tool_results: 1,
+      }),
+    ).toBeUndefined();
+    expect(
+      readPromptPruningFacts({
+        pruned_payload_digests: ["日".repeat(170)], // 510 bytes
+        pruned_tool_results: 1,
+      })?.pruned_payload_digests,
+    ).toEqual(["日".repeat(170)]);
+  });
+
+  it("ignores a count member this shell does not decode", () => {
+    // A wire member added on the server is accepted and not rendered, because the
+    // decoded shape's members are literals and this key is not in the shared list
+    // at all. A key *added to that list* without a decoded member is refused by
+    // TypeScript instead: the list is typed as the number members of the fact set,
+    // so presence cannot be counted from a key that decodes to nothing.
+    expect(
+      readPromptPruningFacts({ pruned_tool_results: 2, pruning_future_count: 5 }),
+    ).toEqual({
+      pruned_tool_results: 2,
+      pruned_payload_bytes: 0,
+      pruned_excerpt_bytes: 0,
+      pruned_omitted_messages: 0,
+      pruned_omitted_bytes: 0,
+      pruned_payload_digests: [],
+      pruning_policy: null,
+    });
+  });
+
+  it("keeps an already-decoded record's facts, because the restored path decodes twice", () => {
+    // `product/product-api-types.ts` nests the facts and the transcript
+    // projection then runs this decoder over its own output; a decoder that only
+    // read flat keys would drop them on the second pass.
+    const decoded = readPromptBuildMetadata({
+      ...BUILD_WIRE_FIELDS,
+      pruning: {
+        pruned_tool_results: 3,
+        pruned_payload_bytes: 90_000,
+        pruned_excerpt_bytes: 6_000,
+        pruned_omitted_messages: 0,
+        pruned_omitted_bytes: 0,
+        pruned_payload_digests: ["call-9:sha256:aaaa"],
+        pruning_policy: "rove.pruning.v1",
+      },
+    });
+
+    expect(decoded?.pruning?.pruned_tool_results).toBe(3);
+    expect(decoded?.pruning?.pruned_payload_bytes).toBe(90_000);
+    expect(decoded?.pruning?.pruned_payload_digests).toEqual(["call-9:sha256:aaaa"]);
+  });
+});

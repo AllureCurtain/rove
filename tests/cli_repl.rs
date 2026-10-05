@@ -1,0 +1,261 @@
+use std::process::{Command, Stdio};
+
+use crate::support::rove_bin;
+
+use rove_app_bootstrap::{DATA_ROOT_ENV, USER_CONFIG_ROOT_ENV, WorkspaceStateLayout};
+
+/// A CLI invocation that cannot see the developer's own provider config.
+///
+/// These tests spawn the real binary, so without this they read
+/// `~/.rove/config.toml` and inherit whatever profile the machine has active —
+/// which on a configured machine means `--model fake` resolves against a real
+/// endpoint and the assertions fail for reasons that have nothing to do with the
+/// code under test. `config_root` must outlive the returned command.
+fn isolated_rove(config_root: &tempfile::TempDir) -> Command {
+    let mut command = Command::new(rove_bin());
+    command.env(USER_CONFIG_ROOT_ENV, config_root.path());
+    command
+}
+
+#[test]
+fn repl_subcommand_accepts_exit_command_and_exits_zero() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_root = tempfile::TempDir::new().unwrap();
+    let layout = WorkspaceStateLayout::resolve(data_root.path(), tmp.path());
+    let config_root = tempfile::TempDir::new().unwrap();
+    let output = isolated_rove(&config_root)
+        .env(DATA_ROOT_ENV, data_root.path())
+        .arg("repl")
+        .arg("--cwd")
+        .arg(tmp.path())
+        .arg("--model")
+        .arg("fake")
+        .arg("--approval")
+        .arg("never")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write as _;
+            child.stdin.as_mut().unwrap().write_all(b"/exit\n")?;
+            child.wait_with_output()
+        })
+        .unwrap();
+
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("R O V E"));
+    assert!(stderr.contains("local-first agent runtime"));
+    assert!(stderr.contains("model   fake"));
+    assert!(stderr.contains("session  new"));
+    assert!(stderr.contains("mode    interactive"));
+    assert!(stderr.contains("status   ready"));
+    assert!(stderr.contains("Type your task, or use /help for commands."));
+    assert!(!stderr.contains("provider"));
+    assert!(!stderr.contains("session id"));
+    assert!(!stderr.contains("memory"));
+    assert!(layout.workspace_dir.join("repl_history").exists());
+}
+
+#[test]
+fn repl_status_command_prints_runtime_context() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_root = tempfile::TempDir::new().unwrap();
+    let config_root = tempfile::TempDir::new().unwrap();
+    let output = isolated_rove(&config_root)
+        .env(DATA_ROOT_ENV, data_root.path())
+        .arg("repl")
+        .arg("--cwd")
+        .arg(tmp.path())
+        .arg("--model")
+        .arg("fake")
+        .arg("--approval")
+        .arg("never")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write as _;
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"/status\n/exit\n")?;
+            child.wait_with_output()
+        })
+        .unwrap();
+
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("workspace"));
+    assert!(stderr.contains("model"));
+    assert!(stderr.contains("fake"));
+    assert!(stderr.contains("provider"));
+    assert!(stderr.contains("state"));
+    assert!(stderr.contains("session new"));
+    assert!(stderr.contains("session id"));
+    assert!(stderr.contains("active"));
+    assert!(stderr.contains("memory"));
+    assert!(stderr.contains("memory/sessions"));
+    assert!(!stderr.contains(".rove/memory/sessions"));
+}
+
+#[test]
+fn repl_fake_run_uses_compact_sections() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let config_root = tempfile::TempDir::new().unwrap();
+    let output = isolated_rove(&config_root)
+        .arg("repl")
+        .arg("--cwd")
+        .arg(tmp.path())
+        .arg("--model")
+        .arg("fake")
+        .arg("--approval")
+        .arg("never")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write as _;
+            child.stdin.as_mut().unwrap().write_all(b"hello\n/exit\n")?;
+            child.wait_with_output()
+        })
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(stderr.contains("You"));
+    assert!(stderr.contains("hello"));
+    assert!(stderr.contains("Done"));
+    assert!(stderr.contains("final"));
+    assert!(stderr.contains("report"));
+    assert!(stderr.contains("Assistant"));
+    assert!(stderr.contains("final · 1 step"));
+    assert!(!stderr.contains("INFO"));
+    assert!(!stderr.contains("Workspace detected"));
+    assert!(!stderr.contains("Plan · 1 steps"));
+    assert!(stdout.contains("fake response: hello"));
+    assert!(!stdout.contains("INFO"));
+    assert!(!stdout.contains("Workspace detected"));
+}
+
+#[test]
+fn message_enters_repl_runs_first_prompt_and_accepts_exit() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let config_root = tempfile::TempDir::new().unwrap();
+    let output = isolated_rove(&config_root)
+        .arg("--cwd")
+        .arg(tmp.path())
+        .arg("--model")
+        .arg("fake")
+        .arg("--approval")
+        .arg("never")
+        .arg("hello")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write as _;
+            child.stdin.as_mut().unwrap().write_all(b"/exit\n")?;
+            child.wait_with_output()
+        })
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("fake response: hello"));
+    assert!(stderr.contains("R O V E") || stderr.contains("Rove"));
+    assert!(stderr.contains("You"));
+    assert!(stderr.contains("hello"));
+    assert!(stderr.contains("Assistant"));
+    assert!(stderr.contains("Done"));
+    assert!(!stderr.contains("unexpected argument"));
+}
+
+#[test]
+fn unquoted_multi_word_message_enters_repl_as_initial_prompt() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let config_root = tempfile::TempDir::new().unwrap();
+    let output = isolated_rove(&config_root)
+        .arg("--cwd")
+        .arg(tmp.path())
+        .arg("--model")
+        .arg("fake")
+        .arg("--approval")
+        .arg("never")
+        .args(["hello", "world"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write as _;
+            child.stdin.as_mut().unwrap().write_all(b"/exit\n")?;
+            child.wait_with_output()
+        })
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("fake response: hello world"));
+    assert!(stderr.contains("You"));
+    assert!(stderr.contains("hello world"));
+    assert!(!stderr.contains("unexpected argument"));
+}
+
+#[test]
+fn exec_message_does_not_wait_for_repl_input() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let config_root = tempfile::TempDir::new().unwrap();
+    let output = isolated_rove(&config_root)
+        .arg("exec")
+        .arg("--cwd")
+        .arg(tmp.path())
+        .arg("--model")
+        .arg("fake")
+        .arg("--approval")
+        .arg("never")
+        .arg("hello")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("fake response: hello"));
+    assert!(!stderr.contains("R O V E"));
+    assert!(!stderr.contains("Rove"));
+    assert!(!stderr.contains("mode    repl"));
+    assert!(!stderr.contains("mode       interactive"));
+}
+
+#[test]
+fn exec_unquoted_multi_word_message_joins_message() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let config_root = tempfile::TempDir::new().unwrap();
+    let output = isolated_rove(&config_root)
+        .arg("exec")
+        .arg("--cwd")
+        .arg(tmp.path())
+        .arg("--model")
+        .arg("fake")
+        .arg("--approval")
+        .arg("never")
+        .args(["hello", "world"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("fake response: hello world"));
+    assert!(!stderr.contains("unexpected argument"));
+}

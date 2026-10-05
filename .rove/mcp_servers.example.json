@@ -1,0 +1,14 @@
+{
+  "servers": [
+    {
+      "name": "mock_server",
+      "transport": "stdio",
+      "command": "python",
+      "args": ["tests/fixtures/mcp_mock_server.py"],
+      "policy": {
+        "request_timeout_ms": 5000,
+        "stderr_capture_bytes": 16384
+      }
+    }
+  ]
+}

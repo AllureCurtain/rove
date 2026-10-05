@@ -1,0 +1,1353 @@
+//! Trace-tail reconciliation for resumed runs.
+//!
+//! `trace.jsonl` is the append-only record of event facts and `task_state.json`
+//! is the resumable snapshot. The snapshot is written after the trace line, so a
+//! crash between those two writes leaves durable lifecycle facts in the trace
+//! that the snapshot does not yet reflect.
+//!
+//! Reconciliation replays only the trace tail newer than
+//! `checkpoint.last_event_seq` and applies those facts to the loaded snapshot.
+//! It is a projection, never an executor:
+//!
+//! - Completed work is never replayed. Tool calls, model turns, and mutations
+//!   are not re-dispatched; only their already-recorded facts are projected.
+//! - Application is idempotent. Replaying the same tail twice yields the same
+//!   state, so a crash during reconciliation is safe.
+//! - A non-success terminal state is never relabelled as completed.
+//! - Unparsable tail lines are skipped with a bounded count rather than
+//!   failing the resume or silently trusting a truncated tail.
+
+use std::path::Path;
+
+use rove_core::history::HistoryItem;
+
+use crate::events::StreamEvent;
+use crate::execution::{ExecutionLifecycleState, StepLedgerState, StepRecordStatus};
+use crate::foundation::session::Session;
+use crate::types::TaskState;
+
+/// Bounded outcome of reconciling one run's trace tail into its snapshot.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TraceReconciliation {
+    /// Highest event sequence represented by the returned state.
+    pub last_event_seq: Option<u64>,
+    /// Trace lines newer than the snapshot that were applied.
+    pub applied_event_count: usize,
+    /// Trace lines newer than the snapshot that could not be parsed.
+    pub corrupt_line_count: usize,
+    /// True when at least one applied fact changed the snapshot.
+    pub changed: bool,
+}
+
+impl TraceReconciliation {
+    fn observed(&mut self, seq: u64) {
+        self.last_event_seq = Some(self.last_event_seq.map_or(seq, |saved| saved.max(seq)));
+    }
+}
+
+/// Reconcile `state` with the trace tail in `run_dir`.
+///
+/// Returns the reconciliation summary. `state` is mutated in place only for
+/// facts newer than its own checkpoint sequence.
+pub async fn reconcile_task_state_with_trace(
+    run_dir: &Path,
+    state: &mut TaskState,
+) -> std::io::Result<TraceReconciliation> {
+    let path = run_dir.join("trace.jsonl");
+    // The version-tolerant reader handles both enveloped lines ({ts, seq,
+    // event}) and legacy bare-event lines in one pass, and reports a
+    // truncated tail instead of failing the resume.
+    let read = match super::trace_reader::read_trace_file(&path).await {
+        Ok(read) => read,
+        Err(error) => return Err(error),
+    };
+
+    let applied_through = snapshot_seq(state);
+    let mut outcome = TraceReconciliation {
+        last_event_seq: applied_through,
+        ..TraceReconciliation::default()
+    };
+
+    if read.truncated_tail {
+        tracing::warn!(
+            path = %path.display(),
+            "Trace tail is truncated (crash mid-write); skipping the partial line"
+        );
+    }
+    for line_number in &read.corrupt_line_numbers {
+        tracing::warn!(
+            path = %path.display(),
+            line = line_number,
+            "Skipping corrupted trace line during resume reconciliation"
+        );
+    }
+    outcome.corrupt_line_count = read.corrupt_line_count;
+
+    for entry in &read.entries {
+        if applied_through.is_some_and(|applied| entry.seq <= applied) {
+            continue;
+        }
+        match &entry.entry {
+            crate::events::TraceEntry::Ui(event) => {
+                if apply_event(state, event) {
+                    outcome.changed = true;
+                }
+                outcome.applied_event_count += 1;
+            }
+            // Explicit history lines are merged below; they still advance the
+            // sequence high-water mark because they share the run's seq space.
+            crate::events::TraceEntry::History(_) => {}
+            // A resume link is provenance about where this run's history came
+            // from, and the identity header restates what the snapshot already
+            // knows. Neither carries a lifecycle fact to project onto it.
+            crate::events::TraceEntry::Link(_) | crate::events::TraceEntry::Meta(_) => {}
+        }
+        outcome.observed(entry.seq);
+    }
+
+    rebuild_history_from_trace(&read, state, &mut outcome, &path);
+
+    if outcome.changed || outcome.last_event_seq != applied_through {
+        // Recomputed from the reconciled state so the bounded checkpoint
+        // projection cannot disagree with the full snapshot it summarizes.
+        let last_event_seq = outcome.last_event_seq;
+        let step_ledger = state.step_ledger.checkpoint();
+        let execution_lifecycle = state.execution_lifecycle.checkpoint();
+        let plan = state.plan.clone();
+        let last_step = state.step;
+        if let Some(checkpoint) = state.checkpoint.as_mut() {
+            checkpoint.last_event_seq = last_event_seq;
+            checkpoint.step_ledger = step_ledger;
+            checkpoint.execution_lifecycle = execution_lifecycle;
+            checkpoint.plan = plan;
+            checkpoint.last_step = last_step;
+        }
+    }
+
+    Ok(outcome)
+}
+
+fn snapshot_seq(state: &TaskState) -> Option<u64> {
+    state
+        .checkpoint
+        .as_ref()
+        .and_then(|checkpoint| checkpoint.last_event_seq)
+}
+
+/// Transitional Phase 2 resume upgrade: rebuild model context from the run's
+/// explicit trace history stream when one exists.
+///
+/// New traces persist every model-visible item as a `TraceEntry::History`
+/// line, so resume no longer needs heuristic classification to reconstruct
+/// what the model saw. Legacy traces carry no history stream and are left on
+/// the snapshot-derived path unchanged.
+///
+/// The projected messages must align with the durable snapshot by suffix:
+/// both derive from the same recorded facts, so a full or partial overlap is
+/// expected (a partial overlap is exactly the crash-between-writes gap this
+/// reconciliation exists to close). A misalignment means the derivation rules
+/// diverged; the snapshot is kept and the mismatch surfaced instead of
+/// guessing. This is a projection, never an executor: nothing here replays
+/// completed work.
+fn rebuild_history_from_trace(
+    read: &super::trace_reader::TraceReadOutcome,
+    state: &mut TaskState,
+    outcome: &mut TraceReconciliation,
+    path: &Path,
+) {
+    if !read.has_explicit_history() {
+        return;
+    }
+    let items: Vec<HistoryItem> = read
+        .history_items
+        .iter()
+        .map(|record| record.item.clone())
+        .collect();
+    let projected = rove_core::history::history_to_messages(&items);
+    let Some(merged) = merge_history_by_suffix(&state.history, &projected) else {
+        tracing::warn!(
+            path = %path.display(),
+            run_id = %state.run_id,
+            snapshot_len = state.history.len(),
+            projected_len = projected.len(),
+            "Trace history stream does not align with snapshot history; keeping durable snapshot"
+        );
+        return;
+    };
+    if merged == state.history {
+        return;
+    }
+    outcome.changed = true;
+    if let Some(checkpoint) = state.checkpoint.as_mut() {
+        // Keep the canonical session — the facade's preferred resume source —
+        // aligned with the trace-derived truth, and its derived compatibility
+        // tail with it.
+        checkpoint.session = Some(Session::from_legacy_history(state.session_id, &merged));
+        checkpoint.preserved_tail = merged.clone();
+    }
+    tracing::info!(
+        path = %path.display(),
+        run_id = %state.run_id,
+        before = state.history.len(),
+        after = merged.len(),
+        "Resume history rebuilt from explicit trace history stream"
+    );
+    state.history = merged;
+}
+
+/// Merge projected trace-history messages into the snapshot history by suffix
+/// alignment. Returns `None` when the streams cannot be reconciled without
+/// guessing: a non-empty projection that shares no suffix element with a
+/// non-empty base is treated as divergence rather than appended blindly, so
+/// resume can never double-count conversation content.
+///
+/// The two streams are not written in the same representation. The trace history
+/// goes through the secret authority as it is written and the snapshot does not,
+/// so a history that carried a known credential compares unequal to its own
+/// projection — and a plain `==` would fail the alignment for the *whole* run,
+/// keeping the raw snapshot and losing the crash-gap rebuild this function
+/// exists to perform. When the direct comparison finds no overlap, the two
+/// streams are aligned once more in the redacted representation; the merged
+/// result still splices the originals, so the trace's own text is what survives.
+fn merge_history_by_suffix(
+    base: &[rove_models::Message],
+    projected: &[rove_models::Message],
+) -> Option<Vec<rove_models::Message>> {
+    if projected.is_empty() {
+        // Nothing new in the trace stream; the snapshot stands as-is.
+        return Some(base.to_vec());
+    }
+    if base.is_empty() {
+        return Some(projected.to_vec());
+    }
+    if let Some(merged) = merge_aligned_by_suffix(base, projected, base, projected) {
+        return Some(merged);
+    }
+    let base_redacted = redacted_history(base);
+    let projected_redacted = redacted_history(projected);
+    merge_aligned_by_suffix(&base_redacted, &projected_redacted, base, projected)
+}
+
+/// Suffix-align `base_keys` against `projected_keys`, splicing `base` and
+/// `projected` themselves.
+///
+/// The keys are a separate argument so the same alignment can run over the
+/// redacted representation while still appending the original messages.
+fn merge_aligned_by_suffix(
+    base_keys: &[rove_models::Message],
+    projected_keys: &[rove_models::Message],
+    base: &[rove_models::Message],
+    projected: &[rove_models::Message],
+) -> Option<Vec<rove_models::Message>> {
+    let max_overlap = projected_keys.len().min(base_keys.len());
+    for k in (1..=max_overlap).rev() {
+        if base_keys[base_keys.len() - k..] == projected_keys[..k] {
+            let mut merged = base[..base.len() - k].to_vec();
+            merged.extend_from_slice(projected);
+            return Some(merged);
+        }
+    }
+    None
+}
+
+/// `messages` in the representation the trace stream stores: every credential
+/// value, and the value of every declared secret field, replaced.
+///
+/// A message that cannot round-trip is compared as it is, which can only make the
+/// alignment fail — never match two different messages.
+fn redacted_history(messages: &[rove_models::Message]) -> Vec<rove_models::Message> {
+    let registry = crate::secrets::registry();
+    messages
+        .iter()
+        .map(|message| {
+            let Ok(mut value) = serde_json::to_value(message) else {
+                return message.clone();
+            };
+            registry.redact_json_value(&mut value);
+            serde_json::from_value(value).unwrap_or_else(|_| message.clone())
+        })
+        .collect()
+}
+
+/// Apply one trace fact to the snapshot. Returns true when state changed.
+///
+/// Only durable lifecycle and planning facts are projected. Streaming deltas,
+/// approval prompts, and in-flight tool dispatch are deliberately ignored: they
+/// are not resumable state, and an in-flight tool whose outcome never reached
+/// the trace must stay indeterminate rather than be assumed complete.
+fn apply_event(state: &mut TaskState, event: &StreamEvent) -> bool {
+    match event {
+        StreamEvent::ExecutionStrategySelected { policy } => {
+            let next = Some(policy.clone());
+            replace_if_changed(&mut state.execution_lifecycle.policy, next)
+        }
+        StreamEvent::ExecutionBudgetUpdated { snapshot, .. } => {
+            // Consumption is monotonic, so a newer trace fact always wins over
+            // an older snapshot value.
+            let usage_changed = replace_if_changed(
+                &mut state.execution_lifecycle.budget_usage,
+                snapshot.consumed.clone(),
+            );
+            // An exhaustion fact is sticky: a later projection without one must
+            // not clear a recorded boundary.
+            let exhaustion_changed = match snapshot.exhausted.clone() {
+                Some(exhausted) => replace_if_changed(
+                    &mut state.execution_lifecycle.budget_exhaustion,
+                    Some(exhausted),
+                ),
+                None => false,
+            };
+            usage_changed || exhaustion_changed
+        }
+        StreamEvent::ExecutionDegraded { record } => {
+            if state
+                .execution_lifecycle
+                .degradations
+                .iter()
+                .any(|saved| saved.degradation_id == record.degradation_id)
+            {
+                return false;
+            }
+            state.execution_lifecycle.degradations.push(record.clone());
+            true
+        }
+        StreamEvent::ProcedureApplied { application } => {
+            if state
+                .execution_lifecycle
+                .procedure_applications
+                .iter()
+                .any(|saved| saved.application_id == application.application_id)
+            {
+                return false;
+            }
+            state
+                .execution_lifecycle
+                .procedure_applications
+                .push(application.as_ref().clone());
+            true
+        }
+        StreamEvent::ProcedureDeviation { deviation, .. } => {
+            if state
+                .execution_lifecycle
+                .procedure_deviations
+                .iter()
+                .any(|saved| saved.deviation_id == deviation.deviation_id)
+            {
+                return false;
+            }
+            state
+                .execution_lifecycle
+                .procedure_deviations
+                .push(deviation.as_ref().clone());
+            true
+        }
+        StreamEvent::FinalizationStarted { record }
+        | StreamEvent::FinalizationCompleted { record } => {
+            apply_finalization(&mut state.execution_lifecycle, record)
+        }
+        StreamEvent::PlanCreated {
+            plan,
+            identity,
+            plan_revision,
+        } => {
+            let mut changed = replace_if_changed(&mut state.plan, Some(plan.clone()));
+            let before = state.step_ledger.clone();
+            state.step_ledger.set_plan_identity(identity);
+            if let Some(revision) = plan_revision.as_deref() {
+                push_revision(&mut state.step_ledger, revision);
+            }
+            changed |= state.step_ledger != before;
+            changed
+        }
+        StreamEvent::PlanRevised { plan, revision } => {
+            let mut changed = replace_if_changed(&mut state.plan, Some(plan.clone()));
+            let before = state.step_ledger.clone();
+            state.step_ledger.set_plan_identity(&revision.identity());
+            push_revision(&mut state.step_ledger, revision);
+            changed |= state.step_ledger != before;
+            changed
+        }
+        StreamEvent::PlanStepStarted { attempt, .. } => {
+            if !attempt.is_complete() {
+                return false;
+            }
+            // An in-flight attempt is recorded so a crash mid-step can be
+            // closed conservatively instead of silently retried.
+            replace_if_changed(
+                &mut state.step_ledger.active_step_attempt,
+                Some(attempt.clone()),
+            )
+        }
+        StreamEvent::StepResult { record } => {
+            if state
+                .step_ledger
+                .step_records
+                .iter()
+                .any(|saved| saved.record_id == record.record_id)
+            {
+                return false;
+            }
+            state.step_ledger.step_records.push(record.as_ref().clone());
+            // The terminal fact for an attempt clears the in-flight marker for
+            // that same attempt only.
+            if state
+                .step_ledger
+                .active_step_attempt
+                .as_ref()
+                .is_some_and(|active| {
+                    active.step_id == record.step_id && active.attempt == record.attempt
+                })
+            {
+                state.step_ledger.active_step_attempt = None;
+            }
+            mark_plan_step_done(state, record.step_id.as_str(), record.status);
+            true
+        }
+        StreamEvent::PlanDecision { record } => {
+            // `push_decision` is itself idempotent on decision and trigger
+            // identity; compare before/after so the caller learns whether this
+            // fact actually advanced the snapshot.
+            let before = state.step_ledger.plan_lifecycle.decisions.len();
+            state
+                .step_ledger
+                .plan_lifecycle
+                .push_decision(record.as_ref().clone());
+            state.step_ledger.plan_lifecycle.decisions.len() != before
+        }
+        StreamEvent::PromptCompacted {
+            summary,
+            state: compacted,
+        } => {
+            let mut advanced = match summary.clone() {
+                Some(summary) => replace_if_changed(&mut state.summary, Some(summary)),
+                None => false,
+            };
+            // The snapshot is written after the trace line, so a crash between
+            // the two leaves a compaction fact in the trace that the snapshot
+            // never recorded — including the failure count and the cooldown
+            // window the automatic path has to respect. Only the session-scoped
+            // breaker facts are replayed: `mode`, `model`, `prompt_version`, and
+            // `source_message_count` describe the run that compacted, and the
+            // snapshot's own projection of them stays the write authority.
+            if let Some(checkpoint) = state.checkpoint.as_mut() {
+                let mut replayed = checkpoint.compaction.clone();
+                replayed.inherit_session_breaker(compacted);
+                if replayed != checkpoint.compaction {
+                    checkpoint.compaction = replayed;
+                    advanced = true;
+                }
+            }
+            advanced
+        }
+        // A terminal run fact never rewrites the snapshot's outcome here. The
+        // finalization record is the outcome authority, and a non-success
+        // reason must not be projected as completed work.
+        StreamEvent::RunCompleted { .. } => false,
+        // Artifact facts are durable in the artifact ledger and the report,
+        // not in the resumable snapshot. Replaying them must not mutate
+        // TaskState: the payloads are already on disk, and re-projecting them
+        // into resume state would invite a re-dispatch of finished work.
+        StreamEvent::ToolArtifactStored { .. } | StreamEvent::ToolArtifactRejected { .. } => false,
+        _ => false,
+    }
+}
+
+/// Finalization is single-authority and monotonic: a `completed` record
+/// supersedes a `started` record for the same finalization, and an existing
+/// completed record is never downgraded.
+fn apply_finalization(
+    lifecycle: &mut ExecutionLifecycleState,
+    record: &crate::execution::FinalizationRecord,
+) -> bool {
+    match lifecycle.finalization.as_ref() {
+        Some(saved) if saved == record => false,
+        // Keep the record that carries a resolved outcome.
+        Some(saved) if saved.outcome.is_some() && record.outcome.is_none() => false,
+        _ => {
+            lifecycle.finalization = Some(record.clone());
+            true
+        }
+    }
+}
+
+fn push_revision(ledger: &mut StepLedgerState, revision: &crate::execution::PlanRevision) {
+    if ledger
+        .plan_lifecycle
+        .revisions
+        .iter()
+        .any(|saved| saved.revision_id == revision.revision_id)
+    {
+        return;
+    }
+    ledger.plan_lifecycle.push_revision(revision.clone());
+}
+
+/// Reflect a terminal step fact into the persisted plan projection.
+///
+/// Only a successful record marks plan progress. A failed, cancelled, or
+/// indeterminate record leaves the step open so resume cannot treat unproven
+/// work as finished.
+fn mark_plan_step_done(state: &mut TaskState, step_id: &str, status: StepRecordStatus) {
+    if status != StepRecordStatus::Succeeded {
+        return;
+    }
+    if let Some(plan) = state.plan.as_mut()
+        && let Some(step) = plan.steps.iter_mut().find(|step| step.id == step_id)
+    {
+        step.done = true;
+    }
+}
+
+fn replace_if_changed<T: PartialEq>(slot: &mut T, next: T) -> bool {
+    if *slot == next {
+        return false;
+    }
+    *slot = next;
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::TraceEntry;
+    use crate::execution::{
+        ExecutionBudgetDimension, ExecutionBudgetExhaustion, ExecutionBudgetSnapshot,
+        ExecutionBudgetUsage, ExecutionDegradation, ExecutionPhase, ExecutionPolicy,
+        FinalOutcomeStatus, FinalizationMode, FinalizationPhase, FinalizationRecord,
+        PlanFinishReason, StepCompletionBasis, StepRecord,
+    };
+    use crate::types::{
+        JobId, PlanStep, PromptCheckpoint, PromptCompactionMode, PromptCompactionState, RunId,
+        SessionId, TaskPlan, TaskState, TerminationReason,
+    };
+    use rove_models::Message;
+
+    fn checkpoint(last_event_seq: Option<u64>) -> PromptCheckpoint {
+        PromptCheckpoint {
+            summary: None,
+            preserved_tail: Vec::new(),
+            session: None,
+            plan: None,
+            session_memory_pointer: None,
+            durable_memory_pointer: None,
+            last_step: 0,
+            last_event_seq,
+            token_estimate: 0,
+            compacted_history_messages: 0,
+            compaction: PromptCompactionState::default(),
+            runtime_identity: None,
+            agent_profile: None,
+            step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
+            message_deliveries: Vec::new(),
+            history_pruned: false,
+        }
+    }
+
+    fn state(last_event_seq: Option<u64>) -> TaskState {
+        TaskState {
+            schema_version: 1,
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            goal: "reconcile".to_string(),
+            step: 1,
+            history: Vec::new(),
+            summary: None,
+            checkpoint: Some(checkpoint(last_event_seq)),
+            plan: None,
+            runtime_identity: None,
+            agent_profile: None,
+            step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
+        }
+    }
+
+    fn step_record(record_id: &str, step_id: &str, status: StepRecordStatus) -> StepRecord {
+        StepRecord {
+            record_id: record_id.to_string(),
+            plan_id: "plan-1".to_string(),
+            plan_revision_id: "rev-1".to_string(),
+            step_id: step_id.to_string(),
+            attempt: 1,
+            status,
+            started_at: "2026-08-08T00:00:00Z".to_string(),
+            finished_at: "2026-08-08T00:00:01Z".to_string(),
+            summary: "did the thing".to_string(),
+            completion_basis: StepCompletionBasis::DeterministicRule,
+            evidence_refs: Vec::new(),
+            tool_call_ids: Vec::new(),
+            artifact_refs: Vec::new(),
+            mutations: Vec::new(),
+            procedure_applications: Vec::new(),
+            procedure_deviations: Vec::new(),
+            model_turns_used: 1,
+            tool_calls_used: 1,
+            token_usage: Default::default(),
+            error_code: None,
+            safe_error_summary: None,
+            supersedes_record_id: None,
+            ambiguity: None,
+        }
+    }
+
+    async fn write_trace(dir: &Path, events: &[StreamEvent]) {
+        let mut body = String::new();
+        for event in events {
+            body.push_str(&serde_json::to_string(event).unwrap());
+            body.push('\n');
+        }
+        tokio::fs::write(dir.join("trace.jsonl"), body)
+            .await
+            .unwrap();
+    }
+
+    /// Write a current-format trace: one [`TraceLine`] envelope per line,
+    /// carrying either a UI event or an explicit history item.
+    async fn write_enveloped_trace(dir: &Path, entries: &[TraceEntry]) {
+        let mut body = String::new();
+        for (index, entry) in entries.iter().enumerate() {
+            let line = crate::state::trace::TraceLine {
+                ts: "2026-08-25T00:00:00Z".to_string(),
+                seq: index as u64 + 1,
+                event: entry.clone(),
+            };
+            body.push_str(&serde_json::to_string(&line).unwrap());
+            body.push('\n');
+        }
+        tokio::fs::write(dir.join("trace.jsonl"), body)
+            .await
+            .unwrap();
+    }
+
+    fn history_line(message: Message) -> TraceEntry {
+        TraceEntry::History(HistoryItem::Message(message))
+    }
+
+    fn session_messages(state: &TaskState) -> Vec<Message> {
+        state
+            .checkpoint
+            .as_ref()
+            .unwrap()
+            .session
+            .as_ref()
+            .unwrap()
+            .messages_for_provider("openai")
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn missing_trace_leaves_state_untouched() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut snapshot = state(Some(4));
+        let before = snapshot.clone();
+
+        let outcome = reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.applied_event_count, 0);
+        assert!(!outcome.changed);
+        assert_eq!(outcome.last_event_seq, Some(4));
+        assert_eq!(
+            serde_json::to_value(&snapshot).unwrap(),
+            serde_json::to_value(&before).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn events_already_covered_by_the_checkpoint_are_not_reapplied() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_trace(
+            tmp.path(),
+            &[
+                StreamEvent::ExecutionDegraded {
+                    record: ExecutionDegradation {
+                        degradation_id: "deg-1".to_string(),
+                        phase: ExecutionPhase::Evaluator,
+                        code: "evaluator_unavailable".to_string(),
+                        safe_summary: "fell back to deterministic rules".to_string(),
+                        occurred_at: "2026-08-08T00:00:00Z".to_string(),
+                    },
+                },
+                StreamEvent::ExecutionDegraded {
+                    record: ExecutionDegradation {
+                        degradation_id: "deg-2".to_string(),
+                        phase: ExecutionPhase::Finalizer,
+                        code: "finalizer_unavailable".to_string(),
+                        safe_summary: "used deterministic finalizer".to_string(),
+                        occurred_at: "2026-08-08T00:00:02Z".to_string(),
+                    },
+                },
+            ],
+        )
+        .await;
+
+        // The snapshot already reflects the first line.
+        let mut snapshot = state(Some(1));
+        let outcome = reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.applied_event_count, 1);
+        assert_eq!(outcome.last_event_seq, Some(2));
+        assert_eq!(snapshot.execution_lifecycle.degradations.len(), 1);
+        assert_eq!(
+            snapshot.execution_lifecycle.degradations[0].degradation_id,
+            "deg-2"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconciliation_is_idempotent_across_repeated_runs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let policy = ExecutionPolicy::from_max_steps_and_plan_flag(8, true);
+        write_trace(
+            tmp.path(),
+            &[
+                StreamEvent::ExecutionStrategySelected {
+                    policy: policy.clone(),
+                },
+                StreamEvent::StepResult {
+                    record: Box::new(step_record("rec-1", "s1", StepRecordStatus::Succeeded)),
+                },
+                StreamEvent::ExecutionDegraded {
+                    record: ExecutionDegradation {
+                        degradation_id: "deg-1".to_string(),
+                        phase: ExecutionPhase::Evaluator,
+                        code: "evaluator_unavailable".to_string(),
+                        safe_summary: "deterministic fallback".to_string(),
+                        occurred_at: "2026-08-08T00:00:03Z".to_string(),
+                    },
+                },
+            ],
+        )
+        .await;
+
+        let mut first = state(None);
+        first.plan = Some(TaskPlan {
+            goal: "reconcile".to_string(),
+            steps: vec![PlanStep {
+                id: "s1".to_string(),
+                title: "inspect".to_string(),
+                done: false,
+            }],
+            current_step: 0,
+        });
+        let mut second = first.clone();
+
+        let first_outcome = reconcile_task_state_with_trace(tmp.path(), &mut first)
+            .await
+            .unwrap();
+        assert!(first_outcome.changed);
+        assert_eq!(first_outcome.applied_event_count, 3);
+
+        // Re-running against the already-reconciled state applies the same tail
+        // again and must converge to an identical snapshot.
+        reconcile_task_state_with_trace(tmp.path(), &mut second)
+            .await
+            .unwrap();
+        let replay = reconcile_task_state_with_trace(tmp.path(), &mut second)
+            .await
+            .unwrap();
+
+        assert!(!replay.changed);
+        assert_eq!(
+            serde_json::to_value(&first).unwrap(),
+            serde_json::to_value(&second).unwrap()
+        );
+        assert_eq!(first.step_ledger.step_records.len(), 1);
+        assert_eq!(first.execution_lifecycle.degradations.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn only_successful_step_facts_mark_plan_progress() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_trace(
+            tmp.path(),
+            &[
+                StreamEvent::StepResult {
+                    record: Box::new(step_record("rec-1", "s1", StepRecordStatus::Succeeded)),
+                },
+                StreamEvent::StepResult {
+                    record: Box::new(step_record("rec-2", "s2", StepRecordStatus::Failed)),
+                },
+                StreamEvent::StepResult {
+                    record: Box::new(step_record("rec-3", "s3", StepRecordStatus::Indeterminate)),
+                },
+                StreamEvent::StepResult {
+                    record: Box::new(step_record("rec-4", "s4", StepRecordStatus::Cancelled)),
+                },
+            ],
+        )
+        .await;
+
+        let mut snapshot = state(None);
+        snapshot.plan = Some(TaskPlan {
+            goal: "reconcile".to_string(),
+            steps: ["s1", "s2", "s3", "s4"]
+                .into_iter()
+                .map(|id| PlanStep {
+                    id: id.to_string(),
+                    title: id.to_string(),
+                    done: false,
+                })
+                .collect(),
+            current_step: 0,
+        });
+
+        reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        let steps = snapshot.plan.as_ref().unwrap().steps.clone();
+        assert!(steps[0].done, "a succeeded record marks the step done");
+        for step in &steps[1..] {
+            assert!(
+                !step.done,
+                "non-success record must not mark {} done",
+                step.id
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_recorded_exhaustion_boundary_is_never_cleared_by_a_later_projection() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let exhaustion = ExecutionBudgetExhaustion {
+            dimension: ExecutionBudgetDimension::ModelTurns,
+            phase: ExecutionPhase::Step,
+            limit: 4,
+            consumed: 4,
+            safe_summary: "model turn budget reached".to_string(),
+        };
+        write_trace(
+            tmp.path(),
+            &[
+                StreamEvent::ExecutionBudgetUpdated {
+                    phase: ExecutionPhase::Step,
+                    snapshot: Box::new(ExecutionBudgetSnapshot {
+                        limits: Default::default(),
+                        consumed: ExecutionBudgetUsage {
+                            model_turns: 4,
+                            ..Default::default()
+                        },
+                        exhausted: Some(exhaustion.clone()),
+                        cost_enforced: false,
+                    }),
+                },
+                StreamEvent::ExecutionBudgetUpdated {
+                    phase: ExecutionPhase::Finalizer,
+                    snapshot: Box::new(ExecutionBudgetSnapshot {
+                        limits: Default::default(),
+                        consumed: ExecutionBudgetUsage {
+                            model_turns: 5,
+                            ..Default::default()
+                        },
+                        exhausted: None,
+                        cost_enforced: false,
+                    }),
+                },
+            ],
+        )
+        .await;
+
+        let mut snapshot = state(None);
+        reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            snapshot.execution_lifecycle.budget_exhaustion,
+            Some(exhaustion),
+            "exhaustion is a sticky boundary fact"
+        );
+        assert_eq!(snapshot.execution_lifecycle.budget_usage.model_turns, 5);
+    }
+
+    #[tokio::test]
+    async fn a_resolved_finalization_outcome_is_not_downgraded() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let completed = FinalizationRecord {
+            finalization_id: "fin-1".to_string(),
+            phase: FinalizationPhase::Completed,
+            finish_reason: PlanFinishReason::Partial,
+            outcome: Some(FinalOutcomeStatus::Partial),
+            mode: FinalizationMode::Deterministic,
+            started_at: "2026-08-08T00:00:00Z".to_string(),
+            completed_at: Some("2026-08-08T00:00:01Z".to_string()),
+            output: Some("partial work".to_string()),
+            evidence_refs: Vec::new(),
+            incomplete_step_ids: Vec::new(),
+            budget_before: Default::default(),
+            budget_after: Default::default(),
+        };
+        let started = FinalizationRecord {
+            phase: FinalizationPhase::Started,
+            outcome: None,
+            completed_at: None,
+            output: None,
+            ..completed.clone()
+        };
+        write_trace(
+            tmp.path(),
+            &[
+                StreamEvent::FinalizationCompleted {
+                    record: Box::new(completed.clone()),
+                },
+                // An out-of-order or replayed `started` fact must not erase the
+                // resolved outcome.
+                StreamEvent::FinalizationStarted {
+                    record: Box::new(started),
+                },
+            ],
+        )
+        .await;
+
+        let mut snapshot = state(None);
+        reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        assert_eq!(snapshot.execution_lifecycle.finalization, Some(completed));
+    }
+
+    #[tokio::test]
+    async fn a_terminal_run_event_does_not_relabel_the_outcome() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_trace(
+            tmp.path(),
+            &[StreamEvent::RunCompleted {
+                reason: TerminationReason::Cancelled,
+                output: Some("stopped".to_string()),
+            }],
+        )
+        .await;
+
+        let mut snapshot = state(None);
+        let outcome = reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.applied_event_count, 1);
+        assert!(!outcome.changed);
+        assert!(
+            snapshot.execution_lifecycle.finalization.is_none(),
+            "the finalization record is the only outcome authority"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_in_flight_attempt_is_recorded_and_cleared_only_by_its_own_terminal_fact() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let attempt = crate::execution::StepAttempt {
+            plan_id: "plan-1".to_string(),
+            plan_revision_id: "rev-1".to_string(),
+            step_id: "s1".to_string(),
+            attempt: 1,
+            started_at: "2026-08-08T00:00:00Z".to_string(),
+        };
+        write_trace(
+            tmp.path(),
+            &[
+                StreamEvent::PlanStepStarted {
+                    step: PlanStep {
+                        id: "s1".to_string(),
+                        title: "inspect".to_string(),
+                        done: false,
+                    },
+                    index: 0,
+                    attempt: attempt.clone(),
+                    budget: Default::default(),
+                },
+                // A terminal fact for a different step must not clear it.
+                StreamEvent::StepResult {
+                    record: Box::new(step_record("rec-9", "s2", StepRecordStatus::Succeeded)),
+                },
+            ],
+        )
+        .await;
+
+        let mut snapshot = state(None);
+        reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+        assert_eq!(
+            snapshot.step_ledger.active_step_attempt.as_ref(),
+            Some(&attempt),
+            "an unresolved attempt stays in-flight for conservative resume"
+        );
+
+        write_trace(
+            tmp.path(),
+            &[
+                StreamEvent::PlanStepStarted {
+                    step: PlanStep {
+                        id: "s1".to_string(),
+                        title: "inspect".to_string(),
+                        done: false,
+                    },
+                    index: 0,
+                    attempt: attempt.clone(),
+                    budget: Default::default(),
+                },
+                StreamEvent::StepResult {
+                    record: Box::new(step_record("rec-1", "s1", StepRecordStatus::Succeeded)),
+                },
+            ],
+        )
+        .await;
+
+        let mut resolved = state(None);
+        reconcile_task_state_with_trace(tmp.path(), &mut resolved)
+            .await
+            .unwrap();
+        assert!(resolved.step_ledger.active_step_attempt.is_none());
+    }
+
+    #[tokio::test]
+    async fn corrupt_tail_lines_are_counted_and_skipped() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let good = serde_json::to_string(&StreamEvent::ExecutionDegraded {
+            record: ExecutionDegradation {
+                degradation_id: "deg-1".to_string(),
+                phase: ExecutionPhase::Evaluator,
+                code: "evaluator_unavailable".to_string(),
+                safe_summary: "deterministic fallback".to_string(),
+                occurred_at: "2026-08-08T00:00:00Z".to_string(),
+            },
+        })
+        .unwrap();
+        // A truncated final line is the realistic crash shape.
+        let body = format!("{good}\n{{\"type\":\"execution_deg\n");
+        tokio::fs::write(tmp.path().join("trace.jsonl"), body)
+            .await
+            .unwrap();
+
+        let mut snapshot = state(None);
+        let outcome = reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.applied_event_count, 1);
+        assert_eq!(outcome.corrupt_line_count, 1);
+        assert_eq!(outcome.last_event_seq, Some(1));
+        assert_eq!(snapshot.execution_lifecycle.degradations.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_checkpoint_projection_is_refreshed_after_reconciliation() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_trace(
+            tmp.path(),
+            &[StreamEvent::StepResult {
+                record: Box::new(step_record("rec-1", "s1", StepRecordStatus::Succeeded)),
+            }],
+        )
+        .await;
+
+        let mut snapshot = state(None);
+        reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        let checkpoint = snapshot.checkpoint.as_ref().unwrap();
+        assert_eq!(checkpoint.last_event_seq, Some(1));
+        assert_eq!(
+            checkpoint.step_ledger.step_record_count, 1,
+            "the bounded checkpoint projection tracks the reconciled ledger"
+        );
+    }
+
+    /// A crash between the compaction trace line and the snapshot write leaves
+    /// the breaker facts — including the cooldown the automatic path has to
+    /// respect — in the trace only. Reconciliation exists for exactly that gap,
+    /// so it has to replay them.
+    #[tokio::test]
+    async fn a_compaction_fact_newer_than_the_snapshot_restores_the_breaker_window() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let deadline = "2027-01-15T08:05:00+00:00".to_string();
+        write_trace(
+            tmp.path(),
+            &[StreamEvent::PromptCompacted {
+                summary: Some("Goal: keep the window".to_string()),
+                state: PromptCompactionState {
+                    mode: PromptCompactionMode::Degraded,
+                    degraded: true,
+                    consecutive_failures: 3,
+                    circuit_open: true,
+                    next_attempt_after: Some(deadline.clone()),
+                    last_error: Some("summary provider is unreachable".to_string()),
+                    ..PromptCompactionState::default()
+                },
+            }],
+        )
+        .await;
+
+        let mut snapshot = state(None);
+        assert!(
+            snapshot
+                .checkpoint
+                .as_ref()
+                .unwrap()
+                .compaction
+                .next_attempt_after
+                .is_none(),
+            "the fixture snapshot has no window to begin with"
+        );
+
+        let outcome = reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        assert!(
+            outcome.changed,
+            "replaying the breaker fact advanced nothing"
+        );
+        let compaction = &snapshot.checkpoint.as_ref().unwrap().compaction;
+        assert_eq!(compaction.consecutive_failures, 3);
+        assert!(compaction.circuit_open);
+        assert_eq!(
+            compaction.next_attempt_after.as_deref(),
+            Some(deadline.as_str()),
+            "the replayed breaker must keep the window the trace recorded"
+        );
+        assert!(
+            compaction.degraded && compaction.last_error.is_some(),
+            "the replayed breaker must keep the facts that explain it"
+        );
+        assert_eq!(
+            snapshot.summary.as_deref(),
+            Some("Goal: keep the window"),
+            "the summary projection is unchanged"
+        );
+    }
+
+    /// Phase 2 soul property at the reconciliation layer: an explicit history
+    /// stream rebuilds model context directly, with no heuristic
+    /// classification of UI events, and every resume source agrees.
+    #[tokio::test]
+    async fn an_explicit_history_stream_rebuilds_model_context_without_heuristics() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_enveloped_trace(
+            tmp.path(),
+            &[
+                TraceEntry::Ui(StreamEvent::LlmChunk {
+                    delta: "ignored by history".to_string(),
+                }),
+                history_line(Message::user("fix the bug")),
+                history_line(Message::assistant("fixed it")),
+            ],
+        )
+        .await;
+
+        let mut snapshot = state(None);
+        let outcome = reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        assert!(outcome.changed);
+        assert_eq!(
+            snapshot
+                .history
+                .iter()
+                .map(|message| message.content.clone())
+                .collect::<Vec<_>>(),
+            vec!["fix the bug", "fixed it"],
+        );
+        // History lines share the run's seq space, so the high-water mark
+        // still advances past them; only UI events are *applied*.
+        assert_eq!(outcome.last_event_seq, Some(3));
+
+        let checkpoint = snapshot.checkpoint.as_ref().unwrap();
+        assert_eq!(
+            checkpoint.preserved_tail, snapshot.history,
+            "the compatibility tail tracks the rebuilt history"
+        );
+        // The session projection normalizes text into content blocks, so
+        // agreement is asserted on the conversation itself (role + content)
+        // rather than on the projected representation.
+        let conversation = |messages: &[Message]| {
+            messages
+                .iter()
+                .map(|message| (message.role.clone(), message.content.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            conversation(&session_messages(&snapshot)),
+            conversation(&snapshot.history),
+            "the canonical session — the facade's preferred resume source — agrees"
+        );
+    }
+
+    /// A legacy trace carries no history stream, so the snapshot-derived
+    /// resume path must be left exactly as it was.
+    #[tokio::test]
+    async fn a_trace_without_a_history_stream_leaves_snapshot_history_untouched() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_trace(
+            tmp.path(),
+            &[StreamEvent::StepResult {
+                record: Box::new(step_record("rec-1", "s1", StepRecordStatus::Succeeded)),
+            }],
+        )
+        .await;
+
+        let mut snapshot = state(None);
+        snapshot.history = vec![Message::user("from snapshot")];
+        let before = snapshot.history.clone();
+
+        reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        assert_eq!(snapshot.history, before);
+        assert!(
+            snapshot.checkpoint.as_ref().unwrap().session.is_none(),
+            "a legacy trace must not synthesize a canonical session"
+        );
+    }
+
+    /// The crash-between-writes gap this reconciliation exists to close: the
+    /// snapshot persisted a prefix, the trace holds the full turn. Suffix
+    /// alignment must extend the snapshot without duplicating the overlap.
+    #[tokio::test]
+    async fn a_partial_overlap_extends_snapshot_history_without_duplicating_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_enveloped_trace(
+            tmp.path(),
+            &[
+                history_line(Message::user("first")),
+                history_line(Message::assistant("second")),
+                history_line(Message::user("third")),
+            ],
+        )
+        .await;
+
+        let mut snapshot = state(None);
+        // Snapshot only captured through the assistant reply before the crash.
+        snapshot.history = vec![Message::user("first"), Message::assistant("second")];
+
+        reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            snapshot
+                .history
+                .iter()
+                .map(|message| message.content.clone())
+                .collect::<Vec<_>>(),
+            vec!["first", "second", "third"],
+        );
+    }
+
+    /// A projection that shares no suffix with the durable snapshot means the
+    /// derivation rules diverged. Resume keeps the snapshot rather than
+    /// guessing, so conversation content can never be double-counted.
+    #[tokio::test]
+    async fn a_diverged_history_projection_keeps_the_durable_snapshot() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_enveloped_trace(
+            tmp.path(),
+            &[
+                history_line(Message::user("unrelated run")),
+                history_line(Message::assistant("unrelated reply")),
+            ],
+        )
+        .await;
+
+        let mut snapshot = state(None);
+        snapshot.history = vec![Message::user("snapshot truth")];
+        let before = snapshot.history.clone();
+
+        reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            snapshot.history, before,
+            "a misaligned trace stream must not overwrite or extend the snapshot"
+        );
+    }
+
+    #[test]
+    fn suffix_merge_rejects_divergence_and_accepts_containment() {
+        let base = vec![Message::user("a"), Message::assistant("b")];
+
+        // Full containment: the trace repeats the snapshot exactly.
+        assert_eq!(
+            merge_history_by_suffix(&base, &base).unwrap(),
+            base,
+            "an identical stream is a no-op"
+        );
+        // Empty projection leaves the base alone.
+        assert_eq!(merge_history_by_suffix(&base, &[]).unwrap(), base);
+        // Empty base adopts the projection wholesale.
+        assert_eq!(merge_history_by_suffix(&[], &base).unwrap(), base);
+        // No shared suffix element is divergence, not an append.
+        assert!(merge_history_by_suffix(&base, &[Message::user("z")]).is_none());
+    }
+
+    /// The snapshot is raw and the trace stream is redacted, so a history that
+    /// carried a credential used to compare unequal to its own projection: the
+    /// alignment failed, the raw snapshot was kept, and the crash-gap rebuild
+    /// was lost for the whole run.
+    #[tokio::test]
+    async fn a_credential_bearing_history_still_reconciles_with_its_redacted_projection() {
+        use crate::state::trace::RunStore;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let canary = "reconcile-credential-canary-4b90";
+        assert!(crate::secrets::registry().register_value(canary));
+
+        let run_id = RunId::new();
+        let store = RunStore::new(tmp.path());
+        let writer = store.create_trace(&run_id).unwrap();
+        // Written through the real writer, so the trace side carries exactly the
+        // representation the durable stream holds.
+        let first = Message::user(format!("carry {canary} onward"));
+        writer
+            .append_history(&HistoryItem::Message(first.clone()))
+            .unwrap();
+        writer
+            .append_history(&HistoryItem::Message(Message::assistant("done")))
+            .unwrap();
+
+        let mut snapshot = state(None);
+        snapshot.run_id = run_id;
+        snapshot.history = vec![first, Message::assistant("done")];
+        let raw_snapshot = snapshot.history.clone();
+
+        let outcome = reconcile_task_state_with_trace(&store.run_dir(&run_id), &mut snapshot)
+            .await
+            .unwrap();
+
+        assert!(
+            outcome.changed,
+            "the trace stream aligns with the snapshot and must rebuild it"
+        );
+        assert_ne!(
+            snapshot.history, raw_snapshot,
+            "the rebuilt history is the trace's representation"
+        );
+        assert_eq!(
+            snapshot
+                .history
+                .iter()
+                .map(|message| message.content.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                format!("carry {} onward", crate::secrets::KNOWN_SECRET_MARKER),
+                "done".to_string()
+            ],
+        );
+        assert!(
+            !snapshot
+                .history
+                .iter()
+                .any(|message| message.content.contains(canary)),
+            "the rebuilt history carries no credential"
+        );
+    }
+}

@@ -1,0 +1,1423 @@
+use std::collections::HashMap;
+use std::path::Path;
+
+use crate::agents::AgentRuntimeProfile;
+use crate::context::compaction::inherits_session_breaker;
+use crate::events::StreamEvent;
+use crate::execution::{
+    ExecutionLifecycleState, PlanIdentity, StepLedgerState, StepRecordStatus,
+    planned_step_failure_message,
+};
+use crate::prompt_metadata::{PromptBuildMetadata, estimate_messages_tokens};
+use crate::runtime_identity::RuntimeIdentity;
+use crate::session::{CHECKPOINT_SESSION_TAIL_ENTRIES, Session, SessionEntry};
+use crate::types::{
+    JobId, MessageDeliveryRecord, PromptCheckpoint, PromptCompactionMode, PromptCompactionState,
+    RunId, SessionId, TaskPlan, TaskState, TerminationReason,
+};
+use crate::workspace::Workspace;
+use rove_core::{CallId, ToolArtifactRef, ToolExecutionMetadata, ToolMutation};
+use rove_models::{
+    AssistantTurn, ContentBlock, InternalCallId, Message, Role, ToolCall,
+    ToolResult as CanonicalToolResult, ToolResultStatus, Usage, WireCallReference,
+};
+
+use super::report::{ReportArtifactEntry, ReportArtifactRejection, RunReport, write_report};
+use super::store::StateStore;
+use super::tool_artifacts::ToolArtifactStore;
+
+const CHECKPOINT_SUMMARY_CHARS: usize = 180;
+
+pub struct RunArtifactRecorder {
+    session_id: SessionId,
+    job_id: JobId,
+    run_id: RunId,
+    goal: String,
+    initial_step: u32,
+    history: Vec<Message>,
+    summary: Option<String>,
+    plan: Option<TaskPlan>,
+    steps: u32,
+    tool_calls: u32,
+    tool_failures: u32,
+    tool_mutations: Vec<ToolMutation>,
+    tool_execution_metadata: Vec<ToolExecutionMetadata>,
+    /// Artifact references seen this run, deduplicated by artifact and call.
+    tool_artifacts: Vec<ToolArtifactRef>,
+    rejected_tool_artifacts: Vec<ReportArtifactRejection>,
+    prompt_builds: Vec<PromptBuildMetadata>,
+    runtime_identity: Option<RuntimeIdentity>,
+    agent_profile: Option<AgentRuntimeProfile>,
+    step_ledger: StepLedgerState,
+    execution_lifecycle: ExecutionLifecycleState,
+    total_usage: Usage,
+    final_reason: TerminationReason,
+    final_output: Option<String>,
+    pending_tool_use_ids: HashMap<CallId, Option<String>>,
+    pending_steers: HashMap<String, String>,
+    pending_messages: HashMap<String, String>,
+    message_deliveries: Vec<MessageDeliveryRecord>,
+    last_event_seq: Option<u64>,
+    compaction: PromptCompactionState,
+    /// The session's breaker facts this run started from.
+    ///
+    /// Kept apart from `compaction`, which is only what *this* run recorded:
+    /// the snapshot writer has to carry the session's count, breaker state, and
+    /// cooldown forward without mistaking them for a compaction this run
+    /// performed. See [`inherited_breaker_facts`].
+    inherited_breaker: PromptCompactionState,
+    /// Canonical provider-neutral conversation. `history` is derived from it
+    /// when snapshots are written; it remains only for legacy readers.
+    session: Session,
+    pending_tool_calls: HashMap<CallId, ToolCall>,
+    unassigned_tool_calls: Vec<ToolCall>,
+    /// Carried forward from the resumed checkpoint so a deliberately bounded
+    /// seed (a fork-at-message child) keeps telling the resume path not to
+    /// refill an empty history from the trace.
+    history_pruned: bool,
+}
+
+/// The breaker facts a run inherits from the session it continues.
+///
+/// Only the session's own state can be inherited: a run continues the session it
+/// records into, and [`inherits_session_breaker`] is the one predicate that
+/// decides that. A fork child starts from the *parent's* snapshot under a new
+/// session id, so it starts with a clean breaker — the parent's failure count and
+/// cooldown describe an outage the child never had.
+///
+/// Only the breaker is inherited. `mode`, `auto_triggered`, `model`,
+/// `prompt_version`, and `source_message_count` describe what a run's *own*
+/// compaction did, and a run that compacted nothing must not claim the previous
+/// run's mode; [`RunArtifactRecorder::checkpoint_compaction_state`] fills those
+/// in. The count, the reported breaker state, the cooldown, and the two facts
+/// that explain them are session facts, and dropping them here would restart the
+/// breaker on every turn — the exact gap the durable cooldown closes.
+fn inherited_breaker_facts(
+    session_id: SessionId,
+    resume_state: Option<&TaskState>,
+) -> PromptCompactionState {
+    let mut inherited = PromptCompactionState::default();
+    let Some(persisted) = resume_state
+        .filter(|state| inherits_session_breaker(state, session_id))
+        .and_then(|state| state.checkpoint.as_ref())
+        .map(|checkpoint| &checkpoint.compaction)
+    else {
+        return inherited;
+    };
+    inherited.inherit_session_breaker(persisted);
+    inherited
+}
+
+impl RunArtifactRecorder {
+    pub fn new(
+        session_id: SessionId,
+        job_id: JobId,
+        run_id: RunId,
+        goal: String,
+        resume_state: Option<&TaskState>,
+        runtime_identity: Option<RuntimeIdentity>,
+    ) -> Self {
+        let mut history = resume_state
+            .map(|state| state.history.clone())
+            .unwrap_or_default();
+        let mut session = resume_state
+            .and_then(|state| state.checkpoint.as_ref())
+            .and_then(|checkpoint| checkpoint.session.clone())
+            .unwrap_or_else(|| Session::from_legacy_history(session_id, &history));
+        if let Err(error) = session.close_unresolved_tool_calls() {
+            tracing::warn!(%error, "canonical resume session could not close in-flight tools");
+        }
+        let needs_current_user_message = history
+            .last()
+            .map(|message| message.role != Role::User || message.content != goal)
+            .unwrap_or(true);
+        if needs_current_user_message {
+            history.push(Message::user(goal.clone()));
+            let entry_id = format!("user-{run_id}");
+            if let Err(error) = session.append(SessionEntry::user(&entry_id, goal.clone())) {
+                tracing::debug!(%error, "legacy session could not append current user message");
+            }
+        }
+        Self {
+            session_id,
+            job_id,
+            run_id,
+            goal,
+            initial_step: resume_state.map(|state| state.step).unwrap_or(0),
+            history,
+            summary: resume_state.and_then(|state| state.summary.clone()),
+            plan: resume_state.and_then(|state| state.plan.clone()),
+            steps: 0,
+            tool_calls: 0,
+            tool_failures: 0,
+            tool_mutations: Vec::new(),
+            tool_execution_metadata: Vec::new(),
+            tool_artifacts: Vec::new(),
+            rejected_tool_artifacts: Vec::new(),
+            prompt_builds: Vec::new(),
+            runtime_identity: runtime_identity
+                .or_else(|| resume_state.and_then(|state| state.runtime_identity.clone())),
+            agent_profile: resume_state.and_then(|state| state.agent_profile.clone()),
+            step_ledger: resume_state
+                .map(|state| state.step_ledger.clone())
+                .unwrap_or_default(),
+            execution_lifecycle: resume_state
+                .map(|state| state.execution_lifecycle.clone())
+                .unwrap_or_default(),
+            total_usage: Usage::default(),
+            final_reason: TerminationReason::Error,
+            final_output: None,
+            pending_tool_use_ids: HashMap::new(),
+            pending_steers: HashMap::new(),
+            pending_messages: HashMap::new(),
+            message_deliveries: resume_state
+                .and_then(|state| state.checkpoint.as_ref())
+                .map(|checkpoint| checkpoint.message_deliveries.clone())
+                .unwrap_or_default(),
+            last_event_seq: None,
+            // What this run compacted, recorded only when a `PromptCompacted`
+            // event arrives for it.
+            compaction: PromptCompactionState::default(),
+            inherited_breaker: inherited_breaker_facts(session_id, resume_state),
+            session,
+            pending_tool_calls: HashMap::new(),
+            unassigned_tool_calls: Vec::new(),
+            history_pruned: resume_state
+                .and_then(|state| state.checkpoint.as_ref())
+                .is_some_and(|checkpoint| checkpoint.history_pruned),
+        }
+    }
+
+    /// Attach the exact Engine-resolved Agent snapshot before the first event
+    /// is persisted. This is intentionally separate from StreamEvent so prompt
+    /// text never enters trace/SSE/report projections.
+    pub fn set_agent_profile(&mut self, profile: Option<AgentRuntimeProfile>) {
+        if profile.is_some() {
+            self.agent_profile = profile;
+        }
+    }
+
+    pub fn set_runtime_identity(&mut self, identity: RuntimeIdentity) {
+        self.runtime_identity = Some(identity);
+    }
+
+    pub async fn record_event(&mut self, event: &StreamEvent, state_store: &StateStore) {
+        self.refresh_last_event_seq(state_store).await;
+        match event {
+            StreamEvent::RunStarted { .. } => {
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ExecutionStrategySelected { policy } => {
+                self.execution_lifecycle.policy = Some(policy.clone());
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ExecutionBudgetUpdated { snapshot, .. } => {
+                self.execution_lifecycle.budget_usage = snapshot.consumed.clone();
+                self.execution_lifecycle.budget_exhaustion = snapshot.exhausted.clone();
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ExecutionDegraded { record } => {
+                if self
+                    .execution_lifecycle
+                    .degradations
+                    .iter()
+                    .all(|saved| saved.degradation_id != record.degradation_id)
+                {
+                    self.execution_lifecycle.degradations.push(record.clone());
+                }
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ProcedureApplied { application }
+                if self
+                    .execution_lifecycle
+                    .procedure_applications
+                    .iter()
+                    .all(|saved| saved.application_id != application.application_id) =>
+            {
+                self.execution_lifecycle
+                    .procedure_applications
+                    .push(application.as_ref().clone());
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ProcedureDeviation { deviation, .. }
+                if self
+                    .execution_lifecycle
+                    .procedure_deviations
+                    .iter()
+                    .all(|saved| saved.deviation_id != deviation.deviation_id) =>
+            {
+                self.execution_lifecycle
+                    .procedure_deviations
+                    .push(deviation.as_ref().clone());
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::LlmMessage {
+                full,
+                usage,
+                tool_calls,
+                assistant_turn,
+                aborted,
+            } => {
+                self.steps += 1;
+                let turn = assistant_turn
+                    .as_deref()
+                    .cloned()
+                    .unwrap_or_else(|| fallback_assistant_turn(full, tool_calls, self.steps));
+                self.unassigned_tool_calls = turn.tool_calls.clone();
+                let entry_id = format!("assistant-{}-{}", self.run_id, self.steps);
+                // A salvaged cancelled partial is still a durable assistant
+                // message and still arrives text-only, so it can never offer
+                // resume a tool. The marker is a durable fact about the message
+                // rather than a stream decoration: keeping it on the entry is
+                // what makes a resumed session report the same stop a live one
+                // did. It stays out of the provider projection, which is
+                // text-only here.
+                let entry = if *aborted {
+                    SessionEntry::aborted_assistant(entry_id, turn.clone())
+                } else {
+                    SessionEntry::assistant(entry_id, turn.clone())
+                };
+                if let Err(error) = self.session.append(entry) {
+                    tracing::warn!(%error, "failed to append canonical assistant turn");
+                }
+                self.sync_history_from_session();
+                self.total_usage.prompt_tokens += usage.prompt_tokens;
+                self.total_usage.completion_tokens += usage.completion_tokens;
+                self.total_usage.total_tokens += usage.total_tokens;
+                self.total_usage.cached_tokens += usage.cached_tokens;
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::PromptBuilt { metadata } => {
+                self.prompt_builds.push(metadata.as_ref().clone());
+                self.write_snapshot(state_store).await;
+            }
+            // An accepted steer is not yet part of prompt history. Keep it
+            // only until the engine confirms that its next model turn began;
+            // cancellation or a budget boundary may still drop it.
+            StreamEvent::SteerAccepted { id, content } => {
+                self.pending_steers.insert(id.clone(), content.clone());
+            }
+            StreamEvent::SteerApplied { id } => {
+                if let Some(content) = self.pending_steers.remove(id) {
+                    self.history.push(Message::user(content));
+                    let entry_id = format!("steer-{id}");
+                    if let Err(error) = self.session.append(SessionEntry::user(
+                        entry_id,
+                        self.history
+                            .last()
+                            .map(|m| m.content.clone())
+                            .unwrap_or_default(),
+                    )) {
+                        tracing::warn!(%error, "failed to append canonical steer");
+                    }
+                    self.sync_history_from_session();
+                    self.write_snapshot(state_store).await;
+                }
+            }
+            StreamEvent::SteerDropped { id, .. } => {
+                self.pending_steers.remove(id);
+            }
+            StreamEvent::MessageQueued { id, content } => {
+                self.pending_messages.insert(id.clone(), content.clone());
+                self.record_message_delivery(id, "queued", None);
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::MessageInterventionRequested { id } => {
+                self.record_message_delivery(id, "intervention_requested", None);
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::MessageAppliedCurrentRun { id } => {
+                self.record_message_delivery(id, "applied_current_run", None);
+                if let Some(content) = self.pending_messages.remove(id) {
+                    if let Err(error) = self
+                        .session
+                        .append(SessionEntry::user(format!("message-{id}"), content))
+                    {
+                        tracing::warn!(%error, "failed to append unified message");
+                    }
+                    self.sync_history_from_session();
+                }
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::MessageClaimedSuccessor { id } => {
+                self.record_message_delivery(id, "claimed_successor", None);
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::MessageNeedsAttention { id, reason } => {
+                self.pending_messages.remove(id);
+                self.record_message_delivery(id, "needs_attention", Some(reason.clone()));
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::MessageRevoked { id } => {
+                self.pending_messages.remove(id);
+                self.record_message_delivery(id, "revoked", None);
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ToolCallStarted {
+                call_id,
+                tool_use_id,
+                name,
+                args,
+            } => {
+                self.tool_calls += 1;
+                let selected = self
+                    .unassigned_tool_calls
+                    .iter()
+                    .position(|call| {
+                        tool_use_id.as_deref().is_some_and(|wire| {
+                            call.wire_reference
+                                .as_ref()
+                                .is_some_and(|reference| reference.value == wire)
+                        }) || call.name == *name
+                    })
+                    .map(|index| self.unassigned_tool_calls.remove(index));
+                let canonical_call = selected.unwrap_or_else(|| ToolCall {
+                    internal_call_id: InternalCallId::new(call_id.to_string()).unwrap_or_else(
+                        |_| {
+                            InternalCallId::new(format!("runtime-call-{}", call_id))
+                                .expect("runtime call id is bounded")
+                        },
+                    ),
+                    name: name.clone(),
+                    arguments: args.clone(),
+                    wire_reference: tool_use_id
+                        .as_ref()
+                        .and_then(|wire| WireCallReference::new("runtime", wire.clone()).ok()),
+                });
+                self.pending_tool_calls
+                    .insert(*call_id, canonical_call.clone());
+                self.pending_tool_use_ids
+                    .insert(*call_id, tool_use_id.clone());
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ToolCallCompleted { call_id, result } => {
+                let tool_use_id = self.pending_tool_use_ids.remove(call_id).flatten();
+                let call = self
+                    .pending_tool_calls
+                    .remove(call_id)
+                    .unwrap_or_else(|| ToolCall {
+                        internal_call_id: InternalCallId::new(call_id.to_string())
+                            .expect("runtime call id is bounded"),
+                        name: "unknown_tool".to_string(),
+                        arguments: serde_json::json!({}),
+                        wire_reference: tool_use_id
+                            .clone()
+                            .and_then(|wire| WireCallReference::new("runtime", wire).ok()),
+                    });
+                self.history.push(Message::tool_with_status(
+                    result.output.clone(),
+                    tool_use_id,
+                    Some(call.internal_call_id.clone()),
+                    Some(call.name.clone()),
+                    canonical_status(&result.metadata.status),
+                ));
+                let canonical = CanonicalToolResult::text(
+                    call.internal_call_id.clone(),
+                    call.name.clone(),
+                    result.output.clone(),
+                );
+                let mut canonical = CanonicalToolResult {
+                    status: canonical_status(&result.metadata.status),
+                    ..canonical
+                };
+                if let Some(envelope) = &result.envelope {
+                    canonical
+                        .content
+                        .extend(envelope.artifacts.iter().map(|artifact| {
+                            ContentBlock::RichReference {
+                                kind: "tool_artifact".to_string(),
+                                reference: artifact.artifact_id.to_string(),
+                                mime_type: artifact.mime_type.clone(),
+                                title: Some(format!(
+                                    "{} bytes sha256:{}",
+                                    artifact.byte_length, artifact.sha256
+                                )),
+                            }
+                        }));
+                }
+                if let Err(error) = self.session.append(SessionEntry::tool_result(
+                    format!("tool-result-{}", call_id),
+                    canonical,
+                )) {
+                    tracing::warn!(%error, "failed to append canonical tool result");
+                }
+                self.sync_history_from_session();
+                self.tool_mutations.extend(result.mutations.clone());
+                self.tool_execution_metadata.push(result.metadata.clone());
+                // The completed envelope is authoritative for this call's
+                // artifacts. Per-artifact events may have arrived first, so
+                // record by identity rather than appending blindly.
+                if let Some(envelope) = &result.envelope {
+                    for artifact in &envelope.artifacts {
+                        self.record_artifact(artifact);
+                    }
+                }
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ToolArtifactStored { artifact, .. } => {
+                self.record_artifact(artifact);
+            }
+            StreamEvent::ToolArtifactRejected {
+                call_id,
+                block_ordinal,
+                reason,
+                observed_bytes,
+            } => {
+                let rejection = ReportArtifactRejection {
+                    call_id: call_id.to_string(),
+                    block_ordinal: *block_ordinal,
+                    reason: reason.clone(),
+                    observed_bytes: *observed_bytes,
+                };
+                if !self.rejected_tool_artifacts.contains(&rejection) {
+                    self.rejected_tool_artifacts.push(rejection);
+                }
+            }
+            StreamEvent::ToolCallFailed {
+                call_id,
+                error,
+                metadata,
+            } => {
+                self.tool_failures += 1;
+                let tool_use_id = self.pending_tool_use_ids.remove(call_id).flatten();
+                let call = self
+                    .pending_tool_calls
+                    .remove(call_id)
+                    .unwrap_or_else(|| ToolCall {
+                        internal_call_id: InternalCallId::new(call_id.to_string())
+                            .expect("runtime call id is bounded"),
+                        name: "unknown_tool".to_string(),
+                        arguments: serde_json::json!({}),
+                        wire_reference: tool_use_id
+                            .clone()
+                            .and_then(|wire| WireCallReference::new("runtime", wire).ok()),
+                    });
+                self.history.push(Message::tool_with_status(
+                    format!("Error: {error}"),
+                    tool_use_id,
+                    Some(call.internal_call_id.clone()),
+                    Some(call.name.clone()),
+                    canonical_failure_status(metadata),
+                ));
+                let canonical = CanonicalToolResult {
+                    internal_call_id: call.internal_call_id.clone(),
+                    tool_name: call.name.clone(),
+                    content: vec![ContentBlock::text(format!("Error: {error}"))],
+                    status: canonical_failure_status(metadata),
+                    error_code: metadata.error_code.clone(),
+                };
+                if let Err(error) = self.session.append(SessionEntry::tool_result(
+                    format!("tool-result-{}", call_id),
+                    canonical,
+                )) {
+                    tracing::warn!(%error, "failed to append canonical failed tool result");
+                }
+                self.sync_history_from_session();
+                self.tool_execution_metadata.push(metadata.clone());
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::PlanCreated {
+                plan,
+                identity,
+                plan_revision,
+            } => {
+                self.plan = Some(plan.clone());
+                self.step_ledger.set_plan_identity(identity);
+                if let Some(revision) = plan_revision {
+                    self.step_ledger
+                        .plan_lifecycle
+                        .push_revision(revision.as_ref().clone());
+                }
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::PlanDecision { record } => {
+                self.step_ledger
+                    .plan_lifecycle
+                    .push_decision(record.as_ref().clone());
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::PlanRevised { plan, revision } => {
+                self.plan = Some(plan.clone());
+                self.step_ledger.set_plan_identity(&revision.identity());
+                self.step_ledger
+                    .plan_lifecycle
+                    .push_revision(revision.as_ref().clone());
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::PlanStepStarted { attempt, .. } => {
+                if attempt.is_complete() {
+                    self.step_ledger.active_step_attempt = Some(attempt.clone());
+                    self.step_ledger.set_plan_identity(&PlanIdentity {
+                        plan_id: attempt.plan_id.clone(),
+                        plan_revision_id: attempt.plan_revision_id.clone(),
+                        revision: self.step_ledger.active_plan_revision,
+                    });
+                }
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::StepResult { record } => {
+                if !self
+                    .step_ledger
+                    .step_records
+                    .iter()
+                    .any(|saved| saved.record_id == record.record_id)
+                {
+                    self.step_ledger.step_records.push(record.as_ref().clone());
+                }
+                if self
+                    .step_ledger
+                    .active_step_attempt
+                    .as_ref()
+                    .is_some_and(|attempt| {
+                        attempt.plan_id == record.plan_id
+                            && attempt.plan_revision_id == record.plan_revision_id
+                            && attempt.step_id == record.step_id
+                            && attempt.attempt == record.attempt
+                    })
+                {
+                    self.step_ledger.active_step_attempt = None;
+                }
+                if matches!(
+                    record.status,
+                    StepRecordStatus::Succeeded | StepRecordStatus::Skipped
+                ) && let Some(active_plan) = self.plan.as_mut()
+                    && let Some(saved_step) = active_plan
+                        .steps
+                        .iter_mut()
+                        .find(|saved_step| saved_step.id == record.step_id)
+                {
+                    saved_step.done = true;
+                    active_plan.current_step = active_plan
+                        .steps
+                        .iter()
+                        .position(|saved_step| !saved_step.done)
+                        .unwrap_or(active_plan.steps.len());
+                }
+                if matches!(
+                    record.status,
+                    StepRecordStatus::Failed
+                        | StepRecordStatus::Blocked
+                        | StepRecordStatus::Rejected
+                        | StepRecordStatus::Interrupted
+                        | StepRecordStatus::BudgetExhausted
+                        | StepRecordStatus::Cancelled
+                        | StepRecordStatus::Indeterminate
+                        | StepRecordStatus::Partial
+                ) {
+                    let step_title = self
+                        .plan
+                        .as_ref()
+                        .and_then(|plan| {
+                            plan.steps
+                                .iter()
+                                .find(|step| step.id == record.step_id)
+                                .map(|step| step.title.clone())
+                        })
+                        .unwrap_or_else(|| record.step_id.clone());
+                    let reason = record
+                        .safe_error_summary
+                        .as_deref()
+                        .unwrap_or(record.summary.as_str());
+                    let failure_message = planned_step_failure_message(&step_title, reason);
+                    if let Err(error) = self.session.append(SessionEntry::user(
+                        format!("step-failure-{}", record.record_id),
+                        failure_message.clone(),
+                    )) {
+                        tracing::warn!(%error, "failed to append canonical step failure");
+                    }
+                    self.history.push(Message::user(failure_message));
+                    self.sync_history_from_session();
+                }
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::FinalizationStarted { record }
+            | StreamEvent::FinalizationCompleted { record } => {
+                self.execution_lifecycle.finalization = Some(record.as_ref().clone());
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::PromptCompacted { summary, state } => {
+                if let Some(summary) = summary.clone() {
+                    self.summary = Some(summary);
+                }
+                self.compaction = state.clone();
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::RunCompleted { reason, output } => {
+                self.final_reason = reason.clone();
+                self.final_output = output.clone();
+                if let Err(error) = self.session.close_unresolved_tool_calls() {
+                    tracing::warn!(%error, "canonical session could not close in-flight tools");
+                }
+                self.pending_tool_calls.clear();
+                self.unassigned_tool_calls.clear();
+                self.pending_tool_use_ids.clear();
+                self.sync_history_from_session();
+                if self.summary.is_none() {
+                    self.summary = self
+                        .final_output
+                        .as_ref()
+                        .map(|output| truncate_summary(output));
+                }
+                self.write_snapshot(state_store).await;
+            }
+            _ => {}
+        }
+    }
+
+    pub async fn finalize(
+        &mut self,
+        state_store: &StateStore,
+        workspace: &Workspace,
+        model_id: &str,
+        run_dir: &Path,
+    ) {
+        if self.summary.is_none() {
+            self.summary = self
+                .final_output
+                .as_ref()
+                .map(|output| truncate_summary(output));
+        }
+        self.write_snapshot(state_store).await;
+        self.write_report(state_store, workspace, model_id, run_dir)
+            .await;
+    }
+
+    fn record_message_delivery(&mut self, id: &str, status: &str, reason: Option<String>) {
+        if let Some(record) = self
+            .message_deliveries
+            .iter_mut()
+            .find(|item| item.id == id)
+        {
+            record.status = status.to_string();
+            record.target_run_id = Some(self.run_id);
+            record.reason = reason;
+            return;
+        }
+        self.message_deliveries.push(MessageDeliveryRecord {
+            id: id.to_string(),
+            status: status.to_string(),
+            target_run_id: Some(self.run_id),
+            reason,
+        });
+    }
+
+    async fn write_snapshot(&self, state_store: &StateStore) {
+        let history = self
+            .session
+            .messages_for_compatibility_artifact()
+            .unwrap_or_else(|_| self.history.clone());
+        let state = TaskState {
+            // TaskState schema 1 remains readable by existing consumers. The
+            // typed session lives in the additive checkpoint field and is
+            // authoritative for new snapshots.
+            schema_version: 1,
+            session_id: self.session_id,
+            job_id: self.job_id,
+            run_id: self.run_id,
+            goal: self.goal.clone(),
+            step: self.initial_step + self.steps,
+            history,
+            summary: self.summary.clone(),
+            checkpoint: Some(self.prompt_checkpoint()),
+            plan: self.plan.clone(),
+            runtime_identity: self.runtime_identity.clone(),
+            agent_profile: self.agent_profile.clone(),
+            step_ledger: self.step_ledger.clone(),
+            execution_lifecycle: self.execution_lifecycle.clone(),
+        };
+        if let Err(err) = state_store.write_task_state(&state).await {
+            tracing::warn!("Failed to write task_state.json: {}", err);
+        }
+    }
+
+    async fn refresh_last_event_seq(&mut self, state_store: &StateStore) {
+        match state_store.index.last_event_seq(self.run_id) {
+            Ok(0) => {}
+            Ok(seq) => {
+                self.last_event_seq = Some(seq);
+            }
+            Err(err) => {
+                tracing::warn!("Failed to read last event sequence: {}", err);
+            }
+        }
+    }
+
+    async fn write_report(
+        &self,
+        state_store: &StateStore,
+        workspace: &Workspace,
+        model_id: &str,
+        run_dir: &Path,
+    ) {
+        let mut report = RunReport::new(
+            self.session_id,
+            self.job_id,
+            self.run_id,
+            workspace.root.clone(),
+            workspace.kind.clone(),
+            model_id.to_string(),
+            self.final_reason.clone(),
+        );
+        report.steps = self.steps;
+        report.total_usage = self.total_usage.clone();
+        report.tool_calls = self.tool_calls;
+        report.tool_failures = self.tool_failures;
+        report.tool_mutations = self.tool_mutations.clone();
+        report.tool_execution_metadata = self.tool_execution_metadata.clone();
+        report.prompt_builds = self.prompt_builds.clone();
+        report.runtime_identity = self.runtime_identity.clone();
+        report.step_records = self.step_ledger.step_records.clone();
+        report.plan_decisions = self.step_ledger.plan_lifecycle.decisions.clone();
+        report.plan_revisions = self.step_ledger.plan_lifecycle.revisions.clone();
+        report.execution_lifecycle = self.execution_lifecycle.clone();
+        report.final_outcome = self
+            .execution_lifecycle
+            .finalization
+            .as_ref()
+            .and_then(|record| record.outcome);
+        // Payload availability is read from disk rather than assumed, so a
+        // report written after retention cleanup says "expired" truthfully.
+        let artifact_store = ToolArtifactStore::new(run_dir);
+        let mut artifact_entries = Vec::with_capacity(self.tool_artifacts.len());
+        for artifact in &self.tool_artifacts {
+            let available = artifact_store
+                .payload_available(&artifact.artifact_id)
+                .await;
+            artifact_entries.push(ReportArtifactEntry::from_ref(artifact, available));
+        }
+        report.tool_artifacts = artifact_entries;
+        report.rejected_tool_artifacts = self.rejected_tool_artifacts.clone();
+        report.message_deliveries = self.message_deliveries.clone();
+        report.output = self.final_output.clone();
+
+        match write_report(run_dir, &report) {
+            Ok(path) => {
+                if let Err(err) = state_store
+                    .record_report(
+                        self.run_id,
+                        path,
+                        report.status.clone(),
+                        termination_reason_label(&report.termination_reason).to_string(),
+                    )
+                    .await
+                {
+                    tracing::warn!("Failed to index report.json: {}", err);
+                }
+            }
+            Err(err) => {
+                tracing::warn!("Failed to write report.json: {}", err);
+            }
+        }
+    }
+
+    fn prompt_checkpoint(&self) -> PromptCheckpoint {
+        let step = self.initial_step + self.steps;
+        let checkpoint_session = self.session.suffix(CHECKPOINT_SESSION_TAIL_ENTRIES);
+        let preserved_tail = checkpoint_session
+            .messages_for_compatibility_artifact()
+            .unwrap_or_else(|_| {
+                let mut tail: Vec<_> = self
+                    .history
+                    .iter()
+                    .rev()
+                    .take(CHECKPOINT_SESSION_TAIL_ENTRIES)
+                    .cloned()
+                    .collect();
+                tail.reverse();
+                tail
+            });
+        let full_history = self
+            .session
+            .messages_for_compatibility_artifact()
+            .unwrap_or_else(|_| self.history.clone());
+        let compacted_history_messages = full_history.len().saturating_sub(preserved_tail.len());
+        let compacted = &full_history[..compacted_history_messages];
+        let summary = self
+            .summary
+            .clone()
+            .or_else(|| checkpoint_summary(compacted));
+        let token_estimate = estimate_messages_tokens(&preserved_tail)
+            + summary
+                .as_ref()
+                .map(|summary| summary.chars().count().div_ceil(4))
+                .unwrap_or_default();
+
+        PromptCheckpoint {
+            summary,
+            preserved_tail,
+            plan: self.plan.clone(),
+            session_memory_pointer: Some(format!(".rove/memory/sessions/{}.md", self.session_id)),
+            durable_memory_pointer: Some(".rove/memory/MEMORY.md".to_string()),
+            last_step: step,
+            last_event_seq: self.last_event_seq,
+            token_estimate,
+            compacted_history_messages,
+            compaction: self.checkpoint_compaction_state(compacted_history_messages),
+            runtime_identity: self.runtime_identity.clone(),
+            agent_profile: self.agent_profile.clone(),
+            step_ledger: self.step_ledger.checkpoint(),
+            execution_lifecycle: self.execution_lifecycle.checkpoint(),
+            message_deliveries: self.message_deliveries.clone(),
+            session: Some(self.session.clone()),
+            history_pruned: self.history_pruned,
+        }
+    }
+
+    fn checkpoint_compaction_state(
+        &self,
+        compacted_history_messages: usize,
+    ) -> PromptCompactionState {
+        if self.compaction.auto_triggered || self.compaction.degraded {
+            return self.compaction.clone();
+        }
+        PromptCompactionState {
+            // This run's own compaction, so a run that compacted nothing reports
+            // `none`/`deterministic` rather than the mode a previous run used.
+            mode: if compacted_history_messages > 0 {
+                PromptCompactionMode::Deterministic
+            } else {
+                PromptCompactionMode::None
+            },
+            auto_triggered: compacted_history_messages > 0,
+            model: None,
+            prompt_version: None,
+            source_message_count: compacted_history_messages,
+            // The breaker outlives the run that tripped it, and so do the facts
+            // that explain it: a tripped breaker reported without its `degraded`
+            // flag and `last_error` is a count with no cause. Everything here
+            // comes from the session's own state, never from this run's empty
+            // `compaction` — resetting them is what let a session start every
+            // turn from a fresh breaker.
+            ..self.inherited_breaker.clone()
+        }
+    }
+
+    /// Records one artifact reference for the report.
+    ///
+    /// The same payload can be referenced by more than one call, so identity
+    /// is the pair of artifact and call: deduplicating on the artifact alone
+    /// would lose the fact that a second call produced the same bytes.
+    fn record_artifact(&mut self, artifact: &ToolArtifactRef) {
+        let already_recorded = self.tool_artifacts.iter().any(|saved| {
+            saved.artifact_id == artifact.artifact_id
+                && saved.source.call_id == artifact.source.call_id
+                && saved.source.block_ordinal == artifact.source.block_ordinal
+        });
+        if !already_recorded {
+            self.tool_artifacts.push(artifact.clone());
+        }
+    }
+
+    fn sync_history_from_session(&mut self) {
+        if let Ok(history) = self.session.messages_for_compatibility_artifact() {
+            self.history = history;
+        }
+    }
+}
+
+fn truncate_summary(output: &str) -> String {
+    let summary = output.trim();
+    if summary.is_empty() {
+        "completed".to_string()
+    } else {
+        summary.chars().take(120).collect()
+    }
+}
+
+fn checkpoint_summary(compacted: &[Message]) -> Option<String> {
+    let last = compacted.last()?;
+    let content = compact(last.content.trim(), CHECKPOINT_SUMMARY_CHARS);
+    Some(format!(
+        "{} earlier message(s) compacted; latest compacted {} message: {}",
+        compacted.len(),
+        role_label(&last.role),
+        content
+    ))
+}
+
+fn compact(value: &str, max_chars: usize) -> String {
+    let truncated: String = value.chars().take(max_chars).collect();
+    if value.chars().count() > max_chars {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
+}
+
+fn role_label(role: &Role) -> &'static str {
+    match role {
+        Role::System => "system",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
+    }
+}
+
+fn termination_reason_label(reason: &TerminationReason) -> &'static str {
+    match reason {
+        TerminationReason::Final => "final",
+        TerminationReason::StepLimit => "step_limit",
+        TerminationReason::TokenLimit => "token_limit",
+        TerminationReason::TimeLimit => "time_limit",
+        TerminationReason::Error => "error",
+        TerminationReason::Cancelled => "cancelled",
+    }
+}
+
+fn fallback_assistant_turn(
+    full: &str,
+    tool_calls: &[rove_models::ToolCallRef],
+    step: u32,
+) -> AssistantTurn {
+    let calls = tool_calls
+        .iter()
+        .enumerate()
+        .map(|(index, reference)| {
+            let internal_call_id = InternalCallId::new(reference.id.clone()).unwrap_or_else(|_| {
+                InternalCallId::new(format!("legacy-call-{step}-{index}"))
+                    .expect("fallback call id is bounded")
+            });
+            ToolCall {
+                internal_call_id,
+                name: reference.name.clone(),
+                arguments: reference.args.clone(),
+                wire_reference: WireCallReference::new("legacy", reference.id.clone()).ok(),
+            }
+        })
+        .collect();
+    AssistantTurn {
+        content: if full.is_empty() {
+            Vec::new()
+        } else {
+            vec![ContentBlock::text(full)]
+        },
+        tool_calls: calls,
+        ..AssistantTurn::default()
+    }
+}
+
+fn canonical_status(status: &rove_core::ToolExecutionStatus) -> ToolResultStatus {
+    match status {
+        rove_core::ToolExecutionStatus::Ok => ToolResultStatus::Ok,
+        rove_core::ToolExecutionStatus::Rejected => ToolResultStatus::Rejected,
+        rove_core::ToolExecutionStatus::PartialSuccess => ToolResultStatus::Partial,
+        rove_core::ToolExecutionStatus::Error => ToolResultStatus::Error,
+    }
+}
+
+fn canonical_failure_status(metadata: &rove_core::ToolExecutionMetadata) -> ToolResultStatus {
+    match metadata.status {
+        rove_core::ToolExecutionStatus::Rejected => ToolResultStatus::Rejected,
+        rove_core::ToolExecutionStatus::PartialSuccess => ToolResultStatus::Partial,
+        _ => ToolResultStatus::Error,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RunArtifactRecorder;
+    use crate::events::StreamEvent;
+    use crate::runtime_identity::RuntimeIdentity;
+    use crate::state::store::StateStore;
+    use crate::types::{
+        ApprovalPolicy, JobId, PromptCompactionMode, PromptCompactionState, RunId, SessionId,
+    };
+    use crate::workspace::{Workspace, WorkspaceKind};
+    use rove_core::{CallId, ToolExecutionMetadata, ToolExecutionStatus, ToolResult};
+    use rove_models::Role;
+
+    fn runtime_identity() -> RuntimeIdentity {
+        RuntimeIdentity {
+            cwd: "D:/workspace".to_string(),
+            workspace_kind: WorkspaceKind::Repo,
+            model_id: "gpt-4.1-mini".to_string(),
+            provider_target: "openai-responses:https://api.openai.com/v1:gpt-4.1-mini".to_string(),
+            approval_policy: ApprovalPolicy::Auto,
+            max_steps: 12,
+            plan_enabled: true,
+            system_prompt_hash: "sha256:system".to_string(),
+            planner_prompt_hash: "sha256:planner".to_string(),
+            evaluator_prompt_hash: None,
+            finalizer_prompt_hash: None,
+            workspace_fingerprint: "sha256:workspace".to_string(),
+            tool_signature: "sha256:tools".to_string(),
+            execution_policy: None,
+            capability_snapshot_id: Some("sha256:capabilities".to_string()),
+            execution_environment: None,
+            execution_capabilities: None,
+            agent: None,
+            run_model: None,
+            mcp_servers: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn recorder_persists_runtime_identity_in_state_and_checkpoint() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_store = StateStore::new(tmp.path());
+        let session_id = SessionId::new();
+        let job_id = JobId::new();
+        let run_id = RunId::new();
+        let identity = runtime_identity();
+        let mut recorder = RunArtifactRecorder::new(
+            session_id,
+            job_id,
+            run_id,
+            "inspect".to_string(),
+            None,
+            Some(identity.clone()),
+        );
+
+        recorder
+            .record_event(
+                &StreamEvent::RunStarted {
+                    run_id,
+                    job_id,
+                    user_message: "inspect".to_string(),
+                    content_blocks: Vec::new(),
+                },
+                &state_store,
+            )
+            .await;
+
+        let state = state_store.load_task_state(run_id).await.unwrap();
+        assert_eq!(state.runtime_identity.as_ref(), Some(&identity));
+        assert_eq!(
+            state
+                .checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.runtime_identity.as_ref()),
+            Some(&identity)
+        );
+
+        let workspace = Workspace {
+            root: tmp.path().to_path_buf(),
+            kind: WorkspaceKind::Folder,
+            state_dir: tmp.path().join(".rove"),
+        };
+        let run_dir = tmp.path().join("report-run");
+        recorder
+            .finalize(&state_store, &workspace, "gpt-4.1-mini", &run_dir)
+            .await;
+        let report_json = tokio::fs::read_to_string(run_dir.join("report.json"))
+            .await
+            .unwrap();
+        let report: crate::state::report::RunReport = serde_json::from_str(&report_json).unwrap();
+
+        assert_eq!(report.runtime_identity.as_ref(), Some(&identity));
+    }
+
+    #[tokio::test]
+    async fn recorder_persists_tool_execution_metadata_in_report() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_store = StateStore::new(tmp.path());
+        let session_id = SessionId::new();
+        let job_id = JobId::new();
+        let run_id = RunId::new();
+        let call_id = CallId::new();
+        let metadata = ToolExecutionMetadata {
+            status: ToolExecutionStatus::Ok,
+            ..ToolExecutionMetadata::default()
+        };
+        let mut recorder = RunArtifactRecorder::new(
+            session_id,
+            job_id,
+            run_id,
+            "inspect".to_string(),
+            None,
+            None,
+        );
+        recorder
+            .record_event(
+                &StreamEvent::ToolCallCompleted {
+                    call_id,
+                    result: ToolResult {
+                        call_id,
+                        output: "done".to_string(),
+                        mutations: Vec::new(),
+                        metadata: metadata.clone(),
+                        envelope: None,
+                    },
+                },
+                &state_store,
+            )
+            .await;
+
+        let workspace = Workspace {
+            root: tmp.path().to_path_buf(),
+            kind: WorkspaceKind::Folder,
+            state_dir: tmp.path().join(".rove"),
+        };
+        let run_dir = tmp.path().join("tool-report-run");
+        recorder
+            .finalize(&state_store, &workspace, "fake", &run_dir)
+            .await;
+        let report_json = tokio::fs::read_to_string(run_dir.join("report.json"))
+            .await
+            .unwrap();
+        let report: crate::state::report::RunReport = serde_json::from_str(&report_json).unwrap();
+
+        assert_eq!(report.tool_execution_metadata, vec![metadata]);
+    }
+
+    #[tokio::test]
+    async fn recorder_persists_an_applied_steer_in_resumable_history() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_store = StateStore::new(tmp.path());
+        let session_id = SessionId::new();
+        let job_id = JobId::new();
+        let run_id = RunId::new();
+        let mut recorder = RunArtifactRecorder::new(
+            session_id,
+            job_id,
+            run_id,
+            "original goal".to_string(),
+            None,
+            None,
+        );
+
+        recorder
+            .record_event(
+                &StreamEvent::RunStarted {
+                    run_id,
+                    job_id,
+                    user_message: "original goal".to_string(),
+                    content_blocks: Vec::new(),
+                },
+                &state_store,
+            )
+            .await;
+        recorder
+            .record_event(
+                &StreamEvent::SteerAccepted {
+                    id: "steer-1".to_string(),
+                    content: "use the safe migration path".to_string(),
+                },
+                &state_store,
+            )
+            .await;
+        recorder
+            .record_event(
+                &StreamEvent::SteerApplied {
+                    id: "steer-1".to_string(),
+                },
+                &state_store,
+            )
+            .await;
+
+        let state = state_store.load_task_state(run_id).await.unwrap();
+        assert!(state.history.iter().any(|message| {
+            message.role == Role::User && message.content == "use the safe migration path"
+        }));
+    }
+
+    /// The breaker facts a session accumulates once its summary model keeps
+    /// failing, with the two facts that explain them and a per-run count that
+    /// must not travel.
+    fn broken_breaker() -> PromptCompactionState {
+        PromptCompactionState {
+            mode: PromptCompactionMode::Degraded,
+            degraded: true,
+            consecutive_failures: 3,
+            circuit_open: true,
+            next_attempt_after: Some("2027-01-15T08:05:00+00:00".to_string()),
+            last_error: Some("summary provider is unreachable".to_string()),
+            source_message_count: 7,
+            ..PromptCompactionState::default()
+        }
+    }
+
+    /// Write a snapshot for `run_id` in `session_id` and return it, so a test can
+    /// hand a real `TaskState` to the next run's recorder.
+    async fn seeded_snapshot(
+        state_store: &StateStore,
+        session_id: SessionId,
+        job_id: JobId,
+        run_id: RunId,
+    ) -> crate::types::TaskState {
+        let mut recorder = RunArtifactRecorder::new(
+            session_id,
+            job_id,
+            run_id,
+            "inspect".to_string(),
+            None,
+            None,
+        );
+        recorder
+            .record_event(
+                &StreamEvent::RunStarted {
+                    run_id,
+                    job_id,
+                    user_message: "inspect".to_string(),
+                    content_blocks: Vec::new(),
+                },
+                state_store,
+            )
+            .await;
+        state_store.load_task_state(run_id).await.unwrap()
+    }
+
+    /// The breaker outlives the run that tripped it, and so do the facts that
+    /// explain it: a snapshot carrying `circuit_open: true` with
+    /// `degraded: false` and no `last_error` would report a count with no cause.
+    /// What this run's *own* compaction did is still derived, not inherited.
+    #[tokio::test]
+    async fn recorder_carries_the_sessions_breaker_and_its_cause() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_store = StateStore::new(tmp.path());
+        let session_id = SessionId::new();
+        let job_id = JobId::new();
+        let first_run = RunId::new();
+        let mut persisted = seeded_snapshot(&state_store, session_id, job_id, first_run).await;
+        persisted.checkpoint.as_mut().unwrap().compaction = broken_breaker();
+
+        let second_run = RunId::new();
+        let mut recorder = RunArtifactRecorder::new(
+            session_id,
+            job_id,
+            second_run,
+            "inspect".to_string(),
+            Some(&persisted),
+            None,
+        );
+        recorder
+            .record_event(
+                &StreamEvent::RunStarted {
+                    run_id: second_run,
+                    job_id,
+                    user_message: "inspect".to_string(),
+                    content_blocks: Vec::new(),
+                },
+                &state_store,
+            )
+            .await;
+
+        let state = state_store.load_task_state(second_run).await.unwrap();
+        let compaction = &state.checkpoint.as_ref().unwrap().compaction;
+        assert_eq!(compaction.consecutive_failures, 3);
+        assert!(compaction.circuit_open);
+        assert_eq!(
+            compaction.next_attempt_after.as_deref(),
+            Some("2027-01-15T08:05:00+00:00"),
+            "the cooldown the automatic path reads must survive a run that never probes"
+        );
+        assert!(
+            compaction.degraded && compaction.last_error.is_some(),
+            "a tripped breaker must keep the facts that explain it"
+        );
+        assert_eq!(
+            compaction.mode,
+            PromptCompactionMode::None,
+            "a run that compacted nothing must not claim the mode it inherited"
+        );
+        assert_eq!(
+            compaction.source_message_count, 0,
+            "the message count describes this run's own compaction"
+        );
+    }
+
+    /// A fork child seeds from the *parent's* snapshot under a new session id.
+    /// The parent's outage is not the child's: inheriting it would refuse the
+    /// child's automatic compaction for a failure it never had.
+    #[tokio::test]
+    async fn recorder_does_not_carry_a_foreign_sessions_breaker() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_store = StateStore::new(tmp.path());
+        let parent_session = SessionId::new();
+        let job_id = JobId::new();
+        let parent_run = RunId::new();
+        let mut parent = seeded_snapshot(&state_store, parent_session, job_id, parent_run).await;
+        parent.checkpoint.as_mut().unwrap().compaction = broken_breaker();
+
+        let child_session = SessionId::new();
+        let child_run = RunId::new();
+        let mut recorder = RunArtifactRecorder::new(
+            child_session,
+            job_id,
+            child_run,
+            "inspect".to_string(),
+            Some(&parent),
+            None,
+        );
+        recorder
+            .record_event(
+                &StreamEvent::RunStarted {
+                    run_id: child_run,
+                    job_id,
+                    user_message: "inspect".to_string(),
+                    content_blocks: Vec::new(),
+                },
+                &state_store,
+            )
+            .await;
+
+        let state = state_store.load_task_state(child_run).await.unwrap();
+        assert_eq!(state.session_id, child_session);
+        let compaction = &state.checkpoint.as_ref().unwrap().compaction;
+        assert_eq!(
+            compaction.consecutive_failures, 0,
+            "a child must not inherit the parent's failure count"
+        );
+        assert!(!compaction.circuit_open);
+        assert!(compaction.next_attempt_after.is_none());
+        assert!(
+            !compaction.degraded && compaction.last_error.is_none(),
+            "and it must not inherit the parent's outage either"
+        );
+    }
+
+    #[tokio::test]
+    async fn recorder_does_not_persist_a_dropped_steer_in_resumable_history() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_store = StateStore::new(tmp.path());
+        let session_id = SessionId::new();
+        let job_id = JobId::new();
+        let run_id = RunId::new();
+        let mut recorder = RunArtifactRecorder::new(
+            session_id,
+            job_id,
+            run_id,
+            "original goal".to_string(),
+            None,
+            None,
+        );
+
+        recorder
+            .record_event(
+                &StreamEvent::RunStarted {
+                    run_id,
+                    job_id,
+                    user_message: "original goal".to_string(),
+                    content_blocks: Vec::new(),
+                },
+                &state_store,
+            )
+            .await;
+        recorder
+            .record_event(
+                &StreamEvent::SteerAccepted {
+                    id: "steer-2".to_string(),
+                    content: "this must not be replayed".to_string(),
+                },
+                &state_store,
+            )
+            .await;
+        recorder
+            .record_event(
+                &StreamEvent::SteerDropped {
+                    id: "steer-2".to_string(),
+                    reason: "run cancelled".to_string(),
+                },
+                &state_store,
+            )
+            .await;
+
+        let state = state_store.load_task_state(run_id).await.unwrap();
+        assert!(
+            state
+                .history
+                .iter()
+                .all(|message| message.content != "this must not be replayed")
+        );
+    }
+}

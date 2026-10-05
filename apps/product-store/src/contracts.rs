@@ -1,0 +1,3701 @@
+//! Public product-control contracts shared by the API, persistence, transcript,
+//! and Web client lanes.
+//!
+//! Product metadata is intentionally separate from each workspace's runtime
+//! state. These types may point at runtime sessions, jobs, and runs, but they
+//! never copy canonical event facts into the product store.
+
+use std::fmt;
+use std::path::PathBuf;
+use std::str::FromStr;
+
+use async_trait::async_trait;
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
+use utoipa::ToSchema;
+
+use rove_runtime::events::{STREAM_EVENT_CONTRACT_VERSION, StreamEvent};
+use rove_runtime::review::{
+    ReviewConclusion, ReviewFinding, ReviewResult, ReviewTargetSpec, ReviewTargetSummary,
+};
+use rove_runtime::state::store::StateStore;
+use rove_runtime::types::{JobId, RunId, RunStatus, SessionId};
+
+use crate::cursor::{ProductMessageSearchCursor, ProductSearchCursor, ProductSessionCursor};
+
+pub const M1_BROWSER_SOURCE_SCHEMA_VERSION: u32 = 1;
+pub const MAX_PRODUCT_WORKSPACES: usize = 256;
+pub const MAX_PRODUCT_SESSIONS: usize = 2_048;
+pub const MAX_PRODUCT_PROVIDER_PROFILES: usize = 128;
+pub const MAX_PRODUCT_TEXT_BYTES: usize = 512;
+pub const MAX_PRODUCT_API_BASE_BYTES: usize = 2_048;
+pub const MAX_PRODUCT_PATH_BYTES: usize = 32_768;
+pub const MAX_MIGRATION_IDEMPOTENCY_KEY_BYTES: usize = 128;
+pub const MAX_M1_BROWSER_MIGRATION_BODY_BYTES: usize = 64 * 1_048_576;
+pub const MAX_PRODUCT_MEMORY_CONTENT_BYTES: usize = 64 * 1_024;
+pub const DEFAULT_PRODUCT_MAX_STEPS: u32 = 8;
+pub const MAX_PRODUCT_MAX_STEPS: u32 = 256;
+
+/// Per-type upload ceiling: 20 MiB for documents, the existing 16 MiB image cap
+/// for raster. A 16-20 MiB raster would be stored and then be unrenderable,
+/// which is worse than a clear 413.
+pub const MAX_PRODUCT_ATTACHMENT_DOCUMENT_BYTES: u64 = 20 * 1_048_576;
+pub const MAX_PRODUCT_ATTACHMENT_RASTER_BYTES: u64 = 16 * 1_048_576;
+/// The route-scoped body limit: the document ceiling plus one byte, so a body
+/// over the ceiling is refused while a body exactly at it is still read.
+pub const MAX_PRODUCT_ATTACHMENT_UPLOAD_BODY_BYTES: usize =
+    MAX_PRODUCT_ATTACHMENT_DOCUMENT_BYTES as usize + 1;
+/// The display name is a hint, never a path. It is rejected above this many
+/// bytes rather than truncated, so the client learns its name was refused.
+pub const MAX_PRODUCT_ATTACHMENT_DISPLAY_NAME_BYTES: usize = 255;
+/// Each in-flight upload holds up to 20 MiB and a file handle, so the
+/// process-wide budget is far below the preview surface's 16.
+pub const MAX_CONCURRENT_PRODUCT_ATTACHMENT_UPLOADS: usize = 4;
+/// First byte to rename. A stalled local client must not pin an upload slot.
+pub const PRODUCT_ATTACHMENT_UPLOAD_DEADLINE_SECONDS: u64 = 60;
+/// Unreferenced attachments are reclaimed after this long by the cleanup job
+/// (a later PR). Referenced attachments are durable session content with no TTL.
+pub const PRODUCT_ATTACHMENT_STAGED_TTL_SECONDS: i64 = 24 * 60 * 60;
+pub const MAX_STAGED_ATTACHMENTS_PER_SESSION: i64 = 32;
+pub const MAX_STAGED_ATTACHMENT_BYTES_PER_SESSION: i64 = 64 * 1_048_576;
+pub const MAX_REFERENCED_ATTACHMENTS_PER_SESSION: i64 = 32;
+pub const MAX_REFERENCED_ATTACHMENT_BYTES_PER_SESSION: i64 = 128 * 1_048_576;
+
+/// A fork preserves references to prior runtime runs, never copied event
+/// payloads. Keep that ancestry bounded so a deeply branched catalog cannot
+/// turn one fork or transcript read into an unbounded operation.
+pub const MAX_PRODUCT_FORK_INHERITED_RUNS: usize = 512;
+pub const MAX_PROJECT_TRUST_CAPABILITIES: usize = 6;
+
+macro_rules! product_id {
+    ($name:ident, $description:literal) => {
+        #[doc = $description]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, ToSchema)]
+        #[serde(transparent)]
+        #[schema(value_type = String, format = "ulid")]
+        pub struct $name(String);
+
+        impl $name {
+            pub fn new() -> Self {
+                Self(SessionId::new().to_string())
+            }
+
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(&self.0)
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = String;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                serde_json::from_value::<SessionId>(serde_json::Value::String(value.to_string()))
+                    .map(|id| Self(id.to_string()))
+                    .map_err(|_| format!("invalid {}", stringify!($name)))
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let value = String::deserialize(deserializer)?;
+                Self::from_str(&value).map_err(D::Error::custom)
+            }
+        }
+    };
+}
+
+product_id!(
+    ProductWorkspaceId,
+    "Server-owned identity for one product workspace catalog entry."
+);
+product_id!(
+    ProductSessionId,
+    "Server-owned product conversation identity, distinct from runtime SessionId."
+);
+/// Stable user-catalog Provider profile identity. Historical ProductStore ULIDs
+/// remain valid because they are a subset of this bounded identifier syntax.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, ToSchema)]
+#[serde(transparent)]
+#[schema(value_type = String)]
+pub struct ProductProviderProfileId(String);
+
+impl ProductProviderProfileId {
+    pub fn new() -> Self {
+        Self(SessionId::new().to_string())
+    }
+
+    pub fn from_catalog_id(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        rove_app_bootstrap::ProviderProfileId::new(value.clone())
+            .map(|_| Self(value))
+            .map_err(|_| "invalid ProductProviderProfileId".to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for ProductProviderProfileId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for ProductProviderProfileId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl FromStr for ProductProviderProfileId {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::from_catalog_id(value)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProductProviderProfileId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::from_str(&String::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+product_id!(
+    ProductMigrationReceiptId,
+    "Server-owned identity for a committed browser migration receipt."
+);
+product_id!(
+    ProductTurnClaimId,
+    "Internal compare-and-set token for one active product-session turn."
+);
+product_id!(
+    ProductControlId,
+    "Server-owned identity for one steer or follow-up control message."
+);
+product_id!(
+    ProductForkId,
+    "Server-owned identity for immutable product-session fork provenance."
+);
+product_id!(
+    ProductReviewId,
+    "Server-owned identity for one hard read-only Review run."
+);
+product_id!(
+    ProductAttachmentId,
+    "Server-owned identity for one session-scoped attachment record. Generated by the server from a fresh ULID; never derived from a client name, path, or content."
+);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductSessionStatus {
+    Idle,
+    Running,
+    Error,
+    NeedsAttention,
+    Archived,
+}
+
+/// How the most recent finished turn in a session ended.
+///
+/// This is deliberately separate from [`ProductSessionStatus`]: a turn that
+/// produced a final answer, a turn the user cancelled, and a turn that failed
+/// can all leave the session `idle` (or `needs_attention`), so only this records
+/// *how* the last turn ended. `None` means the session has never finished a
+/// turn, which is what keeps "just completed" distinguishable from "never ran".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductSessionOutcome {
+    /// The turn reached its final answer.
+    Success,
+    /// The turn ended without a final answer, including an error, an
+    /// interruption, and a completion that produced no answer at all.
+    Failed,
+    /// The user cancelled the turn. A known decision, not a failure.
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductProviderType {
+    Openai,
+    #[serde(rename = "openai-responses")]
+    OpenaiResponses,
+    Anthropic,
+    Ollama,
+    Fake,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductThemePreference {
+    Light,
+    Dark,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductApprovalPreference {
+    #[default]
+    Ask,
+    Auto,
+    Never,
+}
+
+/// Session model configuration is explicit about the provider default. The
+/// API never invents a reasoning level for protocols that do not support it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductReasoningPreference {
+    #[default]
+    Default,
+    Low,
+    Medium,
+    High,
+}
+
+impl ProductReasoningPreference {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+}
+
+impl fmt::Display for ProductReasoningPreference {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ProductReasoningPreference {
+    type Err = ProductStoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "default" => Ok(Self::Default),
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            _ => Err(ProductStoreError::new(
+                ProductErrorCode::ProductInvalidInput,
+                format!("invalid reasoning preference: {value}"),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductWorkspaceKind {
+    Folder,
+    Repo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductControlKind {
+    Steer,
+    Followup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductControlStatus {
+    Pending,
+    Accepted,
+    Applied,
+    Dropped,
+    Abandoned,
+    Revoked,
+}
+
+/// Canonical product-facing delivery state for a user message. The legacy
+/// control rows remain the storage representation during migration; this
+/// projection is the only state exposed by the unified composer contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMessageStatus {
+    Queued,
+    InterventionRequested,
+    AppliedCurrentRun,
+    ClaimedSuccessor,
+    NeedsAttention,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMessageDelivery {
+    Successor,
+    CurrentRun,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProductMessage {
+    pub id: ProductControlId,
+    pub product_session_id: ProductSessionId,
+    pub content: String,
+    pub requested_delivery: ProductMessageDelivery,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_delivery: Option<ProductMessageDelivery>,
+    pub status: ProductMessageStatus,
+    pub seq: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub run_id: Option<RunId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub successor_run_id: Option<RunId>,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_at: Option<String>,
+    /// Explicit successor-queue position, written by a reorder or a
+    /// `successor` promotion. `None` means the message has never been moved and
+    /// keeps its `seq` (creation) order; clients sort the queue by
+    /// `queue_order ?? seq`. The field is additive, so a pre-migration payload
+    /// parses unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_order: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Attachments this message references, in the order the client sent them.
+    ///
+    /// Additive: an empty set is omitted from the payload, so a message with no
+    /// attachments serialises byte-identically to what it did before this field
+    /// existed, and a pre-migration payload deserialises with an empty set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<ProductMessageAttachmentRef>,
+}
+
+/// One attachment reference on a durable message, projected for the client.
+///
+/// `content_type`, `size`, and `sha256` are the **server-verified** values taken
+/// from the durable attachment row, never the client's claim, so a reference
+/// cannot make the transcript report a type the bytes do not have. `name` is
+/// display metadata and is never a path or a filename on disk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProductMessageAttachmentRef {
+    pub attachment_id: ProductAttachmentId,
+    pub content_type: String,
+    pub size: u64,
+    pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Lifecycle availability. `available` is the row's own state; `expired`
+    /// means the payload was deliberately reclaimed. `missing` and `corrupt`
+    /// are reported by the paths that read the bytes — the download endpoint
+    /// and model injection — because detecting them needs a hash this
+    /// projection deliberately does not pay for.
+    pub availability: ProductAttachmentAvailability,
+    /// Why this reference did not reach the model even though its bytes are
+    /// fine. `None` for every reference that was projected as sent, for every
+    /// non-image reference, and for every response a pre-image client reads
+    /// (additive, omitted when absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degradation: Option<String>,
+}
+
+/// The attachment reference a client sends with a message.
+///
+/// The client names an id it already uploaded and, optionally, a display name
+/// for this reference. It cannot name a type, a size, or a path: those come from
+/// the durable row.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProductMessageAttachmentRequest {
+    pub attachment_id: ProductAttachmentId,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl ProductMessage {
+    /// Redact the message's display surfaces on the way out of the process.
+    ///
+    /// The stored row keeps the text verbatim: a queued message is delivered to
+    /// the model and a scheduled successor needs exactly what the user wrote. The
+    /// response does not need it, so a body (or a failure reason) that quotes a
+    /// value the runtime already knows is a credential is removed here rather
+    /// than only being removed when it is excerpted for search.
+    pub fn redact_for_response(&mut self) {
+        let registry = rove_runtime::secrets::registry();
+        self.content = registry.redact_text(&self.content);
+        if let Some(reason) = self.reason.as_mut() {
+            *reason = registry.redact_text(reason);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProductMessageRequest {
+    pub content: String,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+    /// Additive. An old client omits it and keeps working; a new client that
+    /// sends it to an old server is refused by `deny_unknown_fields` rather than
+    /// silently ignored, which is the rule this field deliberately inherits.
+    #[serde(default)]
+    pub attachments: Vec<ProductMessageAttachmentRequest>,
+}
+
+/// Optional body of a message promotion. An absent body keeps the historical
+/// `current_run` behaviour, so existing callers are unaffected.
+#[derive(Debug, Clone, Copy, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromoteProductMessageRequest {
+    #[serde(default)]
+    pub delivery: Option<ProductMessageDelivery>,
+}
+
+impl PromoteProductMessageRequest {
+    pub fn delivery(&self) -> ProductMessageDelivery {
+        self.delivery.unwrap_or(ProductMessageDelivery::CurrentRun)
+    }
+}
+/// Atomic successor-queue reorder. The list must name exactly the session's
+/// current queued (pending successor) messages, in the wanted order; a stale or
+/// partial list is rejected instead of being merged, which is what makes a
+/// concurrent promote, revoke, or drain a typed conflict.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReorderProductMessagesRequest {
+    pub ordered_ids: Vec<ProductControlId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductQueueResponse {
+    pub messages: Vec<ProductMessage>,
+}
+
+pub const DEFAULT_PRODUCT_MESSAGE_PAGE_LIMIT: usize = 64;
+pub const MAX_PRODUCT_MESSAGE_PAGE_LIMIT: usize = 128;
+
+/// Upper bound on the durable pending-message queue of one session. The store
+/// enforces it on send (it mirrors the bounded runtime steer channel, so a run
+/// attaching after an HTTP/API race can still inject every pending message at
+/// its first declared safe point), and the reorder endpoint uses the same bound
+/// to reject an oversized list before it touches the queue.
+pub const MAX_PENDING_MESSAGES_PER_SESSION: i64 = 64;
+
+/// Product-level directory event kinds.
+///
+/// The serialized value is a dotted namespace (`domain.fact`) rather than the
+/// `snake_case` used by the other product enums, because the same value is the
+/// SSE `event:` name of `GET /product/events`, so it is part of the endpoint's
+/// wire contract rather than an internal label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+pub enum ProductEventKind {
+    #[serde(rename = "session.created")]
+    SessionCreated,
+    #[serde(rename = "session.updated")]
+    SessionUpdated,
+    #[serde(rename = "session.deleted")]
+    SessionDeleted,
+    #[serde(rename = "session.status_changed")]
+    SessionStatusChanged,
+    #[serde(rename = "workspace.created")]
+    WorkspaceCreated,
+    #[serde(rename = "workspace.updated")]
+    WorkspaceUpdated,
+    #[serde(rename = "workspace.deleted")]
+    WorkspaceDeleted,
+    #[serde(rename = "preferences.changed")]
+    PreferencesChanged,
+    #[serde(rename = "control.queued")]
+    ControlQueued,
+    #[serde(rename = "control.promoted")]
+    ControlPromoted,
+    #[serde(rename = "control.revoked")]
+    ControlRevoked,
+}
+
+impl ProductEventKind {
+    /// The durable/SSE name. Kept explicit instead of relying on `serde_json`
+    /// so the store and the stream cannot disagree about a stored value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProductEventKind::SessionCreated => "session.created",
+            ProductEventKind::SessionUpdated => "session.updated",
+            ProductEventKind::SessionDeleted => "session.deleted",
+            ProductEventKind::SessionStatusChanged => "session.status_changed",
+            ProductEventKind::WorkspaceCreated => "workspace.created",
+            ProductEventKind::WorkspaceUpdated => "workspace.updated",
+            ProductEventKind::WorkspaceDeleted => "workspace.deleted",
+            ProductEventKind::PreferencesChanged => "preferences.changed",
+            ProductEventKind::ControlQueued => "control.queued",
+            ProductEventKind::ControlPromoted => "control.promoted",
+            ProductEventKind::ControlRevoked => "control.revoked",
+        }
+    }
+
+    /// Parse a stored name. An unknown value is skipped by the reader rather
+    /// than failing the whole page, so a newer writer cannot break an older
+    /// reader that shares the same SQLite file.
+    pub fn from_stored(value: &str) -> Option<Self> {
+        Some(match value {
+            "session.created" => ProductEventKind::SessionCreated,
+            "session.updated" => ProductEventKind::SessionUpdated,
+            "session.deleted" => ProductEventKind::SessionDeleted,
+            "session.status_changed" => ProductEventKind::SessionStatusChanged,
+            "workspace.created" => ProductEventKind::WorkspaceCreated,
+            "workspace.updated" => ProductEventKind::WorkspaceUpdated,
+            "workspace.deleted" => ProductEventKind::WorkspaceDeleted,
+            "preferences.changed" => ProductEventKind::PreferencesChanged,
+            "control.queued" => ProductEventKind::ControlQueued,
+            "control.promoted" => ProductEventKind::ControlPromoted,
+            "control.revoked" => ProductEventKind::ControlRevoked,
+            _ => return None,
+        })
+    }
+}
+
+/// One product-level directory fact.
+///
+/// `seq` is the durable, strictly increasing event order and doubles as the SSE
+/// `id:` field, so a reconnecting client resumes exactly where it stopped.
+/// `summary` is a bounded, secret-free JSON object of status/outcome fields
+/// only: message content, tool arguments, error details, and secrets never
+/// appear there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProductEvent {
+    pub seq: i64,
+    /// Serialized as `type`, the canonical stream-event discriminator, so the
+    /// frame body uses the same field name as the job SSE envelope.
+    #[serde(rename = "type")]
+    pub kind: ProductEventKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<ProductSessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<ProductWorkspaceId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub created_at: String,
+}
+
+/// Rolling retention for the product event log. The stream is a live directory
+/// signal, not an audit log: the oldest rows are trimmed as new ones arrive, and
+/// a reconnect whose cursor was evicted is rejected with a typed
+/// `product_events_expired` instead of silently skipping facts, so the client
+/// re-reads the catalog and reconnects without a cursor.
+pub const MAX_PRODUCT_EVENTS_RETAINED: i64 = 10_000;
+
+/// Upper bound on one catch-up read of the product event log for one stream.
+pub const MAX_PRODUCT_EVENT_PAGE: usize = 512;
+
+/// One bounded catch-up page of the directory event log.
+///
+/// `events` holds only the rows this build can decode: an unrecognized `kind` is
+/// skipped instead of failing the page, because the same SQLite file can be
+/// written by a newer build. Skipping must not hide that the row exists, so the
+/// page also reports the `seq` range it examined. A stream advances its cursor to
+/// `last_scanned_seq` once it has emitted every decodable row of the page, which
+/// is what keeps a run of unrecognized kinds from parking the cursor in front of
+/// rows it can never decode, and a retention check compares
+/// `first_scanned_seq` — not the first *decodable* row — against the oldest row
+/// on disk.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProductEventPage {
+    pub events: Vec<ProductEvent>,
+    /// Lowest `seq` the page read, decodable or not. `None` when the log has no
+    /// row after the cursor.
+    pub first_scanned_seq: Option<i64>,
+    /// Highest `seq` the page read, decodable or not. `None` when the log has no
+    /// row after the cursor.
+    pub last_scanned_seq: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMessagesResponse {
+    pub messages: Vec<ProductMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_after_seq: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_before_seq: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProductMessagePageQuery {
+    pub after_seq: Option<i64>,
+    pub before_seq: Option<i64>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductMessagePage {
+    pub messages: Vec<ProductMessage>,
+    pub next_after_seq: Option<i64>,
+    pub next_before_seq: Option<i64>,
+}
+
+/// Longest search term accepted by single-session message search.
+///
+/// The same cap the session listing uses, and for the same reason: a substring
+/// search cannot use an ordering index, and the two query paths behind it (the
+/// trigram index and the bounded `LIKE` scan) both scale with the term.
+pub const MAX_PRODUCT_MESSAGE_SEARCH_QUERY_BYTES: usize = MAX_PRODUCT_SESSION_QUERY_BYTES;
+
+pub const DEFAULT_PRODUCT_MESSAGE_SEARCH_LIMIT: usize = 32;
+pub const MAX_PRODUCT_MESSAGE_SEARCH_LIMIT: usize = 100;
+
+/// Longest snippet returned for one hit, in Unicode codepoints.
+///
+/// The bound is what stops a snippet from becoming a second copy of the
+/// message. It is enforced by construction in the snippet builder and asserted
+/// again as a hard truncation, so no input — a long unbroken token, a CJK run
+/// with no spaces, a term longer than the window — can exceed it.
+pub const MAX_PRODUCT_MESSAGE_SEARCH_SNIPPET_CODEPOINTS: usize = 160;
+
+/// Whether a search-term character cannot come from a well-formed request.
+///
+/// Control characters are refused directly. `U+FFFD` is refused for the same
+/// reason one step earlier in the pipeline: the query extractor percent-decodes
+/// with replacement, so `q=%FF` — a term that never decoded — would otherwise
+/// reach the index as a literal replacement character and answer an empty page,
+/// which a client reads as "this session has no such message".
+pub fn is_unrepresentable_query_character(character: char) -> bool {
+    character.is_control() || character == char::REPLACEMENT_CHARACTER
+}
+
+/// One message that matched, described only by the bounded excerpt around the
+/// hit. The full body stays in the ledger; search never returns it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProductMessageSearchHit {
+    /// Ledger sequence of the matching message, the same `seq` the message
+    /// listing and the transcript's message anchors use.
+    pub message_seq: i64,
+    pub snippet: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMessagesSearchResponse {
+    pub hits: Vec<ProductMessageSearchHit>,
+    /// Token that returns the next page, absent on the last page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductMessageSearchQuery {
+    /// The exact term the caller asked for, already validated and bounded.
+    pub term: String,
+    /// Resume position, or `None` for the first page.
+    pub cursor: Option<ProductMessageSearchCursor>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductMessageSearchPage {
+    pub hits: Vec<ProductMessageSearchHit>,
+    pub next_cursor: Option<ProductMessageSearchCursor>,
+}
+
+/// Longest accepted `scope` value on the unified product search.
+///
+/// A scope is a fixed keyword plus one ULID, so a well-formed value is well
+/// under this. The cap keeps an absurd query string from reaching the id
+/// parser at all.
+pub const MAX_PRODUCT_SEARCH_SCOPE_BYTES: usize = 128;
+
+pub const DEFAULT_PRODUCT_SEARCH_LIMIT: usize = 32;
+pub const MAX_PRODUCT_SEARCH_LIMIT: usize = 100;
+
+/// Most run traces one trace-search request will open.
+///
+/// The window, not the session, is what is bounded: the page cursor advances
+/// past the window, so paging reaches every run while one request never does.
+pub const MAX_PRODUCT_TRACE_SEARCH_RUNS_PER_REQUEST: usize = 8;
+
+/// Most trace bytes one trace-search request will read, across all its runs.
+///
+/// This is the request's whole work budget. It is also the reason a page can
+/// come back with fewer than `limit` hits and a `next_cursor`: the scan stopped
+/// on its budget rather than at the end of the history, and the cursor is where
+/// it stopped, so no record is skipped and none is read twice.
+pub const MAX_PRODUCT_TRACE_SEARCH_BYTES_PER_REQUEST: usize = 4 * 1024 * 1024;
+
+/// Which sessions a page of product messages covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProductMessageSearchScope {
+    /// Every session bound to one workspace.
+    Workspace(ProductWorkspaceId),
+    /// Exactly one session.
+    Session(ProductSessionId),
+}
+
+impl ProductMessageSearchScope {
+    /// The canonical spelling of this scope.
+    ///
+    /// It is the same text [`ProductSearchScope::canonical`] produces for the
+    /// matching variant, because the cursor digest is computed from it: two
+    /// spellings of one scope would be two cursors that cannot be exchanged.
+    pub fn canonical(&self) -> String {
+        match self {
+            Self::Workspace(workspace_id) => format!("workspace:{workspace_id}"),
+            Self::Session(session_id) => format!("session:{session_id}"),
+        }
+    }
+
+    pub fn cursor_digest(&self, term: &str) -> String {
+        product_search_cursor_digest(&self.canonical(), term)
+    }
+}
+
+/// Digest binding a search cursor to one canonical scope and one term.
+///
+/// A keyset position is only meaningful against the query that produced it, and
+/// that query is the scope *and* the term: a cursor from another scope would
+/// page a different corpus from a key that does not belong to it, which a client
+/// reads as a short page rather than as an error. The unit separator keeps the
+/// two fields unambiguous even if an id or a term ever contains the other's
+/// bytes.
+pub fn product_search_cursor_digest(canonical_scope: &str, term: &str) -> String {
+    rove_runtime::context::stable_hash(&format!("{canonical_scope}\u{1f}{term}"))
+}
+
+/// The corpus and the sessions one unified search request covers.
+///
+/// The value travels in a query string as `<kind>:<id>`, which keeps "what is
+/// searched" and "where" one parameter a client cannot set inconsistently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProductSearchScope {
+    /// Messages of every session in one workspace.
+    Workspace(ProductWorkspaceId),
+    /// Messages of one session.
+    Session(ProductSessionId),
+    /// Persisted `trace.jsonl` records of one session's runs.
+    Trace(ProductSessionId),
+}
+
+impl ProductSearchScope {
+    /// Parse a client-supplied scope value.
+    ///
+    /// Every rejection is the same typed invalid-input failure: an unknown kind
+    /// selects no corpus, an unparsable id names nothing, and answering either
+    /// with an empty page would tell a caller "no match" about a question this
+    /// server never asked.
+    pub fn parse(value: &str) -> Result<Self, ProductStoreError> {
+        let invalid = || {
+            ProductStoreError::new(
+                ProductErrorCode::ProductInvalidInput,
+                "product search scope is invalid",
+            )
+        };
+        if value.is_empty()
+            || value.len() > MAX_PRODUCT_SEARCH_SCOPE_BYTES
+            || value.chars().any(is_unrepresentable_query_character)
+        {
+            return Err(invalid());
+        }
+        let (kind, id) = value.split_once(':').ok_or_else(invalid)?;
+        if id.is_empty() {
+            return Err(invalid());
+        }
+        match kind {
+            "workspace" => id.parse().map(Self::Workspace).map_err(|_| invalid()),
+            "session" => id.parse().map(Self::Session).map_err(|_| invalid()),
+            "trace" => id.parse().map(Self::Trace).map_err(|_| invalid()),
+            _ => Err(invalid()),
+        }
+    }
+
+    /// The canonical spelling of this scope, and the text a cursor is bound to.
+    pub fn canonical(&self) -> String {
+        match self {
+            Self::Workspace(workspace_id) => format!("workspace:{workspace_id}"),
+            Self::Session(session_id) => format!("session:{session_id}"),
+            Self::Trace(session_id) => format!("trace:{session_id}"),
+        }
+    }
+
+    /// The store-side message scope, or `None` for the trace corpus.
+    pub fn message_scope(&self) -> Option<ProductMessageSearchScope> {
+        match self {
+            Self::Workspace(workspace_id) => {
+                Some(ProductMessageSearchScope::Workspace(workspace_id.clone()))
+            }
+            Self::Session(session_id) => {
+                Some(ProductMessageSearchScope::Session(session_id.clone()))
+            }
+            Self::Trace(_) => None,
+        }
+    }
+
+    /// The session this scope names, when it names one.
+    pub fn session_id(&self) -> Option<&ProductSessionId> {
+        match self {
+            Self::Workspace(_) => None,
+            Self::Session(session_id) | Self::Trace(session_id) => Some(session_id),
+        }
+    }
+
+    /// Digest binding a cursor to this scope and one term.
+    pub fn cursor_digest(&self, term: &str) -> String {
+        product_search_cursor_digest(&self.canonical(), term)
+    }
+}
+
+/// Which corpus produced one search hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductSearchSource {
+    /// A message in the product ledger.
+    Message,
+    /// A record in a run's persisted `trace.jsonl`.
+    Trace,
+}
+
+/// One hit of a unified product search.
+///
+/// `session_id` is on every hit because the workspace scope answers a question
+/// a single session cannot: which sessions contain this term. The snippet is
+/// the only body text that leaves the API, and it is bounded and redacted by
+/// the same builder the session-scoped search uses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProductSearchHit {
+    pub session_id: ProductSessionId,
+    pub source: ProductSearchSource,
+    /// The hit's position inside its own corpus: the ledger `seq` of a message
+    /// hit, or the trace record's own sequence for a trace hit. Both are the
+    /// identifiers their corpus already publishes, so a client never has to
+    /// invent one.
+    pub seq: i64,
+    /// The run that owns a trace hit. Absent on a message hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub run_id: Option<RunId>,
+    /// The binding ordinal of that run, which is also the trace reading order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_ordinal: Option<u64>,
+    /// Bounded excerpt around the hit, already redacted.
+    pub snippet: String,
+    /// The ledger timestamp of a message hit, or the trace line's own
+    /// timestamp. A legacy trace line carries none, and an invented one would
+    /// be a fabricated fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductSearchResponse {
+    /// The resolved scope this page was produced for, in canonical form.
+    pub scope: String,
+    pub hits: Vec<ProductSearchHit>,
+    /// Token that returns the next page, absent when the search is exhausted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductSearchQuery {
+    /// The exact term the caller asked for, already validated and bounded.
+    pub term: String,
+    /// Resume position, or `None` for the first page.
+    pub cursor: Option<ProductSearchCursor>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductSearchPage {
+    pub hits: Vec<ProductSearchHit>,
+    pub next_cursor: Option<ProductSearchCursor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductControl {
+    pub id: ProductControlId,
+    pub product_session_id: ProductSessionId,
+    pub kind: ProductControlKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    pub content: String,
+    pub status: ProductControlStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub run_id: Option<RunId>,
+    pub seq: i64,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_at: Option<String>,
+}
+
+impl ProductControl {
+    /// Redact the control's display surface on the way out of the process.
+    ///
+    /// Same split as [`ProductMessage::redact_for_response`]: the stored row
+    /// keeps what the model has to receive, the response does not.
+    pub fn redact_for_response(&mut self) {
+        self.content = rove_runtime::secrets::registry().redact_text(&self.content);
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProductControlRequest {
+    pub content: String,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductControlsResponse {
+    pub controls: Vec<ProductControl>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductControlStatusFilter {
+    Pending,
+    Accepted,
+    Applied,
+    Dropped,
+    Abandoned,
+    Revoked,
+    All,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductWorkspace {
+    pub id: ProductWorkspaceId,
+    /// Canonical absolute execution root resolved by the server.
+    #[schema(value_type = String)]
+    pub canonical_root: PathBuf,
+    pub kind: ProductWorkspaceKind,
+    pub display_name: String,
+    pub pinned: bool,
+    pub last_opened_at: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductTrustState {
+    Unknown,
+    Restricted,
+    Trusted,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductTrustCapability {
+    ProjectConfiguration,
+    WorkspaceInstructions,
+    McpProcesses,
+    HooksExtensions,
+    ProviderCredentials,
+    ExternalPaths,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductTrustDecision {
+    Grant,
+    Deny,
+    Revoke,
+}
+
+impl ProductTrustCapability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ProjectConfiguration => "project_configuration",
+            Self::WorkspaceInstructions => "workspace_instructions",
+            Self::McpProcesses => "mcp_processes",
+            Self::HooksExtensions => "hooks_extensions",
+            Self::ProviderCredentials => "provider_credentials",
+            Self::ExternalPaths => "external_paths",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProductTrustDecisionRequest {
+    pub decision: ProductTrustDecision,
+    #[serde(default)]
+    pub capabilities: Vec<ProductTrustCapability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductTrustStatus {
+    pub workspace_id: ProductWorkspaceId,
+    pub state: ProductTrustState,
+    pub identity_digest: String,
+    pub invalidated_capabilities: Vec<String>,
+    pub granted_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductRuntimeBinding {
+    pub ordinal: u64,
+    #[schema(value_type = String, format = "ulid")]
+    pub runtime_session_id: SessionId,
+    #[schema(value_type = String, format = "ulid")]
+    pub latest_job_id: JobId,
+    #[schema(value_type = String, format = "ulid")]
+    pub latest_run_id: RunId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductSession {
+    pub id: ProductSessionId,
+    pub workspace_id: ProductWorkspaceId,
+    pub title: String,
+    pub status: ProductSessionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_binding: Option<ProductRuntimeBinding>,
+    /// Parent product session retained as lineage even when the parent catalog
+    /// row has subsequently been deleted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<ProductSessionId>,
+    /// Exact parent runtime run from which this session inherited history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub fork_point_run_id: Option<RunId>,
+    /// Terminal canonical event sequence for `fork_point_run_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_point_seq: Option<u64>,
+    /// Outcome of the most recent finished turn, absent until one finishes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome: Option<ProductSessionOutcome>,
+    /// When `last_outcome` was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Durable lifecycle state for a hard read-only Review. It is deliberately
+/// separate from `ProductSessionStatus`: a Review never claims a chat turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductReviewStatus {
+    Queued,
+    Running,
+    Pass,
+    Findings,
+    Partial,
+    Stale,
+    NeedsAttention,
+    Unavailable,
+    Cancelled,
+    Error,
+}
+
+impl ProductReviewStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Pass => "pass",
+            Self::Findings => "findings",
+            Self::Partial => "partial",
+            Self::Stale => "stale",
+            Self::NeedsAttention => "needs_attention",
+            Self::Unavailable => "unavailable",
+            Self::Cancelled => "cancelled",
+            Self::Error => "error",
+        }
+    }
+
+    pub const fn is_terminal(self) -> bool {
+        !matches!(self, Self::Queued | Self::Running)
+    }
+}
+
+/// Request accepted by the HTTP surface. The server captures and validates
+/// the target before constructing the internal ProductStore record.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProductReviewRequest {
+    #[schema(value_type = Object)]
+    pub target: ReviewTargetSpec,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+    #[serde(default)]
+    pub max_steps: Option<u32>,
+}
+
+/// Server-owned capture facts used to create an immutable review row.
+#[derive(Debug, Clone)]
+pub struct CreateProductReviewRecord {
+    pub review_id: ProductReviewId,
+    pub product_session_id: ProductSessionId,
+    pub workspace_id: ProductWorkspaceId,
+    pub target: ReviewTargetSummary,
+    pub target_spec: ReviewTargetSpec,
+    pub state_root: PathBuf,
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductReview {
+    pub id: ProductReviewId,
+    pub product_session_id: ProductSessionId,
+    pub workspace_id: ProductWorkspaceId,
+    #[schema(value_type = Object)]
+    pub target: ReviewTargetSummary,
+    pub status: ProductReviewStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub conclusion: Option<ReviewConclusion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub runtime_session_id: Option<SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub job_id: Option<JobId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub run_id: Option<RunId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Object)]
+    pub result: Option<ReviewResult>,
+    pub findings_count: usize,
+    pub unchecked_count: usize,
+    pub warnings_count: usize,
+    pub created_at: String,
+    pub updated_at: String,
+    pub captured_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalized_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductReviewsResponse {
+    pub reviews: Vec<ProductReview>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductReviewFinding {
+    #[schema(value_type = Object)]
+    pub finding: ReviewFinding,
+    pub sort_key: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+pub struct ProductReviewFindingsQuery {
+    pub limit: Option<usize>,
+    pub cursor: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductReviewFindingsResponse {
+    pub findings: Vec<ProductReviewFinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductSessionRunBinding {
+    pub product_session_id: ProductSessionId,
+    pub ordinal: u64,
+    #[schema(value_type = String, format = "ulid")]
+    pub runtime_session_id: SessionId,
+    #[schema(value_type = String, format = "ulid")]
+    pub runtime_job_id: JobId,
+    #[schema(value_type = String, format = "ulid")]
+    pub runtime_run_id: RunId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub resumed_from_run_id: Option<RunId>,
+    pub bound_at: String,
+}
+
+/// Immutable source boundary for one child product session. This contains
+/// runtime identities and references only; canonical event facts continue to
+/// live in the source workspace StateStore.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductFork {
+    pub id: ProductForkId,
+    pub parent_product_session_id: ProductSessionId,
+    pub child_product_session_id: ProductSessionId,
+    pub parent_workspace_id: ProductWorkspaceId,
+    pub parent_title: String,
+    #[schema(value_type = String, format = "ulid")]
+    pub source_runtime_session_id: SessionId,
+    #[schema(value_type = String, format = "ulid")]
+    pub source_runtime_job_id: JobId,
+    #[schema(value_type = String, format = "ulid")]
+    pub source_runtime_run_id: RunId,
+    pub fork_at_event_seq: u64,
+    pub idempotency_key: String,
+    pub created_at: String,
+    /// Set when the child was built by editing one of the parent's messages:
+    /// the ledger sequence of the user message the child's seed stops before.
+    /// Absent on a plain terminal-boundary fork, which keeps the whole prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncate_after_message_seq: Option<i64>,
+    /// The message that sequence identifies. Recorded alongside the sequence so
+    /// the child's seed can be cut even after the parent's message ledger is
+    /// gone (a parent catalog row may be deleted while its runtime artifacts
+    /// stay readable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncate_after_message_id: Option<ProductControlId>,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProductForkRequest {
+    /// The already-final parent run to branch from. The server derives the
+    /// terminal event sequence and rejects anything incomplete or corrupt.
+    #[schema(value_type = String, format = "ulid")]
+    pub fork_at_run_id: RunId,
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Required client-generated key. Retrying the exact same action returns
+    /// the same child; a body mismatch returns a typed conflict.
+    pub idempotency_key: String,
+    /// Edit-and-resend: the parent message-ledger sequence of the user message
+    /// being replaced. The child is seeded with the parent history up to that
+    /// message and continues from the text the client sends as the child's
+    /// first message; the parent session, its trace, and its transcript are
+    /// untouched. The value must be a positive sequence already recorded in
+    /// the parent's message ledger for `fork_at_run_id`.
+    #[serde(default)]
+    pub truncate_after_message_seq: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductForkResponse {
+    pub fork: ProductFork,
+    pub session: ProductSession,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductForksResponse {
+    pub forks: Vec<ProductFork>,
+}
+
+/// One runtime-run reference projected into a child's inherited prefix. It
+/// deliberately has no event content and remains readable if a parent Product
+/// session is later removed from the catalog.
+#[derive(Debug, Clone)]
+pub struct ProductForkInheritedRun {
+    pub ordinal: u64,
+    pub source_product_session_id: ProductSessionId,
+    pub runtime_session_id: SessionId,
+    pub runtime_job_id: JobId,
+    pub runtime_run_id: RunId,
+    /// Present on the exact terminal source boundary; earlier inherited runs
+    /// are projected through their own complete canonical records.
+    pub through_event_seq: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProductForkContext {
+    pub fork: ProductFork,
+    pub inherited_runs: Vec<ProductForkInheritedRun>,
+}
+
+/// Runtime boundary verified by the coordinator. Browser JSON can never
+/// construct this; ProductStore rechecks it against its immutable binding
+/// ledger in the transaction that creates the child.
+#[derive(Debug, Clone)]
+pub struct VerifiedProductForkBoundary {
+    pub parent_product_session_id: ProductSessionId,
+    pub parent_workspace_id: ProductWorkspaceId,
+    pub parent_title: String,
+    pub source_runtime_session_id: SessionId,
+    pub source_runtime_job_id: JobId,
+    pub source_runtime_run_id: RunId,
+    pub fork_at_event_seq: u64,
+    pub truncate_after: Option<VerifiedForkTruncation>,
+}
+
+/// Edit-and-resend target verified by the coordinator: the parent message
+/// ledger row the child's seeded history stops before. The row must belong to
+/// the fork run and must resolve to a user entry in the loaded source session,
+/// so the coordinator only ever hands ProductStore a cut it already proved.
+#[derive(Debug, Clone)]
+pub struct VerifiedForkTruncation {
+    pub message_seq: i64,
+    pub message_id: ProductControlId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum ProductProviderCredentialSource {
+    Env { name: String },
+    File { path: String },
+    Keyring { service: String, account: String },
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductProviderProfile {
+    pub id: ProductProviderProfileId,
+    pub label: String,
+    pub provider_type: ProductProviderType,
+    pub api_base: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+    pub credential_source: ProductProviderCredentialSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub catalog_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProductProviderSelection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<ProductProviderProfileId>,
+    pub model: String,
+    pub approval: ProductApprovalPreference,
+    pub max_steps: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductSessionModelConfig {
+    pub product_session_id: ProductSessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<ProductProviderProfileId>,
+    pub model: String,
+    pub reasoning: ProductReasoningPreference,
+    pub max_steps: u32,
+    pub revision: u64,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProductSessionModelConfigRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<ProductProviderProfileId>,
+    pub model: String,
+    #[serde(default)]
+    pub reasoning: ProductReasoningPreference,
+    #[serde(default = "default_product_max_steps")]
+    pub max_steps: u32,
+    #[serde(default)]
+    pub expected_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductModelDescriptor {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    #[serde(default)]
+    pub supports_reasoning: bool,
+    #[serde(default)]
+    pub supported_reasoning: Vec<ProductReasoningPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductProviderModelsResponse {
+    pub profile_id: ProductProviderProfileId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    pub models: Vec<ProductModelDescriptor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductSessionRunModelView {
+    pub product_session_id: ProductSessionId,
+    pub ordinal: u64,
+    #[schema(value_type = String, format = "ulid")]
+    pub runtime_run_id: RunId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<ProductProviderProfileId>,
+    pub model: String,
+    pub reasoning: ProductReasoningPreference,
+    pub max_steps: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire_protocol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safe_config_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_currency: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_availability: Option<ProductPricingAvailability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_mtok_prompt: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_mtok_completion: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_mtok_cache_read: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductSessionRunModelsResponse {
+    pub runs: Vec<ProductSessionRunModelView>,
+}
+
+/// Whether a run's cost can be computed from a trusted price snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductPricingAvailability {
+    Priced,
+    LocalZero,
+    Unpriced,
+}
+
+impl ProductPricingAvailability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Priced => "priced",
+            Self::LocalZero => "local_zero",
+            Self::Unpriced => "unpriced",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "priced" => Some(Self::Priced),
+            "local_zero" => Some(Self::LocalZero),
+            "unpriced" => Some(Self::Unpriced),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Default, PartialEq, Eq)]
+pub struct ProductUsage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+    pub cached_tokens: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
+pub struct ProductCostBreakdown {
+    pub currency: String,
+    pub availability: ProductPricingAvailability,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct ProductContextOccupancy {
+    pub token_estimate: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    pub estimate_kind: String,
+    pub included_history_messages: u64,
+    pub dropped_history_messages: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_mode: Option<String>,
+    #[serde(default)]
+    pub compaction_degraded: bool,
+    #[serde(default)]
+    pub compaction_auto_triggered: bool,
+    #[serde(default)]
+    pub compacted_history_messages: u64,
+    #[serde(default)]
+    pub compaction_source_messages: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_prompt_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductRunUsage {
+    #[schema(value_type = String, format = "ulid")]
+    pub runtime_run_id: RunId,
+    pub ordinal: u64,
+    pub model: String,
+    pub usage: ProductUsage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<ProductCostBreakdown>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ProductContextOccupancy>,
+    pub steps: u32,
+    pub tool_calls: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductSessionUsageResponse {
+    pub product_session_id: ProductSessionId,
+    pub totals: ProductUsage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub totals_cost: Option<ProductCostBreakdown>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_context: Option<ProductContextOccupancy>,
+    pub runs: Vec<ProductRunUsage>,
+    pub partial_reasons: Vec<String>,
+}
+
+/// Bounded facts about one manual compaction of a product session.
+///
+/// `triggered` describes *this* call; the remaining compaction fields describe
+/// the state the session holds afterwards. A call that produced no new summary
+/// still reports the state it left behind, so a client can show "already
+/// compacted", "nothing to compact", and "the breaker refuses" apart.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductSessionCompaction {
+    pub product_session_id: ProductSessionId,
+    /// The runtime run whose prompt state was compacted. Absent when the session
+    /// has no run yet, in which case there is nothing to compact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub runtime_run_id: Option<RunId>,
+    /// Whether this call produced a new summary.
+    pub triggered: bool,
+    /// Mode of the compaction state the session now holds:
+    /// `none`, `deterministic`, `model_generated`, `automatic`, `degraded`, or
+    /// `disabled`.
+    pub mode: String,
+    pub degraded: bool,
+    pub consecutive_failures: u32,
+    /// Whether the session's summary model has failed to
+    /// `runtime.compaction_failure_threshold` consecutive times. Independent of
+    /// whether compaction is switched on: this is the state the automatic path
+    /// gates on, but it is not by itself a refusal — the automatic path is
+    /// refused only while `next_attempt_after` is also in the future. A manual
+    /// request is the probe that runs through a tripped breaker, and a probe that
+    /// succeeds clears it.
+    pub circuit_open: bool,
+    /// When the automatic path may next probe a tripped breaker, as an RFC 3339
+    /// timestamp. Present only while it actually refuses something, i.e. while
+    /// `circuit_open` is true and this instant is still ahead: read the two
+    /// together as "auto compaction is refused until then". Absent means nothing
+    /// is being refused — the breaker is not tripped, its window has already
+    /// elapsed (so the next automatic attempt may spend the probe), or a window
+    /// is armed below the threshold and therefore refuses nothing. A successful
+    /// probe clears it, and a failure arms it; the session keeps it across
+    /// restarts, so it is the same answer a later request reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_attempt_after: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_version: Option<String>,
+    pub source_message_count: u64,
+    /// The summary, bounded to [`PRODUCT_COMPACTION_SUMMARY_EXCERPT_CHARS`]
+    /// characters. Absent when the session holds no summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub summary_truncated: bool,
+    /// Token estimate of what the next turn's prompt will carry for this
+    /// session, as persisted in its checkpoint.
+    pub token_estimate: u64,
+    /// Typed classification of why this call produced no new summary, when it has
+    /// one. A summary model call that failed reports its model error code
+    /// (`request_failed`, `stream_interrupted`, `rate_limited`, ...); a segment the
+    /// runtime refused to send reports its own code
+    /// (`compaction_request_unbounded`, see `COMPACTION_REQUEST_UNBOUNDED_CODE`),
+    /// which is not a model error at all — the Provider was never called. Never
+    /// the provider's message or response body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
+}
+
+/// Characters of a compaction summary returned to a client.
+///
+/// The structured summary is small by construction; the bound exists so a
+/// pathological model response cannot turn this route into a data-transfer
+/// vector. A client that needs the entire summary reads it from the run's
+/// durable artifacts, which are already exposed by the transcript routes.
+pub const PRODUCT_COMPACTION_SUMMARY_EXCERPT_CHARS: usize = 400;
+
+const fn default_product_max_steps() -> u32 {
+    DEFAULT_PRODUCT_MAX_STEPS
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductPreferences {
+    pub schema_version: u32,
+    #[serde(default)]
+    pub revision: u64,
+    pub theme: ProductThemePreference,
+    #[serde(default)]
+    pub default_approval_policy: ProductApprovalPreference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_workspace_id: Option<ProductWorkspaceId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_session_id: Option<ProductSessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_selection: Option<ProductProviderSelection>,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProductWorkspaceRequest {
+    #[schema(value_type = String)]
+    pub root: PathBuf,
+    pub kind: ProductWorkspaceKind,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProductSessionRequest {
+    pub workspace_id: ProductWorkspaceId,
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProductSessionRequest {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub archived: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProductProviderProfileRequest {
+    pub label: String,
+    pub provider_type: ProductProviderType,
+    pub api_base: String,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub expected_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProductProviderProfileRequest {
+    pub label: String,
+    pub provider_type: ProductProviderType,
+    pub api_base: String,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub expected_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProductPreferencesRequest {
+    pub schema_version: u32,
+    /// Optional for C0 compatibility. Settings clients send the last observed
+    /// revision so concurrent writes fail instead of silently overwriting.
+    #[serde(default)]
+    pub expected_revision: Option<u64>,
+    pub theme: ProductThemePreference,
+    /// Omission preserves the current value for C0 clients.
+    #[serde(default)]
+    pub default_approval_policy: Option<ProductApprovalPreference>,
+    #[serde(default)]
+    pub active_workspace_id: Option<ProductWorkspaceId>,
+    #[serde(default)]
+    pub active_session_id: Option<ProductSessionId>,
+    #[serde(default)]
+    pub provider_selection: Option<ProductProviderSelection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductWorkspacesResponse {
+    pub workspaces: Vec<ProductWorkspace>,
+}
+
+pub const DEFAULT_PRODUCT_SESSION_PAGE_LIMIT: usize = 50;
+pub const MAX_PRODUCT_SESSION_PAGE_LIMIT: usize = 200;
+
+/// Longest search term accepted by the session listing.
+///
+/// Substring search cannot use the listing index, so it scans the workspace's
+/// rows. The cap bounds how much work one query can ask for.
+pub const MAX_PRODUCT_SESSION_QUERY_BYTES: usize = 128;
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductSessionsResponse {
+    pub sessions: Vec<ProductSession>,
+    /// Token that returns the next page, absent on the last page.
+    ///
+    /// Absent means "no more rows", which is what lets a client stop without
+    /// issuing one extra request to discover an empty page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// A resolved request for one page of sessions.
+///
+/// Before this, the listing took a `LIMIT` of
+/// [`MAX_PRODUCT_SESSIONS`] and returned whatever fit: a workspace past that
+/// many sessions lost the tail with no way to ask for it, and every request
+/// paid to chain-validate every session in the workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductSessionPageQuery {
+    pub workspace_id: ProductWorkspaceId,
+    /// Resume position, or `None` for the first page.
+    pub cursor: Option<ProductSessionCursor>,
+    pub limit: usize,
+    /// Case-insensitive substring match on the title, or `None` for no filter.
+    pub search: Option<String>,
+    /// Whether archived sessions appear at all. They sort after live ones.
+    pub include_archived: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProductSessionPage {
+    pub sessions: Vec<ProductSession>,
+    pub next_cursor: Option<ProductSessionCursor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductProviderProfilesResponse {
+    pub catalog_revision: String,
+    pub provider_profiles: Vec<ProductProviderProfile>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMemoryType {
+    User,
+    Feedback,
+    Project,
+    Reference,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMemoryScope {
+    Global,
+    Project,
+    Session,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMemoryLayer {
+    Durable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMemorySource {
+    ProductSettings,
+    LlmTool,
+    Other,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMemoryTopic {
+    pub slug: String,
+    pub title: String,
+    pub layer: ProductMemoryLayer,
+    pub memory_type: ProductMemoryType,
+    pub scope: ProductMemoryScope,
+    pub source: ProductMemorySource,
+    pub confidence: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    pub description: String,
+    pub metadata_truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMemoryTopicsResponse {
+    pub topics: Vec<ProductMemoryTopic>,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMemoryTopicContentResponse {
+    pub topic: ProductMemoryTopic,
+    pub content: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProductMemoryTopicRequest {
+    pub slug: String,
+    pub title: String,
+    pub memory_type: ProductMemoryType,
+    pub scope: ProductMemoryScope,
+    pub confidence: f32,
+    #[serde(default)]
+    pub description: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProductMemoryTopicRequest {
+    pub title: String,
+    pub memory_type: ProductMemoryType,
+    pub scope: ProductMemoryScope,
+    pub confidence: f32,
+    #[serde(default)]
+    pub description: String,
+    pub content: String,
+    #[serde(default)]
+    pub expected_updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMcpTransport {
+    Stdio,
+    /// Deprecated HTTP+SSE transport, retained for existing configurations.
+    Sse,
+    /// Current MCP HTTP transport with negotiated session and version.
+    StreamableHttp,
+}
+
+impl ProductMcpTransport {
+    /// True for a transport retained only for compatibility. Surfaced so
+    /// product diagnostics can mark it without guessing from the name.
+    pub fn is_deprecated(self) -> bool {
+        matches!(self, Self::Sse)
+    }
+
+    /// True when the transport is configured with a URL rather than a command.
+    pub fn is_http(self) -> bool {
+        matches!(self, Self::Sse | Self::StreamableHttp)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMcpServer {
+    pub name: String,
+    pub enabled: bool,
+    pub required: bool,
+    pub transport: ProductMcpTransport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub env_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    pub request_timeout_ms: u64,
+    /// Server-owned deprecation verdict for this server's transport, so the
+    /// client renders one truth instead of hardcoding which name is legacy.
+    pub transport_deprecated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMcpServersResponse {
+    pub servers: Vec<ProductMcpServer>,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMcpHealthStatus {
+    Ready,
+    Degraded,
+    Disabled,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMcpHealthSnapshot {
+    pub server_name: String,
+    pub required: bool,
+    pub transport: ProductMcpTransport,
+    pub status: ProductMcpHealthStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_config_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_identity_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_snapshot_id: Option<String>,
+    pub tool_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refreshed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMcpHealthResponse {
+    pub servers: Vec<ProductMcpHealthSnapshot>,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProductMcpServerRequest {
+    pub name: String,
+    #[serde(default = "default_product_mcp_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_product_mcp_required")]
+    pub required: bool,
+    pub transport: ProductMcpTransport,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env_names: Vec<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default = "default_product_mcp_timeout_ms")]
+    pub request_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProductMcpServerRequest {
+    pub enabled: bool,
+    #[serde(default = "default_product_mcp_required")]
+    pub required: bool,
+    pub transport: ProductMcpTransport,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env_names: Vec<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    pub request_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMcpToolDescriptor {
+    pub name: String,
+    pub description: String,
+    pub destructive: bool,
+    pub parallel_safe: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMcpProbeResponse {
+    pub server_name: String,
+    pub transport: ProductMcpTransport,
+    pub tools: Vec<ProductMcpToolDescriptor>,
+    pub tested_at: String,
+}
+
+const fn default_product_mcp_enabled() -> bool {
+    true
+}
+
+const fn default_product_mcp_required() -> bool {
+    true
+}
+
+const fn default_product_mcp_timeout_ms() -> u64 {
+    30_000
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductConnectionStatus {
+    Connected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductStoreStatus {
+    Ready,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductResumeHealthStatus {
+    Healthy,
+    NeedsAttention,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductResumeHealth {
+    pub status: ProductResumeHealthStatus,
+    pub workspace_count: u64,
+    pub session_count: u64,
+    pub bound_session_count: u64,
+    pub running_session_count: u64,
+    pub needs_attention_session_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductExecutionAdapter {
+    Local,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductExecutionWorkspaceKind {
+    Folder,
+    Repo,
+    Task,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProductExecutionCapabilities {
+    pub filesystem_read: bool,
+    pub filesystem_write: bool,
+    pub process_run: bool,
+    pub process_stdio: bool,
+    pub observations: bool,
+    pub process_background: bool,
+    pub process_pty: bool,
+    pub workspace_checkpoints: bool,
+    pub artifact_projection: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductExecutionEnvironmentInfo {
+    pub adapter: ProductExecutionAdapter,
+    pub workspace_kind: ProductExecutionWorkspaceKind,
+    pub workspace_digest: String,
+    pub capabilities: ProductExecutionCapabilities,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductAgentRuntimeInfo {
+    /// Configured base selector. A request may still provide an explicit
+    /// selector, and the resolved run identity is emitted canonically.
+    pub selector: String,
+    pub workspace_source_authorized: bool,
+    pub workspace_instructions_enabled: bool,
+    pub allow_remediation_procedures: bool,
+    pub max_procedure_selections: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductRuntimeInfo {
+    pub api_version: String,
+    pub connection: ProductConnectionStatus,
+    pub product_store: ProductStoreStatus,
+    pub execution_environment: ProductExecutionEnvironmentInfo,
+    pub agent: ProductAgentRuntimeInfo,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_health: Option<ProductResumeHealth>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductTranscriptStatus {
+    Complete,
+    Partial,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductTranscriptPartialReasonCode {
+    MissingRunMapping,
+    RuntimeRunMissing,
+    RuntimeStateUnavailable,
+    RuntimeIdentityMismatch,
+    MissingEventRange,
+    CorruptEvent,
+    CorruptArtifact,
+    CleanedHistory,
+    ResponseLimitReached,
+    /// A durable event row this response read but did not deliver, because its
+    /// kind is outside the event contract the request declared (or because this
+    /// build cannot decode it at all). `expected_seq` and `observed_seq` on the
+    /// reason name the lowest and highest withheld sequence numbers, so the
+    /// withheld position is reported instead of hidden.
+    UnknownEventType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductTranscriptPartialReason {
+    pub code: ProductTranscriptPartialReasonCode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_ordinal: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub run_id: Option<RunId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_seq: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductTranscriptFallbackSource {
+    Report,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductTranscriptFallback {
+    pub source: ProductTranscriptFallbackSource,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductTranscriptRunSegment {
+    pub binding: ProductSessionRunBinding,
+    /// True when this segment is a read-only reference inherited at a fork
+    /// boundary rather than an event written by the requested product session.
+    #[serde(default)]
+    pub inherited: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_product_session_id: Option<ProductSessionId>,
+    #[schema(value_type = String, example = "done")]
+    pub run_status: RunStatus,
+    pub observed_through_seq: u64,
+    pub last_event_seq: u64,
+    pub events: Vec<JobStreamEvent>,
+    /// Additive R2b projection of this segment's `events`: `true` only when the
+    /// segment carries a salvaged partial — an `llm_message` whose `aborted`
+    /// marker is `true`, meaning the user stopped the turn after it had already
+    /// published text. The field is omitted when it does not apply, so a
+    /// response for a run without such a message keeps its previous bytes, and
+    /// it never changes the meaning of `run_status`: a stop that produced
+    /// nothing and a failed turn both stay unmarked.
+    ///
+    /// `true` is conclusive: it is read off an event this segment actually
+    /// carries. Absence is conclusive only when the response reported
+    /// `status: "complete"`; a segment inside a `partial` response describes
+    /// just the events it projected, and the response's `partial_reasons` say
+    /// why it may be short, so a client that needs certainty must read the
+    /// response status rather than this field alone.
+    #[serde(default, skip_serializing_if = "crate::is_false")]
+    pub answer_aborted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<ProductTranscriptFallback>,
+}
+
+/// Largest page a cursor request may ask for. The legacy request keeps the
+/// wider bounded window so that a client which never paginates observes no
+/// change.
+pub const MAX_TRANSCRIPT_PAGE_RUNS: usize = 64;
+
+/// Longest accepted `event_contract` query value. A `u32` needs ten digits;
+/// anything longer is refused before it is parsed.
+pub const MAX_TRANSCRIPT_EVENT_CONTRACT_BYTES: usize = 10;
+
+/// The canonical-event contract one transcript request declares.
+///
+/// A client states the newest contract version whose kinds it can decode
+/// (`runtime/src/foundation/events.rs::STREAM_EVENT_KINDS`), and the projection
+/// may then only deliver durable rows whose kind entered the contract at or
+/// below that version. The declaration is explicit and per request: the API
+/// never infers a client's capability from a user agent, from the request's
+/// other fields, or from what the client failed to complain about, and a
+/// request that omits `event_contract` keeps the legacy contract byte for byte
+/// (`docs/api.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProductTranscriptEventContract {
+    /// Declared version, clamped to `STREAM_EVENT_CONTRACT_VERSION`.
+    ///
+    /// A client that declares a newer contract than this build defines is not
+    /// refused: it decodes a superset, so the intersection — everything this
+    /// server can project — is exactly what the newest contract means here.
+    version: u32,
+}
+
+impl ProductTranscriptEventContract {
+    /// Parse the `event_contract` query value.
+    ///
+    /// `None` means malformed: an empty value, anything longer than
+    /// [`MAX_TRANSCRIPT_EVENT_CONTRACT_BYTES`], a value that is not decimal
+    /// digits only, or version `0` (there is no contract before the first one).
+    /// `u32::from_str` would also accept a leading `+`, which the published
+    /// contract and the Web client's own validation do not, so the digits are
+    /// checked before the value is parsed. The route turns `None` into a typed
+    /// `product_invalid_input` 400.
+    pub fn parse(raw: &str) -> Option<Self> {
+        if raw.is_empty() || raw.len() > MAX_TRANSCRIPT_EVENT_CONTRACT_BYTES {
+            return None;
+        }
+        if !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let declared: u32 = raw.parse().ok()?;
+        if declared == 0 {
+            return None;
+        }
+        Some(Self {
+            version: declared.min(STREAM_EVENT_CONTRACT_VERSION),
+        })
+    }
+
+    /// The declared version, clamped to what this build defines.
+    pub fn version(self) -> u32 {
+        self.version
+    }
+
+    /// True when a client on this contract can decode `event_name`.
+    ///
+    /// A name this build does not define is never decodable through a declared
+    /// contract, because no contract version can promise the shape of a kind
+    /// this build has never seen.
+    pub fn accepts(self, event_name: &str) -> bool {
+        StreamEvent::event_contract_version_of(event_name)
+            .is_some_and(|version| version <= self.version)
+    }
+}
+
+/// Cursor pagination for the canonical-event transcript projection.
+///
+/// The default value preserves the pre-pagination request: the response then
+/// covers the bounded window from the oldest run and carries no cursor fields.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProductTranscriptQuery {
+    /// Return only runs whose transcript ordinal is below this value.
+    pub before_ordinal: Option<u64>,
+    /// Maximum runs in this page.
+    pub limit_runs: Option<usize>,
+    /// Canonical-event contract the requesting client declared, if any.
+    ///
+    /// `None` is the legacy request: the projection delivers every durable row
+    /// it can decode, exactly as it did before the declaration existed.
+    pub event_contract: Option<ProductTranscriptEventContract>,
+}
+
+impl ProductTranscriptQuery {
+    /// True when the request asked for an explicit cursor page. Such a response
+    /// always reports its page shape; a legacy response never does.
+    pub fn is_page(&self) -> bool {
+        self.before_ordinal.is_some() || self.limit_runs.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductTranscriptResponse {
+    pub product_session_id: ProductSessionId,
+    pub workspace_id: ProductWorkspaceId,
+    pub status: ProductTranscriptStatus,
+    pub partial_reasons: Vec<ProductTranscriptPartialReason>,
+    pub segments: Vec<ProductTranscriptRunSegment>,
+    /// Cursor for the next older page: the ordinal of this page's oldest run,
+    /// present only on a cursor page while strictly older runs remain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_before_ordinal: Option<u64>,
+    /// Explicit `next_before_ordinal.is_some()` for clients. Present only on a
+    /// cursor page, so a legacy request keeps its exact previous body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_more: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum M1BrowserMigrationSource {
+    WebM1LocalStorage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct M1WorkspaceImport {
+    pub source_id: String,
+    #[schema(value_type = String)]
+    pub root: PathBuf,
+    pub kind: ProductWorkspaceKind,
+    pub display_name: String,
+    pub pinned: bool,
+    pub last_opened_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct M1SessionImport {
+    pub source_id: String,
+    pub source_workspace_id: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub legacy_active_job_id: Option<String>,
+    #[serde(default)]
+    pub legacy_active_run_id: Option<String>,
+    #[serde(default)]
+    pub legacy_resumed_from_run_id: Option<String>,
+    #[serde(default)]
+    pub legacy_has_durable_turn: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct M1ProviderProfileImport {
+    pub source_id: String,
+    pub label: String,
+    pub provider_type: ProductProviderType,
+    pub api_base: String,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct M1ProviderSelectionImport {
+    #[serde(default)]
+    pub source_profile_id: Option<String>,
+    pub model: String,
+    pub approval: ProductApprovalPreference,
+    pub max_steps: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct M1SafePreferencesImport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<ProductThemePreference>,
+    #[serde(default)]
+    pub source_active_workspace_id: Option<String>,
+    #[serde(default)]
+    pub source_active_session_id: Option<String>,
+    #[serde(default)]
+    pub provider_selection: Option<M1ProviderSelectionImport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct M1BrowserMigrationRequest {
+    pub source: M1BrowserMigrationSource,
+    pub source_schema_version: u32,
+    pub idempotency_key: String,
+    pub workspaces: Vec<M1WorkspaceImport>,
+    pub sessions: Vec<M1SessionImport>,
+    pub provider_profiles: Vec<M1ProviderProfileImport>,
+    pub safe_preferences: M1SafePreferencesImport,
+}
+
+/// Stable digest persisted with the migration receipt. The request is already
+/// reduced to strict allowlisted fields before this helper can be called.
+pub fn m1_browser_migration_digest(
+    request: &M1BrowserMigrationRequest,
+) -> Result<String, serde_json::Error> {
+    let canonical = serde_json::to_string(request)?;
+    Ok(rove_runtime::context::stable_hash(&canonical))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct M1WorkspaceIdMapping {
+    pub source_id: String,
+    pub workspace_id: ProductWorkspaceId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct M1SessionIdMapping {
+    pub source_id: String,
+    pub product_session_id: ProductSessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct M1ProviderProfileIdMapping {
+    pub source_id: String,
+    pub provider_profile_id: ProductProviderProfileId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum M1MigrationDisposition {
+    Applied,
+    AlreadyApplied,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum M1MigrationIssueCode {
+    InvalidWorkspace,
+    MissingWorkspace,
+    InvalidRuntimeHint,
+    AmbiguousRuntimeBinding,
+    RuntimeBindingNotFound,
+    InvalidPreferenceReference,
+    PreferenceWriteConflict,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct M1MigrationIssue {
+    pub code: M1MigrationIssueCode,
+    pub entity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct M1BrowserMigrationResponse {
+    pub source_schema_version: u32,
+    pub idempotency_key: String,
+    pub receipt_id: ProductMigrationReceiptId,
+    pub disposition: M1MigrationDisposition,
+    pub workspace_mappings: Vec<M1WorkspaceIdMapping>,
+    pub session_mappings: Vec<M1SessionIdMapping>,
+    pub provider_profile_mappings: Vec<M1ProviderProfileIdMapping>,
+    pub issues: Vec<M1MigrationIssue>,
+    pub applied_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProductSessionContext {
+    pub workspace: ProductWorkspace,
+    pub session: ProductSession,
+    pub fork: Option<ProductForkContext>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProductTurnClaim {
+    pub claim_id: ProductTurnClaimId,
+    pub context: ProductSessionContext,
+    pub previous_status: ProductSessionStatus,
+    pub previous_binding: Option<ProductRuntimeBinding>,
+    pub model_config: ProductSessionModelConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommitProductRunBinding {
+    pub claim_id: ProductTurnClaimId,
+    pub product_session_id: ProductSessionId,
+    pub runtime_session_id: SessionId,
+    pub runtime_job_id: JobId,
+    pub runtime_run_id: RunId,
+    pub resumed_from_run_id: Option<RunId>,
+    /// The durable follow-up that caused this turn, when this is an automatic
+    /// queued continuation. ProductStore commits its delivery state and the
+    /// run binding together so restart recovery can distinguish a started
+    /// follow-up from one that must be confirmed by the user.
+    pub followup_control_id: Option<ProductControlId>,
+    /// The config captured while the product turn was claimed. The binding
+    /// transaction records it with the run so later edits cannot rewrite the
+    /// model used by an already-started run.
+    pub model_config: ProductSessionModelConfig,
+    pub run_model_snapshot: Option<rove_runtime::runtime_identity::RunModelSnapshot>,
+}
+
+/// One session's product ownership, reassembled from its runs' on-disk records.
+///
+/// The store-facing form of the on-disk ownership
+/// records (`product/ownership.rs`). Recovery is per-session rather than per-run
+/// because `product_session_runs` is validated as a *chain* on every read —
+/// ordinals must be contiguous from 1 and each binding must resume the previous
+/// one's run. Handing the store one run at a time could leave a session whose
+/// rows exist but whose every read fails, which is worse than not recovering it.
+#[derive(Debug, Clone)]
+pub struct RecoverProductSessionOwnership {
+    pub product_session_id: ProductSessionId,
+    pub workspace_id: ProductWorkspaceId,
+    pub canonical_root_text: String,
+    pub canonical_key: String,
+    pub workspace_kind: ProductWorkspaceKind,
+    pub workspace_display_name: String,
+    pub session_title: String,
+    pub status: ProductSessionStatus,
+    pub session_created_at: String,
+    /// The session's runs, oldest first. The store renumbers them from 1 and
+    /// relinks the chain, so a lost record shifts later ordinals rather than
+    /// leaving a hole no reader can tolerate.
+    pub runs: Vec<RecoverProductRun>,
+}
+
+/// One run inside a recovered session's chain.
+#[derive(Debug, Clone)]
+pub struct RecoverProductRun {
+    /// Ordinal as recorded on disk. Used only to order the chain; the stored
+    /// ordinal is recomputed.
+    pub recorded_ordinal: u64,
+    pub runtime_session_id: SessionId,
+    pub runtime_job_id: JobId,
+    pub runtime_run_id: RunId,
+    pub bound_at: String,
+}
+
+/// What recovering one session did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductSessionRecovery {
+    /// The catalog already had the session and its chain; nothing was written.
+    AlreadyPresent,
+    /// The records could not become a readable session — no run survived,
+    /// because each was already bound elsewhere or disagreed with the chain's
+    /// runtime identity. Nothing was written.
+    Skipped,
+    /// The session came back, with this many of its runs.
+    Recovered { runs: usize },
+}
+
+/// What one recovery sweep over the run directories found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProductOwnershipRecovery {
+    /// Ownership records read off disk.
+    pub records_found: usize,
+    /// Distinct sessions those records describe.
+    pub sessions_found: usize,
+    /// Sessions that were missing and came back.
+    pub sessions_recovered: usize,
+    /// Runs reinserted across all recovered sessions.
+    pub runs_recovered: usize,
+    /// Sessions the catalog rejected. Counted, not fatal: one unusable session
+    /// must not stop the rest from coming back.
+    pub sessions_failed: usize,
+}
+
+/// One atomically claimed queued follow-up and its exclusive product turn.
+///
+/// The store creates the turn claim, changes the session to `running`, and
+/// moves the control from `pending` to `accepted` in one transaction. A second
+/// coordinator therefore cannot dequeue the next follow-up while this one is
+/// being prepared.
+#[derive(Debug, Clone)]
+pub struct ProductFollowupTurnClaim {
+    pub control: ProductControl,
+    pub turn: ProductTurnClaim,
+}
+
+/// Result of closing a product turn with a non-final or indeterminate
+/// outcome. The control rows are returned so the coordinator can surface the
+/// corresponding canonical lifecycle events before it publishes the terminal
+/// run result.
+#[derive(Debug, Clone)]
+pub struct ProductTurnControlFinish {
+    pub dropped_steers: Vec<ProductControl>,
+    pub abandoned_followups: Vec<ProductControl>,
+}
+
+/// Runtime identity validated by the coordinator before a browser migration
+/// enters the ProductStore transaction. Browser hints never construct this
+/// type directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedM1SessionRunBinding {
+    pub source_session_id: String,
+    pub ordinal: u64,
+    pub runtime_session_id: SessionId,
+    pub runtime_job_id: JobId,
+    pub runtime_run_id: RunId,
+    pub resumed_from_run_id: Option<RunId>,
+    pub verified_workspace_root: PathBuf,
+    pub verified_workspace_kind: ProductWorkspaceKind,
+}
+
+/// Server-owned compare-and-set token captured before runtime migration
+/// inspection. It is intentionally absent from the browser request digest.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum M1PreferencesBaseline {
+    NotRequested,
+    Revision(u64),
+}
+
+/// Result of the atomic migration receipt/preferences preflight read.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub enum M1BrowserMigrationPreflight {
+    Replay(M1BrowserMigrationResponse),
+    Prepare(M1PreferencesBaseline),
+}
+
+/// Sanitized migration plus server-side runtime validation results. The store
+/// commits entity mappings, verified bindings, issues, and receipt atomically.
+#[derive(Debug, Clone)]
+pub struct PreparedM1BrowserMigration {
+    pub request: M1BrowserMigrationRequest,
+    pub verified_run_bindings: Vec<VerifiedM1SessionRunBinding>,
+    pub issues: Vec<M1MigrationIssue>,
+    pub preferences_baseline: M1PreferencesBaseline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductErrorCode {
+    ProductNotFound,
+    ProductInvalidInput,
+    ProductStoreUnavailable,
+    ProductSessionActive,
+    ProductSessionWorkspaceMismatch,
+    ProductSessionResumeConflict,
+    ProductSessionRuntimeStateMissing,
+    ProductSessionRuntimeStateCorrupt,
+    ProductBindingCorrupt,
+    ProductRevisionConflict,
+    ProductMemoryInvalidSlug,
+    ProductMemoryNotFound,
+    ProductMemoryConflict,
+    ProductMcpInvalidInput,
+    ProductMcpNotFound,
+    ProductMcpConflict,
+    ProjectTrustInvalidInput,
+    ProjectTrustUnavailable,
+    ProjectTrustRequired,
+    MigrationIdempotencyConflict,
+    ProductControlConflict,
+    ProductControlRejected,
+    ProductEventsExpired,
+    ProductForkConflict,
+    ProductForkSourceInvalid,
+    ProductSessionModelConfigConflict,
+    ProductProviderProfileUnavailable,
+    ProviderUnavailableForResume,
+    ProviderChangedForResume,
+    ReviewTargetUnavailable,
+    ReviewConflict,
+    ReviewUnavailable,
+    ProductStorageFailure,
+    ProductPreviewInvalidInput,
+    ProductPreviewNotFound,
+    ProductPreviewUnavailable,
+    ProductPreviewLimit,
+    /// A run-state artifact is larger than the redaction cap, so it cannot be
+    /// served without either rewriting it or streaming it raw.
+    ProductArtifactTooLarge,
+    ProductAttachmentInvalidInput,
+    ProductAttachmentNotFound,
+    ProductAttachmentConflict,
+    ProductAttachmentQuota,
+    ProductAttachmentTooLarge,
+    ProductAttachmentBusy,
+    ProductAttachmentTimeout,
+    ProductAttachmentUnavailable,
+}
+
+impl ProductErrorCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ProductNotFound => "product_not_found",
+            Self::ProductInvalidInput => "product_invalid_input",
+            Self::ProductStoreUnavailable => "product_store_unavailable",
+            Self::ProductSessionActive => "product_session_active",
+            Self::ProductSessionWorkspaceMismatch => "product_session_workspace_mismatch",
+            Self::ProductSessionResumeConflict => "product_session_resume_conflict",
+            Self::ProductSessionRuntimeStateMissing => "product_session_runtime_state_missing",
+            Self::ProductSessionRuntimeStateCorrupt => "product_session_runtime_state_corrupt",
+            Self::ProductBindingCorrupt => "product_binding_corrupt",
+            Self::ProductRevisionConflict => "product_revision_conflict",
+            Self::ProductMemoryInvalidSlug => "product_memory_invalid_slug",
+            Self::ProductMemoryNotFound => "product_memory_not_found",
+            Self::ProductMemoryConflict => "product_memory_conflict",
+            Self::ProductMcpInvalidInput => "product_mcp_invalid_input",
+            Self::ProductMcpNotFound => "product_mcp_not_found",
+            Self::ProductMcpConflict => "product_mcp_conflict",
+            Self::ProjectTrustInvalidInput => rove_app_bootstrap::PROJECT_TRUST_INVALID_INPUT_CODE,
+            Self::ProjectTrustUnavailable => rove_app_bootstrap::PROJECT_TRUST_UNAVAILABLE_CODE,
+            Self::ProjectTrustRequired => rove_app_bootstrap::PROJECT_TRUST_REQUIRED_CODE,
+            Self::MigrationIdempotencyConflict => "migration_idempotency_conflict",
+            Self::ProductControlConflict => "product_control_conflict",
+            Self::ProductControlRejected => "product_control_rejected",
+            Self::ProductEventsExpired => "product_events_expired",
+            Self::ProductForkConflict => "product_fork_conflict",
+            Self::ProductForkSourceInvalid => "product_fork_source_invalid",
+            Self::ProductSessionModelConfigConflict => "product_session_model_config_conflict",
+            Self::ProductProviderProfileUnavailable => "product_provider_profile_unavailable",
+            Self::ProviderUnavailableForResume => "provider_unavailable_for_resume",
+            Self::ProviderChangedForResume => "provider_changed_for_resume",
+            Self::ReviewTargetUnavailable => "review_target_unavailable",
+            Self::ReviewConflict => "review_conflict",
+            Self::ReviewUnavailable => "review_unavailable",
+            Self::ProductStorageFailure => "product_storage_failure",
+            Self::ProductPreviewInvalidInput => "product_preview_invalid_input",
+            Self::ProductPreviewNotFound => "product_preview_not_found",
+            Self::ProductPreviewUnavailable => "product_preview_unavailable",
+            Self::ProductPreviewLimit => "product_preview_limit",
+            Self::ProductArtifactTooLarge => "product_artifact_too_large",
+            Self::ProductAttachmentInvalidInput => "product_attachment_invalid_input",
+            Self::ProductAttachmentNotFound => "product_attachment_not_found",
+            Self::ProductAttachmentConflict => "product_attachment_conflict",
+            Self::ProductAttachmentQuota => "product_attachment_quota",
+            Self::ProductAttachmentTooLarge => "product_attachment_too_large",
+            Self::ProductAttachmentBusy => "product_attachment_busy",
+            Self::ProductAttachmentTimeout => "product_attachment_timeout",
+            Self::ProductAttachmentUnavailable => "product_attachment_unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductStoreError {
+    pub code: ProductErrorCode,
+    pub message: String,
+}
+
+impl fmt::Display for ProductStoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ProductStoreError {}
+
+impl ProductStoreError {
+    pub fn new(code: ProductErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub fn unavailable() -> Self {
+        Self::new(
+            ProductErrorCode::ProductStoreUnavailable,
+            "product store is not available",
+        )
+    }
+}
+
+/// The durable half of one session-scoped attachment: everything SQLite knows
+/// about it.
+///
+/// The payload bytes live on the filesystem at
+/// `<data_root>/attachments/<product_session_id>/<attachment_id>` and are
+/// resolved by `attachment_id` alone. No field here is ever used to build a
+/// path: `display_name` is bounded display metadata, never a filename.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductAttachmentRecord {
+    pub attachment_id: ProductAttachmentId,
+    pub product_session_id: ProductSessionId,
+    /// The locally verified type. The client's `Content-Type` header is only
+    /// ever a claim and is never stored here.
+    pub content_type: String,
+    pub byte_length: u64,
+    pub sha256: String,
+    pub status: ProductAttachmentStatus,
+    pub display_name: Option<String>,
+    pub created_at: String,
+    pub referenced_at: Option<String>,
+    pub expires_at: Option<String>,
+    /// Secret-free warning codes recorded when the row was published.
+    pub scan_flags: Vec<String>,
+}
+
+/// The row lifecycle. `staged` is written-but-unreferenced, `referenced` is
+/// durable session content with no TTL, and `expired` was deliberately
+/// reclaimed — a visible conflict rather than a silent 404.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductAttachmentStatus {
+    Staged,
+    Referenced,
+    Expired,
+}
+
+impl ProductAttachmentStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Staged => "staged",
+            Self::Referenced => "referenced",
+            Self::Expired => "expired",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Result<Self, ProductStoreError> {
+        match value {
+            "staged" => Ok(Self::Staged),
+            "referenced" => Ok(Self::Referenced),
+            "expired" => Ok(Self::Expired),
+            other => Err(ProductStoreError::new(
+                ProductErrorCode::ProductStorageFailure,
+                format!("persisted attachment status is invalid: {other}"),
+            )),
+        }
+    }
+}
+
+/// Why an attachment payload cannot be served, mirroring the durable-record
+/// status. Deliberately separate from [`ProductArtifactAvailability`]: its
+/// `cleaned`/`too_large` words carry artifact-specific meanings that an
+/// attachment does not have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductAttachmentAvailability {
+    Available,
+    Missing,
+    Corrupt,
+    Expired,
+}
+
+impl ProductAttachmentAvailability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::Missing => "missing",
+            Self::Corrupt => "corrupt",
+            Self::Expired => "expired",
+        }
+    }
+}
+
+/// Publish one staged attachment row. The bytes are already on disk when this
+/// is called; the store owns the TTL and the quota decision.
+#[derive(Debug, Clone)]
+pub struct CreateStagedAttachmentRequest {
+    /// Generated by the caller *before* the payload is written, because the
+    /// filename is the id. The store persists this identity rather than
+    /// inventing a second one that would not name the bytes on disk.
+    pub attachment_id: ProductAttachmentId,
+    /// The locally verified type, computed from the bytes — not the client's
+    /// `Content-Type` claim.
+    pub content_type: String,
+    pub byte_length: u64,
+    pub sha256: String,
+    pub display_name: Option<String>,
+    pub scan_flags: Vec<String>,
+}
+
+#[allow(clippy::double_must_use)]
+#[async_trait]
+pub trait ProductStore: Send + Sync {
+    /// Mark claims left active by a previous API process as needing attention.
+    async fn recover_stale_turn_claims(&self) -> Result<u64, ProductStoreError>;
+
+    async fn list_workspaces(&self) -> Result<Vec<ProductWorkspace>, ProductStoreError>;
+    async fn get_workspace(
+        &self,
+        workspace_id: &ProductWorkspaceId,
+    ) -> Result<ProductWorkspace, ProductStoreError>;
+    async fn create_workspace(
+        &self,
+        request: CreateProductWorkspaceRequest,
+    ) -> Result<ProductWorkspace, ProductStoreError>;
+    async fn delete_workspace(
+        &self,
+        workspace_id: &ProductWorkspaceId,
+    ) -> Result<(), ProductStoreError>;
+    /// Read one page of a workspace's sessions.
+    ///
+    /// The paginated read replaced the unpaginated one: a workspace with
+    /// more than [`MAX_PRODUCT_SESSIONS`] sessions used to lose its tail with no
+    /// way to request it.
+    async fn list_sessions(
+        &self,
+        query: ProductSessionPageQuery,
+    ) -> Result<ProductSessionPage, ProductStoreError>;
+
+    /// Walk every page and collect a workspace's sessions.
+    ///
+    /// This exists for the few internal callers that are only correct over the
+    /// complete set — a digest of every session's provider configuration, for
+    /// instance, is wrong if it omits one. It is not a convenience for handlers:
+    /// anything serving a client should page, so that response size stays a
+    /// function of the request rather than of the workspace's history.
+    ///
+    /// The walk terminates on an absent cursor, and separately on a page budget,
+    /// so a cursor that somehow failed to advance would surface as a truncated
+    /// read rather than as a request that never returns.
+    async fn list_all_sessions(
+        &self,
+        workspace_id: &ProductWorkspaceId,
+    ) -> Result<Vec<ProductSession>, ProductStoreError> {
+        let mut collected = Vec::new();
+        let mut cursor = None;
+        // Enough pages to cover the table limit, plus one to observe the end.
+        let budget = MAX_PRODUCT_SESSIONS / MAX_PRODUCT_SESSION_PAGE_LIMIT + 2;
+        for _ in 0..budget {
+            let page = self
+                .list_sessions(ProductSessionPageQuery {
+                    workspace_id: workspace_id.clone(),
+                    cursor,
+                    limit: MAX_PRODUCT_SESSION_PAGE_LIMIT,
+                    search: None,
+                    include_archived: true,
+                })
+                .await?;
+            collected.extend(page.sessions);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        Ok(collected)
+    }
+    async fn create_session(
+        &self,
+        request: CreateProductSessionRequest,
+    ) -> Result<ProductSession, ProductStoreError>;
+    async fn update_session(
+        &self,
+        session_id: &ProductSessionId,
+        request: UpdateProductSessionRequest,
+    ) -> Result<ProductSession, ProductStoreError>;
+    async fn delete_session(&self, session_id: &ProductSessionId) -> Result<(), ProductStoreError>;
+    async fn get_session_model_config(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<ProductSessionModelConfig, ProductStoreError>;
+    async fn update_session_model_config(
+        &self,
+        session_id: &ProductSessionId,
+        request: UpdateProductSessionModelConfigRequest,
+    ) -> Result<ProductSessionModelConfig, ProductStoreError>;
+    async fn list_session_run_models(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductSessionRunModelView>, ProductStoreError>;
+    async fn get_session_context(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<ProductSessionContext, ProductStoreError>;
+    async fn list_run_bindings(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductSessionRunBinding>, ProductStoreError>;
+
+    /// Create or idempotently replay a Review row after the coordinator has
+    /// captured and validated the immutable target snapshot.
+    async fn create_review(
+        &self,
+        record: CreateProductReviewRecord,
+    ) -> Result<(ProductReview, bool /* already_exists */), ProductStoreError>;
+
+    async fn list_reviews(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductReview>, ProductStoreError>;
+
+    async fn get_review(
+        &self,
+        review_id: &ProductReviewId,
+    ) -> Result<ProductReview, ProductStoreError>;
+
+    /// Bind Runtime identities once the external Review state/run has been
+    /// durably started. This operation is CAS/idempotent.
+    async fn bind_review_runtime(
+        &self,
+        review_id: &ProductReviewId,
+        runtime_session_id: SessionId,
+        job_id: JobId,
+        run_id: RunId,
+    ) -> Result<ProductReview, ProductStoreError>;
+
+    /// Persist the sanitized, secret-free Review result exactly once.
+    async fn finalize_review(
+        &self,
+        review_id: &ProductReviewId,
+        result: ReviewResult,
+    ) -> Result<ProductReview, ProductStoreError>;
+
+    /// Cancel a queued/running Review. Terminal rows are returned unchanged.
+    async fn cancel_review(
+        &self,
+        review_id: &ProductReviewId,
+    ) -> Result<ProductReview, ProductStoreError>;
+
+    async fn mark_review_needs_attention(
+        &self,
+        review_id: &ProductReviewId,
+    ) -> Result<ProductReview, ProductStoreError>;
+
+    async fn mark_review_unavailable(
+        &self,
+        review_id: &ProductReviewId,
+    ) -> Result<ProductReview, ProductStoreError>;
+
+    async fn list_review_findings(
+        &self,
+        review_id: &ProductReviewId,
+        query: ProductReviewFindingsQuery,
+    ) -> Result<ProductReviewFindingsResponse, ProductStoreError>;
+
+    /// Atomically materialize an immutable child session from an already
+    /// coordinator-verified terminal parent boundary. `already_exists` is true
+    /// only for an idempotent replay of the exact same request.
+    async fn create_fork(
+        &self,
+        request: CreateProductForkRequest,
+        boundary: VerifiedProductForkBoundary,
+    ) -> Result<(ProductSession, ProductFork, bool /* already_exists */), ProductStoreError>;
+
+    /// Resolve an existing fork before inspecting the parent runtime boundary.
+    /// This keeps an exact idempotent retry recoverable after the parent
+    /// catalog row has been removed, while a body mismatch remains a conflict.
+    async fn replay_fork(
+        &self,
+        parent_session_id: &ProductSessionId,
+        request: &CreateProductForkRequest,
+    ) -> Result<Option<(ProductSession, ProductFork)>, ProductStoreError>;
+
+    /// Direct children only, ordered and bounded for branch-tree expansion.
+    async fn list_forks(
+        &self,
+        parent_session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductFork>, ProductStoreError>;
+
+    async fn claim_session_turn(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<ProductTurnClaim, ProductStoreError>;
+    async fn commit_run_binding(
+        &self,
+        binding: CommitProductRunBinding,
+    ) -> Result<ProductSessionRunBinding, ProductStoreError>;
+    async fn finish_session_turn(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        status: ProductSessionStatus,
+    ) -> Result<(), ProductStoreError>;
+
+    /// Reinsert the catalog rows one session's on-disk ownership records
+    /// describe, reporting whether anything was actually missing.
+    ///
+    /// Never modifies a session the catalog still knows: a live row keeps its
+    /// own title, status, and lineage, and its run chain is left exactly as it
+    /// is. Used by startup recovery when the product catalog is lost while the
+    /// run directories survive.
+    async fn recover_session_ownership(
+        &self,
+        ownership: RecoverProductSessionOwnership,
+    ) -> Result<ProductSessionRecovery, ProductStoreError>;
+
+    /// Finish a successfully-final product turn and atomically claim the
+    /// oldest queued follow-up, if one exists. This closes the enqueue/final
+    /// race: a follow-up written before this transaction is claimed here;
+    /// one written after observes the session idle and is claimed by its route.
+    async fn finish_session_turn_and_claim_followup(
+        &self,
+        claim_id: &ProductTurnClaimId,
+    ) -> Result<Option<ProductFollowupTurnClaim>, ProductStoreError>;
+
+    /// Drop steers which did not reach a model turn, while the current product
+    /// turn claim still owns the session. The coordinator publishes the
+    /// returned rows as canonical `steer_dropped` events before it writes the
+    /// run terminal event. `applied` steers are historical facts and are never
+    /// changed by this operation.
+    async fn drop_unapplied_steers_for_turn(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        run_id: RunId,
+        reason: &str,
+    ) -> Result<Vec<ProductControl>, ProductStoreError>;
+
+    /// Close an unsuccessful product turn and transition all controls that
+    /// have not reached a terminal control lifecycle at that exact boundary.
+    /// This is one transaction so a concurrently submitted follow-up is either
+    /// part of the old queue and explicitly abandoned, or is a new instruction
+    /// submitted after the session has reached its next state.
+    /// `run_id` is `None` only before a runtime run has been allocated. Once
+    /// a run id exists, dropped steers retain it for auditability.
+    /// `outcome` records how the finished turn ended in the same transaction as
+    /// the status change, so a session can never look idle without saying why.
+    /// `None` means this close is not a turn outcome at all — the caller is
+    /// undoing an attempt that never became a turn and restored the session's
+    /// previous status, so the last real outcome is deliberately left alone.
+    async fn finish_session_turn_and_abandon_pending_controls(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        run_id: Option<RunId>,
+        status: ProductSessionStatus,
+        outcome: Option<ProductSessionOutcome>,
+        reason: &str,
+    ) -> Result<ProductTurnControlFinish, ProductStoreError>;
+
+    async fn list_provider_profiles(
+        &self,
+    ) -> Result<Vec<ProductProviderProfile>, ProductStoreError>;
+    async fn get_provider_profile(
+        &self,
+        profile_id: &ProductProviderProfileId,
+    ) -> Result<ProductProviderProfile, ProductStoreError>;
+    async fn create_provider_profile(
+        &self,
+        request: CreateProductProviderProfileRequest,
+    ) -> Result<ProductProviderProfile, ProductStoreError>;
+    async fn update_provider_profile(
+        &self,
+        profile_id: &ProductProviderProfileId,
+        request: UpdateProductProviderProfileRequest,
+    ) -> Result<ProductProviderProfile, ProductStoreError>;
+    async fn delete_provider_profile(
+        &self,
+        profile_id: &ProductProviderProfileId,
+    ) -> Result<(), ProductStoreError>;
+    /// Persist only a catalog identity stub for SQLite foreign-key
+    /// compatibility. Endpoint, credential, and model definitions remain in
+    /// the user catalog and are never copied into ProductStore.
+    async fn upsert_provider_catalog_identity(
+        &self,
+        profile_id: &ProductProviderProfileId,
+        label: &str,
+        provider_type: ProductProviderType,
+        catalog_revision: &str,
+    ) -> Result<(), ProductStoreError>;
+
+    async fn get_preferences(&self) -> Result<ProductPreferences, ProductStoreError>;
+    async fn update_preferences(
+        &self,
+        request: UpdateProductPreferencesRequest,
+    ) -> Result<ProductPreferences, ProductStoreError>;
+    async fn get_resume_health(&self) -> Result<ProductResumeHealth, ProductStoreError>;
+    /// Validate the sanitized request and replay an existing receipt before
+    /// callers inspect runtime artifacts that may have since been cleaned.
+    async fn preflight_m1_browser_migration(
+        &self,
+        request: &M1BrowserMigrationRequest,
+    ) -> Result<M1BrowserMigrationPreflight, ProductStoreError>;
+    async fn apply_m1_browser_migration(
+        &self,
+        migration: PreparedM1BrowserMigration,
+    ) -> Result<M1BrowserMigrationResponse, ProductStoreError>;
+
+    /// Persist a steer or follow-up control. Same idempotency key + same body
+    /// returns the existing row (`already_existed = true`); same key + different
+    /// body returns [`ProductErrorCode::ProductControlConflict`].
+    async fn create_control(
+        &self,
+        session_id: &ProductSessionId,
+        kind: ProductControlKind,
+        request: CreateProductControlRequest,
+    ) -> Result<(ProductControl, bool /* already_existed */), ProductStoreError>;
+
+    /// Durably accept one product message and atomically classify its default
+    /// delivery from the server-owned session state. The returned control row
+    /// is the compatibility storage projection of the same message identity.
+    async fn create_message(
+        &self,
+        session_id: &ProductSessionId,
+        request: CreateProductMessageRequest,
+    ) -> Result<(ProductMessage, bool /* already_existed */), ProductStoreError>;
+
+    /// Promote a still-queued successor message. With
+    /// [`ProductMessageDelivery::CurrentRun`] the store CASes the row into a
+    /// steer for the live run; with [`ProductMessageDelivery::Successor`] it
+    /// keeps the drainable shape and moves the row to the head of the successor
+    /// queue instead. Both race the terminal successor claim inside the same
+    /// SQLite authority.
+    async fn promote_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+        delivery: ProductMessageDelivery,
+    ) -> Result<ProductMessage, ProductStoreError>;
+
+    /// Atomically rewrite the successor-queue order and return the resulting
+    /// queue. The list must cover the current queue exactly.
+    async fn reorder_messages(
+        &self,
+        session_id: &ProductSessionId,
+        ordered_ids: &[ProductControlId],
+    ) -> Result<Vec<ProductMessage>, ProductStoreError>;
+
+    /// Idempotently revoke a still-queued or needs-attention message.
+    async fn revoke_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError>;
+
+    async fn list_messages(
+        &self,
+        session_id: &ProductSessionId,
+        query: ProductMessagePageQuery,
+    ) -> Result<ProductMessagePage, ProductStoreError>;
+
+    /// Search one session's message ledger and return a bounded excerpt around
+    /// each hit, oldest hit first.
+    ///
+    /// The session existence check comes first, so an unknown or deleted
+    /// session is a not-found error rather than an empty hit list: an empty
+    /// page must never be the answer to "does this session exist". That check
+    /// is the same one the message listing uses; the catalog is API-global, so
+    /// it is not a workspace-scoped authorization.
+    async fn search_messages(
+        &self,
+        session_id: &ProductSessionId,
+        query: ProductMessageSearchQuery,
+    ) -> Result<ProductMessageSearchPage, ProductStoreError>;
+
+    /// Search messages across every session of a workspace, or across one
+    /// session, and name the session on each hit.
+    ///
+    /// The corpus is the same ledger and the same FTS5 index as
+    /// [`Self::search_messages`]; what changes is the key the page walks. The
+    /// session scope keeps the per-session `seq` keyset, and the workspace scope
+    /// orders by `(session_id, seq)` so a session's hits stay contiguous and one
+    /// page can answer "which sessions contain this term".
+    ///
+    /// A workspace that is not in the catalog and a session that is not in the
+    /// catalog are both not-found errors. The index cannot serve a term below
+    /// the trigram floor across a whole workspace — the fallback `LIKE` scan
+    /// would leave the workspace — so the workspace scope refuses such a term
+    /// with a typed invalid-input error instead of degrading into a scan of the
+    /// store. The session scope keeps the bounded scan step one already ships.
+    async fn search_scoped_messages(
+        &self,
+        scope: &ProductMessageSearchScope,
+        query: ProductSearchQuery,
+    ) -> Result<ProductSearchPage, ProductStoreError>;
+
+    async fn get_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError>;
+
+    /// Resolve one unified user message by its per-session ledger sequence.
+    ///
+    /// Sequences come from the same counter as the legacy control rows, so a
+    /// sequence that names a steer control rather than a product message — or
+    /// nothing at all — is simply absent. Edit-and-resend forks use this to
+    /// turn the client's `truncate_after_message_seq` into the exact message
+    /// identity the child's seed is cut at.
+    async fn find_message_by_seq(
+        &self,
+        session_id: &ProductSessionId,
+        seq: i64,
+    ) -> Result<Option<ProductMessage>, ProductStoreError>;
+
+    async fn list_controls(
+        &self,
+        session_id: &ProductSessionId,
+        filter: Option<ProductControlStatus>,
+    ) -> Result<Vec<ProductControl>, ProductStoreError>;
+
+    async fn get_control(
+        &self,
+        session_id: &ProductSessionId,
+        control_id: &ProductControlId,
+    ) -> Result<ProductControl, ProductStoreError>;
+
+    /// Compare-and-swap control status. Rejects when the stored status is not `from`.
+    async fn transition_control(
+        &self,
+        session_id: &ProductSessionId,
+        control_id: &ProductControlId,
+        from: ProductControlStatus,
+        to: ProductControlStatus,
+        applied_run_id: Option<&RunId>,
+    ) -> Result<ProductControl, ProductStoreError>;
+
+    /// Explicitly confirm that an abandoned follow-up may be retried. This is
+    /// the only path that moves an indeterminate queued continuation back to
+    /// `pending`; ordinary restart recovery never does so after uncertainty.
+    async fn confirm_abandoned_followup(
+        &self,
+        session_id: &ProductSessionId,
+        control_id: &ProductControlId,
+    ) -> Result<ProductControl, ProductStoreError>;
+
+    /// Mark every still-pending control abandoned (non-final run termination).
+    async fn abandon_pending_controls(
+        &self,
+        session_id: &ProductSessionId,
+        reason: &str,
+    ) -> Result<u64, ProductStoreError>;
+
+    /// List pending follow-ups in seq order (read-only; prefer
+    /// [`Self::claim_next_pending_followup`] for drain).
+    async fn list_pending_followups(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductControl>, ProductStoreError>;
+
+    /// Atomically claim the next pending follow-up (`pending` → `accepted`) so
+    /// crash restart cannot double-start the same control.
+    async fn claim_next_pending_followup(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Option<ProductControl>, ProductStoreError>;
+
+    /// Atomically dequeue one pending follow-up and claim the product session
+    /// turn required to start it. Only idle sessions without an active turn
+    /// claim are eligible.
+    async fn claim_next_followup_turn(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Option<ProductFollowupTurnClaim>, ProductStoreError>;
+
+    /// Undo an automatic follow-up claim before any runtime run is started.
+    /// This keeps a transient assembly failure retryable without exposing a
+    /// second runnable session turn.
+    async fn requeue_followup_turn(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        control_id: &ProductControlId,
+    ) -> Result<(), ProductStoreError>;
+
+    /// Persist the exact runtime run id that is about to be started for a
+    /// claimed follow-up. Once this succeeds, restart recovery must assume
+    /// the runtime side effect may have started and require confirmation
+    /// rather than risk a duplicate run.
+    async fn reserve_followup_run(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        control_id: &ProductControlId,
+        run_id: RunId,
+    ) -> Result<(), ProductStoreError>;
+
+    /// Release an automatic follow-up claim into a conservative state when
+    /// runtime preparation reached an uncertain boundary.
+    async fn abandon_followup_turn(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        control_id: &ProductControlId,
+        reason: &str,
+    ) -> Result<(), ProductStoreError>;
+
+    /// Sessions whose final prior turn is idle and which still own a queued
+    /// follow-up. Used once at API startup to resume safe server-side drains.
+    async fn list_idle_sessions_with_pending_followups(
+        &self,
+    ) -> Result<Vec<ProductSessionId>, ProductStoreError>;
+
+    /// Close queued steer controls that were never observed at a runtime safe
+    /// point. The returned rows are used to publish canonical dropped events
+    /// before the run terminal event.
+    async fn drop_pending_steers(
+        &self,
+        session_id: &ProductSessionId,
+        reason: &str,
+    ) -> Result<Vec<ProductControl>, ProductStoreError>;
+
+    /// Move queued follow-ups to explicit confirmation after a non-final or
+    /// otherwise indeterminate run outcome. Returned rows become canonical
+    /// `followup_abandoned` events before the terminal event is published.
+    async fn abandon_pending_followups(
+        &self,
+        session_id: &ProductSessionId,
+        reason: &str,
+    ) -> Result<Vec<ProductControl>, ProductStoreError>;
+
+    /// Read the durable product event log in `seq` order, excluding `after`.
+    /// The workspace/session/preference/control mutations append their own event
+    /// inside the same transaction that performs them, so this is the
+    /// authoritative catch-up source for a stream reconnect over those facts. The
+    /// M1 browser import, its `needs_attention` marking, and
+    /// `recover_session_ownership` restore history another authority already owns
+    /// and append nothing, so a follower also reads the catalog. `limit` bounds
+    /// one page, and the returned page also
+    /// reports the `seq` range it scanned so a row this build cannot decode still
+    /// costs a skipped sequence number instead of stalling the reader.
+    async fn list_product_events(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> Result<ProductEventPage, ProductStoreError>;
+
+    /// The newest retained event `seq`, or `0` when the log is empty.
+    ///
+    /// A subscriber that connects with no cursor starts here. The directory
+    /// stream carries deltas, so replaying an arbitrary slice of retained
+    /// history into a client that has never read the catalog would be noise
+    /// rather than information; that client reads the catalog and follows.
+    async fn latest_product_event_seq(&self) -> Result<i64, ProductStoreError>;
+
+    /// Resolve the session a pending attachment write will belong to, *before*
+    /// any path is derived or any payload byte is written (section 3.1 of the
+    /// attachments plan).
+    ///
+    /// An unknown session is `product_not_found`; an archived session is
+    /// `product_attachment_conflict`. This is the cheap first step of the
+    /// upload validation order, so a refused request never touches the disk.
+    async fn resolve_attachment_session(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<(), ProductStoreError>;
+
+    /// Publish a staged attachment row.
+    ///
+    /// The per-session count and byte quotas are evaluated inside the same
+    /// `IMMEDIATE` transaction that inserts the row, so two concurrent uploads
+    /// cannot both pass the last slot. Staged and referenced rows are accounted
+    /// separately: a staged attachment cannot starve a referenced one, and a
+    /// referenced attachment does not consume the staged budget.
+    ///
+    /// The caller has already written the payload. A refusal here — a quota,
+    /// an archived session, or a vanished session — means the caller must
+    /// remove the bytes it wrote.
+    async fn create_staged_attachment(
+        &self,
+        session_id: &ProductSessionId,
+        request: CreateStagedAttachmentRequest,
+    ) -> Result<ProductAttachmentRecord, ProductStoreError>;
+
+    /// Read one attachment scoped to its session.
+    ///
+    /// The session/attachment pair is always checked together, so an id that
+    /// belongs to another session is indistinguishable from an absent one.
+    async fn attachment_for_session(
+        &self,
+        session_id: &ProductSessionId,
+        attachment_id: &ProductAttachmentId,
+    ) -> Result<Option<ProductAttachmentRecord>, ProductStoreError>;
+
+    /// Mark every staged attachment whose TTL has passed as `expired`.
+    ///
+    /// Bounded by `limit` and ordered by `expires_at`, so one run of the cleanup
+    /// job can never become an unbounded sweep. Only a row this call actually
+    /// moved out of `staged` is returned: the caller removes exactly those
+    /// payloads, and a row a concurrent send promoted to `referenced` is not in
+    /// the result and is never a deletion candidate.
+    ///
+    /// The clock is the store's own, so a caller cannot extend an attachment's
+    /// life by passing a timestamp.
+    async fn expire_staged_attachments(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ProductAttachmentRecord>, ProductStoreError>;
+
+    /// The `(attachment id, status)` pairs of one session, bounded by `limit`.
+    ///
+    /// The cleanup job's orphan scan needs the full status set — not only the
+    /// staged rows — because a payload whose row is `expired` is still a
+    /// deletion candidate while a `referenced` one never is.
+    async fn attachment_statuses_for_session(
+        &self,
+        session_id: &ProductSessionId,
+        limit: usize,
+    ) -> Result<Vec<(ProductAttachmentId, ProductAttachmentStatus)>, ProductStoreError>;
+}
+
+pub trait ProductRuntimeStateResolver: Send + Sync {
+    fn state_store_for(
+        &self,
+        workspace: &ProductWorkspace,
+    ) -> Result<StateStore, ProductStoreError>;
+}
+
+#[allow(clippy::double_must_use)]
+#[async_trait]
+pub trait ProductTranscriptReader: Send + Sync {
+    async fn read_transcript(
+        &self,
+        session_id: &ProductSessionId,
+        query: ProductTranscriptQuery,
+    ) -> Result<ProductTranscriptResponse, ProductStoreError>;
+}
+
+// A doc comment here would change the generated OpenAPI description.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct JobStreamEvent {
+    pub seq: u64,
+    #[schema(value_type = Object)]
+    pub event: StreamEvent,
+}
+
+/// `skip_serializing_if` helper for additive boolean fields.
+#[doc(hidden)]
+pub fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The response surfaces are redacted in place, and the two contract types
+    /// must not diverge on which field carries the text.
+    #[test]
+    fn response_redaction_clears_message_and_control_bodies_without_touching_innocent_text() {
+        let canary = "message-response-credential-canary-51c3ba";
+        let registry = rove_runtime::secrets::registry();
+        assert!(registry.register_value(canary));
+
+        let mut message = ProductMessage {
+            id: ProductControlId::new(),
+            product_session_id: ProductSessionId::new(),
+            content: format!("the queue holds {canary} verbatim"),
+            requested_delivery: ProductMessageDelivery::Successor,
+            actual_delivery: None,
+            status: ProductMessageStatus::Queued,
+            seq: 1,
+            run_id: None,
+            successor_run_id: None,
+            created_at: "2026-09-27T00:00:00Z".to_string(),
+            applied_at: None,
+            queue_order: None,
+            reason: Some(format!("abandoned while {canary} was configured")),
+            attachments: Vec::new(),
+        };
+        message.redact_for_response();
+        assert!(!message.content.contains(canary), "{}", message.content);
+        assert!(
+            message
+                .content
+                .contains(rove_runtime::secrets::KNOWN_SECRET_MARKER),
+            "{}",
+            message.content
+        );
+        assert!(
+            message.content.contains("the queue holds"),
+            "{}",
+            message.content
+        );
+        let reason = message.reason.as_deref().unwrap();
+        assert!(!reason.contains(canary), "{reason}");
+        assert!(reason.contains("was configured"), "{reason}");
+
+        let mut control = ProductControl {
+            id: ProductControlId::new(),
+            product_session_id: ProductSessionId::new(),
+            kind: ProductControlKind::Followup,
+            idempotency_key: None,
+            content: format!("the queued follow-up carries {canary}"),
+            status: ProductControlStatus::Pending,
+            run_id: None,
+            seq: 2,
+            created_at: "2026-09-27T00:00:00Z".to_string(),
+            applied_at: None,
+        };
+        control.redact_for_response();
+        assert!(!control.content.contains(canary), "{}", control.content);
+        assert!(
+            control.content.contains("the queued follow-up"),
+            "{}",
+            control.content
+        );
+    }
+
+    #[test]
+    fn transcript_event_contract_declares_exactly_what_the_client_can_decode() {
+        let legacy = ProductTranscriptEventContract::parse("1").expect("version 1 is valid");
+        let current =
+            ProductTranscriptEventContract::parse("2").expect("version 2 is the current contract");
+
+        assert_eq!(legacy.version(), 1);
+        assert!(legacy.accepts("run_started"));
+        assert!(
+            !legacy.accepts("provider_retry"),
+            "a client on the pre-retry contract must not be offered the retry row"
+        );
+        assert!(current.accepts("provider_retry"));
+        assert!(current.accepts("run_started"));
+        assert!(
+            !current.accepts("a_kind_this_build_never_defined"),
+            "an undeclared kind is outside every contract this build can promise"
+        );
+        assert_eq!(
+            current.version(),
+            STREAM_EVENT_CONTRACT_VERSION,
+            "the fixture must follow the runtime's current contract version"
+        );
+    }
+
+    #[test]
+    fn transcript_event_contract_clamps_a_newer_declaration_instead_of_refusing_it() {
+        let future =
+            ProductTranscriptEventContract::parse("7").expect("a newer declaration parses");
+
+        assert_eq!(
+            future.version(),
+            STREAM_EVENT_CONTRACT_VERSION,
+            "a newer client decodes a superset, so the intersection is this build's contract"
+        );
+        assert!(future.accepts("provider_retry"));
+    }
+
+    #[test]
+    fn transcript_event_contract_rejects_malformed_declarations() {
+        for raw in [
+            "",
+            "0",
+            "-1",
+            "1.5",
+            "abc",
+            "1e3",
+            "+1abc",
+            "+1",
+            "+0",
+            " 1",
+            "1 ",
+            "4294967296",
+            "00000000000",
+        ] {
+            assert!(
+                ProductTranscriptEventContract::parse(raw).is_none(),
+                "`{raw}` is not a valid contract version declaration"
+            );
+        }
+        // The published contract is decimal digits only: `u32::from_str` would
+        // also take `+1`, and the Web client's own validation (`/^\d+$/`) and the
+        // mocked route reject it, so the server must not be the lenient one.
+        assert_eq!(
+            ProductTranscriptEventContract::parse("1")
+                .unwrap()
+                .version(),
+            1
+        );
+        assert_eq!(
+            ProductTranscriptEventContract::parse("2")
+                .unwrap()
+                .version(),
+            2
+        );
+    }
+
+    #[test]
+    fn product_ids_reject_legacy_browser_ids() {
+        let error = "sess_browser-owned"
+            .parse::<ProductSessionId>()
+            .unwrap_err();
+
+        assert_eq!(error, "invalid ProductSessionId");
+    }
+
+    #[test]
+    fn provider_type_preserves_public_hyphenated_name() {
+        let value = serde_json::to_value(ProductProviderType::OpenaiResponses).unwrap();
+
+        assert_eq!(value, "openai-responses");
+    }
+
+    #[test]
+    fn browser_migration_rejects_unknown_raw_key_fields() {
+        let payload = serde_json::json!({
+            "source": "web_m1_local_storage",
+            "source_schema_version": 1,
+            "idempotency_key": "migration-1",
+            "workspaces": [],
+            "sessions": [],
+            "provider_profiles": [{
+                "source_id": "prov_legacy",
+                "label": "unsafe",
+                "provider_type": "openai",
+                "api_base": "https://api.openai.com/v1",
+                "api_key_env": "OPENAI_API_KEY",
+                "api_key": "must-not-cross-the-boundary",
+                "default_model": "gpt-test",
+                "updated_at": "2026-07-26T00:00:00Z"
+            }],
+            "safe_preferences": {
+                "theme": "system"
+            }
+        });
+
+        let error = serde_json::from_value::<M1BrowserMigrationRequest>(payload).unwrap_err();
+
+        assert!(error.to_string().contains("unknown field `api_key`"));
+    }
+}

@@ -1,0 +1,489 @@
+use std::path::{Path, PathBuf};
+
+fn workspace_root() -> PathBuf {
+    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // tests package lives at <workspace>/tests
+    root.pop();
+    root
+}
+
+fn workspace_path(rel: impl AsRef<Path>) -> PathBuf {
+    workspace_root().join(rel)
+}
+
+#[test]
+fn package_libs_do_not_hide_dead_code_globally() {
+    for rel in [
+        "apps/cli/src/lib.rs",
+        "apps/api/src/lib.rs",
+        "apps/bootstrap/src/lib.rs",
+        "runtime/src/lib.rs",
+        "core/src/lib.rs",
+        "models/src/lib.rs",
+    ] {
+        let lib = std::fs::read_to_string(workspace_path(rel)).unwrap();
+        assert!(
+            !lib.contains("#![allow(dead_code)]"),
+            "{rel} must not hide dead code globally"
+        );
+    }
+}
+
+#[test]
+fn web_production_build_does_not_fetch_remote_fonts() {
+    let layout = std::fs::read_to_string(workspace_path("apps/web/app/layout.tsx"))
+        .expect("Web root layout should exist");
+    let web_files = [
+        "apps/web/app/layout.tsx",
+        "apps/web/app/globals.css",
+        "apps/web/styles/tokens.css",
+        "apps/web/app/dev/workbench/page.tsx",
+        "apps/web/styles/product-v2.css",
+        "apps/web/styles/v3/index.css",
+    ];
+
+    assert!(
+        !layout.contains("next/font/google"),
+        "the deterministic local Web build must not fetch Google Fonts"
+    );
+    for rel in web_files {
+        let source = std::fs::read_to_string(workspace_path(rel))
+            .unwrap_or_else(|error| panic!("failed to read {rel}: {error}"));
+        assert!(
+            !source.contains("--font-geist"),
+            "{rel} must use the local system font stack"
+        );
+    }
+}
+
+#[test]
+fn dev_launcher_documents_process_lifecycle_and_modes() {
+    let script = std::fs::read_to_string(workspace_path("scripts/dev.ps1"))
+        .expect("scripts/dev.ps1 should exist");
+
+    assert!(script.contains("[switch]$Provider"));
+    assert!(script.contains("[switch]$InstallWebDeps"));
+    assert!(script.contains("[int]$RunSeconds"));
+    assert!(script.contains("ROVE_PROVIDER = \"fake\""));
+    assert!(script.contains("ROVE_MODEL = \"fake\""));
+    assert!(script.contains("Test-PortFree $apiPort \"API\""));
+    assert!(script.contains("if ($RunSeconds -gt 0)"));
+    assert!(script.contains("Stop-ProcessTree $webProcess"));
+    assert!(script.contains("Stop-ProcessTree $apiProcess"));
+    assert!(script.contains("http://localhost:$WebPort"));
+    assert!(script.contains("Press Ctrl+C to stop API and Web."));
+}
+
+#[test]
+fn config_tests_clear_every_env_key_loaded_by_env_layer() {
+    let source = std::fs::read_to_string(workspace_path("apps/bootstrap/src/config.rs"))
+        .expect("apps/bootstrap/src/config.rs should exist")
+        .replace("\r\n", "\n");
+    let loaded = extract_env_string_keys(&source);
+    let clear_start = source
+        .find("fn clear_config_env()")
+        .expect("config tests should define clear_config_env");
+    let clear_rest = &source[clear_start..];
+    let clear_end = clear_rest
+        .find("\n    }\n\n    #[test]")
+        .or_else(|| clear_rest.find("\n    }\n    #[test]"))
+        .expect("clear_config_env should be followed by config tests");
+    let cleared = extract_quoted_env_keys(&clear_rest[..clear_end]);
+    let missing: Vec<_> = loaded.difference(&cleared).cloned().collect();
+
+    assert!(
+        missing.is_empty(),
+        "clear_config_env must remove every env var read by env_layer; missing: {missing:?}"
+    );
+}
+
+#[test]
+fn cli_and_api_share_interface_engine_assembly() {
+    let shared = std::fs::read_to_string(workspace_path("apps/bootstrap/src/assembly.rs"))
+        .expect("shared product engine assembly should exist");
+    let cli = std::fs::read_to_string(workspace_path("apps/cli/src/cli/runtime.rs"))
+        .expect("CLI runtime builder should exist");
+    let api = std::fs::read_to_string(workspace_path("apps/api/src/lib.rs"))
+        .expect("API module should exist");
+
+    assert!(shared.contains("EngineOptions"));
+    assert!(shared.contains("build_engine"));
+    assert!(cli.contains("build_engine"));
+    assert!(api.contains("build_engine"));
+    assert!(!shared.contains("build_product_engine"));
+    assert!(!shared.contains("build_interface_engine"));
+    assert!(!shared.contains("ProductEngineOptions"));
+    assert!(!shared.contains("EngineAssemblyOptions"));
+    assert!(!cli.contains("ContextManager::with_token_budget"));
+    assert!(!api.contains("ContextManager::with_token_budget"));
+}
+
+#[test]
+fn ignore_rules_match_release_artifact_policy() {
+    let ignore = std::fs::read_to_string(workspace_path(".gitignore")).unwrap();
+
+    assert!(ignore.contains("/outputs/"));
+    assert!(ignore.contains("/benchmarks/results/*"));
+    assert!(ignore.contains("!/benchmarks/results/README.md"));
+}
+
+#[test]
+fn provider_integration_runner_is_generic_and_documented() {
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
+        .expect("scripts/provider-integration.ps1 should exist");
+    let env_example = std::fs::read_to_string(workspace_path(".env.example")).unwrap();
+
+    assert!(script.contains("[string]$Provider"));
+    assert!(script.contains("[string]$Model"));
+    assert!(script.contains("[string]$ApiBase"));
+    assert!(script.contains("[string]$ApiKeyEnv"));
+    assert!(script.contains("[string]$ModelsEndpoint"));
+    assert!(script.contains("[switch]$SkipModelInventory"));
+    assert!(script.contains("[switch]$SkipProviderSmoke"));
+    assert!(script.contains("[switch]$SkipApiSmoke"));
+    assert!(script.contains("[switch]$SkipWebSmoke"));
+    assert!(script.contains("[switch]$RunStress"));
+    assert!(script.contains("[switch]$RunRestartRecovery"));
+    assert!(script.contains("[switch]$RunLongSoak"));
+    assert!(script.contains("[switch]$RunExternalMcp"));
+    assert!(script.contains("[int]$StressSequentialCount"));
+    assert!(script.contains("[int]$StressConcurrentCount"));
+    assert!(script.contains("[int]$StressJobTimeoutSeconds"));
+    assert!(script.contains("[int]$RestartRecoveryTimeoutSeconds"));
+    assert!(script.contains("[int]$LongSoakCount"));
+    assert!(script.contains("[int]$LongSoakDelayMs"));
+    assert!(script.contains("[string]$ExternalMcpToolName"));
+    assert!(script.contains("openai"));
+    assert!(script.contains("Invoke-ProviderSmoke"));
+    assert!(script.contains("cargo test -p rove-integration-tests --test it provider_smoke::"));
+    assert!(script.contains("provider api plain ok"));
+    assert!(script.contains("Invoke-ApiSmoke"));
+    assert!(script.contains("Invoke-WebSmoke"));
+    assert!(script.contains("Invoke-StressGate"));
+    assert!(script.contains("Invoke-RestartRecoveryGate"));
+    assert!(script.contains("Invoke-LongSoakGate"));
+    assert!(script.contains("Classify-RunReport"));
+    assert!(script.contains("Invoke-ExternalMcpGate"));
+    assert!(script.contains("ROVE_MCP_CONFIG"));
+    assert!(script.contains("mcp_servers.example.json"));
+    assert!(script.contains("external-mcp-config.redacted.json"));
+    assert!(script.contains("evidence-summary.json"));
+    assert!(script.contains("stress-runs-before-restart.json"));
+    assert!(script.contains("stress-runs-after-restart.json"));
+    assert!(script.contains("stress-sequential-$i.state.json"));
+    assert!(script.contains("stress-concurrent-$($i + 1).state.json"));
+    assert!(script.contains("long-soak-summary.json"));
+    assert!(script.contains("long-soak-$i.state.json"));
+    assert!(script.contains("key_present"));
+    assert!(!script.contains("SiliconFlow only"));
+
+    assert!(env_example.contains("ROVE_PROVIDER_INTEGRATION_PROVIDER=openai"));
+    assert!(env_example.contains("ROVE_PROVIDER_INTEGRATION_MODEL="));
+    assert!(env_example.contains("ROVE_PROVIDER_INTEGRATION_API_BASE="));
+    assert!(env_example.contains("ROVE_PROVIDER_INTEGRATION_API_KEY_ENV=OPENAI_API_KEY"));
+    assert!(env_example.contains("ROVE_PROVIDER_INTEGRATION_STRESS_JOB_TIMEOUT_SECONDS=180"));
+    assert!(env_example.contains("ROVE_PROVIDER_INTEGRATION_RESTART_TIMEOUT_SECONDS=90"));
+    assert!(env_example.contains("ROVE_PROVIDER_INTEGRATION_LONG_SOAK_COUNT=20"));
+    assert!(env_example.contains("ROVE_PROVIDER_INTEGRATION_LONG_SOAK_DELAY_MS=500"));
+}
+
+#[test]
+fn provider_integration_runner_supports_native_provider_protocols() {
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
+        .expect("scripts/provider-integration.ps1 should exist");
+    let env_example = std::fs::read_to_string(workspace_path(".env.example")).unwrap();
+
+    assert!(script.contains("function Normalize-ProviderName"));
+    assert!(script.contains("function Invoke-AnthropicModelInventory"));
+    assert!(script.contains("function Invoke-OllamaModelInventory"));
+    assert!(script.contains("function Invoke-ProviderRestMethod"));
+    assert!(script.contains("Provider request to $Uri failed:"));
+    assert!(script.contains("-Uri $endpoint"));
+    assert!(
+        script
+            .contains("Provider request to .* failed|request failed|error sending request|Connect")
+    );
+    assert!(script.contains("anthropic_real_provider_smoke_when_enabled"));
+    assert!(script.contains("ollama_real_provider_smoke_when_enabled"));
+    assert!(script.contains("provider = @{"));
+    assert!(script.contains("provider_type = $Provider"));
+    assert!(script.contains("api_key_env = $ApiKeyEnv"));
+    assert!(script.contains("if ($normalized -eq \"ollama\")"));
+    assert!(script.contains("return \"\""));
+    assert!(script.contains("ROVE_PROVIDER_SMOKE_ANTHROPIC"));
+    assert!(script.contains("ROVE_PROVIDER_SMOKE_OLLAMA"));
+    assert!(script.contains("openai-responses"));
+    assert!(script.contains("openai_responses_real_provider_smoke_when_enabled"));
+    assert!(!script.contains("currently automates API/Web gates for openai-compatible providers"));
+
+    assert!(env_example.contains("ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES"));
+}
+
+#[test]
+fn provider_integration_runner_records_requested_gate_failures() {
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
+        .expect("scripts/provider-integration.ps1 should exist");
+
+    assert!(script.contains("function New-RequestedGateStatusMap"));
+    assert!(script.contains("function Invoke-Gate"));
+    assert!(script.contains("$script:CurrentGateName"));
+    assert!(script.contains("failure-classification.json"));
+    assert!(script.contains("failed_gate = $script:CurrentGateName"));
+    assert!(script.contains("classification = $classification"));
+    assert!(script.contains("message = $Message"));
+    assert!(script.contains("$Gates[$GateName] = \"failed\""));
+    assert!(script.contains("$gates = New-RequestedGateStatusMap"));
+    assert!(script.contains("Invoke-Gate -Gates $gates -GateName \"model_inventory\""));
+    assert!(script.contains("Invoke-Gate -Gates $gates -GateName \"provider_smoke\""));
+    assert!(script.contains("Invoke-Gate -Gates $gates -GateName \"provider_full_api\""));
+    assert!(script.contains("Invoke-Gate -Gates $gates -GateName \"web_provider\""));
+    assert!(script.contains("Invoke-Gate -Gates $gates -GateName \"stress\""));
+    assert!(script.contains("Invoke-Gate -Gates $gates -GateName \"external_mcp\""));
+    assert!(!script.contains("$gates[\"failure\"] = $_.Exception.Message"));
+}
+
+#[test]
+fn integration_runners_allow_web_origins_before_api_start() {
+    let local_script = std::fs::read_to_string(workspace_path("scripts/integration-smoke.ps1"))
+        .expect("scripts/integration-smoke.ps1 should exist");
+    let provider_script =
+        std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
+            .expect("scripts/provider-integration.ps1 should exist");
+
+    assert!(local_script.contains("function Add-CorsOrigins"));
+    assert!(local_script.contains("ROVE_API_CORS_ORIGINS"));
+    let local_cors_index = local_script
+        .find("Add-CorsOrigins @($WebBase, \"http://localhost:$WebPort\")")
+        .expect("local-full runner should allow both 127.0.0.1 and localhost web origins");
+    let local_api_start_index = local_script
+        .find("Start-BackgroundCommand -Command $apiBinary")
+        .expect("local-full runner should start rove-api");
+    assert!(
+        local_cors_index < local_api_start_index,
+        "local-full runner must set CORS origins before starting rove-api"
+    );
+
+    assert!(provider_script.contains("function Add-CorsOrigins"));
+    assert!(provider_script.contains("ROVE_API_CORS_ORIGINS"));
+    let provider_web_index = provider_script
+        .find("function Invoke-WebSmoke")
+        .expect("provider runner should define a Web smoke gate");
+    let provider_cors_index = provider_script[provider_web_index..]
+        .find("Add-CorsOrigins @($WebBase, \"http://localhost:$WebPort\")")
+        .map(|offset| provider_web_index + offset)
+        .expect("provider Web runner should allow both 127.0.0.1 and localhost web origins");
+    let provider_api_start_index = provider_script[provider_web_index..]
+        .find("web-provider-api.out.log")
+        .map(|offset| provider_web_index + offset)
+        .expect("provider Web runner should start rove-api for Web smoke");
+    assert!(
+        provider_cors_index < provider_api_start_index,
+        "provider Web runner must set CORS origins before starting rove-api"
+    );
+}
+
+#[test]
+fn local_full_runner_builds_rove_api_before_starting_service() {
+    let script = std::fs::read_to_string(workspace_path("scripts/integration-smoke.ps1"))
+        .expect("scripts/integration-smoke.ps1 should exist");
+
+    let build_args_index = script
+        .find("$apiBuildArgs = @(\"build\", \"-p\", \"rove-api\", \"--bin\", \"rove-api\")")
+        .expect("local-full runner should build rove-api explicitly");
+    let build_location_index = script
+        .find("Push-Location $RepoRoot")
+        .expect("local-full runner should build from the repository root");
+    let build_invoke_index = script
+        .find("& cargo @apiBuildArgs")
+        .expect("local-full runner should run the rove-api build before startup");
+    let pop_location_index = script[build_location_index..]
+        .find("Pop-Location")
+        .map(|offset| build_location_index + offset)
+        .expect("local-full runner should restore the previous location after building");
+    let binary_path_index = script
+        .find("$apiBinary = Join-Path")
+        .expect("local-full runner should resolve the compiled rove-api binary");
+    let start_index = script
+        .find("Start-BackgroundCommand -Command $apiBinary")
+        .expect("local-full runner should start the compiled rove-api binary");
+
+    assert!(
+        build_args_index < build_invoke_index,
+        "local-full runner should define build args before invoking cargo"
+    );
+    assert!(
+        build_location_index < build_invoke_index,
+        "local-full runner should switch to the repository root before building"
+    );
+    assert!(
+        build_invoke_index < pop_location_index,
+        "local-full runner should restore the previous location after the build command"
+    );
+    assert!(
+        pop_location_index < binary_path_index,
+        "local-full runner should build before resolving the compiled binary"
+    );
+    assert!(
+        binary_path_index < start_index,
+        "local-full runner should resolve the compiled binary before starting it"
+    );
+    assert!(
+        !script.contains("$apiArgs = @(\"run\", \"--bin\", \"rove-api\""),
+        "local-full runner should not include Cargo execution in the API readiness window"
+    );
+    assert!(
+        !script.contains("Start-BackgroundCommand -Command \"cargo\" -Arguments $apiArgs"),
+        "local-full runner should not start rove-api through cargo run"
+    );
+}
+
+#[test]
+fn release_gate_keeps_local_full_workspace_outside_checked_out_repo() {
+    let workflow = std::fs::read_to_string(workspace_path(".github/workflows/release-gate.yml"))
+        .expect("release-gate workflow should exist");
+
+    assert!(
+        !workflow.contains("ROVE_INTEGRATION_ROOT: ${{ github.workspace }}"),
+        "local-full workspace must not live under github.workspace because Workspace::detect will promote nested paths to the git root"
+    );
+    assert!(
+        workflow
+            .contains("ROVE_INTEGRATION_ROOT: ${{ runner.temp }}\\rove-release-gate\\local-full"),
+        "local-full runtime workspace should live under runner.temp"
+    );
+    assert!(
+        workflow.contains("ROVE_INTEGRATION_ARTIFACTS: ${{ github.workspace }}\\.release-gate\\local-full\\artifacts"),
+        "local-full artifacts should still be written under github.workspace for upload-artifact"
+    );
+    assert!(workflow.contains("path: .release-gate/local-full/artifacts"));
+}
+
+#[test]
+fn provider_integration_runner_keeps_ollama_keyless_after_env_import() {
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
+        .expect("scripts/provider-integration.ps1 should exist");
+
+    assert!(script.contains("if ($Provider -eq \"ollama\")"));
+    assert!(script.contains("$ApiKeyEnv = \"\""));
+    assert!(script.contains("providerKeyEnv: providerKeyEnv || ''"));
+}
+
+#[test]
+fn provider_integration_runner_checks_exact_web_report_identity() {
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
+        .expect("scripts/provider-integration.ps1 should exist");
+
+    assert!(script.contains("[string]$report.job_id -ne [string]$webResult.jobId"));
+    assert!(script.contains("[string]$report.run_id -ne [string]$webResult.runId"));
+    assert!(script.contains("[string]$_.binding.runtime_run_id -eq [string]$webResult.runId"));
+    assert!(
+        script.contains("[string]$boundRun.binding.runtime_job_id -ne [string]$webResult.jobId")
+    );
+}
+
+#[test]
+fn provider_integration_runner_reuses_gate_classification_artifacts() {
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
+        .expect("scripts/provider-integration.ps1 should exist");
+
+    assert!(script.contains("function Read-GateClassification"));
+    assert!(script.contains("provider-smoke-result.json"));
+    assert!(script.contains("return [string]$result.classification"));
+    assert!(script.contains("Read-GateClassification -GateName $script:CurrentGateName"));
+    assert!(script.contains("if (-not $classification)"));
+}
+
+#[test]
+fn provider_integration_runner_classifies_transport_failures_before_tool_fields() {
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
+        .expect("scripts/provider-integration.ps1 should exist");
+
+    assert!(script.contains("error sending request"));
+    assert!(script.contains("request failed"));
+    assert!(script.contains("did not emit a read_file tool call"));
+    assert!(!script.contains("tool_call|tool call"));
+
+    let network_index = script.find("error sending request").unwrap();
+    let tool_index = script.find("did not emit a read_file tool call").unwrap();
+    assert!(
+        network_index < tool_index,
+        "network/transport failures must be classified before tool-use wording"
+    );
+}
+
+#[test]
+fn provider_integration_runner_does_not_match_status_codes_inside_paths() {
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
+        .expect("scripts/provider-integration.ps1 should exist");
+
+    assert!(
+        !script.contains("\"401|403|Unauthorized"),
+        "provider classification must not match bare status-code substrings inside paths or hashes"
+    );
+    assert!(script.contains("\\b(401|403)\\b"));
+    assert!(script.contains("did not emit a read_file tool call"));
+}
+
+#[test]
+fn provider_integration_runner_classifies_tool_assertions_before_panic_text() {
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
+        .expect("scripts/provider-integration.ps1 should exist");
+
+    let tool_index = script.find("did not emit a read_file tool call").unwrap();
+    let panic_index = script.find("panic|SQLite").unwrap();
+    assert!(
+        tool_index < panic_index,
+        "provider smoke assertion failures include panic text, so tool-use behavior must win first"
+    );
+}
+
+#[test]
+fn provider_integration_runner_writes_stress_summary_on_long_soak_failure() {
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
+        .expect("scripts/provider-integration.ps1 should exist");
+
+    assert!(script.contains("function Write-StressSummary"));
+    assert!(script.contains("-FailedGate \"long_soak\""));
+    assert!(script.contains("-LongSoakStatus \"failed\""));
+    assert!(script.contains("long_soak_summary = \"long-soak-summary.json\""));
+    assert!(script.contains("Write-StressSummary -CreatedJobs $created -RestartStatus $restartStatus -LongSoakStatus \"failed\""));
+}
+
+#[test]
+fn benchmark_evidence_format_is_documented() {
+    let results = std::fs::read_to_string(workspace_path("benchmarks/results/README.md")).unwrap();
+
+    assert!(results.contains("DATA_PROVENANCE.md"));
+    assert!(results.contains("rove-benchmark-core-report.md"));
+    assert!(results.contains("metrics.json"));
+}
+
+fn extract_env_string_keys(source: &str) -> std::collections::BTreeSet<String> {
+    let mut keys = std::collections::BTreeSet::new();
+    let mut rest = source;
+    while let Some(index) = rest.find("env_string(\"") {
+        rest = &rest[index + "env_string(\"".len()..];
+        if let Some(end) = rest.find('"') {
+            keys.insert(rest[..end].to_string());
+            rest = &rest[end + 1..];
+        } else {
+            break;
+        }
+    }
+    keys
+}
+
+fn extract_quoted_env_keys(source: &str) -> std::collections::BTreeSet<String> {
+    source
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .filter(|value| {
+            !value.is_empty()
+                && value
+                    .chars()
+                    .all(|ch| ch == '_' || ch.is_ascii_uppercase() || ch.is_ascii_digit())
+        })
+        .map(str::to_string)
+        .collect()
+}

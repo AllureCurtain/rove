@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  # pull_request covers branch development; the push trigger re-validates what
+  # actually landed on main. Scoping push to main avoids running the full
+  # suite twice for every PR (push event + pull_request event).
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust:
+    name: rust default
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Caches ~/.cargo plus target/, so repeat runs only rebuild what changed.
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      # rove-desktop drags in the whole Tauri/WebKit tree and is covered by the
+      # paths-gated desktop workflow instead.
+      - name: cargo clippy
+        run: cargo clippy --workspace --exclude rove-desktop --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --exclude rove-desktop
+
+  web:
+    name: web test + typecheck + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        run: |
+          corepack enable pnpm
+          pnpm config set store-dir ~/.pnpm-store
+
+      - name: Cache pnpm store
+        uses: actions/cache@v5
+        with:
+          path: ~/.pnpm-store
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('apps/web/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-pnpm-
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm test
+        run: pnpm test
+
+      - name: pnpm typecheck
+        run: pnpm typecheck
+
+      - name: pnpm build
+        run: pnpm build

@@ -1,0 +1,270 @@
+//! Runtime control plane: in-flight steer message injection.
+//!
+//! Steer messages are injected at declared safe points so they never land in
+//! the middle of a tool side-effect and never bypass approval or
+//! cancellation. A cloneable [`RunControlHandle`] is the only public handle
+//! external callers (API, CLI/TUI) use; the receiver side is owned by the
+//! engine run-loop and drained at step/iteration boundaries.
+//!
+//! Follow-up messages (queued-after-completion auto-runs) are an API/
+//! ProductStore concern — they do not require runtime plumbing. The event
+//! variants for follow-up are defined in `StreamEvent` and emitted by the
+//! API supervisor, not by the engine.
+
+use std::sync::Arc;
+
+use tokio::sync::{Mutex, mpsc};
+
+use crate::conversation::MessageAttachment;
+
+/// Unique identifier for a steer injection.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SteerId(pub String);
+
+impl SteerId {
+    pub fn new() -> Self {
+        Self(crate::foundation::types::SessionId::new().to_string())
+    }
+}
+
+impl Default for SteerId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A steering message queued for the *currently running* turn.
+///
+/// Steer content is drained at the next declared safe point (top of a step
+/// iteration, before the next model turn is built). It is never injected in
+/// the middle of a tool side-effect, during approval wait, or after the run
+/// has reached a terminal state.
+#[derive(Debug, Clone)]
+pub struct SteerMessage {
+    pub id: SteerId,
+    pub content: String,
+    /// Attachments the message referenced, already resolved to path-free
+    /// content by the surface that owns the payload root. Empty for every
+    /// producer with no attachment surface, which keeps a plain steer
+    /// byte-for-byte what it was.
+    pub attachments: Vec<MessageAttachment>,
+    /// Image content blocks the steer's user message projects. Empty for
+    /// every producer with no image surface.
+    pub content_blocks: Vec<rove_models::ContentBlock>,
+    pub(crate) unified_message: bool,
+}
+
+impl SteerMessage {
+    pub fn new(content: impl Into<String>) -> Self {
+        Self {
+            id: SteerId::new(),
+            content: content.into(),
+            attachments: Vec::new(),
+            content_blocks: Vec::new(),
+            unified_message: false,
+        }
+    }
+
+    /// Build from an externally-supplied id (used when the API already
+    /// persisted a control record).
+    pub fn with_id(id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            id: SteerId(id.into()),
+            content: content.into(),
+            attachments: Vec::new(),
+            content_blocks: Vec::new(),
+            unified_message: false,
+        }
+    }
+
+    pub fn for_message(id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            id: SteerId(id.into()),
+            content: content.into(),
+            attachments: Vec::new(),
+            content_blocks: Vec::new(),
+            unified_message: true,
+        }
+    }
+
+    /// Attach the resolved attachment set. Consuming, so a caller cannot keep a
+    /// handle it believes still stands for a plain steer.
+    pub fn with_attachments(mut self, attachments: Vec<MessageAttachment>) -> Self {
+        self.attachments = attachments;
+        self
+    }
+
+    /// Attach the projected image content blocks. Consuming, like
+    /// [`SteerMessage::with_attachments`].
+    pub fn with_content_blocks(mut self, content_blocks: Vec<rove_models::ContentBlock>) -> Self {
+        self.content_blocks = content_blocks;
+        self
+    }
+
+    /// The exact user message this steer contributes to the conversation.
+    pub fn user_message(&self) -> String {
+        crate::conversation::compose_user_message(&self.content, &self.attachments)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AcceptedSteer {
+    pub id: String,
+    pub unified_message: bool,
+}
+
+pub(crate) fn steer_accepted_event(steer: SteerMessage) -> crate::events::StreamEvent {
+    if steer.unified_message {
+        crate::events::StreamEvent::MessageInterventionRequested { id: steer.id.0 }
+    } else {
+        crate::events::StreamEvent::SteerAccepted {
+            id: steer.id.0,
+            content: steer.content,
+        }
+    }
+}
+
+pub(crate) fn steer_applied_event(steer: &AcceptedSteer) -> crate::events::StreamEvent {
+    if steer.unified_message {
+        crate::events::StreamEvent::MessageAppliedCurrentRun {
+            id: steer.id.clone(),
+        }
+    } else {
+        crate::events::StreamEvent::SteerApplied {
+            id: steer.id.clone(),
+        }
+    }
+}
+
+pub(crate) fn steer_dropped_event(
+    id: String,
+    unified_message: bool,
+    reason: String,
+) -> crate::events::StreamEvent {
+    if unified_message {
+        crate::events::StreamEvent::MessageNeedsAttention { id, reason }
+    } else {
+        crate::events::StreamEvent::SteerDropped { id, reason }
+    }
+}
+
+/// Bounded queue size. Caps in-memory buffering — durability lives in the
+/// ProductStore control table; if the buffer is full the API returns a typed
+/// "busy" response rather than blocking the HTTP handler.
+const STEER_BUFFER: usize = 64;
+
+/// Cloneable handle given to the API / CLI for submitting in-flight steers.
+///
+/// Dropping the last clone closes the channel; the engine observes closure
+/// and treats it as "no more external controls will arrive", which is the
+/// normal case for runs started without a control plane attached.
+#[derive(Clone, Default)]
+pub struct RunControlHandle {
+    pub steer: Option<mpsc::Sender<SteerMessage>>,
+    message_events: Option<mpsc::Sender<crate::events::StreamEvent>>,
+}
+
+/// Tracks steers that have crossed a safe point but have not yet been handed
+/// to the next model turn. The runtime uses this to emit a terminal
+/// `steer_dropped` fact when a budget, cancellation, or failure prevents the
+/// prepared next turn from starting.
+#[derive(Clone, Default)]
+pub(crate) struct SteerLifecycle {
+    accepted_ids: Arc<Mutex<Vec<AcceptedSteer>>>,
+}
+
+impl SteerLifecycle {
+    pub(crate) async fn accepted(&self, steer: AcceptedSteer) {
+        self.accepted_ids.lock().await.push(steer);
+    }
+
+    pub(crate) async fn applied(&self, id: &str) {
+        self.accepted_ids
+            .lock()
+            .await
+            .retain(|pending| pending.id != id);
+    }
+
+    pub(crate) async fn take_unapplied(&self) -> Vec<AcceptedSteer> {
+        std::mem::take(&mut *self.accepted_ids.lock().await)
+    }
+}
+
+impl RunControlHandle {
+    /// Create a disconnected handle (no in-flight controls will arrive).
+    pub fn disconnected() -> Self {
+        Self::default()
+    }
+
+    /// Best-effort steer submission. Returns `false` if the buffer is full or
+    /// the receiver has been dropped, letting the caller decide what to tell
+    /// the user without blocking.
+    pub fn try_send_steer(&self, msg: SteerMessage) -> bool {
+        match &self.steer {
+            Some(tx) => tx.try_send(msg).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Publish a product-message lifecycle fact through the running Engine's
+    /// canonical stream. This ingress accepts only message events; approvals,
+    /// input, cancellation, and capability decisions retain their typed paths.
+    pub fn try_send_message_event(&self, event: crate::events::StreamEvent) -> bool {
+        if !matches!(
+            event,
+            crate::events::StreamEvent::MessageQueued { .. }
+                | crate::events::StreamEvent::MessageInterventionRequested { .. }
+                | crate::events::StreamEvent::MessageAppliedCurrentRun { .. }
+                | crate::events::StreamEvent::MessageClaimedSuccessor { .. }
+                | crate::events::StreamEvent::MessageNeedsAttention { .. }
+                | crate::events::StreamEvent::MessageRevoked { .. }
+        ) {
+            return false;
+        }
+        self.message_events
+            .as_ref()
+            .is_some_and(|sender| sender.try_send(event).is_ok())
+    }
+}
+
+/// Create a matched sender/receiver pair. The handle is given to the API; the
+/// receiver is threaded into the run loops via LoopContext.
+pub(crate) fn control_channel() -> (
+    RunControlHandle,
+    mpsc::Receiver<SteerMessage>,
+    mpsc::Receiver<crate::events::StreamEvent>,
+) {
+    let (steer_tx, steer_rx) = mpsc::channel(STEER_BUFFER);
+    let (message_event_tx, message_event_rx) = mpsc::channel(STEER_BUFFER);
+    (
+        RunControlHandle {
+            steer: Some(steer_tx),
+            message_events: Some(message_event_tx),
+        },
+        steer_rx,
+        message_event_rx,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn disconnected_handle_rejects_sends() {
+        let h = RunControlHandle::disconnected();
+        assert!(!h.try_send_steer(SteerMessage::new("x")));
+    }
+
+    #[tokio::test]
+    async fn drain_returns_all_pending_messages() {
+        let (handle, mut receiver, _message_events) = control_channel();
+        handle.try_send_steer(SteerMessage::new("a"));
+        handle.try_send_steer(SteerMessage::new("b"));
+        let mut drained = Vec::new();
+        while let Ok(msg) = receiver.try_recv() {
+            drained.push(msg);
+        }
+        assert_eq!(drained.len(), 2);
+    }
+}

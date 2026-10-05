@@ -1,0 +1,49 @@
+[package]
+name = "rove-integration-tests"
+version.workspace = true
+edition.workspace = true
+description = "Cross-package integration and compatibility contracts for Rove"
+publish = false
+
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+chrono.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+rove-api.workspace = true
+rove-app-bootstrap.workspace = true
+rove-bench.workspace = true
+rove-cli.workspace = true
+rove-core.workspace = true
+rove-protocol.workspace = true
+rove-models.workspace = true
+rove-runtime.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full", "test-util"] }
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tower = { workspace = true, features = ["util"] }
+tracing.workspace = true
+ulid.workspace = true
+
+# Most cross-package contracts share one test binary: every separate binary
+# links the full API/CLI/runtime stack, and linking dominated incremental test
+# builds. Two suites stay separate because they need process-global state that
+# a shared binary cannot give them:
+#   - `api` sets and removes process environment variables;
+#   - `secret_authority_unarmed` needs a secret registry nothing ever armed.
+[[test]]
+name = "it"
+path = "it.rs"
+[[test]]
+name = "api"
+path = "api.rs"
+[[test]]
+name = "secret_authority_unarmed"
+path = "secret_authority_unarmed.rs"

@@ -1,0 +1,1538 @@
+export type RunStatus = "init" | "running" | "done" | "error" | "cancelled" | "interrupted";
+
+export interface Usage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cached_tokens?: number;
+}
+
+export interface PlanStep {
+  id: string;
+  title: string;
+  done: boolean;
+}
+
+export interface TaskPlan {
+  goal: string;
+  steps: PlanStep[];
+  current_step: number;
+}
+
+export type StepRecordStatus =
+  | "succeeded"
+  | "partial"
+  | "failed"
+  | "blocked"
+  | "rejected"
+  | "skipped"
+  | "budget_exhausted"
+  | "cancelled"
+  | "interrupted"
+  | "indeterminate";
+
+export type StepCompletionBasis =
+  | "model_conclusion"
+  | "deterministic_rule"
+  | "user_decision"
+  | "runtime_failure";
+
+/** Semantic uncertainty that deterministic lifecycle rules cannot resolve. */
+export type PlanAmbiguityKind =
+  | "remaining_work_may_be_unnecessary"
+  | "plan_assumption_may_be_invalid"
+  | "recoverable_alternative_may_exist"
+  | "goal_may_be_partially_satisfied"
+  | "remaining_dependencies_may_need_reordering";
+
+export interface PlanAmbiguity {
+  kind: PlanAmbiguityKind;
+  safe_summary: string;
+  evidence_refs?: string[];
+}
+
+export type ProcedureDeviationReason =
+  | "evidence_contradiction"
+  | "capability_unavailable"
+  | "preconditions_unsatisfied"
+  | "user_constraint"
+  | "procedure_stale"
+  | "safer_alternative"
+  | "runtime_failure";
+
+export interface ProcedureCapabilityBinding {
+  capability_id: string;
+  required?: boolean;
+  tool_name?: string | null;
+  available: boolean;
+  mutation_class?: "read_only" | "mutating" | null;
+  approval_required: boolean;
+}
+
+export interface ProcedureApplication {
+  application_id: string;
+  reference: ProcedureReference;
+  hydration_hash: string;
+  section_ids?: string[];
+  capability_snapshot_id: string;
+  capability_bindings?: ProcedureCapabilityBinding[];
+  risk_level: "low" | "medium" | "high";
+  side_effects?: string[];
+  truncated?: boolean;
+  step_id?: string | null;
+  boundary: string;
+}
+
+export interface ProcedureDeviation {
+  deviation_id: string;
+  reference: ProcedureReference;
+  application_id?: string | null;
+  reason: ProcedureDeviationReason;
+  safe_summary: string;
+  material?: boolean;
+  evidence_refs?: string[];
+}
+
+export interface StepRecord {
+  record_id: string;
+  plan_id: string;
+  plan_revision_id: string;
+  step_id: string;
+  attempt: number;
+  status: StepRecordStatus;
+  started_at: string;
+  finished_at: string;
+  summary: string;
+  completion_basis: StepCompletionBasis;
+  evidence_refs?: string[];
+  tool_call_ids?: string[];
+  artifact_refs?: string[];
+  mutations?: ToolMutation[];
+  procedure_applications?: ProcedureApplication[];
+  procedure_deviations?: ProcedureDeviation[];
+  model_turns_used: number;
+  tool_calls_used: number;
+  token_usage: Usage;
+  error_code?: string;
+  safe_error_summary?: string;
+  supersedes_record_id?: string;
+  ambiguity?: PlanAmbiguity;
+}
+
+export interface ExecutionBudgetUsage {
+  plan_steps: number;
+  step_attempts: number;
+  model_turns: number;
+  tool_calls: number;
+  plan_revisions: number;
+  model_repairs: number;
+  planner_turns: number;
+  evaluator_turns: number;
+  replanner_turns: number;
+  finalization_turns: number;
+  wall_time_ms: number;
+  total_tokens: number;
+  cost_microunits: number;
+}
+
+/** Independent per-dimension execution limits. Absent means unresolved. */
+export interface ExecutionBudgetLimits {
+  max_plan_steps?: number | null;
+  max_step_attempts?: number | null;
+  max_model_turns?: number | null;
+  max_model_turns_per_step?: number | null;
+  max_tool_calls?: number | null;
+  max_tool_calls_per_step?: number | null;
+  max_plan_revisions?: number | null;
+  max_model_repairs?: number | null;
+  max_finalization_turns?: number | null;
+  max_wall_time_ms?: number | null;
+  max_total_tokens?: number | null;
+  max_cost_microunits?: number | null;
+}
+
+export type ExecutionPhase =
+  | "planner"
+  | "step"
+  | "evaluator"
+  | "replanner"
+  | "finalizer"
+  | "run";
+
+export type ExecutionBudgetDimension =
+  | "plan_steps"
+  | "step_attempts"
+  | "model_turns"
+  | "model_turns_per_step"
+  | "tool_calls"
+  | "tool_calls_per_step"
+  | "plan_revisions"
+  | "model_repairs"
+  | "finalization_turns"
+  | "wall_time"
+  | "total_tokens"
+  | "cost";
+
+export interface ExecutionBudgetExhaustion {
+  dimension: ExecutionBudgetDimension;
+  phase: ExecutionPhase;
+  limit: number;
+  consumed: number;
+  safe_summary: string;
+}
+
+export interface ExecutionBudgetSnapshot {
+  limits: ExecutionBudgetLimits;
+  consumed: ExecutionBudgetUsage;
+  exhausted?: ExecutionBudgetExhaustion | null;
+  /** Cost is enforceable only when the provider supplies priced usage. */
+  cost_enforced: boolean;
+}
+
+export type ExecutionStrategy = "react" | "plan_react";
+
+export type StrategySelectionSource =
+  | "request"
+  | "session"
+  | "config"
+  | "compatibility_default"
+  | "max_steps_and_plan_flag";
+
+export type EvaluatorMode = "rule_only" | "rule_first_model_on_ambiguity";
+
+export type FinalizerPolicy = "deterministic" | "model_preferred";
+
+export interface ExecutionPolicy {
+  version: number;
+  strategy: ExecutionStrategy;
+  selection_source: StrategySelectionSource;
+  budgets: ExecutionBudgetLimits;
+  evaluator_mode?: EvaluatorMode;
+  finalizer_policy?: FinalizerPolicy;
+}
+
+/** Explicit, safe degradation fact. Fallbacks are never silent. */
+export interface ExecutionDegradation {
+  degradation_id: string;
+  phase: ExecutionPhase;
+  code: string;
+  safe_summary: string;
+  occurred_at: string;
+}
+
+/** User-visible terminal classification, distinct from `TerminationReason`. */
+export type FinalOutcomeStatus =
+  | "success"
+  | "partial"
+  | "blocked"
+  | "rejected"
+  | "cancelled"
+  | "interrupted"
+  | "exhausted"
+  | "indeterminate"
+  | "failed";
+
+export type FinalizationMode =
+  | "direct"
+  | "model"
+  | "deterministic"
+  | "deterministic_fallback";
+
+export type FinalizationPhase = "started" | "completed";
+
+export interface FinalizationRecord {
+  finalization_id: string;
+  phase: FinalizationPhase;
+  finish_reason: PlanFinishReason;
+  outcome?: FinalOutcomeStatus | null;
+  mode: FinalizationMode;
+  started_at: string;
+  completed_at?: string | null;
+  output?: string | null;
+  evidence_refs?: string[];
+  incomplete_step_ids?: string[];
+  budget_before?: ExecutionBudgetUsage;
+  budget_after?: ExecutionBudgetUsage;
+}
+
+/** Materialized run lifecycle projection stored in state and reports. */
+export interface ExecutionLifecycleState {
+  policy?: ExecutionPolicy | null;
+  budget_usage?: ExecutionBudgetUsage;
+  budget_exhaustion?: ExecutionBudgetExhaustion | null;
+  finalization?: FinalizationRecord | null;
+  degradations?: ExecutionDegradation[];
+  procedure_applications?: ProcedureApplication[];
+  procedure_deviations?: ProcedureDeviation[];
+}
+
+export type PlanDecisionKind = "continue" | "replace_remaining" | "finish";
+
+export type PlanFinishReason =
+  | "completed"
+  | "partial"
+  | "blocked"
+  | "budget_exhausted"
+  | "failed"
+  | "cancelled"
+  | "interrupted"
+  | "rejected"
+  | "indeterminate";
+
+export interface PlanDecision {
+  decision_id: string;
+  kind: PlanDecisionKind;
+  safe_reason_codes?: string[];
+  safe_summary: string;
+  remaining_work_requirements?: string[];
+  finish_reason?: PlanFinishReason;
+}
+
+export interface PlanDecisionRecord {
+  trigger_step_record_id: string;
+  decided_at: string;
+  decision: PlanDecision;
+}
+
+export interface PlanRevision {
+  plan_id: string;
+  revision_id: string;
+  parent_revision_id?: string;
+  revision: number;
+  created_at: string;
+  trigger_step_record_id?: string;
+  decision_id: string;
+  safe_reason_codes?: string[];
+  retained_step_ids?: string[];
+  superseded_remaining_step_ids?: string[];
+  remaining_steps?: PlanStep[];
+  capability_snapshot_id?: string;
+  budget_snapshot: ExecutionBudgetUsage;
+}
+
+export type PromptCompactionMode =
+  | "none"
+  | "deterministic"
+  | "model_generated"
+  | "automatic"
+  | "degraded"
+  | "disabled";
+
+export interface PromptCompactionState {
+  mode: PromptCompactionMode;
+  auto_triggered: boolean;
+  degraded: boolean;
+  consecutive_failures: number;
+  circuit_open: boolean;
+  model?: string;
+  prompt_version?: string;
+  source_message_count: number;
+  last_error?: string;
+}
+
+export interface PromptBuildMetadata {
+  prompt_hash: string;
+  stable_prefix_hash: string;
+  workspace_fingerprint: string;
+  tool_signature: string;
+  token_estimate: number;
+  included_history_messages: number;
+  dropped_history_messages: number;
+  /**
+   * The server's own cache identity for this prompt.
+   *
+   * Absent when the runtime had none to report (`skip_serializing_if` on the
+   * Rust side), which is why both decoders treat it as optional and
+   * `state/transcript-projection.ts` falls back to `prompt_hash` rather than
+   * rendering an empty key.
+   */
+  prompt_cache_key?: string;
+  /**
+   * Absent on a build that pruned nothing, which is most of them.
+   *
+   * Both arrival paths produce the decoded shape: the restored path validates
+   * every member before defaulting the ones the server omitted, and the live
+   * path runs the same wire record through `readPromptBuildMetadata`. Nothing
+   * here is optional once `pruning` exists.
+   */
+  pruning?: PromptPruningFacts;
+}
+
+/**
+ * What one bounded compaction request elided (R9).
+ *
+ * The runtime records these on the `PromptBuilt` metadata of the turn that ran
+ * the compaction probe, so they describe that request rather than the turn's own
+ * prompt. Each member is `skip_serializing_if`-defaulted on the wire, and a build
+ * that pruned nothing carries no `pruning` object at all, so a reader must treat
+ * the whole fact set's absence as "nothing was pruned" instead of reading a zero
+ * the server never sent. This is the decoded shape the product parser produces:
+ * it fills members the server omitted with their defaults, so nothing here is
+ * optional once `pruning` exists.
+ */
+export interface PromptPruningFacts {
+  /** Oversized tool payloads replaced by a bounded excerpt. */
+  pruned_tool_results: number;
+  /** Serialized bytes those payloads occupied before the projection. */
+  pruned_payload_bytes: number;
+  /** Serialized bytes they occupy as the request carried them. */
+  pruned_excerpt_bytes: number;
+  /** Older messages left out whole so the request stayed inside its bounds. */
+  pruned_omitted_messages: number;
+  /** Serialized bytes those omitted messages occupied. */
+  pruned_omitted_bytes: number;
+  /** Newest-first identities of the elided payloads; identity, not volume. */
+  pruned_payload_digests: string[];
+  /** The rule that produced the excerpt, absent when nothing was pruned. */
+  pruning_policy: string | null;
+}
+
+/**
+ * The decoded members of `PromptPruningFacts` that the runtime writes as counts.
+ *
+ * Derived from the fact set rather than listed again, so the key list below and
+ * the shape it decodes into cannot drift: a key that is not a number member of the
+ * fact set does not typecheck here, and a number member added to the fact set
+ * without being added to the list leaves the object literal at the end of
+ * `readPromptPruningFacts` missing a property.
+ */
+type PruningCountMember = {
+  [K in keyof PromptPruningFacts]: PromptPruningFacts[K] extends number ? K : never;
+}[keyof PromptPruningFacts];
+
+/**
+ * The wire keys the runtime writes only while they carry something.
+ *
+ * `runtime/src/context/prompt_metadata.rs` marks all five counts and the policy
+ * with `skip_serializing_if`, and the digest list with `Vec::is_empty`, so the
+ * metadata a frame carries is a subset of the seven facts rather than seven
+ * values. They sit flat on the metadata — the nesting below is this shell's own
+ * decoded shape, which is why both decoders read this exact key list.
+ *
+ * The counts are separate from the policy and the digest list because this list
+ * decides which members are counts and the strict restored path validates exactly
+ * these members. It names members of `PromptPruningFacts` rather than arbitrary
+ * strings, because presence is decided by the keys this reader carried: a key the
+ * fact set does not have as a number would be counted as presence while decoding
+ * to nothing, and "absence is not a measured zero" would break silently. Adding a
+ * wire count therefore means adding it to the fact set *and* to this list, and
+ * TypeScript refuses either half on its own.
+ */
+export const PRUNING_WIRE_COUNT_KEYS: readonly PruningCountMember[] = [
+  "pruned_tool_results",
+  "pruned_payload_bytes",
+  "pruned_excerpt_bytes",
+  "pruned_omitted_messages",
+  "pruned_omitted_bytes",
+] as const;
+
+/**
+ * The bounds the wire record is read inside.
+ *
+ * The strict restored path has always refused a record outside them; the live
+ * path has no schema to refuse a frame with, so it withholds what does not fit
+ * rather than rendering it. Both use these numbers, so a raised policy cap cannot
+ * make one path accept what the other throws on. The digest count is generous on
+ * purpose: the policy caps the list at 8, and a transcript read must not turn
+ * into a schema error if that cap ever rises.
+ */
+export const MAX_PRUNED_PAYLOAD_DIGESTS = 64;
+export const MAX_PRUNING_DIGEST_BYTES = 512;
+export const MAX_PRUNING_POLICY_BYTES = 128;
+
+/**
+ * The control characters the restored path's schema refuses in a string member —
+ * the same class `product-api-types.ts`'s `expectString` rejects under
+ * `noControlCharacters`, copied here so the live reader applies the identical
+ * predicate instead of a looser one.
+ */
+const WIRE_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/u;
+
+/**
+ * Decode the flat wire pruning keys of one prompt-build metadata record.
+ *
+ * One reader for both arrival paths, because they used to disagree: the restored
+ * path validated and nested these members, while the live path kept the metadata
+ * object exactly as the SSE frame carried it — flat — so a live turn's message
+ * had no `pruning` member at all and its facts appeared only once the transcript
+ * had been re-fetched.
+ *
+ * Absence is not a measured zero. The runtime omits each member while it is zero
+ * or empty, so a record carrying none of them means "this build pruned nothing"
+ * and answers `undefined` rather than an all-zero fact set.
+ *
+ * Both paths judge a member by the same predicates — the type, the trim-non-empty
+ * rule, the control-character rule and the byte bound that the restored path's
+ * schema applies, and the same count bound on the digest list — and they dispose
+ * of a member that fails the same way: the restored path has a schema and refuses
+ * the record, which surfaces as a visible restore error, while this reader answers
+ * `undefined` and the fact set is missing. That includes an optional member such
+ * as `prompt_cache_key`: a record carrying one the schema would refuse is refused
+ * whole there, so a build is either describable by both paths or by neither.
+ *
+ * The two paths read the same record in different domains. The strict parser reads
+ * a flat wire record; this reader reads a flat wire record *or* its own already
+ * decoded output, whose fact set is nested under `pruning`, which is why the
+ * nested object wins when both are present — no wire record has one.
+ *
+ * Dropping just the offending member is deliberately not an option — the panel
+ * prints the digest count, so a filtered list would report a shorter list as the
+ * whole measurement, and half a fact set rendered as a measurement is worse than
+ * the fact being missing. A truncated digest is worse still: it would name a
+ * different payload.
+ *
+ * The one member whose *content* this shell cannot vouch for is a digest: it is
+ * `format!("{identity}:{digest}")` over `tool_call_id`, which the runtime copies
+ * from the provider without bounding it. A digest longer than the bound or
+ * carrying a control character therefore is reachable through a provider, and the
+ * two paths then answer as above — a restore error on the restored path, an
+ * absent fact set on the live one. Neither invents a fact.
+ */
+export function readPromptPruningFacts(record: object): PromptPruningFacts | undefined {
+  const source = record as Record<string, unknown>;
+  // Carried counts, validated one member at a time. A count the schema would
+  // refuse withholds the whole fact set below instead of being read as zero.
+  const carried: Partial<Record<PruningCountMember, number>> = {};
+  for (const key of PRUNING_WIRE_COUNT_KEYS) {
+    const value = source[key];
+    if (value === undefined || value === null) {
+      continue;
+    }
+    const count = readWireCount(value);
+    if (count === null) {
+      return undefined;
+    }
+    carried[key] = count;
+  }
+  // The digest list: the schema refuses a list longer than the cap, so this
+  // reader withholds the fact set rather than answering with a shortened one.
+  const rawDigests = source.pruned_payload_digests;
+  const digests: string[] = [];
+  if (rawDigests !== undefined && rawDigests !== null) {
+    if (!Array.isArray(rawDigests) || rawDigests.length > MAX_PRUNED_PAYLOAD_DIGESTS) {
+      return undefined;
+    }
+    for (const digest of rawDigests) {
+      if (!describesWireString(digest, MAX_PRUNING_DIGEST_BYTES)) {
+        return undefined;
+      }
+      digests.push(digest);
+    }
+  }
+  const rawPolicy = source.pruning_policy;
+  let policy: string | null = null;
+  if (rawPolicy !== undefined && rawPolicy !== null) {
+    if (!describesWireString(rawPolicy, MAX_PRUNING_POLICY_BYTES)) {
+      return undefined;
+    }
+    policy = rawPolicy;
+  }
+  if (Object.keys(carried).length === 0 && digests.length === 0 && policy === null) {
+    // Nothing survived: the wire state the runtime produces for a build that
+    // pruned nothing, which is an absence and not a fact set of zeroes.
+    return undefined;
+  }
+  return {
+    // A member this record does not carry was reported as nothing, so it reads
+    // as the default the restored path also produces — never as a measurement.
+    pruned_tool_results: carried.pruned_tool_results ?? 0,
+    pruned_payload_bytes: carried.pruned_payload_bytes ?? 0,
+    pruned_excerpt_bytes: carried.pruned_excerpt_bytes ?? 0,
+    pruned_omitted_messages: carried.pruned_omitted_messages ?? 0,
+    pruned_omitted_bytes: carried.pruned_omitted_bytes ?? 0,
+    pruned_payload_digests: digests,
+    pruning_policy: policy,
+  };
+}
+
+/** Whether one wire string member is what the restored path's schema accepts. */
+function describesWireString(value: unknown, maxBytes: number): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    !WIRE_CONTROL_CHARACTERS.test(value) &&
+    wireBytes(value) <= maxBytes
+  );
+}
+
+/**
+ * Decode one `prompt_built` metadata object into what consumers read.
+ *
+ * The wire record is flat, and `readPromptPruningFacts` turns its flat pruning
+ * keys into the nested fact set, so a message carries the same object whichever
+ * path built it. Answers `null` when the build's identity or counts are missing
+ * or malformed: the live path cannot refuse the frame, and half a build would
+ * render as "undefined tokens" in the trace and the evidence panel, which is a
+ * worse answer than the event having no build description at all. The four
+ * hashes are required for the same reason even though the summary panel reads
+ * only the token estimate — the trace and the evidence panel name the build by
+ * them, so a record that cannot name itself is not a description this shell can
+ * render, and the reducer keeps the moment with a trace row that says so instead.
+ */
+export function readPromptBuildMetadata(value: unknown): PromptBuildMetadata | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const source = value as Record<string, unknown>;
+  const promptHash = readWireString(source.prompt_hash);
+  const stablePrefixHash = readWireString(source.stable_prefix_hash);
+  const workspaceFingerprint = readWireString(source.workspace_fingerprint);
+  const toolSignature = readWireString(source.tool_signature);
+  const tokenEstimate = readWireCount(source.token_estimate);
+  const includedHistoryMessages = readWireCount(source.included_history_messages);
+  const droppedHistoryMessages = readWireCount(source.dropped_history_messages);
+  if (
+    promptHash === null ||
+    stablePrefixHash === null ||
+    workspaceFingerprint === null ||
+    toolSignature === null ||
+    tokenEstimate === null ||
+    includedHistoryMessages === null ||
+    droppedHistoryMessages === null
+  ) {
+    return null;
+  }
+  const metadata: PromptBuildMetadata = {
+    prompt_hash: promptHash,
+    stable_prefix_hash: stablePrefixHash,
+    workspace_fingerprint: workspaceFingerprint,
+    tool_signature: toolSignature,
+    token_estimate: tokenEstimate,
+    included_history_messages: includedHistoryMessages,
+    dropped_history_messages: droppedHistoryMessages,
+  };
+  const cacheKey = readOptionalWireString(source.prompt_cache_key);
+  if (cacheKey === null) {
+    // Present but not a string the schema's `nonEmpty` rule accepts: the strict
+    // parse refuses the whole record over this member, so this reader must not
+    // answer with a build it would have refused — an optional member is still a
+    // member of the record.
+    return null;
+  }
+  if (cacheKey !== undefined) {
+    metadata.prompt_cache_key = cacheKey;
+  }
+  // The record is decoded twice on the restored path — the product parser nests
+  // the facts, and the projection then runs this decoder over its own output —
+  // so an already-decoded `pruning` object is read as the fact set it is rather
+  // than being dropped for carrying no flat keys. Both shapes use the same
+  // member names, so one reader serves both; the nested object wins when a record
+  // carries both, because that is the decoded shape of the same record and the
+  // wire record has no nested member at all.
+  const nested = source.pruning;
+  const pruning = readPromptPruningFacts(
+    typeof nested === "object" && nested !== null ? nested : source,
+  );
+  if (pruning !== undefined) {
+    metadata.pruning = pruning;
+  }
+  return metadata;
+}
+
+/**
+ * A wire string member as the restored path's schema reads it, or `null` when the
+ * frame carried anything else.
+ *
+ * The trim rule is the schema's `nonEmpty: true`: a member of spaces is not an
+ * identity there and must not become one here. The schema applies no
+ * control-character rule to the build's identity members (only to the pruning
+ * record's strings), so this reader applies none either — the two paths have to
+ * agree on the same record, not on the same rule set in the abstract.
+ */
+function readWireString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+/**
+ * An optional wire string member, distinguishing the three things the strict
+ * parse distinguishes.
+ *
+ * `undefined` means the frame does not carry the member at all, which
+ * `optionalString` reads as absent; a string is the value it accepts; `null` means
+ * the frame carries something that member's schema refuses, which makes the strict
+ * parse throw for the *whole* record. A frame cannot be described by one path and
+ * refused by the other, so the caller must answer `null` for the record rather
+ * than dropping the member.
+ */
+function readOptionalWireString(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  return readWireString(value);
+}
+
+/**
+ * A non-negative safe-integer count, or `null` when the frame carried anything
+ * else.
+ *
+ * `Number.isSafeInteger` rather than `Number.isInteger`, matching what the
+ * restored path's schema accepts: a count beyond the safe range is not a
+ * measurement either path should carry, and the two must not disagree about it.
+ */
+function readWireCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+/** What one bounded string costs as UTF-8, which is the unit the caps use. */
+function wireBytes(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+export interface ToolResult {
+  call_id: string;
+  output: string;
+  mutations?: ToolMutation[];
+  metadata?: ToolExecutionMetadata;
+  /** Rich result detail. Absent for a plain text tool result. */
+  envelope?: ToolOutputEnvelope;
+}
+
+export const TOOL_RESULT_OUTCOMES = [
+  "success",
+  "partial",
+  "error",
+  "rejected",
+  "cancelled",
+  "timed_out_known_not_sent",
+  "indeterminate",
+] as const;
+
+export type ToolResultOutcome = (typeof TOOL_RESULT_OUTCOMES)[number];
+
+export const ARTIFACT_VALIDATION_STATES = [
+  "validated",
+  "claim_rejected",
+  "quota_exceeded",
+] as const;
+
+export type ArtifactValidation = (typeof ARTIFACT_VALIDATION_STATES)[number];
+
+export const TOOL_ARTIFACT_KINDS = [
+  "text",
+  "image",
+  "audio",
+  "resource",
+  "unknown",
+] as const;
+
+export type ToolArtifactKind = (typeof TOOL_ARTIFACT_KINDS)[number];
+
+export interface ToolArtifactSource {
+  run_id: string;
+  call_id: string;
+  server_config_id?: string;
+  server_identity_hash?: string;
+  session_hash?: string;
+  remote_tool_name?: string;
+  block_ordinal: number;
+  captured_at: string;
+}
+
+export interface ToolArtifactRef {
+  artifact_id: string;
+  kind: ToolArtifactKind;
+  /** Locally validated MIME type. Absent when the claim was rejected. */
+  mime_type?: string;
+  byte_length: number;
+  sha256: string;
+  storage_ref: string;
+  source: ToolArtifactSource;
+  /** Remote claim retained for provenance only. Never resolved by the UI. */
+  original_uri?: string;
+  audience?: string[];
+  priority?: number;
+  last_modified?: string;
+  sensitivity?: "normal" | "sensitive";
+  trust?: "untrusted" | "local_tool";
+  validation?: ArtifactValidation;
+  validation_detail?: string;
+}
+
+export interface ToolContentBlockMeta {
+  ordinal: number;
+  mime_type?: string;
+  audience?: string[];
+  priority?: number;
+  truncated?: boolean;
+  validation?: ArtifactValidation;
+}
+
+export type ToolContentBlock =
+  | { type: "text"; meta: ToolContentBlockMeta; text: string }
+  | { type: "image"; meta: ToolContentBlockMeta; artifact: ToolArtifactRef }
+  | { type: "audio"; meta: ToolContentBlockMeta; artifact: ToolArtifactRef }
+  | {
+      type: "resource_link";
+      meta: ToolContentBlockMeta;
+      uri: string;
+      name?: string;
+      description?: string;
+    }
+  | {
+      type: "embedded_resource";
+      meta: ToolContentBlockMeta;
+      uri?: string;
+      artifact: ToolArtifactRef;
+      preview?: string;
+    }
+  | {
+      type: "unknown";
+      meta: ToolContentBlockMeta;
+      declared_type: string;
+      retained?: string;
+    };
+
+export interface StructuredToolContent {
+  value: unknown;
+  schema_valid?: boolean;
+  schema_error?: string;
+}
+
+export interface ToolProtocolMetadata {
+  protocol?: string;
+  server_config_id?: string;
+  server_identity_hash?: string;
+  protocol_version?: string;
+  capability_snapshot_id?: string;
+  remote_tool_name?: string;
+  request_id_hash?: string;
+  connection_id?: string;
+  session_hash?: string;
+  attempt_count?: number;
+  duration_ms?: number;
+}
+
+export interface ToolDiagnostic {
+  domain: string;
+  code: string;
+  message: string;
+}
+
+export interface ExternalEffect {
+  kind: string;
+  target: string;
+  indeterminate?: boolean;
+}
+
+export interface ToolOutputEnvelope {
+  outcome?: ToolResultOutcome;
+  summary_text: string;
+  content_blocks?: ToolContentBlock[];
+  structured_content?: StructuredToolContent;
+  artifacts?: ToolArtifactRef[];
+  mutations?: ToolMutation[];
+  external_effects?: ExternalEffect[];
+  protocol_metadata?: ToolProtocolMetadata;
+  diagnostics?: ToolDiagnostic[];
+}
+
+export interface ToolMutation {
+  path: string;
+  operation: ToolMutationOperation;
+  diff?: string | null;
+}
+
+export type ToolMutationOperation = "create" | "update" | "delete" | "unknown";
+
+export type ToolExecutionStatus =
+  | "ok"
+  | "error"
+  | "rejected"
+  | "partial_success";
+
+export type ToolRiskLevel = "low" | "high";
+
+export interface ToolExecutionMetadata {
+  status: ToolExecutionStatus;
+  error_code?: string;
+  security_event_type?: string;
+  risk_level: ToolRiskLevel;
+  read_only: boolean;
+  /** Omitted on the wire when the canonical list is empty. */
+  affected_paths?: string[];
+  workspace_changed: boolean;
+  /** Omitted on the wire when the canonical list is empty. */
+  diff_summary?: string[];
+}
+
+export interface ToolCallRef {
+  id: string;
+  name: string;
+  args: unknown;
+}
+
+export interface ToolError {
+  code: string;
+  reason?: string;
+  timeout_ms?: number;
+  name?: string;
+  [key: string]: unknown;
+}
+
+export type StreamEvent =
+  | {
+      type: "run_started";
+      run_id: string;
+      job_id: string;
+      user_message: string;
+    }
+  | {
+      type: "agent_profile_activated";
+      identity: AgentProfileIdentity;
+      resumed_from_snapshot: boolean;
+      diagnostics?: AgentDiagnostic[];
+    }
+  | {
+      type: "workspace_instructions_resolved";
+      bundle_hash: string;
+      layer_count: number;
+      rejected_count: number;
+      truncated: boolean;
+    }
+  | {
+      type: "execution_strategy_selected";
+      policy: ExecutionPolicy;
+    }
+  | {
+      type: "instruction_overlay_applied";
+      target_path: string;
+      scope: string;
+      source_path: string;
+      content_hash: string;
+      boundary: string;
+      call_id?: string | null;
+    }
+  | {
+      type: "procedures_selected";
+      profile_hash: string;
+      selected?: ProcedureReference[];
+      considered_count: number;
+      excluded_count: number;
+    }
+  | {
+      type: "procedure_hydrated";
+      reference: ProcedureReference;
+      truncated: boolean;
+      dropped_bytes: number;
+      step_id?: string | null;
+      hydration_hash?: string | null;
+    }
+  | {
+      type: "procedure_applied";
+      application: ProcedureApplication;
+    }
+  | {
+      type: "procedure_deviation";
+      record_id: string;
+      deviation: ProcedureDeviation;
+    }
+  | {
+      type: "execution_budget_updated";
+      phase: ExecutionPhase;
+      snapshot: ExecutionBudgetSnapshot;
+    }
+  | {
+      type: "execution_degraded";
+      record: ExecutionDegradation;
+    }
+  | {
+      type: "llm_chunk";
+      delta: string;
+    }
+  | {
+      type: "model_status";
+      status: string;
+      message: string;
+    }
+  | {
+      /**
+       * Runtime-owned retry progress. `attempt` is the 1-based index of the
+       * attempt about to run and `max_attempts` is that failure class' budget;
+       * the UI projects these facts instead of inventing a retry policy.
+       */
+      type: "provider_retry";
+      attempt: number;
+      max_attempts: number;
+      delay_ms: number;
+      reason: string;
+      phase: string;
+    }
+  | {
+      type: "llm_message";
+      full: string;
+      usage: Usage;
+      tool_calls?: ToolCallRef[];
+      /**
+       * R2b abort salvage: `true` when this message is the text a stop kept
+       * from a cancelled turn rather than a complete model response. The run
+       * still terminates as cancelled. Older servers and older persisted
+       * transcripts omit the field, which means "complete".
+       */
+      aborted?: boolean;
+    }
+  | {
+      type: "tool_call_started";
+      call_id: string;
+      tool_use_id?: string | null;
+      name: string;
+      args: unknown;
+    }
+  | {
+      type: "tool_call_approval_needed";
+      call_id: string;
+      name: string;
+      args: unknown;
+      reason: string;
+    }
+  | {
+      type: "tool_call_completed";
+      call_id: string;
+      result: ToolResult;
+    }
+  | {
+      type: "tool_call_failed";
+      call_id: string;
+      error: ToolError;
+      metadata?: ToolExecutionMetadata;
+    }
+  | {
+      type: "tool_artifact_stored";
+      call_id: string;
+      artifact: ToolArtifactRef;
+    }
+  | {
+      type: "tool_artifact_rejected";
+      call_id: string;
+      block_ordinal: number;
+      reason: string;
+      observed_bytes: number;
+    }
+  | {
+      type: "mcp_server_degraded";
+      server_config_id: string;
+      required: boolean;
+      failure_code: string;
+    }
+  | {
+      type: "mcp_capabilities_refreshed";
+      server_config_id: string;
+      snapshot_id: string;
+      added: string[];
+      removed: string[];
+      changed: string[];
+    }
+  | {
+      type: "input_needed";
+      input_id: string;
+      prompt: string;
+    }
+  | {
+      type: "plan_created";
+      plan: TaskPlan;
+      plan_id?: string;
+      plan_revision_id?: string;
+      revision?: number;
+      plan_revision?: PlanRevision;
+    }
+  | {
+      type: "plan_step_started";
+      step: PlanStep;
+      index: number;
+      plan_id?: string;
+      plan_revision_id?: string;
+      step_id?: string;
+      attempt?: number;
+      started_at?: string;
+      budget?: ExecutionBudgetSnapshot;
+    }
+  | {
+      type: "step_result";
+      record: StepRecord;
+    }
+  | {
+      type: "plan_decision";
+      record: PlanDecisionRecord;
+    }
+  | {
+      type: "plan_revised";
+      plan: TaskPlan;
+      revision: PlanRevision;
+    }
+  | {
+      type: "finalization_started";
+      record: FinalizationRecord;
+    }
+  | {
+      type: "finalization_completed";
+      record: FinalizationRecord;
+    }
+  | {
+      type: "prompt_compacted";
+      summary?: string | null;
+      state: PromptCompactionState;
+    }
+  | {
+      type: "memory_flushed";
+      notes: string[];
+    }
+  | {
+      type: "prompt_built";
+      metadata: PromptBuildMetadata;
+    }
+  | {
+      type: "run_completed";
+      reason: string;
+      output?: string | null;
+    }
+  | {
+      type: "steer_accepted";
+      id: string;
+      content: string;
+    }
+  | {
+      type: "steer_applied";
+      id: string;
+    }
+  | {
+      type: "steer_dropped";
+      id: string;
+      reason: string;
+    }
+  | {
+      type: "followup_queued";
+      id: string;
+      content: string;
+    }
+  | {
+      type: "followup_dequeued";
+      id: string;
+    }
+  | {
+      type: "followup_abandoned";
+      id: string;
+      reason: string;
+    }
+  | {
+      type: "message_queued";
+      id: string;
+      content: string;
+    }
+  | {
+      type: "message_intervention_requested";
+      id: string;
+    }
+  | {
+      type: "message_applied_current_run";
+      id: string;
+    }
+  | {
+      type: "message_claimed_successor";
+      id: string;
+    }
+  | {
+      type: "message_needs_attention";
+      id: string;
+      reason: string;
+    }
+  | {
+      type: "message_revoked";
+      id: string;
+    };
+
+export interface AgentProfileIdentity {
+  selector: { source: "builtin" | "workspace"; agent_id: string };
+  agent_id: string;
+  display_name: string;
+  definition_version: string;
+  manifest_hash: string;
+  package_hash: string;
+  profile_hash: string;
+  instruction_bundle_hash?: string;
+  procedures?: ProcedureReference[];
+}
+
+export interface AgentDiagnostic {
+  code: string;
+  subject: string;
+  message: string;
+}
+
+export interface ProcedureReference {
+  id: string;
+  version: string;
+  trust:
+    | "builtin_trusted"
+    | "workspace_trusted"
+    | "user_installed"
+    | "external_untrusted";
+  source_path: string;
+  content_hash: string;
+}
+
+export type CreateJobWorkspaceKind = "folder" | "repo" | "task";
+
+/**
+ * Per-job workspace binding.
+ *
+ * - `folder` / `repo`: bind tools/state to an absolute local `root`.
+ * - `task`: isolated workspace under `base`/`name`.
+ */
+export interface CreateJobWorkspace {
+  kind: CreateJobWorkspaceKind;
+  /** Task workspace name (`kind = "task"` only). */
+  name?: string;
+  /** Task base directory (`kind = "task"` only). */
+  base?: string;
+  /** Absolute local directory for `folder` / `repo`. */
+  root?: string;
+}
+
+export interface CreateJobRequest {
+  message: string;
+  model?: string;
+  max_steps?: number;
+  /** Fully qualified Runtime Agent selector. */
+  agent?: string;
+  approval?: ApprovalPolicy;
+  resume?: ResumeMode;
+  workspace?: CreateJobWorkspace;
+  provider?: ProviderProfile;
+  /** Server-owned product session; the API resolves its exact runtime run. */
+  product_session_id?: string;
+}
+
+/**
+ * User-facing provider type (protocol family). Official and relay endpoints
+ * share the same type; only base URL / key / model differ. Gemini relays that
+ * expose an OpenAI Chat Completions API use the `openai` type.
+ */
+export type ProviderType =
+  | "openai"
+  | "openai-responses"
+  | "anthropic"
+  | "ollama"
+  | "fake";
+
+export interface ProviderProfile {
+  /**
+   * Provider type: openai | openai-responses | anthropic | ollama | fake.
+   * Maps to an internal wire protocol on the API. Not "official vs relay".
+   */
+  provider_type?: ProviderType;
+  /**
+   * Optional display label. When omitted/empty the API derives a name from
+   * `api_base`. Use `provider_type` to select the type, not `name`.
+   */
+  name?: string;
+  api_base: string;
+  api_key_env?: string;
+}
+
+export interface ProviderTestRequest {
+  provider: ProviderProfile;
+  model?: string;
+  models_endpoint?: string;
+}
+
+export interface ProviderTestResponse {
+  status: string;
+  provider: string;
+  provider_type?: string | null;
+  wire_protocol?: string | null;
+  api_base: string;
+  key_env: string;
+  key_present: boolean;
+  model?: string | null;
+  model_present?: boolean | null;
+  models_count: number;
+}
+
+/** Request body for listing models available on a provider endpoint. */
+export interface ProviderModelsRequest {
+  provider: ProviderProfile;
+  /** Optional override for the models inventory URL. */
+  models_endpoint?: string;
+}
+
+/** Catalog of model ids returned by a provider inventory endpoint. */
+export interface ProviderModelsResponse {
+  provider: string;
+  provider_type: string;
+  wire_protocol: string;
+  api_base: string;
+  key_env: string;
+  key_present: boolean;
+  models: string[];
+  models_count: number;
+}
+
+export interface CreateJobResponse {
+  job_id: string;
+  run_id: string;
+  resumed_from_run_id?: string | null;
+  workspace_activation?: "restricted" | "trusted";
+}
+
+export interface JobStateResponse {
+  job_id: string;
+  run_id: string;
+  resumed_from_run_id?: string | null;
+  status: RunStatus;
+  event_count: number;
+  events: JobStreamEvent[];
+  /**
+   * Additive R2b marker: `true` only when this run's answer was stopped by the
+   * user after it had already published text, so `events` carries a salvaged
+   * partial rather than a complete response. Absent means it does not apply: a
+   * complete answer, a failed turn, or a stop that produced nothing.
+   */
+  answer_aborted?: boolean;
+  pending_approvals: PendingApproval[];
+  pending_inputs: PendingInput[];
+}
+
+export interface JobStreamEvent {
+  seq: number;
+  event: StreamEvent;
+}
+
+export interface ListRunsResponse {
+  runs: RunSummary[];
+}
+
+export interface RunSummary {
+  run_id: string;
+  session_id: string;
+  job_id: string;
+  status: RunStatus;
+  last_event_seq: number;
+  has_report: boolean;
+}
+
+export interface RunReport {
+  session_id: string;
+  job_id: string;
+  run_id: string;
+  workspace_root: string;
+  workspace_kind: string;
+  model_id: string;
+  status: string;
+  termination_reason: string;
+  steps: number;
+  total_usage: Usage;
+  tool_calls: number;
+  tool_failures: number;
+  tool_mutations: ToolMutation[];
+  step_records?: StepRecord[];
+  output?: string | null;
+  timestamp: string;
+}
+
+export interface PendingApproval {
+  call_id: string;
+  name: string;
+  args: unknown;
+  reason: string;
+}
+
+export interface PendingInput {
+  input_id: string;
+  prompt: string;
+}
+
+export type ApprovalDecision = "approve" | "reject";
+
+export type ApprovalPolicy = "ask" | "auto" | "never";
+
+export type ResumeMode = "latest";
+
+export const STREAM_EVENT_NAMES = [
+  "run_started",
+  "agent_profile_activated",
+  "workspace_instructions_resolved",
+  "execution_strategy_selected",
+  "instruction_overlay_applied",
+  "procedures_selected",
+  "procedure_hydrated",
+  "procedure_applied",
+  "procedure_deviation",
+  "execution_budget_updated",
+  "execution_degraded",
+  "llm_chunk",
+  "model_status",
+  "provider_retry",
+  "llm_message",
+  "tool_call_started",
+  "tool_call_approval_needed",
+  "tool_call_completed",
+  "tool_call_failed",
+  "tool_artifact_stored",
+  "tool_artifact_rejected",
+  "mcp_server_degraded",
+  "mcp_capabilities_refreshed",
+  "input_needed",
+  "plan_created",
+  "plan_step_started",
+  "step_result",
+  "plan_decision",
+  "plan_revised",
+  "finalization_started",
+  "finalization_completed",
+  "prompt_compacted",
+  "memory_flushed",
+  "prompt_built",
+  "run_completed",
+  "steer_accepted",
+  "steer_applied",
+  "steer_dropped",
+  "followup_queued",
+  "followup_dequeued",
+  "followup_abandoned",
+  "message_queued",
+  "message_intervention_requested",
+  "message_applied_current_run",
+  "message_claimed_successor",
+  "message_needs_attention",
+  "message_revoked",
+] as const;
+
+export type StreamEventName = (typeof STREAM_EVENT_NAMES)[number];
+
+/**
+ * Canonical-event contract version this client can decode.
+ *
+ * The version is the newest `STREAM_EVENT_KINDS` entry version in
+ * `runtime/src/foundation/events.rs` that this bundle understands: version 1 is
+ * every kind before `provider_retry`, and version 2 is `provider_retry`. The
+ * transcript request declares it as `event_contract`, so a newer server withholds
+ * the rows this bundle cannot decode and reports their durable positions instead
+ * of failing the restore. Adding a kind here means adding its version there and
+ * bumping this constant in the same change; `tests/event_contract.rs` asserts the
+ * three stay in agreement.
+ */
+export const STREAM_EVENT_CONTRACT_VERSION = 2;
+
+/**
+ * Product directory event kinds served by `GET /product/events`.
+ *
+ * The stream names every frame after its kind, so this list is the
+ * subscription: a kind missing here is never delivered. A kind added later on
+ * the server therefore costs latency, not correctness, because every delivered
+ * frame refreshes the catalog and the catalog is what the UI renders.
+ */
+export const PRODUCT_EVENT_KINDS = [
+  "session.created",
+  "session.updated",
+  "session.deleted",
+  "session.status_changed",
+  "workspace.created",
+  "workspace.updated",
+  "workspace.deleted",
+  "preferences.changed",
+  "control.queued",
+  "control.promoted",
+  "control.revoked",
+] as const;
+
+export type ProductEventKind = (typeof PRODUCT_EVENT_KINDS)[number];
+
+/**
+ * One `data:` body of the product directory stream.
+ *
+ * `seq` is the durable cursor the frame also carries in its SSE `id:`. `summary`
+ * is a JSON-encoded string of status/outcome fields only — never message
+ * content, tool arguments, error details, or secrets — so it can justify a
+ * catalog refresh but never replace one.
+ */
+export interface ProductEvent {
+  v: number;
+  type: ProductEventKind;
+  seq: number;
+  session_id?: string;
+  workspace_id?: string;
+  summary?: string;
+  created_at: string;
+}
+
+export interface BenchSuiteInfo {
+  name: string;
+  description: string;
+  profiles: string[];
+}
+
+export interface ListBenchSuitesResponse {
+  suites: BenchSuiteInfo[];
+}
+
+export interface StartBenchRunRequest {
+  suite: string;
+  profile: string;
+}
+
+export interface StartBenchRunResponse {
+  bench_run_id: string;
+  suite: string;
+  profile: string;
+  status: string;
+}
+
+export interface BenchRunSummary {
+  bench_run_id: string;
+  suite: string;
+  profile: string;
+  status: string;
+  total_tasks: number;
+  passed_tasks: number;
+  failed_tasks: number;
+  started_at: string | null;
+  finished_at: string | null;
+  evidence_root: string | null;
+}
+
+export interface ListBenchRunsResponse {
+  runs: BenchRunSummary[];
+}
+
+export interface BenchCheckResult {
+  kind: string;
+  description: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface BenchArtifacts {
+  run_dir: string;
+  trace_jsonl: string;
+  task_state_json: string;
+  report_json: string;
+}
+
+export interface BenchTaskResult {
+  name: string;
+  outcome: string;
+  termination_reason: string;
+  steps: number;
+  tool_calls: number;
+  tool_failures: number;
+  artifacts: BenchArtifacts;
+  output: string | null;
+  check_results: BenchCheckResult[];
+  failures: string[];
+}
+
+export interface BenchRunDetail {
+  bench_run_id: string;
+  suite: string;
+  profile: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  total_tasks: number;
+  passed_tasks: number;
+  failed_tasks: number;
+  evidence_root: string | null;
+  summary_md: string | null;
+  tasks: BenchTaskResult[];
+}

@@ -1,0 +1,62 @@
+name: Desktop
+
+# rove-desktop pulls the Tauri/WebKit dependency tree, which dominates CI
+# compile time while barely changing between PRs. It therefore runs only when
+# the desktop crate or the shared manifest changes — the main CI workflow
+# excludes it via `cargo --exclude rove-desktop`. Runtime-side breaking
+# changes that slip past this filter are still caught by clippy/test on the
+# main workflow's other crates and by local/release-gate builds.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/desktop/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/desktop.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - apps/desktop/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/desktop.yml
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  desktop:
+    name: desktop clippy + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install Linux desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev
+
+      - name: cargo clippy
+        run: cargo clippy -p rove-desktop --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test -p rove-desktop

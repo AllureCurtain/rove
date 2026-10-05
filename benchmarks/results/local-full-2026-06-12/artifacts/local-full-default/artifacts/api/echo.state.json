@@ -1,0 +1,144 @@
+{
+    "job_id":  "01KTZN20SYV8N49ZC1WMGEPQZW",
+    "run_id":  "01KTZN20SY9YBRK770WFA038NV",
+    "status":  "done",
+    "event_count":  11,
+    "events":  [
+                   {
+                       "seq":  1,
+                       "event":  {
+                                     "type":  "run_started",
+                                     "run_id":  "01KTZN20SY9YBRK770WFA038NV",
+                                     "job_id":  "01KTZN20SYV8N49ZC1WMGEPQZW",
+                                     "user_message":  "{\"tool\":\"echo\",\"args\":{\"message\":\"hello local-full\"}}"
+                                 }
+                   },
+                   {
+                       "seq":  2,
+                       "event":  {
+                                     "type":  "plan_created",
+                                     "plan":  {
+                                                  "goal":  "{\"tool\":\"echo\",\"args\":{\"message\":\"hello local-full\"}}",
+                                                  "steps":  [
+                                                                {
+                                                                    "id":  "1",
+                                                                    "title":  "answer the request",
+                                                                    "done":  false
+                                                                }
+                                                            ],
+                                                  "current_step":  0
+                                              }
+                                 }
+                   },
+                   {
+                       "seq":  3,
+                       "event":  {
+                                     "type":  "plan_step_started",
+                                     "step":  {
+                                                  "id":  "1",
+                                                  "title":  "answer the request",
+                                                  "done":  false
+                                              },
+                                     "index":  0
+                                 }
+                   },
+                   {
+                       "seq":  4,
+                       "event":  {
+                                     "type":  "prompt_built",
+                                     "metadata":  {
+                                                      "prompt_hash":  "sha256:11b85ca3e26fc16b30a230d72389ef6ff4f2c54dd8002b69bdb31be3eb11bf89",
+                                                      "stable_prefix_hash":  "sha256:7fa6db21c8b275f928a689df0f7df7a58a7d3ec8388331639078653dc4221b0d",
+                                                      "workspace_fingerprint":  "sha256:26ea150165676c75567b9479ecb6907901ae314f6d723e30d8c63a16ba50b366",
+                                                      "tool_signature":  "sha256:2cd1b22a9a9988805e64ad9ee38f1cc984f187ba32a3f955e0f86c4802ee55fd",
+                                                      "token_estimate":  61,
+                                                      "included_history_messages":  0,
+                                                      "dropped_history_messages":  0,
+                                                      "prompt_cache_key":  "sha256:b782195468d6a3f52e368bb9169ff7ec04def3c8f0eae2a8793acf9a7474de5b"
+                                                  }
+                                 }
+                   },
+                   {
+                       "seq":  5,
+                       "event":  {
+                                     "type":  "model_status",
+                                     "status":  "thinking",
+                                     "message":  "Model is thinking"
+                                 }
+                   },
+                   {
+                       "seq":  6,
+                       "event":  {
+                                     "type":  "llm_chunk",
+                                     "delta":  "{\"tool\":\"echo\",\"args\":{\"message\":\"hello local-full\"}}"
+                                 }
+                   },
+                   {
+                       "seq":  7,
+                       "event":  {
+                                     "type":  "llm_message",
+                                     "full":  "{\"tool\":\"echo\",\"args\":{\"message\":\"hello local-full\"}}",
+                                     "usage":  {
+                                                   "prompt_tokens":  0,
+                                                   "completion_tokens":  0,
+                                                   "total_tokens":  0,
+                                                   "cached_tokens":  0
+                                               }
+                                 }
+                   },
+                   {
+                       "seq":  8,
+                       "event":  {
+                                     "type":  "tool_call_started",
+                                     "call_id":  "01KTZN2110DFAQ2GVTST0XQM5E",
+                                     "name":  "echo",
+                                     "args":  {
+                                                  "message":  "hello local-full"
+                                              }
+                                 }
+                   },
+                   {
+                       "seq":  9,
+                       "event":  {
+                                     "type":  "tool_call_completed",
+                                     "call_id":  "01KTZN2110DFAQ2GVTST0XQM5E",
+                                     "result":  {
+                                                    "call_id":  "01KTZN2110DFAQ2GVTST0XQM5E",
+                                                    "output":  "hello local-full",
+                                                    "metadata":  {
+                                                                     "status":  "ok",
+                                                                     "risk_level":  "low",
+                                                                     "read_only":  true,
+                                                                     "workspace_changed":  false
+                                                                 }
+                                                }
+                                 }
+                   },
+                   {
+                       "seq":  10,
+                       "event":  {
+                                     "type":  "plan_step_completed",
+                                     "step":  {
+                                                  "id":  "1",
+                                                  "title":  "answer the request",
+                                                  "done":  false
+                                              },
+                                     "index":  0
+                                 }
+                   },
+                   {
+                       "seq":  11,
+                       "event":  {
+                                     "type":  "run_completed",
+                                     "reason":  "final",
+                                     "output":  "hello local-full"
+                                 }
+                   }
+               ],
+    "pending_approvals":  [
+
+                          ],
+    "pending_inputs":  [
+
+                       ]
+}

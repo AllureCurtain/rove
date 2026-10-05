@@ -1,0 +1,769 @@
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+use crate::types::{JobId, RunId, RunRequest, SessionId, TaskState, TerminationReason};
+
+use super::index::{CleanupResult, StateIndex, TaskStateIndexRecord};
+use super::report::RunReport;
+use super::trace::RunStore;
+use super::trace::TraceWriter;
+
+pub const TASK_STATE_SCHEMA_VERSION: u32 = 1;
+
+/// Top-level state store.
+///
+/// Coordinates run directories, trace files, and (later) report generation.
+pub struct StateStore {
+    pub run_store: RunStore,
+    pub index: StateIndex,
+    state_dir: PathBuf,
+}
+
+/// Identity and filesystem bundle for a single run.
+pub struct RunHandle {
+    pub session_id: SessionId,
+    pub job_id: JobId,
+    pub run_id: RunId,
+    pub run_dir: PathBuf,
+    pub trace_writer: TraceWriter,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepairResult {
+    pub task_state_count: usize,
+    pub event_count: usize,
+    pub report_count: usize,
+    pub corrupt_trace_line_count: usize,
+}
+
+/// What a startup backfill found and whether it had to do anything.
+///
+/// `repair` is `None` on the healthy path: it distinguishes "nothing was
+/// missing" from "a rebuild ran and imported nothing", which otherwise look
+/// identical in the logs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BackfillResult {
+    pub runs_on_disk: usize,
+    pub runs_missing: usize,
+    pub repair: Option<RepairResult>,
+}
+
+struct TaskStateEntry {
+    path: PathBuf,
+    modified: SystemTime,
+}
+
+struct TraceImportResult {
+    event_count: usize,
+    corrupt_line_count: usize,
+}
+
+impl StateStore {
+    pub fn new(state_dir: &Path) -> Self {
+        let index = StateIndex::new(state_dir);
+        Self::with_index(state_dir, index)
+    }
+
+    pub fn with_index_path(state_dir: &Path, db_path: PathBuf, busy_timeout_ms: u64) -> Self {
+        let index = StateIndex::with_path(state_dir, db_path, busy_timeout_ms);
+        Self::with_index(state_dir, index)
+    }
+
+    pub fn with_index(state_dir: &Path, index: StateIndex) -> Self {
+        Self {
+            run_store: RunStore::with_index(state_dir, index.clone()),
+            index,
+            state_dir: state_dir.to_path_buf(),
+        }
+    }
+
+    /// Create a new run and return its filesystem handle.
+    pub fn start_run(
+        &self,
+        session_id: SessionId,
+        job_id: JobId,
+        run_id: RunId,
+    ) -> std::io::Result<RunHandle> {
+        let run_dir = self.run_store.run_dir(&run_id);
+        let trace_writer = self.run_store.create_trace(&run_id)?;
+        self.index
+            .record_run_started(session_id, job_id, run_id, &run_dir, trace_writer.path())?;
+        // Open the file with the run's identity so the
+        // directory describes itself. Guarded on emptiness rather than written
+        // unconditionally — a re-entered run directory must not gain a second
+        // opening line.
+        let trace_is_empty = std::fs::metadata(trace_writer.path())
+            .map(|metadata| metadata.len() == 0)
+            .unwrap_or(true);
+        if trace_is_empty {
+            trace_writer.append_run_meta(session_id, job_id, run_id)?;
+        }
+        Ok(RunHandle {
+            session_id,
+            job_id,
+            run_id,
+            run_dir,
+            trace_writer,
+        })
+    }
+
+    pub async fn write_task_state(&self, state: &TaskState) -> std::io::Result<()> {
+        let run_dir = self.run_store.run_dir(&state.run_id);
+        tokio::fs::create_dir_all(&run_dir).await?;
+        let path = run_dir.join("task_state.json");
+        let json = serde_json::to_vec_pretty(state).map_err(std::io::Error::other)?;
+        atomic_write(&path, &json).await?;
+        let modified = tokio::fs::metadata(&path)
+            .await?
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        self.index
+            .record_task_state_async(state.clone(), path, modified)
+            .await
+    }
+
+    pub async fn load_latest_task_state(&self) -> std::io::Result<Option<TaskState>> {
+        let mut records = self.index.list_task_state_records_async(None).await?;
+        if records.is_empty() {
+            self.import_task_states().await?;
+            records = self.index.list_task_state_records_async(None).await?;
+        }
+        let Some(record) = records.first() else {
+            return Ok(None);
+        };
+
+        let state = self.load_task_state_path(&record.path).await?;
+        if state.run_id != record.run_id {
+            return Err(task_state_identity_error(record.run_id, state.run_id));
+        }
+        Ok(Some(state))
+    }
+
+    pub async fn load_task_state(&self, run_id: RunId) -> std::io::Result<TaskState> {
+        let mut indexed_path = self.index.task_state_path_async(run_id).await?;
+        if indexed_path.is_none() {
+            self.import_task_states().await?;
+            indexed_path = self.index.task_state_path_async(run_id).await?;
+        }
+        let path = match indexed_path {
+            Some(path) => path,
+            None => self.run_store.run_dir(&run_id).join("task_state.json"),
+        };
+        if !tokio::fs::try_exists(&path).await? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("task_state not found for run {run_id}"),
+            ));
+        }
+        let state = self.load_task_state_path(&path).await?;
+        if state.run_id != run_id {
+            return Err(task_state_identity_error(run_id, state.run_id));
+        }
+        Ok(state)
+    }
+
+    pub async fn list_resumable_task_states(
+        &self,
+        session_id: SessionId,
+    ) -> std::io::Result<Vec<TaskState>> {
+        let mut records = self
+            .index
+            .list_task_state_records_async(Some(session_id))
+            .await?;
+        if records.is_empty() {
+            self.import_task_states().await?;
+            records = self
+                .index
+                .list_task_state_records_async(Some(session_id))
+                .await?;
+        }
+        self.load_task_state_records(records).await
+    }
+
+    pub async fn list_task_states(&self) -> std::io::Result<Vec<TaskState>> {
+        let mut records = self.index.list_task_state_records_async(None).await?;
+        if records.is_empty() {
+            self.import_task_states().await?;
+            records = self.index.list_task_state_records_async(None).await?;
+        }
+        self.load_task_state_records(records).await
+    }
+
+    /// Load a bounded set of snapshots that still point at their owning job's
+    /// latest terminal run. Malformed or concurrently removed artifacts are
+    /// skipped so one bad historical file cannot freeze the TUI picker.
+    pub async fn list_resumable_task_states_limited(
+        &self,
+        limit: usize,
+    ) -> std::io::Result<Vec<TaskState>> {
+        let mut records = self
+            .index
+            .list_resumable_task_state_records_async(limit)
+            .await?;
+        if records.is_empty() {
+            // A fresh index may still need one legacy artifact import. This
+            // path is deliberately cold; normal picker opens stay bounded by
+            // the SQL LIMIT above.
+            self.import_task_states().await?;
+            records = self
+                .index
+                .list_resumable_task_state_records_async(limit)
+                .await?;
+        }
+        let mut states = Vec::with_capacity(records.len());
+        for record in records {
+            match self.load_task_state_path(&record.path).await {
+                Ok(state) if state.run_id == record.run_id => states.push(state),
+                Ok(state) => tracing::warn!(
+                    path = %record.path.display(),
+                    indexed_run_id = %record.run_id,
+                    task_state_run_id = %state.run_id,
+                    "Skipping task state with mismatched run identity in resumable picker"
+                ),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::InvalidData | std::io::ErrorKind::NotFound
+                    ) =>
+                {
+                    tracing::warn!(
+                        path = %record.path.display(),
+                        error = %error,
+                        "Skipping malformed or missing task state in resumable picker"
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(states)
+    }
+
+    pub async fn record_report(
+        &self,
+        run_id: RunId,
+        report_path: PathBuf,
+        status: String,
+        termination_reason: String,
+    ) -> std::io::Result<()> {
+        self.index
+            .record_report_async(run_id, report_path, status, termination_reason)
+            .await
+    }
+
+    pub async fn load_report(&self, run_id: RunId) -> std::io::Result<RunReport> {
+        let Some(record) = self.index.report_record(run_id)? else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("report not found for run {run_id}"),
+            ));
+        };
+        self.load_report_path(&record.path).await
+    }
+
+    pub async fn repair_index(&self) -> std::io::Result<RepairResult> {
+        let task_state_count = self.import_task_states().await?;
+        let report_count = self.import_reports().await?;
+        let trace_import = self.import_trace_events().await?;
+        Ok(RepairResult {
+            task_state_count,
+            event_count: trace_import.event_count,
+            report_count,
+            corrupt_trace_line_count: trace_import.corrupt_line_count,
+        })
+    }
+
+    /// Re-derive index rows for run directories the index does not know.
+    ///
+    /// The filesystem is the record and the index is a
+    /// cache, so a deleted or stale index has to heal itself rather than wait
+    /// for someone to run a repair command. This is the cheap counterpart to
+    /// [`Self::repair_index`]: it lists the run directories, asks the index
+    /// which runs it already has, and imports only the difference — so the
+    /// common case (nothing missing) costs one directory listing and one
+    /// identifier query, and a full rebuild happens only when the index really
+    /// is empty.
+    pub async fn backfill_missing_runs(&self) -> std::io::Result<BackfillResult> {
+        let runs_dir = self.state_dir.join("runs");
+        let mut entries = match tokio::fs::read_dir(&runs_dir).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(BackfillResult::default());
+            }
+            Err(error) => return Err(error),
+        };
+        let mut on_disk = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let Some(run_id) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.parse::<RunId>().ok())
+            else {
+                continue;
+            };
+            // A directory with neither artifact records nothing recoverable.
+            if tokio::fs::try_exists(path.join("trace.jsonl")).await?
+                || tokio::fs::try_exists(path.join("task_state.json")).await?
+            {
+                on_disk.push(run_id);
+            }
+        }
+
+        let indexed = {
+            let index = self.index.clone();
+            tokio::task::spawn_blocking(move || index.indexed_run_ids())
+                .await
+                .map_err(std::io::Error::other)??
+        };
+        let missing = on_disk
+            .iter()
+            .filter(|run_id| !indexed.contains(run_id))
+            .count();
+        if missing == 0 {
+            return Ok(BackfillResult {
+                runs_on_disk: on_disk.len(),
+                runs_missing: 0,
+                repair: None,
+            });
+        }
+
+        // Import is per-artifact rather than per-run, and it is idempotent, so
+        // healing the difference means running the same repair the CLI runs.
+        // The diff above is what keeps that off the healthy startup path.
+        let repair = self.repair_index().await?;
+        Ok(BackfillResult {
+            runs_on_disk: on_disk.len(),
+            runs_missing: missing,
+            repair: Some(repair),
+        })
+    }
+
+    pub async fn cleanup_expired(&self) -> std::io::Result<CleanupResult> {
+        self.index.cleanup_expired_async().await
+    }
+
+    async fn load_task_state_records(
+        &self,
+        records: Vec<TaskStateIndexRecord>,
+    ) -> std::io::Result<Vec<TaskState>> {
+        let mut states = Vec::new();
+        for record in records {
+            let state = self.load_task_state_path(&record.path).await?;
+            if state.run_id != record.run_id {
+                return Err(task_state_identity_error(record.run_id, state.run_id));
+            }
+            states.push(state);
+        }
+        Ok(states)
+    }
+
+    async fn import_task_states(&self) -> std::io::Result<usize> {
+        let mut entries = self.task_state_entries().await?;
+        entries.sort_by(|left, right| {
+            left.modified
+                .cmp(&right.modified)
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        let mut imported = 0;
+        for entry in entries {
+            let state = match self.load_task_state_path(&entry.path).await {
+                Ok(state) => state,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::InvalidData | std::io::ErrorKind::NotFound
+                    ) =>
+                {
+                    tracing::warn!(
+                        path = %entry.path.display(),
+                        error = %error,
+                        "Skipping malformed or missing task state during index import"
+                    );
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            if Some(state.run_id) != run_id_from_artifact_path(&entry.path) {
+                tracing::warn!(
+                    path = %entry.path.display(),
+                    task_state_run_id = %state.run_id,
+                    "Skipping task state with mismatched run identity during state repair"
+                );
+                continue;
+            }
+            let run_id = state.run_id;
+            let job_id = state.job_id;
+            let state_path = entry.path.clone();
+            self.index
+                .record_task_state_async(state, state_path, entry.modified)
+                .await?;
+            let report_path = entry.path.parent().map(|parent| parent.join("report.json"));
+            if let Some(report_path) = report_path
+                && tokio::fs::try_exists(&report_path).await?
+            {
+                match self.load_report_path(&report_path).await {
+                    Ok(report) if report.run_id == run_id && report.job_id == job_id => {
+                        self.index.record_report(
+                            run_id,
+                            &report_path,
+                            &report.status,
+                            termination_reason_label(&report.termination_reason),
+                        )?;
+                    }
+                    Ok(_) => tracing::warn!(
+                        path = %report_path.display(),
+                        "Skipping report with mismatched identity during task-state import"
+                    ),
+                    Err(error) => tracing::warn!(
+                        path = %report_path.display(),
+                        error = %error,
+                        "Skipping malformed report during task-state import"
+                    ),
+                }
+            }
+            imported += 1;
+        }
+        Ok(imported)
+    }
+
+    async fn import_trace_events(&self) -> std::io::Result<TraceImportResult> {
+        let entries = self.run_artifact_entries("trace.jsonl").await?;
+        let mut event_count = 0;
+        let mut corrupt_line_count = 0;
+        for entry in entries {
+            let Some(run_id) = run_id_from_artifact_path(&entry) else {
+                continue;
+            };
+            let read = super::trace_reader::read_trace_file(&entry).await?;
+            if read.truncated_tail {
+                tracing::warn!(
+                    path = %entry.display(),
+                    "Trace tail is truncated (crash mid-write); skipping the partial line"
+                );
+            }
+            for line_number in &read.corrupt_line_numbers {
+                tracing::warn!(
+                    path = %entry.display(),
+                    line = line_number,
+                    error = "unparsable trace line",
+                    "Skipping corrupted trace line during state repair"
+                );
+            }
+            corrupt_line_count += read.corrupt_line_count;
+
+            // Every row below hangs off `runs`, and a
+            // run whose process died before its first checkpoint has no
+            // `task_state.json` to create that row. Take the identity from the
+            // trace's own opening line first, so one crashed run can no longer
+            // fail the entire repair on a foreign key.
+            let identity = read.entries.iter().find_map(|record| match &record.entry {
+                crate::events::TraceEntry::Meta(crate::events::RunMeta::RunIdentity {
+                    session_id,
+                    job_id,
+                    run_id: meta_run_id,
+                    started_at,
+                }) if *meta_run_id == run_id => Some((*session_id, *job_id, started_at.clone())),
+                _ => None,
+            });
+            match identity {
+                Some((session_id, job_id, started_at)) => {
+                    let run_dir = entry
+                        .parent()
+                        .map(Path::to_path_buf)
+                        .unwrap_or_else(|| self.run_store.run_dir(&run_id));
+                    self.index.recover_run_identity(
+                        session_id,
+                        job_id,
+                        run_id,
+                        &run_dir,
+                        &entry,
+                        &started_at,
+                    )?;
+                }
+                None if self.index.run_record(run_id)?.is_none() => {
+                    // Pre-Phase-5 traces have no identity line. Without a
+                    // `runs` row every append below would violate the foreign
+                    // key, so skip the file rather than fail the whole repair;
+                    // its events are recovered once a snapshot supplies the
+                    // owning session.
+                    tracing::warn!(
+                        path = %entry.display(),
+                        %run_id,
+                        "Trace has no run identity line and no indexed run; skipping its events"
+                    );
+                    continue;
+                }
+                None => {}
+            }
+
+            for record in &read.entries {
+                match &record.entry {
+                    crate::events::TraceEntry::Ui(event) => {
+                        // The index stores bare event JSON so SSE/transcript
+                        // projections keep their wire format unchanged. Repair
+                        // is a failure path, so it applies the same
+                        // authority-first redaction the writer does: a trace
+                        // written before this process learned a credential must
+                        // not be re-indexed into an unredacted row.
+                        let bare = crate::state::trace::redact_event_json(event)?;
+                        self.index.append_event(run_id, record.seq, event, &bare)?;
+                        event_count += 1;
+                    }
+                    // History lines never travel on SSE/transcript replays;
+                    // they only advance the sequence high-water mark.
+                    crate::events::TraceEntry::History(_) => {
+                        self.index.advance_event_seq(run_id, record.seq)?;
+                    }
+                    // Same for a resume link: provenance, not a replayable
+                    // event, but it owns a sequence number all the same.
+                    crate::events::TraceEntry::Link(_) => {
+                        self.index.advance_event_seq(run_id, record.seq)?;
+                    }
+                    // The identity header sits at `RUN_META_SEQ`, below every
+                    // event, so it has no high-water mark to contribute. Its
+                    // content was already consumed above to create the run row.
+                    crate::events::TraceEntry::Meta(_) => {}
+                }
+            }
+        }
+        Ok(TraceImportResult {
+            event_count,
+            corrupt_line_count,
+        })
+    }
+
+    async fn import_reports(&self) -> std::io::Result<usize> {
+        let entries = self.run_artifact_entries("report.json").await?;
+        let mut imported = 0;
+        for entry in entries {
+            let report = self.load_report_path(&entry).await?;
+            if Some(report.run_id) != run_id_from_artifact_path(&entry) {
+                tracing::warn!(
+                    path = %entry.display(),
+                    report_run_id = %report.run_id,
+                    "Skipping report with mismatched run identity during state repair"
+                );
+                continue;
+            }
+            let run_dir = entry
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| self.run_store.run_dir(&report.run_id));
+            self.index.record_run_started(
+                report.session_id,
+                report.job_id,
+                report.run_id,
+                &run_dir,
+                &run_dir.join("trace.jsonl"),
+            )?;
+            self.record_report(
+                report.run_id,
+                entry,
+                report.status,
+                termination_reason_label(&report.termination_reason).to_string(),
+            )
+            .await?;
+            imported += 1;
+        }
+        Ok(imported)
+    }
+
+    async fn task_state_entries(&self) -> std::io::Result<Vec<TaskStateEntry>> {
+        let runs_dir = self.state_dir.join("runs");
+        let mut entries = match tokio::fs::read_dir(&runs_dir).await {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(err),
+        };
+
+        let mut state_paths = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path().join("task_state.json");
+            if tokio::fs::try_exists(&path).await? {
+                let modified = tokio::fs::metadata(&path)
+                    .await?
+                    .modified()
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                state_paths.push(TaskStateEntry { path, modified });
+            }
+        }
+
+        Ok(state_paths)
+    }
+
+    async fn run_artifact_entries(&self, file_name: &str) -> std::io::Result<Vec<PathBuf>> {
+        let runs_dir = self.state_dir.join("runs");
+        let mut entries = match tokio::fs::read_dir(&runs_dir).await {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(err),
+        };
+
+        let mut artifact_paths = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path().join(file_name);
+            if tokio::fs::try_exists(&path).await? {
+                artifact_paths.push(path);
+            }
+        }
+        artifact_paths.sort();
+        Ok(artifact_paths)
+    }
+
+    async fn load_task_state_path(&self, path: &Path) -> std::io::Result<TaskState> {
+        let bytes = tokio::fs::read(path).await?;
+        let state: TaskState = serde_json::from_slice(&bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        validate_task_state_schema(&state)?;
+        Ok(state)
+    }
+
+    async fn load_report_path(&self, path: &Path) -> std::io::Result<RunReport> {
+        let bytes = tokio::fs::read(path).await?;
+        serde_json::from_slice(&bytes).map_err(std::io::Error::other)
+    }
+}
+
+fn task_state_identity_error(expected: RunId, actual: RunId) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!(
+            "task_state run identity mismatch: requested {expected}, artifact contains {actual}"
+        ),
+    )
+}
+
+impl RunHandle {
+    pub fn request(
+        &self,
+        user_message: String,
+        content_blocks: Vec<rove_models::ContentBlock>,
+        resume_state: Option<TaskState>,
+    ) -> RunRequest {
+        RunRequest {
+            session_id: self.session_id,
+            job_id: self.job_id,
+            run_id: self.run_id,
+            user_message,
+            content_blocks,
+            resume_state,
+        }
+    }
+}
+
+async fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp_path = path.with_extension("json.tmp");
+    tokio::fs::write(&tmp_path, bytes).await?;
+    tokio::fs::rename(tmp_path, path).await
+}
+
+/// Reject task-state artifacts that this runtime cannot safely resume.
+pub fn validate_task_state_schema(state: &TaskState) -> std::io::Result<()> {
+    if state.schema_version != TASK_STATE_SCHEMA_VERSION {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "unsupported task_state schema_version {}; supported version is {}",
+                state.schema_version, TASK_STATE_SCHEMA_VERSION
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn run_id_from_artifact_path(path: &Path) -> Option<RunId> {
+    path.parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .and_then(|value| ulid::Ulid::from_string(value).ok())
+        .map(RunId)
+}
+
+fn termination_reason_label(reason: &TerminationReason) -> &'static str {
+    match reason {
+        TerminationReason::Final => "final",
+        TerminationReason::StepLimit => "step_limit",
+        TerminationReason::TokenLimit => "token_limit",
+        TerminationReason::TimeLimit => "time_limit",
+        TerminationReason::Error => "error",
+        TerminationReason::Cancelled => "cancelled",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::{RunMeta, TraceEntry};
+    use crate::foundation::StreamEvent;
+    use crate::state::trace::{RUN_META_SEQ, TraceLine};
+
+    #[tokio::test]
+    async fn index_repair_never_reindexes_a_known_credential() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Matches no pattern the export backstop knows: only the registry can
+        // remove it. Repair runs when the index is corrupt or empty — a failure
+        // path — and a disclosure there would be no less a disclosure.
+        let canary = "repair-known-credential-canary-8b41";
+        assert!(crate::secrets::registry().register_value(canary));
+
+        let store =
+            StateStore::with_index_path(dir.path(), dir.path().join(".rove/state.sqlite"), 5_000);
+        store.index.initialize().unwrap();
+
+        // A trace written by a build that did not know the credential, or by a
+        // process that resolved it later: the durable line still carries it.
+        // The lines are serialized from the real envelope types rather than
+        // hand-written, so the fixture cannot drift from the wire format.
+        let run_id = RunId::new();
+        let run_dir = dir.path().join("runs").join(run_id.to_string());
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let identity = TraceLine {
+            ts: "2026-08-25T00:00:00+00:00".to_string(),
+            seq: RUN_META_SEQ,
+            event: TraceEntry::Meta(RunMeta::RunIdentity {
+                session_id: SessionId::new(),
+                job_id: JobId::new(),
+                run_id,
+                started_at: "2026-08-25T00:00:00+00:00".to_string(),
+            }),
+        };
+        let event = TraceLine {
+            ts: "2026-08-25T00:00:01+00:00".to_string(),
+            seq: 1,
+            event: TraceEntry::Ui(StreamEvent::ModelStatus {
+                status: "working".to_string(),
+                message: format!("repaired run carrying {canary}"),
+            }),
+        };
+        std::fs::write(
+            run_dir.join("trace.jsonl"),
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&identity).unwrap(),
+                serde_json::to_string(&event).unwrap()
+            ),
+        )
+        .unwrap();
+
+        let repair = store.repair_index().await.unwrap();
+        assert_eq!(repair.event_count, 1);
+        assert_eq!(repair.corrupt_trace_line_count, 0);
+
+        let snapshot = store
+            .index
+            .run_event_snapshot(run_id, 0, 10)
+            .unwrap()
+            .expect("the repaired run is indexed");
+        assert_eq!(snapshot.events.len(), 1);
+        let indexed = &snapshot.events[0].event_json;
+        assert!(!indexed.contains(canary), "{indexed}");
+        assert!(
+            indexed.contains(crate::secrets::KNOWN_SECRET_MARKER),
+            "{indexed}"
+        );
+        // The row is still a decodable canonical event, so SSE replay and the
+        // transcript projection keep working after a repair.
+        let decoded: StreamEvent = serde_json::from_str(indexed).unwrap();
+        assert!(matches!(decoded, StreamEvent::ModelStatus { .. }));
+    }
+}

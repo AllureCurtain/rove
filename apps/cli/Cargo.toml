@@ -1,0 +1,41 @@
+[package]
+name = "rove-cli"
+version.workspace = true
+edition.workspace = true
+description = "CLI, REPL, and full-screen TUI surfaces for Rove"
+default-run = "rove"
+
+[[bin]]
+name = "rove"
+path = "src/main.rs"
+
+[lib]
+name = "rove_cli"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+futures.workspace = true
+ratatui.workspace = true
+reqwest.workspace = true
+rove-app-bootstrap.workspace = true
+rove-core.workspace = true
+rove-models.workspace = true
+rove-runtime.workspace = true
+rustyline.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

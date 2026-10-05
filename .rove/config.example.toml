@@ -1,0 +1,82 @@
+# Copy to `.rove/config.toml` for local integration runs.
+# Keep real secrets in environment variables, not in this file.
+#
+# Path defaults (leave unset unless you need an explicit override):
+#   - Unset `state_dir`/`sqlite_path`/`memory.*`/`mcp_config_path` resolve
+#     through the user state contract: run data lives under the user data
+#     root (Windows %LOCALAPPDATA%\rove, macOS ~/Library/Application
+#     Support/rove, Linux $XDG_DATA_HOME/rove), isolated per workspace.
+#     See `rove state paths` for the resolved locations.
+#   - This `.rove/` directory only holds project-shared configuration
+#     (`config.toml`), gated by Project Trust. Migrate old project-local
+#     run data with `rove state migrate`.
+
+[runtime]
+max_steps = 20
+system_prompt_path = "prompts/system.md"
+planner_prompt_path = "prompts/planner.md"
+model_compaction_enabled = false
+compaction_failure_threshold = 3
+context_soft_limit_tokens = 24000
+context_hard_limit_tokens = 30000
+context_reserved_tokens = 4000
+
+[provider]
+# Profiles-only config. `fake` is the required provider for the deterministic
+# `local-full` profile. Use the gated provider-smoke profile for real endpoints.
+active = "local"
+model = "fake"
+fallback_models = []
+fallback_profiles = []
+
+[provider.profiles.local]
+provider_type = "fake"
+base_url = ""
+model = "fake"
+
+# Example real endpoint (env secret only — never put literal keys in this file):
+# [provider.profiles.relay]
+# provider_type = "openai"
+# base_url = "https://example.invalid/v1"
+# model = "gpt-4.1-mini"
+# auth = { style = "bearer", secret = { env = "OPENAI_API_KEY" } }
+
+[tool]
+# Unset by default: the MCP catalog resolves to the user data directory.
+# mcp_config_path = ".rove/mcp_servers.json"
+
+[tool.shell]
+timeout_ms = 30000
+max_output_bytes = 65536
+inherit_environment = true
+denylist = []
+
+# Unset by default: memory resolves to <user data>/workspaces/<key>/memory.
+# [memory]
+# recall_limit = 8
+
+# Unset by default: state resolves to <user data>/workspaces/<key>.
+# The explicit values below are the historical integration-run overrides.
+[state]
+lazy_migration = true
+sqlite_busy_timeout_ms = 5000
+allow_external_paths = false
+# state_dir = ".tmp/integration/state"
+# sqlite_path = ".tmp/integration/state/state.sqlite"
+
+[api]
+bind_addr = "127.0.0.1:8787"
+unsafe_remote_without_auth = false
+cors_origins = ["http://127.0.0.1:3000", "http://localhost:3000"]
+rate_limit_per_minute = 120
+# token_auth = "set-via-ROVE_API_TOKEN-when-needed"
+
+[web]
+api_base = "http://127.0.0.1:8787"
+
+[routing]
+failure_threshold = 3
+open_cooldown_ms = 30000
+retry_max_attempts = 1
+retry_backoff_base_ms = 250
+retry_backoff_max_ms = 5000

@@ -1,0 +1,1459 @@
+use std::{
+    collections::BTreeSet,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::{Context, Poll},
+};
+
+use async_stream::stream;
+use futures::stream::{BoxStream, Stream, StreamExt};
+use tokio::sync::Mutex as AsyncMutex;
+use tokio_util::sync::CancellationToken;
+
+use crate::agents::definition::PromptSlotRole;
+use crate::agents::{
+    AgentActivationConfig, AgentActivationError, AgentRuntime, AgentRuntimeProfile,
+    ResolvedRuntimeFacts, procedure_prompt_for_target,
+};
+use crate::capability::CapabilitySnapshot;
+use crate::compaction::{
+    CompactionDecline, CompactionRuntime, CompactionTrigger, ManualCompactionOutcome,
+    inherits_session_breaker, maybe_compact_history,
+};
+use crate::context::{ContextManager, durable_memory_message, session_summary_message};
+use crate::engine::control::{RunControlHandle, SteerLifecycle, control_channel};
+use crate::engine::recovery::{ProviderRetryPolicy, SilentTurnRecoveryPolicy};
+use crate::environment::{ExecutionEnvironment, local_environment};
+use crate::events::StreamEvent;
+use crate::execution::{ExecutionPolicy, ExecutionStrategy};
+use crate::finalizer::Finalizer;
+use crate::hooks::{HookRegistry, PostRunHookContext, RunSummary};
+use crate::memory::layered::load_prompt_memory_from_paths_sync;
+use crate::memory::paths::MemoryPaths;
+use crate::plan_evaluator::PlanEvaluator;
+use crate::plan_loop::{PlanLoopState, run_planned_loop};
+use crate::planner::Planner;
+use crate::run_loop::{LoopContext, LoopItem, RunLoopState, SteerReceiver, run_unplanned_loop};
+use crate::runtime_identity::{
+    RunModelSnapshot, RuntimeIdentity, RuntimeIdentityInput, RuntimeIdentityStatus,
+    build_runtime_identity,
+};
+use crate::state::tool_artifacts::ToolArtifactStore;
+use crate::state::trace::TraceWriter;
+use crate::tools::mcp_proxy::{McpLifecycleFact, McpRuntimeState, McpServerRuntimeSnapshot};
+use crate::types::{
+    ApprovalDecision, ApprovalPolicy, JobId, Message, RunId, RunMode, RunRequest, SessionId,
+    TaskState, TerminationReason, ToolApprovalProvider, ToolDescriptor, UserInputProvider,
+};
+use crate::workspace::Workspace;
+use rove_core::ToolRegistry;
+use rove_models::ModelClient;
+
+/// A running engine stream plus immediate identity, cancellation, and a
+/// control handle for steer/follow-up submission.
+pub struct RunStream<'e> {
+    session_id: SessionId,
+    job_id: JobId,
+    run_id: RunId,
+    cancel_token: CancellationToken,
+    control: RunControlHandle,
+    runtime_identity: RuntimeIdentity,
+    agent_profile: Option<AgentRuntimeProfile>,
+    inner: Pin<Box<dyn Stream<Item = StreamEvent> + Send + 'e>>,
+}
+
+impl RunStream<'_> {
+    pub fn session_id(&self) -> SessionId {
+        self.session_id
+    }
+
+    pub fn job_id(&self) -> JobId {
+        self.job_id
+    }
+
+    pub fn run_id(&self) -> RunId {
+        self.run_id
+    }
+
+    pub fn cancel(&self) {
+        self.cancel_token.cancel();
+    }
+
+    /// Handle for submitting steer/followup messages to the in-flight run.
+    pub fn control(&self) -> &RunControlHandle {
+        &self.control
+    }
+
+    /// Exact runtime identity for this run, including the resolved Agent.
+    pub fn runtime_identity(&self) -> &RuntimeIdentity {
+        &self.runtime_identity
+    }
+
+    /// Exact Agent snapshot retained by task/checkpoint persistence.
+    pub fn agent_profile(&self) -> Option<&AgentRuntimeProfile> {
+        self.agent_profile.as_ref()
+    }
+}
+
+impl Stream for RunStream<'_> {
+    type Item = StreamEvent;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.get_mut().inner.as_mut().poll_next(cx)
+    }
+}
+
+impl Unpin for RunStream<'_> {}
+
+impl Drop for RunStream<'_> {
+    fn drop(&mut self) {
+        self.cancel_token.cancel();
+    }
+}
+
+/// Configuration for the engine's execution limits and planner prompt.
+#[derive(Debug, Clone)]
+pub struct EngineConfig {
+    pub max_steps: u32,
+    pub plan_enabled: bool,
+    /// Fully resolved execution policy. When present it is authoritative and
+    /// the `max_steps` / `plan_enabled` sugar is used only for compatibility
+    /// projections. When absent the policy is derived from that sugar.
+    pub execution_policy: Option<ExecutionPolicy>,
+    /// Model-call retry budget applied at each model-turn boundary.
+    /// [`ProviderRetryPolicy::disabled`] restores the pre-recovery behavior.
+    pub provider_retry: ProviderRetryPolicy,
+    /// Silent-turn recovery budget applied at each run boundary.
+    /// [`SilentTurnRecoveryPolicy::disabled`] restores the pre-recovery
+    /// behavior.
+    pub silent_turn_recovery: SilentTurnRecoveryPolicy,
+}
+
+/// Invocation-scoped authority used when constructing an Engine for a
+/// workspace. Keeping the environment beside the approval settings makes it
+/// explicit that both are shared by the entire run.
+pub struct EngineEnvironmentOptions {
+    pub approval_policy: ApprovalPolicy,
+    pub approval_decision: ApprovalDecision,
+    pub environment: Arc<dyn ExecutionEnvironment>,
+}
+
+impl EngineConfig {
+    /// Build a config from the compatibility sugar fields, deriving the
+    /// execution policy deterministically.
+    ///
+    /// Callers that resolve a full policy (for example from operator
+    /// configuration) use [`EngineConfig::with_execution_policy`] instead.
+    pub fn new(max_steps: u32, plan_enabled: bool) -> Self {
+        Self {
+            max_steps,
+            plan_enabled,
+            execution_policy: None,
+            provider_retry: ProviderRetryPolicy::default(),
+            silent_turn_recovery: SilentTurnRecoveryPolicy::default(),
+        }
+    }
+
+    /// Attach a fully resolved policy, which then takes precedence over the
+    /// sugar fields.
+    pub fn with_execution_policy(mut self, policy: ExecutionPolicy) -> Self {
+        self.execution_policy = Some(policy);
+        self
+    }
+
+    /// Attach a model-call retry budget.
+    ///
+    /// Without this the engine uses [`ProviderRetryPolicy::default`].
+    pub fn with_provider_retry(mut self, policy: ProviderRetryPolicy) -> Self {
+        self.provider_retry = policy;
+        self
+    }
+
+    /// Attach a silent-turn recovery budget.
+    ///
+    /// Without this the engine uses [`SilentTurnRecoveryPolicy::default`], which
+    /// spends at most one extra turn recovering a run that answered with no
+    /// visible text.
+    pub fn with_silent_turn_recovery(mut self, policy: SilentTurnRecoveryPolicy) -> Self {
+        self.silent_turn_recovery = policy;
+        self
+    }
+
+    /// Project sugar fields into the typed policy used by the engine.
+    ///
+    /// `max_steps` / `plan_enabled` remain convenience inputs; `ExecutionPolicy`
+    /// is the sole execution-config truth.
+    pub fn to_execution_policy(&self) -> ExecutionPolicy {
+        self.execution_policy.clone().unwrap_or_else(|| {
+            ExecutionPolicy::from_max_steps_and_plan_flag(self.max_steps, self.plan_enabled)
+        })
+    }
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            max_steps: 20,
+            plan_enabled: false,
+            execution_policy: None,
+            provider_retry: ProviderRetryPolicy::default(),
+            silent_turn_recovery: SilentTurnRecoveryPolicy::default(),
+        }
+    }
+}
+
+/// The core engine that drives the agent loop.
+///
+/// Owns the model client, tool registry, context manager, and config.
+/// Produces a `Stream<Item = StreamEvent>` that any interface can consume.
+pub struct Engine {
+    model: Box<dyn ModelClient>,
+    registry: ToolRegistry,
+    capability_snapshot: CapabilitySnapshot,
+    context_manager: ContextManager,
+    config: EngineConfig,
+    planner: Planner,
+    evaluator: PlanEvaluator,
+    finalizer: Finalizer,
+    execution_policy: ExecutionPolicy,
+    workspace: Workspace,
+    environment: Arc<dyn ExecutionEnvironment>,
+    approval_policy: ApprovalPolicy,
+    approval_decision: ApprovalDecision,
+    approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
+    input_provider: Option<Arc<dyn UserInputProvider>>,
+    hooks: HookRegistry,
+    memory_paths: MemoryPaths,
+    model_compaction_enabled: bool,
+    compaction_failure_threshold: u32,
+    agent_runtime: AgentRuntime,
+    run_model: Option<RunModelSnapshot>,
+    run_mode: RunMode,
+}
+
+impl Engine {
+    pub fn new(
+        model: Box<dyn ModelClient>,
+        registry: ToolRegistry,
+        context_manager: ContextManager,
+        config: EngineConfig,
+    ) -> Self {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let workspace = Workspace::detect(&cwd).unwrap_or_else(|_| Workspace {
+            root: cwd.clone(),
+            kind: crate::workspace::WorkspaceKind::Folder,
+            state_dir: cwd.join(".rove"),
+        });
+
+        Self::with_workspace_and_approval_decision(
+            model,
+            registry,
+            context_manager,
+            config,
+            workspace,
+            ApprovalPolicy::Auto,
+            ApprovalDecision::Approve,
+        )
+    }
+
+    pub fn with_workspace(
+        model: Box<dyn ModelClient>,
+        registry: ToolRegistry,
+        context_manager: ContextManager,
+        config: EngineConfig,
+        workspace: Workspace,
+        approval_policy: ApprovalPolicy,
+    ) -> Self {
+        Self::with_workspace_and_approval_decision(
+            model,
+            registry,
+            context_manager,
+            config,
+            workspace,
+            approval_policy,
+            ApprovalDecision::Reject,
+        )
+    }
+
+    pub fn with_workspace_and_approval_decision(
+        model: Box<dyn ModelClient>,
+        registry: ToolRegistry,
+        context_manager: ContextManager,
+        config: EngineConfig,
+        workspace: Workspace,
+        approval_policy: ApprovalPolicy,
+        approval_decision: ApprovalDecision,
+    ) -> Self {
+        let environment = local_environment(&workspace);
+        Self::with_workspace_and_approval_decision_and_environment(
+            model,
+            registry,
+            context_manager,
+            config,
+            workspace,
+            EngineEnvironmentOptions {
+                approval_policy,
+                approval_decision,
+                environment,
+            },
+        )
+    }
+
+    pub fn with_workspace_and_approval_decision_and_environment(
+        model: Box<dyn ModelClient>,
+        registry: ToolRegistry,
+        context_manager: ContextManager,
+        config: EngineConfig,
+        workspace: Workspace,
+        options: EngineEnvironmentOptions,
+    ) -> Self {
+        let memory_paths = MemoryPaths::from_workspace(&workspace, 8);
+        let capability_snapshot = CapabilitySnapshot::from_registry(&registry);
+        let execution_policy = config.to_execution_policy();
+        let agent_runtime = AgentRuntime::load(
+            &workspace,
+            AgentActivationConfig::default(),
+            resolved_agent_facts(model.as_ref(), &registry, None),
+        )
+        .expect("builtin legacy Agent activation is infallible");
+        Self {
+            model,
+            registry,
+            capability_snapshot,
+            context_manager,
+            config,
+            planner: Planner::default(),
+            evaluator: PlanEvaluator::default(),
+            finalizer: Finalizer::default(),
+            execution_policy,
+            workspace,
+            environment: options.environment,
+            approval_policy: options.approval_policy,
+            approval_decision: options.approval_decision,
+            approval_provider: None,
+            input_provider: None,
+            hooks: HookRegistry::with_default_post_run_hooks(),
+            memory_paths,
+            model_compaction_enabled: false,
+            compaction_failure_threshold: 3,
+            agent_runtime,
+            run_model: None,
+            run_mode: RunMode::Normal,
+        }
+    }
+
+    pub fn with_hooks(mut self, hooks: HookRegistry) -> Self {
+        self.hooks = hooks;
+        self
+    }
+
+    pub fn with_planner_prompt(mut self, planner_prompt: impl Into<String>) -> Self {
+        self.planner = Planner::new(planner_prompt);
+        self
+    }
+
+    pub fn with_evaluator_prompt(mut self, evaluator_prompt: impl Into<String>) -> Self {
+        self.evaluator = PlanEvaluator::new(evaluator_prompt);
+        self
+    }
+
+    pub fn with_finalizer_prompt(mut self, finalizer_prompt: impl Into<String>) -> Self {
+        self.finalizer = Finalizer::new(finalizer_prompt);
+        self
+    }
+
+    /// Replace compatibility sugar with a fully resolved public execution
+    /// policy. Validation happens before the Engine can start a run.
+    pub fn with_execution_policy(
+        mut self,
+        policy: ExecutionPolicy,
+    ) -> Result<Self, crate::execution::ExecutionValidationError> {
+        policy.validate()?;
+        self.execution_policy = policy;
+        Ok(self)
+    }
+
+    pub fn with_approval_provider(
+        mut self,
+        approval_provider: Arc<dyn ToolApprovalProvider>,
+    ) -> Self {
+        self.approval_provider = Some(approval_provider);
+        self
+    }
+
+    pub fn with_input_provider(mut self, input_provider: Arc<dyn UserInputProvider>) -> Self {
+        self.input_provider = Some(input_provider);
+        self
+    }
+
+    pub fn with_memory_recall_limit(mut self, memory_recall_limit: usize) -> Self {
+        self.memory_paths.recall_limit = memory_recall_limit;
+        self
+    }
+
+    pub fn with_memory_paths(mut self, memory_paths: MemoryPaths) -> Self {
+        self.memory_paths = memory_paths;
+        self
+    }
+
+    pub fn with_model_compaction(mut self, enabled: bool, failure_threshold: u32) -> Self {
+        self.model_compaction_enabled = enabled;
+        self.compaction_failure_threshold = failure_threshold.max(1);
+        self
+    }
+
+    pub fn with_run_model_snapshot(mut self, snapshot: Option<RunModelSnapshot>) -> Self {
+        self.run_model = snapshot;
+        self
+    }
+
+    /// Select a host-owned execution profile for every invocation produced by
+    /// this Engine. Review mode is immutable once a run starts.
+    pub fn with_run_mode(mut self, run_mode: RunMode) -> Self {
+        self.run_mode = run_mode;
+        self
+    }
+
+    /// Configure the Runtime-owned Agent source for this Engine.
+    pub fn with_agent_activation(
+        mut self,
+        config: AgentActivationConfig,
+    ) -> Result<Self, AgentActivationError> {
+        let facts =
+            resolved_agent_facts(self.model.as_ref(), &self.registry, config.context_tokens);
+        self.agent_runtime = AgentRuntime::load(&self.workspace, config, facts)?;
+        Ok(self)
+    }
+
+    pub fn model_id(&self) -> &str {
+        self.model.model_id()
+    }
+
+    /// Compact the model-visible history held in a resume snapshot, in place.
+    ///
+    /// This is the `/compact` path. It deliberately does *not* start a run: no
+    /// `RunId` is allocated, no trace is opened, and no `PromptCompacted` event
+    /// is emitted, because there is no run for such an event to belong to.
+    /// Compaction here is an edit to state the caller already owns — the caller
+    /// decides whether to keep or persist the result.
+    ///
+    /// Because no trace is written, the original history stays exactly where it
+    /// already was: in the trace files of the runs that produced it. Compaction
+    /// changes what the *next* prompt will contain, never the audit record.
+    ///
+    /// Returns an outcome for every attempt, including the ones that produced no
+    /// summary: "nothing left to compact" and "the breaker refuses" are
+    /// different answers and a caller that has to report to a user needs both.
+    /// The circuit breaker is inherited from the checkpoint rather than started
+    /// fresh, so the reported count is the session's real one. An explicit manual
+    /// request still runs: it is the operator's single bounded probe of that
+    /// breaker, and a probe that succeeds resets the persisted count, so a
+    /// session whose provider recovered is not stranded. The `enabled` switch is
+    /// bypassed: an operator asking for this has already given consent.
+    pub async fn compact_resume_state(
+        &self,
+        state: &mut TaskState,
+        cancel: CancellationToken,
+    ) -> Result<ManualCompactionOutcome, crate::session::SessionError> {
+        let history = state.replayable_history(&self.model.history_protocol())?;
+        // A prior summary is part of what the next prompt would carry, so it
+        // has to be folded into the new one. Dropping it would silently lose
+        // everything the earlier compaction stood for.
+        let previous = state
+            .checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.summary.clone());
+        let persisted = state
+            .checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.compaction.clone())
+            .unwrap_or_default();
+
+        let mut runtime = CompactionRuntime::new(
+            self.model_compaction_enabled,
+            self.compaction_failure_threshold,
+        );
+        runtime.adopt_persisted_breaker(&persisted);
+
+        // Nothing was appended since the last compaction, so the only thing left
+        // to summarise is the summary itself. Re-summarising it would spend a
+        // model call to lose detail, which also makes a repeated request a safe
+        // no-op instead of a second, lossier compaction.
+        if history.is_empty() && previous.is_some() {
+            return Ok(ManualCompactionOutcome::unchanged(
+                persisted,
+                runtime.breaker_tripped(),
+                previous,
+            ));
+        }
+
+        let mut compacted = Vec::with_capacity(history.len() + 1);
+        if let Some(previous) = previous.as_ref() {
+            compacted.push(Message::assistant(previous.clone()));
+        }
+        compacted.extend(history);
+
+        let update = match maybe_compact_history(
+            &mut runtime,
+            self.model.as_ref(),
+            &compacted,
+            Vec::new(),
+            CompactionTrigger::Manual,
+            chrono::Utc::now(),
+            cancel,
+        )
+        .await
+        {
+            Ok(update) => update,
+            // The request's own bound is the one refusal a manual caller has to
+            // see: there was material, and it could not be sent without breaking
+            // the bound that exists to keep the request from growing past the
+            // window it shrinks. It is reported as a typed failure code rather
+            // than as "nothing to compact", because those are different answers
+            // and this type exists to keep them apart.
+            Err(CompactionDecline::UnboundedRequest) => {
+                return Ok(ManualCompactionOutcome::unbounded_request(
+                    persisted,
+                    runtime.breaker_tripped(),
+                    previous,
+                ));
+            }
+            // Everything else here is one of the benign answers: an empty prefix
+            // is "nothing to compact" in so many words, and the switch and the
+            // breaker do not gate a manual request at all.
+            Err(_) => {
+                return Ok(ManualCompactionOutcome::unchanged(
+                    persisted,
+                    runtime.breaker_tripped(),
+                    previous,
+                ));
+            }
+        };
+
+        if let Some(summary) = update.summary.clone() {
+            state.continue_from_summary(summary);
+            if let Some(checkpoint) = state.checkpoint.as_mut() {
+                checkpoint.compaction = update.state.clone();
+            }
+        }
+        Ok(ManualCompactionOutcome {
+            triggered: true,
+            breaker_open: runtime.breaker_tripped(),
+            state: update.state,
+            summary: update.summary,
+            failure_code: update.failure_code,
+        })
+    }
+
+    /// Return the host-selected execution profile for this Engine.
+    pub fn run_mode(&self) -> RunMode {
+        self.run_mode
+    }
+
+    pub fn workspace(&self) -> &Workspace {
+        &self.workspace
+    }
+
+    pub fn execution_environment(&self) -> &Arc<dyn ExecutionEnvironment> {
+        &self.environment
+    }
+
+    pub fn runtime_identity(&self) -> RuntimeIdentity {
+        let agent = self.agent_runtime.source_profile_identity();
+        let tools = self.registry.descriptors();
+        let mcp_servers = self
+            .registry
+            .extension::<McpRuntimeState>()
+            .map(|state| state.snapshots())
+            .unwrap_or_default();
+        self.build_runtime_identity(EngineRuntimeIdentityInput {
+            execution_policy: &self.execution_policy,
+            capability_snapshot: &self.capability_snapshot,
+            agent: &agent,
+            tools: &tools,
+            planner_prompt: self.planner.prompt(),
+            evaluator_prompt: self.evaluator.prompt(),
+            finalizer_prompt: self.finalizer.prompt(),
+            mcp_servers: &mcp_servers,
+        })
+    }
+
+    fn build_runtime_identity(&self, input: EngineRuntimeIdentityInput<'_>) -> RuntimeIdentity {
+        let mut identity = build_runtime_identity(RuntimeIdentityInput {
+            workspace: &self.workspace,
+            model_id: self.model.model_id(),
+            provider_target: self.model.client_id().as_str(),
+            run_model: self.run_model.as_ref(),
+            approval_policy: self.approval_policy,
+            max_steps: self.config.max_steps,
+            plan_enabled: self.config.plan_enabled,
+            system_prompt: self.context_manager.system_prompt(),
+            planner_prompt: input.planner_prompt,
+            evaluator_prompt: input.evaluator_prompt,
+            finalizer_prompt: input.finalizer_prompt,
+            execution_policy: input.execution_policy.clone(),
+            tools: input.tools,
+            capability_snapshot_id: Some(&input.capability_snapshot.snapshot_id),
+            execution_environment: Some(self.environment.identity()),
+            execution_capabilities: Some(self.environment.capabilities()),
+            agent: Some(input.agent),
+        });
+        identity.mcp_servers = input.mcp_servers.to_vec();
+        identity
+    }
+
+    async fn run_post_run_hooks(&self, ctx: CompletedRunContext) {
+        let ctx = PostRunHookContext {
+            workspace: &self.workspace,
+            memory_paths: &self.memory_paths,
+            session_id: ctx.session_id,
+            job_id: ctx.job_id,
+            run_id: ctx.run_id,
+            reason: ctx.reason,
+            output: ctx.output,
+            summary: ctx.summary,
+            cancel_token: ctx.cancel_token,
+        };
+        self.hooks.run_post_run(&ctx).await;
+    }
+
+    /// Run the agent loop for a user message.
+    ///
+    /// Returns a stream of events. The stream completes when the run terminates.
+    pub fn ask(&self, user_message: String, trace_writer: Option<TraceWriter>) -> RunStream<'_> {
+        let req = RunRequest {
+            session_id: crate::types::SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            user_message,
+            content_blocks: Vec::new(),
+            resume_state: None,
+        };
+
+        self.run(req, trace_writer)
+    }
+
+    /// Run the agent loop for an explicit request.
+    ///
+    /// The caller owns run identity so persisted artifacts and streamed events stay aligned.
+    pub fn run(&self, req: RunRequest, trace_writer: Option<TraceWriter>) -> RunStream<'_> {
+        self.run_with_cancel(req, trace_writer, CancellationToken::new())
+    }
+
+    /// Run the agent loop with an interface-owned cancellation token.
+    pub fn run_with_cancel(
+        &self,
+        req: RunRequest,
+        trace_writer: Option<TraceWriter>,
+        cancel: CancellationToken,
+    ) -> RunStream<'_> {
+        let session_id = req.session_id;
+        let job_id = req.job_id;
+        let run_id = req.run_id;
+        let user_message = req.user_message;
+        let content_blocks = req.content_blocks;
+        let resume_state = req.resume_state;
+        let stream_cancel = cancel.clone();
+        // Review tools may return source text to the in-process model, but a
+        // caller-provided TraceWriter is a durable boundary. Keep the same
+        // redaction guarantee for direct Engine consumers (CLI/embedders) as
+        // the API supervisor applies to its SSE and artifact projections.
+        let review_mode = self.run_mode == RunMode::Review;
+        // Dynamic catalogs publish only into the live registry. This private
+        // copy freezes both schemas and implementations for the whole run.
+        let run_registry = self.registry.snapshot();
+        let run_mcp_servers = run_registry
+            .extension::<McpRuntimeState>()
+            .map(|state| state.snapshots())
+            .unwrap_or_default();
+        let mcp_lifecycle_facts = run_registry
+            .extension::<McpRuntimeState>()
+            .map(|state| state.take_facts())
+            .unwrap_or_default();
+        let pinned_agent_profile = resume_state.as_ref().and_then(|state| {
+            // A successor run created from an interrupted snapshot must keep
+            // the exact profile that was admitted before the interruption.
+            // A completed product turn is a new user turn, so it may select a
+            // fresh procedure set. Explicit same-run requests remain pinned
+            // even when their lifecycle record already contains finalization.
+            let same_run = state.run_id == run_id;
+            let unfinished = state
+                .execution_lifecycle
+                .finalization
+                .as_ref()
+                .is_none_or(|finalization| finalization.completed_at.is_none());
+            (same_run || unfinished)
+                .then(|| {
+                    state
+                        .checkpoint
+                        .as_ref()
+                        .and_then(|checkpoint| checkpoint.agent_profile.as_ref())
+                        .or(state.agent_profile.as_ref())
+                })
+                .flatten()
+        });
+        let run_capabilities = run_registry
+            .descriptors()
+            .into_iter()
+            .filter_map(|descriptor| descriptor.capability_id)
+            .collect();
+        let resolved_agent = self.agent_runtime.resolve_for_run_with_capabilities(
+            &user_message,
+            pinned_agent_profile,
+            run_capabilities,
+        );
+        let run_policy = resolved_agent
+            .as_ref()
+            .map(|agent| execution_policy_for_agent(&self.execution_policy, &agent.profile))
+            .unwrap_or_else(|_| self.execution_policy.clone());
+        let run_descriptors = resolved_agent
+            .as_ref()
+            .map(|agent| descriptors_for_agent(&run_registry, &agent.profile))
+            .unwrap_or_else(|_| run_registry.descriptors());
+        let run_capability_snapshot = CapabilitySnapshot::from_descriptors(&run_descriptors);
+        let run_planner_prompt = resolved_agent
+            .as_ref()
+            .map(|agent| {
+                composed_prompt(
+                    self.planner.prompt(),
+                    agent.profile.prompt_slot(PromptSlotRole::Planner),
+                    "planner",
+                )
+            })
+            .unwrap_or_else(|_| self.planner.prompt().to_string());
+        let run_evaluator_prompt = resolved_agent
+            .as_ref()
+            .map(|agent| {
+                composed_prompt(
+                    self.evaluator.prompt(),
+                    agent.profile.prompt_slot(PromptSlotRole::Evaluator),
+                    "evaluator",
+                )
+            })
+            .unwrap_or_else(|_| self.evaluator.prompt().to_string());
+        let run_finalizer_prompt = resolved_agent
+            .as_ref()
+            .map(|agent| {
+                composed_prompt(
+                    self.finalizer.prompt(),
+                    agent.profile.prompt_slot(PromptSlotRole::Finalizer),
+                    "finalizer",
+                )
+            })
+            .unwrap_or_else(|_| self.finalizer.prompt().to_string());
+        let runtime_identity = resolved_agent
+            .as_ref()
+            .map(|agent| {
+                self.build_runtime_identity(EngineRuntimeIdentityInput {
+                    execution_policy: &run_policy,
+                    capability_snapshot: &run_capability_snapshot,
+                    agent: &agent.identity,
+                    tools: &run_descriptors,
+                    planner_prompt: &run_planner_prompt,
+                    evaluator_prompt: &run_evaluator_prompt,
+                    finalizer_prompt: &run_finalizer_prompt,
+                    mcp_servers: &run_mcp_servers,
+                })
+            })
+            .unwrap_or_else(|_| self.runtime_identity());
+        let stream_agent_profile = resolved_agent
+            .as_ref()
+            .ok()
+            .map(|agent| agent.profile.clone());
+        let (control_handle, steer_rx, mut message_event_rx) = control_channel();
+        let steer_rx: SteerReceiver = Arc::new(AsyncMutex::new(steer_rx));
+        let steer_lifecycle = SteerLifecycle::default();
+
+        RunStream {
+            session_id,
+            job_id,
+            run_id,
+            cancel_token: cancel,
+            control: control_handle,
+            runtime_identity: runtime_identity.clone(),
+            agent_profile: stream_agent_profile,
+            inner: Box::pin(stream! {
+                let mut run_summary = RunSummary::new(user_message.clone());
+
+                // Derive model-visible history items
+                // once, at the durable write choke point. Every event that
+                // reaches the trace also yields its explicit history items so
+                // resume no longer reclassifies audit events heuristically.
+                let mut history_projector =
+                    crate::engine::history_projection::HistoryProjector::new();
+
+                macro_rules! complete_run {
+                    ($reason:expr, $output:expr) => {{
+                        let reason = $reason;
+                        let output = $output;
+                        // The last safe point may have passed while an LLM
+                        // turn was resolving. Close any remaining steers
+                        // before the terminal fact so every accepted API
+                        // control has an explicit lifecycle outcome.
+                        let mut pending_steers = steer_rx.lock().await;
+                        // Reject a concurrent API submission before draining.
+                        // Any sender that won the race is already buffered and
+                        // is surfaced as a dropped lifecycle event below.
+                        pending_steers.close();
+                        while let Ok(steer) = pending_steers.try_recv() {
+                            let dropped = crate::engine::control::steer_dropped_event(
+                                steer.id.0,
+                                steer.unified_message,
+                                "run completed before the steer reached a safe point".to_string(),
+                            );
+                            run_summary.record_event(&dropped);
+                            append_trace(&mut history_projector, &trace_writer, &dropped, review_mode);
+                            yield dropped;
+                        }
+                        drop(pending_steers);
+                        message_event_rx.close();
+                        while let Ok(message_event) = message_event_rx.try_recv() {
+                            run_summary.record_event(&message_event);
+                            append_trace(&mut history_projector, &trace_writer, &message_event, review_mode);
+                            yield message_event;
+                        }
+                        for accepted in steer_lifecycle.take_unapplied().await {
+                            let dropped = crate::engine::control::steer_dropped_event(
+                                accepted.id,
+                                accepted.unified_message,
+                                "run completed before the accepted steer reached a model turn".to_string(),
+                            );
+                            run_summary.record_event(&dropped);
+                            append_trace(&mut history_projector, &trace_writer, &dropped, review_mode);
+                            yield dropped;
+                        }
+                        let event = StreamEvent::RunCompleted {
+                            reason: reason.clone(),
+                            output: output.clone(),
+                        };
+                        append_trace(&mut history_projector, &trace_writer, &event, review_mode);
+                        yield event;
+                        self.run_post_run_hooks(CompletedRunContext {
+                            session_id,
+                            job_id,
+                            run_id,
+                            reason,
+                            output,
+                            summary: run_summary.clone(),
+                            cancel_token: stream_cancel.clone(),
+                        })
+                        .await;
+                        return;
+                    }};
+                }
+                macro_rules! yield_traced {
+                    ($event:expr) => {{
+                        let event = $event;
+                        append_trace(&mut history_projector, &trace_writer, &event, review_mode);
+                        yield event;
+                    }};
+                }
+
+                let start_event = StreamEvent::RunStarted {
+                    run_id,
+                    job_id,
+                    user_message: user_message.clone(),
+                    content_blocks: content_blocks.clone(),
+                };
+                append_trace(&mut history_projector, &trace_writer, &start_event, review_mode);
+                yield start_event;
+
+                for fact in mcp_lifecycle_facts {
+                    let event = match fact {
+                        McpLifecycleFact::Degraded {
+                            server_config_id,
+                            failure_code,
+                        } => {
+                            let required = run_mcp_servers
+                                .iter()
+                                .find(|snapshot| snapshot.server_config_id == server_config_id)
+                                .is_some_and(|snapshot| snapshot.required);
+                            StreamEvent::McpServerDegraded {
+                                server_config_id,
+                                required,
+                                failure_code,
+                            }
+                        }
+                        McpLifecycleFact::CapabilitiesRefreshed {
+                            server_config_id,
+                            snapshot_id,
+                            added,
+                            removed,
+                            changed,
+                        } => StreamEvent::McpCapabilitiesRefreshed {
+                            server_config_id,
+                            snapshot_id,
+                            added,
+                            removed,
+                            changed,
+                        },
+                    };
+                    yield_traced!(event);
+                }
+
+                let resolved_agent = match resolved_agent {
+                    Ok(agent) => agent,
+                    Err(error) => {
+                        let event = StreamEvent::ModelStatus {
+                            status: "agent_activation_failed".to_string(),
+                            message: format!("{}: {error}", error.code()),
+                        };
+                        yield_traced!(event);
+                        complete_run!(
+                            TerminationReason::Error,
+                            Some("Agent activation failed before model execution".to_string())
+                        );
+                    }
+                };
+
+                yield_traced!(StreamEvent::AgentProfileActivated {
+                    identity: Box::new(resolved_agent.identity.clone()),
+                    resumed_from_snapshot: resolved_agent.resumed_from_snapshot,
+                    diagnostics: resolved_agent.diagnostics.clone(),
+                });
+                if let Some(bundle) = resolved_agent.profile.instructions.as_ref() {
+                    yield_traced!(StreamEvent::WorkspaceInstructionsResolved {
+                        bundle_hash: bundle.bundle_hash(),
+                        layer_count: bundle.all_layers().len(),
+                        rejected_count: bundle.rejected.len(),
+                        truncated: bundle.truncated,
+                    });
+                }
+                yield_traced!(StreamEvent::ExecutionStrategySelected {
+                    policy: run_policy.clone(),
+                });
+                if let Some(selection) = resolved_agent.profile.procedures.as_ref() {
+                    yield_traced!(StreamEvent::ProceduresSelected {
+                        profile_hash: resolved_agent.profile.profile_hash.clone(),
+                        selected: selection
+                            .selected
+                            .iter()
+                            .map(|selected| selected.reference.clone())
+                            .collect(),
+                        considered_count: selection.considered.len(),
+                        excluded_count: selection
+                            .risk_excluded
+                            .len()
+                            .saturating_add(selection.conflict_excluded.len()),
+                    });
+                }
+                for procedure in &resolved_agent.profile.hydrated_procedures {
+                    yield_traced!(StreamEvent::ProcedureHydrated {
+                        reference: procedure.reference.clone(),
+                        truncated: procedure.truncated,
+                        dropped_bytes: procedure.dropped_bytes,
+                        step_id: None,
+                        hydration_hash: Some(procedure.body_hash.clone()),
+                    });
+                }
+                let react_procedure_context = if matches!(run_policy.strategy, ExecutionStrategy::React) {
+                    procedure_prompt_for_target(
+                        &resolved_agent.profile,
+                        &run_capability_snapshot,
+                        &user_message,
+                        "react_run",
+                        None,
+                    )
+                } else {
+                    Default::default()
+                };
+                for application in &react_procedure_context.applications {
+                    yield_traced!(StreamEvent::ProcedureApplied {
+                        application: Box::new(application.clone()),
+                    });
+                }
+
+                if stream_cancel.is_cancelled() {
+                    complete_run!(TerminationReason::Cancelled, None);
+                }
+
+                warn_on_runtime_identity_mismatch(resume_state.as_ref(), &runtime_identity);
+
+                let resume_checkpoint = resume_state
+                    .as_ref()
+                    .and_then(|state| state.checkpoint.as_ref());
+                // The precedence between the three stored history sources lives
+                // on TaskState, so anything else that has to reconstruct what a
+                // resumed run would see (the REPL's `/compact`) agrees with the
+                // resume path by construction instead of by review.
+                let history: Vec<Message> = match resume_state
+                    .as_ref()
+                    .map(|state| state.replayable_history(&self.model.history_protocol()))
+                {
+                    Some(Ok(messages)) => messages,
+                    Some(Err(error)) => {
+                        let message = StreamEvent::ModelStatus {
+                            status: "resume_rejected".to_string(),
+                            message: format!("canonical session cannot be projected safely: {error}"),
+                        };
+                        yield_traced!(message);
+                        complete_run!(
+                            TerminationReason::Error,
+                            Some("resume rejected due to invalid canonical session history".to_string())
+                        );
+                    }
+                    None => Vec::new(),
+                };
+                // The trace is the durable record of
+                // model-visible history, the snapshot is a cache. A run killed
+                // before its checkpoint landed has an empty snapshot but a
+                // complete trace, so fall back to the trace rather than
+                // resuming with no context at all. The snapshot still wins when
+                // it has content: it is already protocol-projected, and
+                // preferring it keeps every existing resume path byte-identical.
+                //
+                // Phase 8 carves out the one case where empty is the answer: a
+                // compacted session holds a summary *instead of* its history, so
+                // refilling it from the trace would restore exactly what the
+                // compaction just dropped and leave the prompt larger than
+                // before. Only a deliberately bounded checkpoint is exempt; a
+                // missing checkpoint still falls back.
+                //
+                // A fork-at-message child is the second such constructor: its
+                // seed stops before the edited user message, and the parent run
+                // its resume points at still holds everything after that point.
+                let bounded_on_purpose = resume_state
+                    .as_ref()
+                    .is_some_and(|state| state.history_is_deliberately_empty());
+                let history = if history.is_empty() && !bounded_on_purpose {
+                    match resume_state.as_ref().map(|state| state.run_id) {
+                        Some(source_run) => {
+                            let runs_dir = self.workspace.state_dir.join("runs");
+                            match crate::state::initial_history::read_history_chain(
+                                source_run,
+                                |run| runs_dir.join(run.to_string()),
+                                crate::state::initial_history::DEFAULT_HISTORY_TAIL_ITEMS,
+                            ) {
+                                Ok(chain) => {
+                                    let messages = chain.to_messages();
+                                    if !messages.is_empty() {
+                                        tracing::info!(
+                                            %source_run,
+                                            segments = chain.segments.len(),
+                                            items = chain.items.len(),
+                                            complete = chain.is_complete(),
+                                            "recovered resume history from trace",
+                                        );
+                                    }
+                                    messages
+                                }
+                                Err(error) => {
+                                    // Losing the fallback is not fatal: the run
+                                    // proceeds with the (empty) snapshot, which
+                                    // is exactly the pre-Phase-6 behavior.
+                                    tracing::warn!(
+                                        %source_run,
+                                        "could not read resume history from trace: {error}",
+                                    );
+                                    Vec::new()
+                                }
+                            }
+                        }
+                        None => history,
+                    }
+                } else {
+                    history
+                };
+                // Record the hand-off explicitly. rove owns a directory per run,
+                // so a resumed run writes its own trace instead of appending to
+                // its predecessor's; without this marker the two files would
+                // look like unrelated runs and the chain could not be walked.
+                if let (Some(tw), Some(source_run)) = (
+                    trace_writer.as_ref(),
+                    resume_state
+                        .as_ref()
+                        .map(|state| state.run_id)
+                        .filter(|source_run| *source_run != run_id),
+                ) {
+                    let source_trace = self
+                        .workspace
+                        .state_dir
+                        .join("runs")
+                        .join(source_run.to_string())
+                        .join("trace.jsonl");
+                    let through_seq =
+                        crate::state::initial_history::read_trace_high_water_seq(&source_trace)
+                            .unwrap_or(0);
+                    if let Err(error) = tw.append_resume_link(source_run, through_seq) {
+                        tracing::warn!(
+                            %source_run,
+                            "could not record the resume link: {error}",
+                        );
+                    }
+                }
+                let compact_summary = resume_checkpoint
+                    .and_then(|checkpoint| checkpoint.summary.clone());
+                let resume_summary = resume_state
+                    .as_ref()
+                    .and_then(|state| state.summary.as_deref());
+                let prompt_memory = load_prompt_memory_from_paths_sync(
+                    &self.memory_paths,
+                    session_id,
+                    resume_summary,
+                    &user_message,
+                )
+                .unwrap_or_default();
+                let mut working_memory: Vec<Message> = resolved_agent.prompt.messages.clone();
+                working_memory.extend(react_procedure_context.messages.clone());
+                if let Some(index) = prompt_memory.durable_index {
+                    working_memory.push(durable_memory_message(&index));
+                }
+                if let Some(summary) = prompt_memory.session_summary {
+                    working_memory.push(session_summary_message(&summary));
+                }
+                let step: u32 = resume_checkpoint
+                    .map(|checkpoint| checkpoint.last_step)
+                    .or_else(|| resume_state.as_ref().map(|state| state.step))
+                    .unwrap_or(0);
+                let plan = resume_checkpoint
+                    .and_then(|checkpoint| checkpoint.plan.clone())
+                    .or_else(|| resume_state.as_ref().and_then(|state| state.plan.clone()));
+
+                // Execution budgets are per-run accounting. A genuine resume of
+                // the same run must restore consumed usage so a restart cannot
+                // hand out a fresh allowance, but a new turn that merely
+                // continues a session starts from zero. Inheriting usage across
+                // turns would progressively starve a long session until no work
+                // could run at all.
+                let resumes_same_run = resume_state
+                    .as_ref()
+                    .is_some_and(|state| state.run_id == run_id);
+                let execution_lifecycle = if resumes_same_run {
+                    resume_state
+                        .as_ref()
+                        .map(|state| state.execution_lifecycle.clone())
+                        .unwrap_or_default()
+                } else {
+                    crate::execution::ExecutionLifecycleState::default()
+                };
+                // The React migration below reads `step` as a model-turn count.
+                // It applies only to the run that actually consumed those turns.
+                let budget_step = if resumes_same_run { step } else { 0 };
+
+                let execution_policy = run_policy.clone();
+                let run_planner = Planner::new(run_planner_prompt.clone());
+                let run_evaluator = PlanEvaluator::new(run_evaluator_prompt.clone());
+                let run_finalizer = Finalizer::new(run_finalizer_prompt.clone());
+                // The compaction breaker is a session fact, not a run one. Without
+                // this the count restarts at zero on every turn, so a session whose
+                // summary model is already broken retries it up to the threshold
+                // again and again. The persisted cooldown is what makes adopting
+                // the count safe: the automatic path waits for it and then spends
+                // exactly one probe, instead of either gating forever or retrying
+                // every turn.
+                //
+                // Only the state's own session can contribute it: a fork child
+                // seeds from the parent's snapshot under a new session id, and
+                // inheriting the parent's outage would refuse the child's
+                // automatic compaction for a failure it never had.
+                let mut compaction = CompactionRuntime::new(
+                    self.model_compaction_enabled,
+                    self.compaction_failure_threshold,
+                );
+                if resume_state
+                    .as_ref()
+                    .is_some_and(|state| inherits_session_breaker(state, session_id))
+                    && let Some(checkpoint) = resume_checkpoint
+                {
+                    compaction.adopt_persisted_breaker(&checkpoint.compaction);
+                }
+                let loop_context = LoopContext {
+                    model: self.model.as_ref(),
+                    registry: &run_registry,
+                    capability_snapshot: &run_capability_snapshot,
+                    context_manager: &self.context_manager,
+                    workspace: &self.workspace,
+                    environment: self.environment.clone(),
+                    memory_paths: &self.memory_paths,
+                    session_id,
+                    max_steps: self.config.max_steps,
+                    execution_policy: execution_policy.clone(),
+                    provider_retry: self.config.provider_retry.clone(),
+                    silent_turn_recovery: self.config.silent_turn_recovery,
+                    finalizer: &run_finalizer,
+                    agent_profile: Some(Arc::new(resolved_agent.profile.clone())),
+                    agent_planner_summary: Some(resolved_agent.prompt.planner_summary.clone()),
+                    instruction_overlays_seen: Arc::new(Mutex::new(BTreeSet::new())),
+                    run_mode: self.run_mode,
+                    approval_policy: self.approval_policy,
+                    approval_decision: self.approval_decision,
+                    approval_provider: self.approval_provider.clone(),
+                    input_provider: self.input_provider.clone(),
+                    hooks: self.hooks.clone(),
+                    compaction,
+                    steer_rx: Some(steer_rx.clone()),
+                    steer_lifecycle: Some(steer_lifecycle.clone()),
+                    // Artifacts live beside the trace and state snapshot for
+                    // this run, so a resume reads the same ledger the original
+                    // attempt wrote and download requests resolve against the
+                    // run they name rather than an ambient directory.
+                    tool_artifacts: Some(Arc::new(ToolArtifactStore::new(
+                        self.workspace
+                            .state_dir
+                            .join("runs")
+                            .join(run_id.to_string()),
+                    ))),
+                };
+
+                let mut runtime: BoxStream<'_, LoopItem> = match execution_policy.strategy {
+                    ExecutionStrategy::PlanReact => run_planned_loop(
+                        loop_context,
+                        &run_planner,
+                        &run_evaluator,
+                        &run_finalizer,
+                        PlanLoopState {
+                            user_message,
+                            content_blocks: content_blocks.clone(),
+                            working_memory,
+                            compact_summary,
+                            history,
+                            plan,
+                            step_ledger: resume_state
+                                .as_ref()
+                                .map(|state| state.step_ledger.clone())
+                                .unwrap_or_default(),
+                            execution_lifecycle: execution_lifecycle.clone(),
+                        },
+                        stream_cancel.clone(),
+                    ),
+                    ExecutionStrategy::React => run_unplanned_loop(
+                        loop_context,
+                        RunLoopState {
+                            user_message,
+                            content_blocks,
+                            working_memory,
+                            compact_summary,
+                            history,
+                            step: budget_step,
+                            execution_lifecycle,
+                        },
+                        stream_cancel.clone(),
+                    ),
+                };
+
+                loop {
+                    tokio::select! {
+                        biased;
+                        Some(message_event) = message_event_rx.recv() => {
+                            run_summary.record_event(&message_event);
+                            yield_traced!(message_event);
+                        }
+                        item = runtime.next() => {
+                            match item {
+                                Some(LoopItem::Event(event)) => {
+                                    run_summary.record_event(&event);
+                                    yield_traced!(event);
+                                }
+                                Some(LoopItem::Complete { reason, output }) => {
+                                    complete_run!(reason, output);
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+                }
+
+                complete_run!(
+                    TerminationReason::Error,
+                    Some("runtime loop ended without completion".to_string())
+                );
+            }),
+        }
+    }
+}
+
+struct EngineRuntimeIdentityInput<'a> {
+    execution_policy: &'a ExecutionPolicy,
+    capability_snapshot: &'a CapabilitySnapshot,
+    agent: &'a crate::agents::AgentProfileIdentity,
+    tools: &'a [ToolDescriptor],
+    planner_prompt: &'a str,
+    evaluator_prompt: &'a str,
+    finalizer_prompt: &'a str,
+    mcp_servers: &'a [McpServerRuntimeSnapshot],
+}
+
+struct CompletedRunContext {
+    session_id: SessionId,
+    job_id: JobId,
+    run_id: RunId,
+    reason: TerminationReason,
+    output: Option<String>,
+    summary: RunSummary,
+    cancel_token: CancellationToken,
+}
+
+fn resolved_agent_facts(
+    model: &dyn ModelClient,
+    registry: &ToolRegistry,
+    context_tokens: Option<u32>,
+) -> ResolvedRuntimeFacts {
+    let available_capabilities = registry
+        .descriptors()
+        .into_iter()
+        .filter_map(|descriptor| descriptor.capability_id)
+        .collect::<BTreeSet<_>>();
+    let provider = model.capabilities();
+    ResolvedRuntimeFacts {
+        available_capabilities,
+        native_tool_use: provider.tool_calls,
+        // ProviderCapabilities does not yet expose a normalized structured
+        // output bit. A package requiring it must fail rather than have the
+        // runtime infer support from a provider name.
+        structured_output: false,
+        context_tokens,
+        modalities: BTreeSet::new(),
+    }
+}
+
+fn execution_policy_for_agent(
+    base: &ExecutionPolicy,
+    profile: &AgentRuntimeProfile,
+) -> ExecutionPolicy {
+    let mut policy = base.clone();
+    if let Some(strategy) = profile.strategy.as_deref() {
+        policy.strategy = match strategy {
+            "react" => ExecutionStrategy::React,
+            "plan_react" => ExecutionStrategy::PlanReact,
+            _ => policy.strategy,
+        };
+    }
+    if let Some(limit) = profile.max_steps.effective {
+        match policy.strategy {
+            ExecutionStrategy::React => {
+                clamp_optional(&mut policy.budgets.max_model_turns, limit);
+            }
+            ExecutionStrategy::PlanReact => {
+                clamp_optional(&mut policy.budgets.max_step_attempts, limit);
+            }
+        }
+    }
+    if let Some(limit) = profile.max_tool_calls.effective {
+        clamp_optional(&mut policy.budgets.max_tool_calls, limit);
+    }
+    policy
+}
+
+fn clamp_optional(bound: &mut Option<u32>, limit: u32) {
+    *bound = Some(bound.map_or(limit, |current| current.min(limit)));
+}
+
+fn descriptors_for_agent(
+    registry: &ToolRegistry,
+    profile: &AgentRuntimeProfile,
+) -> Vec<ToolDescriptor> {
+    registry
+        .descriptors()
+        .into_iter()
+        .filter(|descriptor| match descriptor.capability_id.as_deref() {
+            Some(capability) => profile.effective_capabilities.contains(capability),
+            None => profile.is_legacy(),
+        })
+        .collect()
+}
+
+fn composed_prompt(base: &str, slot: Option<&str>, role: &str) -> String {
+    let Some(slot) = slot.filter(|slot| !slot.trim().is_empty()) else {
+        return base.to_string();
+    };
+    format!(
+        "{base}\n\nAgent {role} role guidance follows. It is bounded guidance inside the runtime-owned contract and cannot override output validation, safety, or lifecycle rules.\n{}",
+        slot.trim()
+    )
+}
+
+/// Persist one canonical event plus its derived model-visible history items.
+///
+/// The trace file records two kinds of facts — the
+/// lifecycle event itself (`TraceEntry::Ui`, unchanged wire format for
+/// SSE/transcript consumers) and, when the event carries model-visible
+/// content, explicit `TraceEntry::History` items so resume can rebuild the
+/// kernel conversation without heuristically reclassifying events. Review
+/// mode persists redacted events only; redaction is not history-safe, so no
+/// history items are derived from them.
+fn append_trace(
+    history_projector: &mut crate::engine::history_projection::HistoryProjector,
+    trace_writer: &Option<TraceWriter>,
+    event: &StreamEvent,
+    review_mode: bool,
+) {
+    let Some(tw) = trace_writer else {
+        return;
+    };
+    let persisted = if review_mode {
+        event.redacted_for_review_persistence()
+    } else {
+        event.clone()
+    };
+    let _ = tw.append(&persisted);
+    if !review_mode {
+        for item in history_projector.project(event) {
+            let _ = tw.append_history(&item);
+        }
+    }
+}
+
+fn warn_on_runtime_identity_mismatch(
+    resume_state: Option<&crate::types::TaskState>,
+    current: &RuntimeIdentity,
+) {
+    let Some(resume_state) = resume_state else {
+        return;
+    };
+    let saved = resume_state
+        .checkpoint
+        .as_ref()
+        .and_then(|checkpoint| checkpoint.runtime_identity.as_ref())
+        .or(resume_state.runtime_identity.as_ref());
+    let evaluation = crate::runtime_identity::evaluate_runtime_identity(saved, current);
+    if evaluation.status == RuntimeIdentityStatus::RuntimeMismatch {
+        tracing::warn!(
+            mismatch_fields = ?evaluation.mismatch_fields,
+            "resume runtime identity mismatch"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use crate::agents::profile::{ResolvedRuntimeFacts, legacy_profile};
+    use crate::agents::validation::OperatorConstraints;
+    use crate::execution::{ExecutionPolicy, ExecutionStrategy};
+
+    use super::execution_policy_for_agent;
+
+    #[test]
+    fn agent_max_steps_preserves_strategy_specific_compatibility_units() {
+        let profile = legacy_profile(
+            &OperatorConstraints {
+                max_steps_cap: Some(1),
+                ..OperatorConstraints::unconstrained()
+            },
+            &ResolvedRuntimeFacts {
+                available_capabilities: BTreeSet::new(),
+                native_tool_use: true,
+                structured_output: false,
+                context_tokens: None,
+                modalities: BTreeSet::new(),
+            },
+        );
+
+        let planned = execution_policy_for_agent(
+            &ExecutionPolicy::from_max_steps_and_plan_flag(1, true),
+            &profile,
+        );
+        assert_eq!(planned.strategy, ExecutionStrategy::PlanReact);
+        assert_eq!(planned.budgets.max_step_attempts, Some(1));
+        assert_eq!(planned.budgets.max_model_turns, None);
+
+        let react = execution_policy_for_agent(
+            &ExecutionPolicy::from_max_steps_and_plan_flag(1, false),
+            &profile,
+        );
+        assert_eq!(react.strategy, ExecutionStrategy::React);
+        assert_eq!(react.budgets.max_model_turns, Some(1));
+        assert_eq!(react.budgets.max_step_attempts, None);
+    }
+}
