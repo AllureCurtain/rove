@@ -10,7 +10,9 @@ test("empty -> open workspace -> run -> complete on live shell mock", async ({
   const api = await installMockProductApi(page);
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "打开工作区以开始" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "让 rove 做点什么？" }),
+  ).toBeVisible();
 
   await openWorkspace(page);
   // The work panel is closed by default (design §3.3); the floating toggle
@@ -171,6 +173,9 @@ test("settings providers can test and list models without raw keys", async ({
 });
 
 async function openWorkspace(page: Page) {
+  // §9.1: the absolute-path field lives behind the collapsed manual entry;
+  // the visible flow is the shared open-workspace dialog.
+  await page.getByText("手动输入路径").click();
   await page.getByLabel("绝对路径").fill(WORKSPACE_ROOT);
   await page.getByRole("button", { name: "打开工作区", exact: true }).click();
   await expect(page).toHaveURL(/\/w\/workspace-1\/s\/session-1$/u);

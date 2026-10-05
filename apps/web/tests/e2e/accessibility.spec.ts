@@ -194,7 +194,9 @@ test("the empty shell has no WCAG violations", async ({ page }) => {
   await page.setViewportSize(VIEWPORT);
   await installMockProductApi(page);
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "打开工作区以开始" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "让 rove 做点什么？" }),
+  ).toBeVisible();
   await expectNoViolations(page, "empty shell");
 });
 
@@ -252,6 +254,7 @@ test("a live approval and its acknowledgement have no WCAG violations", async ({
   await seedPanelOpen(page);
   await installMockProductApi(page, { mode: "approval" });
   await page.goto("/");
+  await page.getByText("手动输入路径").click();
   await page.getByLabel("绝对路径").fill("D:/tmp/rove-a11y");
   await page.getByRole("button", { name: "打开工作区", exact: true }).click();
   const composer = page.getByRole("textbox", { name: COMPOSER });

@@ -116,6 +116,17 @@ export interface MockProductApiOptions {
   mcpProbeTools?: ProductMcpToolDescriptor[];
   activeWorkspaceId?: string;
   activeSessionId?: string;
+  /**
+   * Seed `preferences.provider_selection`. A `profile_id` that no seeded
+   * profile owns is exactly the §9.2 no-model state: the selection survives
+   * but cannot be satisfied.
+   */
+  providerSelection?: {
+    profile_id?: string | null;
+    model?: string;
+    approval?: string;
+    max_steps?: number;
+  };
   mode?: MockJobMode;
   transcriptDelayMs?: Record<string, number>;
   transcriptFailures?: Record<string, number>;
@@ -472,6 +483,9 @@ export async function installMockProductApi(
       revision: 0,
       theme: "light",
       default_approval_policy: "ask",
+      ...(options.providerSelection
+        ? { provider_selection: options.providerSelection }
+        : {}),
       ...(options.activeWorkspaceId
         ? { active_workspace_id: options.activeWorkspaceId }
         : {}),

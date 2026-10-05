@@ -10,6 +10,7 @@ async function shot(page: Page, name: string) {
 }
 
 async function openWorkspace(page: Page) {
+  await page.getByText("手动输入路径").click();
   await page.getByLabel("绝对路径").fill(WORKSPACE_ROOT);
   await page.getByRole("button", { name: "打开工作区", exact: true }).click();
   await expect(page).toHaveURL(/\/w\/workspace-1\/s\/session-1$/u);
