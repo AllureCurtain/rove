@@ -13,10 +13,17 @@ import {
  * removes. The arm expires on its own, and a dismissed menu never reopens armed.
  */
 async function openSidebarMenu(page: import("@playwright/test").Page) {
-  await page.getByRole("button", { name: /的操作$/ }).first().click();
+  // Session rows carry their own ⋯ menu under the same "…的操作" pattern, so
+  // scope to the project row or the click lands on a session menu instead.
+  await page
+    .locator(".workspace-group")
+    .getByRole("button", { name: /的操作$/ })
+    .click();
 }
 
-test("removing a workspace needs a second click", async ({ page }) => {
+test("removing a workspace needs an armed click and a dialog confirm", async ({
+  page,
+}) => {
   const workspace = createMockWorkspace();
   const session = createMockSession();
   const api = await installMockProductApi(page, {
@@ -36,7 +43,15 @@ test("removing a workspace needs a second click", async ({ page }) => {
   await expect(armed).toHaveAttribute("data-armed", "true");
   expect(api.workspaces).toHaveLength(1);
 
+  // The armed click opens a dialog that counts the sessions being removed;
+  // only its confirm commits the removal.
   await armed.click();
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("rove-shell-demo");
+  expect(api.workspaces).toHaveLength(1);
+
+  await dialog.getByRole("button", { name: "移除项目" }).click();
   await expect.poll(() => api.workspaces).toHaveLength(0);
 });
 

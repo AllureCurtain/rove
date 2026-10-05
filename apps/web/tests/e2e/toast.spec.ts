@@ -103,9 +103,12 @@ test("the same session failing twice inside the window says it once", async ({ p
   await page.goto(`/w/${workspace.id}/s/${active.id}`);
   await expect(page.getByRole("heading", { name: "Active session" })).toBeVisible();
   const toast = page.locator(TOAST);
+  // Sessions render in the flat zone and inside their project group (§7.1);
+  // either row carries the status text this test watches.
   const backgroundRow = page
     .locator(".session-item")
-    .filter({ hasText: "Background session" });
+    .filter({ hasText: "Background session" })
+    .first();
 
   // First failure: the reader is told, and can dismiss it like any other toast.
   setStatus(api, background.id, "error");
@@ -166,7 +169,7 @@ test("the active session reports its own failure inline", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Active session" })).toBeVisible();
   setStatus(api, session.id, "error");
   await expect(
-    page.locator(".session-item").filter({ hasText: "Active session" }),
+    page.locator(".session-item").filter({ hasText: "Active session" }).first(),
   ).toContainText("失败");
   await page.waitForTimeout(3_000);
   await expect(page.locator(TOAST)).toHaveCount(0);

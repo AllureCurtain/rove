@@ -24,14 +24,20 @@ test("project disclosure does not navigate and top new session keeps workspace i
   await sidebar.getByRole("button", { name: "收起 alpha 的会话" }).click();
   await expect(sidebar.getByRole("button", { name: "展开 alpha 的会话" })).toHaveAttribute("aria-expanded", "false");
   await expect(page).toHaveURL(originalUrl);
-  await expect(sidebar.getByText("Alpha history", { exact: true })).toBeHidden();
+  // The session still shows in the flat Sessions zone (§7.1); only its row
+  // inside the collapsed project group hides.
+  await expect(
+    sidebar.locator(".workspace-group").getByText("Alpha history", { exact: true }),
+  ).toBeHidden();
 
   await sidebar.getByRole("button", { name: "展开 beta 的会话" }).click();
   await expect(sidebar.getByRole("button", { name: "收起 beta 的会话" })).toHaveAttribute("aria-expanded", "true");
   await expect(page).toHaveURL(originalUrl);
   const actions = sidebar.getByRole("button", { name: "beta 的操作" });
   await actions.click();
-  await expect(sidebar.getByRole("menuitem", { name: "固定工作区", exact: true })).toBeFocused();
+  // The menu focuses its first item; in the browser build there is no
+  // file-manager item, so that is Rename.
+  await expect(sidebar.getByRole("menuitem", { name: "重命名项目", exact: true })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(actions).toBeFocused();
   await expect(page).toHaveURL(originalUrl);

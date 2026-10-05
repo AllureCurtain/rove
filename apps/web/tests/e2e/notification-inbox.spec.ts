@@ -138,8 +138,10 @@ test("a row whose session is gone says so instead of closing on nothing", async 
   // the live array, so removing it is what the shell reads on the next refresh.
   // Waiting for the rail to drop the row is what makes "the catalog no longer
   // has it" true on the client side rather than only on the mock's.
+  // The session renders in the flat Sessions zone and inside its project
+  // group (§7.1), so the row exists twice until the catalog drops it.
   const railRow = page.locator(".session-item").filter({ hasText: "Background session" });
-  await expect(railRow).toHaveCount(1);
+  await expect(railRow).toHaveCount(2);
   api.sessions.splice(
     api.sessions.findIndex((session) => session.id === background.id),
     1,

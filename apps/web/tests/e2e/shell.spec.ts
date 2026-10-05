@@ -96,7 +96,12 @@ test("inspector shows empty then completed states during a run", async ({ page }
 test("benchmark runner is not exposed in product Settings", async ({ page }) => {
   await installMockProductApi(page);
   await page.goto("/");
-  await page.getByLabel("设置", { exact: true }).click();
+  // The boot surface's top bar carries its own 设置 gear that lands on
+  // /settings/general; the rail footer entry is the product one (providers).
+  await page
+    .locator(".product-sidebar")
+    .getByLabel("设置", { exact: true })
+    .click();
   await expect(page.locator(".settings-nav").getByRole("button", { name: "高级", exact: true })).toHaveCount(0);
   await expect(page).toHaveURL(/\/settings\/providers$/u);
   await expect(page.getByRole("button", { name: /Benchmark runner/ })).toHaveCount(0);

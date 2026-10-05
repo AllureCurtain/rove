@@ -195,7 +195,13 @@ async function openSession(page: Page, workspaceId: string, sessionId: string) {
 }
 
 async function switchTo(page: Page, title: string) {
-  await page.getByRole("button", { name: title, exact: true }).click();
+  // The rail lists a session once per zone it belongs to (§7); the row's
+  // accessible name is comma-joined ("Title, workspace"), so match the title
+  // prefix inside a project group where each session resolves once.
+  await page
+    .locator(".workspace-group")
+    .getByRole("button", { name: new RegExp(`^${title}(?:,|$)`) })
+    .click();
 }
 
 function distanceFromBottom(scroller: Locator) {

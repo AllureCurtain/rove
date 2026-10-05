@@ -37,7 +37,12 @@ test("hovering a session row reveals its details card", async ({ page }) => {
   });
 
   await page.goto(`/w/${workspace.id}/s/${active.id}`);
-  const row = page.locator(".session-item").filter({ hasText: "Hovered session" });
+  // The session appears in both the flat Sessions zone and its project group
+  // (§7.1); hovering the first row is enough.
+  const row = page
+    .locator(".session-item")
+    .filter({ hasText: "Hovered session" })
+    .first();
   await expect(row).toBeVisible();
 
   // Nothing appears until the row has been hovered for the delay.
@@ -60,8 +65,16 @@ test("hovering a session row reveals its details card", async ({ page }) => {
 
   // The card lives inside the shell (tokens and scoped styles), not in <body>.
   await expect(page.locator(`.product-app-frame ${CARD}`)).toBeVisible();
-  // ...and it never intercepts the row it describes.
-  await expect(card).toHaveCSS("pointer-events", "none");
+  // It carries an Open action (§7.3), so it takes pointer events — and it is
+  // positioned beside the row, not over it.
+  await expect(card).toHaveCSS("pointer-events", "auto");
+  const rowBox = await row.boundingBox();
+  const cardBox = await card.boundingBox();
+  expect(
+    cardBox && rowBox && cardBox.x + cardBox.width <= rowBox.x + 4 ||
+    cardBox && rowBox && cardBox.x >= rowBox.x + rowBox.width - 4,
+    "the card must not cover the row it describes",
+  ).toBe(true);
 
   // The row points at the card while it is shown.
   await expect(row).toHaveAttribute("aria-describedby", `session-hover-card-${hovered.id}`);
@@ -131,7 +144,10 @@ test("a failed model read shows a dash and is not retried on the next hover", as
   });
 
   await page.goto(`/w/${workspace.id}/s/${active.id}`);
-  const row = page.locator(".session-item").filter({ hasText: "Hovered session" });
+  const row = page
+    .locator(".session-item")
+    .filter({ hasText: "Hovered session" })
+    .first();
   await row.hover();
 
   const card = page.locator(CARD);

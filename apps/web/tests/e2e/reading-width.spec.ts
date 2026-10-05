@@ -10,13 +10,12 @@ import {
 /**
  * Conversation reading band handles.
  *
- * At 1440x900 the conversation column is 840px and the transcript pads 16px per
- * side, so the band can use 808px: `min(available, preferred)` with the 840px
- * design measure as the preference. Both handles move one centered band, so a
- * 1px pointer move is a 2px width change.
+ * At 1440x900 the transcript scroller spans the 1165px pane minus the symmetric
+ * scrollbar-gutter reserve, so the band has far more room than the 840px design
+ * measure: `min(available, preferred)` renders at the 840px cap. Both handles
+ * move one centered band, so a 1px pointer move is a 2px width change.
  */
-const COLUMN_WIDTH = 840;
-const BAND_AVAILABLE = COLUMN_WIDTH - 32;
+const BAND_AVAILABLE = 840;
 
 async function openSession(page: Page, width = 1440, height = 900) {
   await page.setViewportSize({ width, height });
@@ -63,13 +62,13 @@ test("the reading band resizes from either edge and keeps one measure", async ({
   const handles = page.getByRole("separator", { name: /阅读宽度/ });
   const left = handles.first();
 
-  // The band is `min(available, preferred)`, so the 840px measure renders at the
-  // 808px the padded column can actually use.
+  // The band is `min(available, preferred)`: the column has room to spare, so
+  // it renders at the 840px design measure.
   await expect(handles).toHaveCount(2);
   await expect(left).toHaveAttribute("aria-valuemin", "560");
   await expect(left).toHaveAttribute("aria-valuemax", String(BAND_AVAILABLE));
   await expect(left).toHaveAttribute("aria-valuenow", String(BAND_AVAILABLE));
-  await expect(left).toHaveAttribute("aria-valuetext", /808/);
+  await expect(left).toHaveAttribute("aria-valuetext", /840/);
 
   const content = await box(page, ".chat-transcript__content");
   const composer = await box(page, ".chat-composer");
@@ -130,13 +129,14 @@ test("the reading band resizes from either edge and keeps one measure", async ({
   await page.keyboard.press("End");
   await expect(reloaded).toHaveAttribute("aria-valuenow", String(BAND_AVAILABLE));
 
-  // The band must not have dragged the rest of the shell with it.
-  await expect(page.getByRole("separator", { name: /面板宽度/ })).toHaveCount(1);
+  // The band must not have dragged the rest of the shell with it. The work
+  // panel is closed by default (design §5.0), so its divider is not mounted;
+  // the aside stays zero-width and the shell still fits the viewport exactly.
   const panel = await box(page, "aside.product-inspector");
   expect(
-    panel.x + panel.width,
-    "the work panel stays flush with the viewport",
-  ).toBeCloseTo(1440, 0);
+    panel.width,
+    "the closed work panel takes no width",
+  ).toBeCloseTo(0, 0);
   const main = await box(page, ".product-main");
   expect(main.width).toBeGreaterThanOrEqual(450);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(

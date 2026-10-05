@@ -107,6 +107,7 @@ async function shellGeometry(page: Page) {
       };
     };
     const frame = document.querySelector<HTMLElement>(".chat-transcript-frame");
+    const transcript = document.querySelector<HTMLElement>(".chat-transcript");
     const column = document.querySelector<HTMLElement>(".chat-transcript__content");
     const rail = document.querySelector<HTMLElement>(".conversation-minimap");
     const columnBox = box(".chat-transcript__content");
@@ -114,6 +115,9 @@ async function shellGeometry(page: Page) {
       overflowX:
         document.documentElement.scrollWidth - document.documentElement.clientWidth,
       frameWidth: frame?.clientWidth ?? null,
+      // The scroller's clientWidth excludes the symmetric `scrollbar-gutter`
+      // reserve, so this is the width the reading column can actually span.
+      scrollWidth: transcript?.clientWidth ?? null,
       columnWidth: column ? Math.round(column.getBoundingClientRect().width) : null,
       columnBox,
       railBox: box(".conversation-minimap"),
@@ -133,16 +137,20 @@ test("the reading column and the minimap lane keep their arithmetic across width
     await waitForSettledColumns(page);
     const geometry = await shellGeometry(page);
     const frameWidth = geometry.frameWidth;
+    const scrollWidth = geometry.scrollWidth;
     const columnWidth = geometry.columnWidth;
     expect(frameWidth).not.toBeNull();
+    expect(scrollWidth).not.toBeNull();
     expect(columnWidth).not.toBeNull();
 
     // No width may overflow the shell horizontally.
     expect(geometry.overflowX, `overflow at ${width}`).toBe(0);
 
-    // One reading measure: the column is the cap, or the frame minus its 16px
-    // padding on both sides — never wider than the cap.
-    const expectedColumn = Math.min(READING_CAP_PX, (frameWidth ?? 0) - 32);
+    // One reading measure: the column is the cap, or the scroller's usable box
+    // minus its 16px padding on both sides — never wider than the cap. The
+    // usable box is `clientWidth`, which already excludes the symmetric
+    // scrollbar gutter reserved inside `.chat-transcript`.
+    const expectedColumn = Math.min(READING_CAP_PX, (scrollWidth ?? 0) - 32);
     expect(columnWidth, `column at ${width}`).toBeGreaterThanOrEqual(expectedColumn - 1);
     expect(columnWidth, `column at ${width}`).toBeLessThanOrEqual(expectedColumn + 1);
     expect(columnWidth, `column at ${width}`).toBeLessThanOrEqual(READING_CAP_PX);

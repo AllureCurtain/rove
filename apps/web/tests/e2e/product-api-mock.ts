@@ -961,10 +961,13 @@ export async function installMockProductApi(
       const workspaceId = url.searchParams.get("workspace_id");
       state.sessionListReads += 1;
       const q = url.searchParams.get("q");
+      const includeArchived = url.searchParams.get("include_archived") === "true";
       if (!q) {
         return json(route, {
           sessions: state.sessions
             .filter((session) => session.workspace_id === workspaceId)
+            // Mirrors the real endpoint: archived rows only ship on request.
+            .filter((session) => includeArchived || session.status !== "archived")
             .map((session) => {
               const delayed = delayedSessionVisibility.get(session.id);
               if (!delayed || delayed.remainingReads <= 0) {
