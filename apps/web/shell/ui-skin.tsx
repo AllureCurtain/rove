@@ -9,14 +9,15 @@ import {
   type ReactNode,
 } from "react";
 
-export type UiSkin = "cool" | "warm";
+export type UiSkin = "graphite" | "warm";
 
 const UI_SKIN_STORAGE_KEY = "rove.ui-skin";
+const DEFAULT_UI_SKIN: UiSkin = "graphite";
 
 const UiSkinContext = createContext<{
   skin: UiSkin;
   setSkin: (skin: UiSkin) => void;
-}>({ skin: "warm", setSkin: () => undefined });
+}>({ skin: DEFAULT_UI_SKIN, setSkin: () => undefined });
 
 function readStoredUiSkin(): UiSkin | null {
   if (typeof window === "undefined") {
@@ -24,7 +25,16 @@ function readStoredUiSkin(): UiSkin | null {
   }
   try {
     const raw = window.localStorage.getItem(UI_SKIN_STORAGE_KEY);
-    return raw === "warm" || raw === "cool" ? raw : null;
+    if (raw === "warm" || raw === "graphite") {
+      return raw;
+    }
+    // The retired "cool" study folded into graphite; migrate once so the next
+    // visit does not re-hit this branch.
+    if (raw === "cool") {
+      writeStoredUiSkin("graphite");
+      return "graphite";
+    }
+    return null;
   } catch {
     return null;
   }
@@ -42,9 +52,10 @@ function writeStoredUiSkin(skin: UiSkin): void {
 }
 
 export function UiSkinProvider({ children }: { children: ReactNode }) {
-  const [skin, setSkinState] = useState<UiSkin>("warm");
+  const [skin, setSkinState] = useState<UiSkin>(DEFAULT_UI_SKIN);
 
-  // Keep the server and first client render warm, then restore before paint.
+  // Keep the server and first client render on the default skin, then restore
+  // before paint.
   useLayoutEffect(() => {
     const stored = readStoredUiSkin();
     if (stored) {
@@ -53,7 +64,7 @@ export function UiSkinProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setSkin = useCallback((next: UiSkin) => {
-    if (next !== "warm" && next !== "cool") {
+    if (next !== "warm" && next !== "graphite") {
       return;
     }
     setSkinState(next);
@@ -73,6 +84,6 @@ export function useUiSkin() {
 
 /** Safe default when a component mounts outside UiSkinProvider (e.g. storybook/dev tools). */
 export const FALLBACK_UI_SKIN = {
-  skin: "warm" as UiSkin,
+  skin: DEFAULT_UI_SKIN as UiSkin,
   setSkin: () => undefined,
 };

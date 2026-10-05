@@ -7,7 +7,7 @@ import { FALLBACK_UI_SKIN, UiSkinProvider, useUiSkin, type UiSkin } from "./ui-s
 // without adding a DOM dependency; server rendering still uses real React hooks.
 const lifecycle = vi.hoisted(() => ({
   client: false,
-  skin: "warm" as "warm" | "cool",
+  skin: "graphite" as "graphite" | "warm",
   layoutEffects: [] as Array<() => void>,
 }));
 
@@ -57,7 +57,7 @@ function storage(raw: string | null = null) {
 
 beforeEach(() => {
   lifecycle.client = false;
-  lifecycle.skin = "warm";
+  lifecycle.skin = "graphite";
   lifecycle.layoutEffects = [];
 });
 
@@ -66,21 +66,21 @@ afterEach(() => {
 });
 
 describe("UiSkinProvider", () => {
-  it("renders warm on the server without browser globals", () => {
+  it("renders graphite on the server without browser globals", () => {
     vi.stubGlobal("window", undefined);
-    expect(renderProvider()).toBe('<div data-skin="warm">warm</div>');
+    expect(renderProvider()).toBe('<div data-skin="graphite">graphite</div>');
   });
 
-  it("keeps the warm fallback outside the provider inert", () => {
-    const cache = storage("cool");
-    expect(renderToStaticMarkup(<Consumer />)).toContain('data-skin="warm"');
-    selectSkin("cool");
+  it("keeps the graphite fallback outside the provider inert", () => {
+    const cache = storage("warm");
+    expect(renderToStaticMarkup(<Consumer />)).toContain('data-skin="graphite"');
+    selectSkin("warm");
     FALLBACK_UI_SKIN.setSkin();
-    expect(FALLBACK_UI_SKIN.skin).toBe("warm");
+    expect(FALLBACK_UI_SKIN.skin).toBe("graphite");
     expect(cache.setItem).not.toHaveBeenCalled();
   });
 
-  it.each(["warm", "cool"] as const)(
+  it.each(["graphite", "warm"] as const)(
     "matches server markup before restoring %s in the layout phase without writing storage",
     (stored) => {
       const cache = storage(stored);
@@ -95,14 +95,23 @@ describe("UiSkinProvider", () => {
     },
   );
 
-  it.each([null, "", "dark", "COOL", " cool "])(
+  it("migrates a stored cool preference to graphite once", () => {
+    const cache = storage("cool");
+    lifecycle.client = true;
+    renderProvider();
+    flushLayout();
+    expect(lifecycle.skin).toBe("graphite");
+    expect(cache.setItem).toHaveBeenCalledWith("rove.ui-skin", "graphite");
+  });
+
+  it.each([null, "", "dark", "GRAPHITE", " graphite "])(
     "ignores unsupported stored skin %s without rewriting it",
     (stored) => {
       const cache = storage(stored);
       lifecycle.client = true;
       renderProvider();
       flushLayout();
-      expect(lifecycle.skin).toBe("warm");
+      expect(lifecycle.skin).toBe("graphite");
       expect(cache.setItem).not.toHaveBeenCalled();
     },
   );
@@ -112,26 +121,26 @@ describe("UiSkinProvider", () => {
     lifecycle.client = true;
     renderProvider();
     flushLayout();
-    selectSkin("cool");
-    expect(lifecycle.skin).toBe("cool");
-    expect(cache.setItem).toHaveBeenLastCalledWith("rove.ui-skin", "cool");
     selectSkin("warm");
     expect(lifecycle.skin).toBe("warm");
     expect(cache.setItem).toHaveBeenLastCalledWith("rove.ui-skin", "warm");
-    selectSkin("cool");
-    lifecycle.skin = "warm";
+    selectSkin("graphite");
+    expect(lifecycle.skin).toBe("graphite");
+    expect(cache.setItem).toHaveBeenLastCalledWith("rove.ui-skin", "graphite");
+    selectSkin("warm");
+    lifecycle.skin = "graphite";
     renderProvider();
     flushLayout();
-    expect(lifecycle.skin).toBe("cool");
+    expect(lifecycle.skin).toBe("warm");
   });
 
   it("rejects unsupported runtime choices without changing state or storage", () => {
-    const cache = storage("cool");
+    const cache = storage("warm");
     lifecycle.client = true;
     renderProvider();
     flushLayout();
     selectSkin("dark" as UiSkin);
-    expect(lifecycle.skin).toBe("cool");
+    expect(lifecycle.skin).toBe("warm");
     expect(cache.setItem).not.toHaveBeenCalled();
   });
 
@@ -142,9 +151,9 @@ describe("UiSkinProvider", () => {
     lifecycle.client = true;
     renderProvider();
     expect(flushLayout).not.toThrow();
+    expect(lifecycle.skin).toBe("graphite");
+    expect(() => selectSkin("warm")).not.toThrow();
     expect(lifecycle.skin).toBe("warm");
-    expect(() => selectSkin("cool")).not.toThrow();
-    expect(lifecycle.skin).toBe("cool");
   });
 
   it("keeps the in-memory selection when storage is full", () => {
@@ -153,7 +162,7 @@ describe("UiSkinProvider", () => {
     lifecycle.client = true;
     renderProvider();
     flushLayout();
-    expect(() => selectSkin("cool")).not.toThrow();
-    expect(lifecycle.skin).toBe("cool");
+    expect(() => selectSkin("warm")).not.toThrow();
+    expect(lifecycle.skin).toBe("warm");
   });
 });

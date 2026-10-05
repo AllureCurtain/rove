@@ -77,6 +77,8 @@ const zhCN = {
     status_error: "失败",
   },
   chrome: {
+    brandName: "rove",
+    brandTag: "本地代理",
     loadError: "无法完成操作，请刷新后重试。",
     partial: "部分记录未能加载。",
     download: "下载 {{name}}",
@@ -147,6 +149,8 @@ const zhCN = {
     collapseInspector: "收起详情面板",
     closeInspector: "关闭详情",
     newSession: "新会话",
+    newTask: "新任务",
+    search: "搜索",
     searchWorkspace: "搜索会话",
   },
   chat: {
@@ -664,9 +668,9 @@ const zhCN = {
   },
   uiSkin: {
     label: "界面风格",
-    desc: "对比两套视觉方案后再定稿。选择会立即生效并保存在本机。",
+    desc: "石墨单色是默认风格；暖米色保留为备选。选择会立即生效并保存在本机。",
+    graphite: "石墨单色",
     warm: "暖米色",
-    cool: "冷色精修",
   },
   migration: {
     importing: "正在导入工作区历史",

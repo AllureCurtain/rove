@@ -101,6 +101,8 @@
   --v2-surface-raised: var(--cp-surface-raised);
   --v2-surface-sunken: var(--cp-surface-warm);
   --v2-surface-hover: #e4dfd2;
+  --v2-tile: rgba(28, 25, 23, 0.05);
+  --v2-tile-deep: var(--cp-surface-warm);
   --v2-ink: var(--cp-fg);
   --v2-ink-2: var(--cp-fg-2);
   --v2-ink-3: var(--cp-muted);
@@ -116,6 +118,10 @@
   --v2-warning-soft: var(--cp-warning-soft);
   --v2-danger: var(--cp-danger);
   --v2-danger-soft: var(--cp-danger-soft);
+  --v2-info: #5c564e;
+  --v2-info-soft: #ebe7dc;
+  --v2-purple: #6f4fc0;
+  --v2-purple-soft: #eee8f7;
   --v2-focus: var(--cp-accent);
   --v2-shadow-sm: var(--cp-shadow-xs);
   --v2-shadow-md: var(--cp-shadow-md);
@@ -197,6 +203,8 @@ html[data-theme="dark"] .product-app-frame[data-skin="warm"] {
   --v2-surface-raised: var(--cp-surface-raised);
   --v2-surface-sunken: var(--cp-surface-warm);
   --v2-surface-hover: #3d3630;
+  --v2-tile: rgba(247, 243, 236, 0.07);
+  --v2-tile-deep: var(--cp-surface-warm);
   --v2-ink: var(--cp-fg);
   --v2-ink-2: var(--cp-fg-2);
   --v2-ink-3: var(--cp-muted);
@@ -212,6 +220,10 @@ html[data-theme="dark"] .product-app-frame[data-skin="warm"] {
   --v2-warning-soft: var(--cp-warning-soft);
   --v2-danger: var(--cp-danger);
   --v2-danger-soft: var(--cp-danger-soft);
+  --v2-info: #b0a89c;
+  --v2-info-soft: #37322d;
+  --v2-purple: #c9a5f5;
+  --v2-purple-soft: #3d3444;
   --v2-focus: var(--cp-accent);
 
   --v2-rail: #221e1b;
@@ -224,4 +236,240 @@ html[data-theme="dark"] .product-app-frame[data-skin="warm"] {
 
   --v2-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.28);
   --v2-shadow-md: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+/* Graphite skin — near-monochrome Codex-style console (design §4.1).
+ * Light ramp below is the inverse of the dark ramp: page is pure white, the
+ * rail drops to a light gray tier, accent is near-black ink. Dark overrides
+ * follow the warm skin's pattern. */
+
+.product-app-frame[data-skin="graphite"] {
+  color-scheme: light;
+
+  --cp-bg: #ffffff;
+  --cp-surface: #f9f9f9;
+  --cp-surface-warm: #f3f3f3;
+  --cp-surface-raised: #ffffff;
+  --cp-fg: #1a1c1f;
+  --cp-fg-2: rgba(26, 28, 31, 0.74);
+  --cp-muted: #5d5d5d;
+  --cp-meta: #afafaf;
+  --cp-border: rgba(26, 28, 31, 0.08);
+  --cp-border-soft: rgba(26, 28, 31, 0.05);
+  --cp-border-strong: rgba(26, 28, 31, 0.14);
+
+  /* Same WCAG contract as the warm skin: each tone is a fill carrying `-on`
+   * text and small text on its opaque `-soft` wash. Ratios are measured
+   * against the wash and the darkest light surface (`--cp-surface-warm`,
+   * #f3f3f3). */
+  --cp-accent: #1a1c1f; /* 14.8:1 | 5.9:1 */
+  --cp-accent-on: #ffffff;
+  --cp-accent-hover: #303030;
+  --cp-accent-soft: #ececec;
+
+  --cp-success: #00713d; /* 5.35:1 | 5.5:1 */
+  --cp-success-soft: #e4f2e9;
+  --cp-warning: #a04800; /* 4.97:1 | 5.4:1 */
+  --cp-warning-soft: #f6e9da;
+  --cp-danger: #b42318; /* 5.63:1 | 5.9:1 */
+  --cp-danger-soft: #f9e5e3;
+
+  --cp-selection: rgba(26, 28, 31, 0.12);
+  --cp-overlay: rgba(26, 28, 31, 0.3);
+  --cp-focus-ring: var(--cp-accent);
+
+  --cp-font-display: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --cp-font-body: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --cp-font-mono: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
+
+  --cp-radius-sm: 6px;
+  --cp-radius-md: 8px;
+  --cp-radius-lg: 12px;
+
+  --cp-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --cp-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.04);
+  --cp-shadow-md: 0 16px 48px rgba(0, 0, 0, 0.14);
+
+  /* Legacy aliases */
+  --bg: var(--cp-bg);
+  --bg-elevated: var(--cp-surface);
+  --surface: var(--cp-surface);
+  --surface-strong: var(--cp-surface-raised);
+  --surface-soft: var(--cp-surface-warm);
+  --surface-muted: var(--cp-surface-warm);
+  --text: var(--cp-fg);
+  --text-secondary: var(--cp-fg-2);
+  --muted: var(--cp-muted);
+  --border: var(--cp-border);
+  --border-strong: var(--cp-border-strong);
+  --accent: var(--cp-accent);
+  --accent-hover: var(--cp-accent-hover);
+  --accent-soft: var(--cp-accent-soft);
+  --accent-contrast: var(--cp-accent-on);
+  --accent-strong: var(--cp-accent-hover);
+  --success: var(--cp-success);
+  --success-soft: var(--cp-success-soft);
+  --warning: var(--cp-warning);
+  --warning-soft: var(--cp-warning-soft);
+  --error: var(--cp-danger);
+  --error-soft: var(--cp-danger-soft);
+  --focus-ring: var(--cp-focus-ring);
+  --selection: var(--cp-selection);
+  --overlay: var(--cp-overlay);
+  --shadow-sm: var(--cp-shadow-xs);
+  --shadow-md: var(--cp-shadow-md);
+  --radius-sm: var(--cp-radius-sm);
+  --radius-md: var(--cp-radius-md);
+  --radius-lg: var(--cp-radius-lg);
+
+  /* Full v2 bridge including rail */
+  --v2-canvas: var(--cp-bg);
+  --v2-bg: var(--cp-bg);
+  --v2-surface: var(--cp-surface);
+  --v2-surface-raised: var(--cp-surface-raised);
+  --v2-surface-sunken: var(--cp-surface-warm);
+  --v2-surface-hover: rgba(26, 28, 31, 0.05);
+  --v2-tile: rgba(26, 28, 31, 0.05);
+  --v2-tile-deep: #ededed;
+  --v2-ink: var(--cp-fg);
+  --v2-ink-2: var(--cp-fg-2);
+  --v2-ink-3: var(--cp-muted);
+  --v2-border: var(--cp-border);
+  --v2-border-strong: var(--cp-border-strong);
+  --v2-signal: var(--cp-accent);
+  --v2-signal-strong: var(--cp-accent-hover);
+  --v2-signal-soft: var(--cp-accent-soft);
+  --v2-on-signal: var(--cp-accent-on);
+  --v2-success: var(--cp-success);
+  --v2-success-soft: var(--cp-success-soft);
+  --v2-warning: var(--cp-warning);
+  --v2-warning-soft: var(--cp-warning-soft);
+  --v2-danger: var(--cp-danger);
+  --v2-danger-soft: var(--cp-danger-soft);
+  --v2-info: #4d4d4d;
+  --v2-info-soft: #ececec;
+  --v2-purple: #7c2de0;
+  --v2-purple-soft: #f3e9fd;
+  --v2-focus: var(--cp-accent);
+  --v2-shadow-sm: var(--cp-shadow-xs);
+  --v2-shadow-md: var(--cp-shadow-md);
+  --v2-radius-sm: var(--cp-radius-sm);
+  --v2-radius-md: var(--cp-radius-md);
+
+  /* Rail drops a tier below the page: near-white gray, borderless */
+  --v2-rail: #f3f3f3;
+  --v2-rail-raised: rgba(26, 28, 31, 0.05);
+  --v2-rail-hover: rgba(26, 28, 31, 0.09);
+  --v2-rail-ink: #1a1c1f;
+  --v2-rail-muted: #5d5d5d;
+  --v2-rail-border: rgba(26, 28, 31, 0.08);
+  --v2-rail-signal: var(--cp-accent);
+
+  --overlay: rgba(26, 28, 31, 0.28);
+  --scrollbar: rgba(26, 28, 31, 0.14);
+  --scrollbar-hover: rgba(26, 28, 31, 0.28);
+}
+
+html[data-theme="dark"] .product-app-frame[data-skin="graphite"] {
+  color-scheme: dark;
+
+  --cp-bg: #181818;
+  --cp-surface: #212121;
+  --cp-surface-warm: #282828;
+  --cp-surface-raised: #2a2a2a;
+  --cp-fg: #ffffff;
+  --cp-fg-2: rgba(255, 255, 255, 0.72);
+  --cp-muted: #9e9e9e;
+  --cp-meta: #6f6f6f;
+  --cp-border: rgba(255, 255, 255, 0.09);
+  --cp-border-soft: rgba(255, 255, 255, 0.05);
+  --cp-border-strong: rgba(255, 255, 255, 0.16);
+
+  /* Accent is the gray ramp itself: the primary fill is white ink on dark. */
+  --cp-accent: #ffffff; /* 17.4:1 on #181818 | 11.9:1 on its wash */
+  --cp-accent-on: #181818;
+  --cp-accent-hover: #e6e6e6;
+  --cp-accent-soft: #3a3a3a;
+
+  --cp-success: #40c977; /* 5.6:1 on its wash */
+  --cp-success-soft: #1f3327;
+  --cp-warning: #ff8549; /* 5.6:1 on its wash */
+  --cp-warning-soft: #3a2b20;
+  --cp-danger: #ff6764; /* 5.1:1 on its wash */
+  --cp-danger-soft: #3a2221;
+
+  --cp-selection: rgba(255, 255, 255, 0.16);
+  --cp-overlay: rgba(0, 0, 0, 0.5);
+
+  --cp-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --cp-shadow-sm: 0 3px 8px rgba(0, 0, 0, 0.32);
+  --cp-shadow-md: 0 16px 48px rgba(0, 0, 0, 0.55);
+
+  --bg: var(--cp-bg);
+  --bg-elevated: var(--cp-surface);
+  --surface: var(--cp-surface);
+  --surface-strong: var(--cp-surface-raised);
+  --surface-soft: var(--cp-surface-warm);
+  --surface-muted: var(--cp-surface-warm);
+  --text: var(--cp-fg);
+  --text-secondary: var(--cp-fg-2);
+  --muted: var(--cp-muted);
+  --border: var(--cp-border);
+  --border-strong: var(--cp-border-strong);
+  --accent: var(--cp-accent);
+  --accent-hover: var(--cp-accent-hover);
+  --accent-soft: var(--cp-accent-soft);
+  --accent-contrast: var(--cp-accent-on);
+  --accent-strong: var(--cp-accent-hover);
+  --success: var(--cp-success);
+  --success-soft: var(--cp-success-soft);
+  --warning: var(--cp-warning);
+  --warning-soft: var(--cp-warning-soft);
+  --error: var(--cp-danger);
+  --error-soft: var(--cp-danger-soft);
+
+  --v2-canvas: var(--cp-bg);
+  --v2-bg: var(--cp-bg);
+  --v2-surface: var(--cp-surface);
+  --v2-surface-raised: var(--cp-surface-raised);
+  --v2-surface-sunken: #101010;
+  --v2-surface-hover: rgba(255, 255, 255, 0.07);
+  --v2-tile: rgba(255, 255, 255, 0.04);
+  --v2-tile-deep: #262626;
+  --v2-ink: var(--cp-fg);
+  --v2-ink-2: var(--cp-fg-2);
+  --v2-ink-3: var(--cp-muted);
+  --v2-border: var(--cp-border);
+  --v2-border-strong: var(--cp-border-strong);
+  --v2-signal: var(--cp-accent);
+  --v2-signal-strong: var(--cp-accent-hover);
+  --v2-signal-soft: var(--cp-accent-soft);
+  --v2-on-signal: var(--cp-accent-on);
+  --v2-success: var(--cp-success);
+  --v2-success-soft: var(--cp-success-soft);
+  --v2-warning: var(--cp-warning);
+  --v2-warning-soft: var(--cp-warning-soft);
+  --v2-danger: var(--cp-danger);
+  --v2-danger-soft: var(--cp-danger-soft);
+  --v2-info: #b3b3b3;
+  --v2-info-soft: #323232;
+  --v2-purple: #c27aff;
+  --v2-purple-soft: #302038;
+  --v2-focus: var(--cp-accent);
+
+  /* Near-black rail: darkest tier of the ramp */
+  --v2-rail: #0d0d0d;
+  --v2-rail-raised: rgba(255, 255, 255, 0.06);
+  --v2-rail-hover: rgba(255, 255, 255, 0.11);
+  --v2-rail-ink: #ffffff;
+  --v2-rail-muted: #9e9e9e;
+  --v2-rail-border: rgba(255, 255, 255, 0.09);
+  --v2-rail-signal: var(--cp-accent);
+
+  --v2-shadow-sm: var(--cp-shadow-xs);
+  --v2-shadow-md: var(--cp-shadow-md);
+
+  --overlay: rgba(0, 0, 0, 0.45);
+  --scrollbar: rgba(255, 255, 255, 0.14);
+  --scrollbar-hover: rgba(255, 255, 255, 0.26);
 }
