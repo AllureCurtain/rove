@@ -4,6 +4,20 @@ New decisions go on top. Do not delete overturned decisions; mark them "supersed
 
 Decisions before 2026-10-01 were distilled from the design documents of that period; the originals have been deleted.
 
+## 2026-10-05 Web rail: local order/pin preferences, no session-to-workspace moves
+
+- Status: active
+- Decision: session pinning and project ordering in the session rail are per-machine UI preferences held in `localStorage` (`rove.ui-pinned-sessions`, `rove.ui-rail-project-order`), like the rail/panel width and reading-width preferences. Workspace rename reuses the `createWorkspace` upsert keyed by canonical root; reveal-in-folder goes through the existing `show_in_folder` desktop command. Sessions are never reassigned between workspaces: the update contract has no `workspace_id`, and a session's runtime binding is scoped to its workspace root, so dragging a session onto a project is not offered.
+- Why: the product contract carries no ordering/pinning fields, and the design's ownership table assigns these to UI preferences rather than durable product state; inventing a schema field for them would widen the contract for a view concern.
+- Rejected: adding `sort_order`/`pinned` columns to ProductStore — durable schema for a per-machine view preference; session move — the contract does not support it and faking it as copy+delete would orphan runtime bindings.
+
+## 2026-10-05 Shared `target/` for worktrees via root `.cargo/config.toml`
+
+- Status: active
+- Decision: the repository root carries an *untracked* `.cargo/config.toml` with `build.target-dir = "target"` (the path resolves relative to `rove/`, the config's parent). Cargo's ancestor config search reaches it from any worktree under `.worktrees/`, so every checkout compiles into the single root `target/` directory. The file must stay untracked: a committed copy would also exist inside each worktree at `.worktrees/<topic>/.cargo/config.toml`, where the same relative value resolves to a per-worktree `target/` and — being the closer config — wins, silently undoing the sharing.
+- Why: a full workspace `target/` is multi-GB; one per worktree duplicates it per task. Sharing one directory is safe because Cargo takes a lock on concurrent access.
+- Rejected: committing the config — relative `target-dir` resolves per containing directory and cannot describe both depths; `CARGO_TARGET_DIR` per command — works but is invisible and easy to forget.
+
 ## 2026-10-04 CI: cache target, desktop moved to paths-gated trigger
 
 - Status: active

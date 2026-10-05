@@ -103,6 +103,15 @@ Before committing:
 - Commit message format `type(scope): subject`, where type is `feat|fix|docs|refactor|test|build|ci|chore` and scope is `runtime|api|web|cli|...`. The subject states the observable outcome; one commit does one thing.
 - One PR delivers one independently verifiable capability; describe scope and non-goals in the body (template `.github/PULL_REQUEST_TEMPLATE.md`). Merge with rebase merge — it is the only merge method enabled on the repository and keeps main linear; a PR's commits must therefore be split by logical step, not left as WIP/fixup noise. If a branch accumulated cleanup commits, squash them into place with `git rebase -i main` before pushing — whatever remains lands verbatim on main.
 - Review: small changes may be self-reviewed; safety-related changes, shared runtime boundaries, or cross-package behavior with uncertainty require a blind review by a fresh session — give it the requirements, acceptance criteria, and repo location, but not the implementation approach.
+- Worktree Rust builds share the root `target/` directory instead of growing
+  a multi-GB build cache per worktree. The mechanism is an untracked
+  `.cargo/config.toml` at the repository root (`build.target-dir = "target"`,
+  resolved relative to the root): Cargo's ancestor config search reaches it
+  from any directory inside the repository, including `.worktrees/<topic>`.
+  Keep that file untracked — a committed copy inside each worktree would
+  resolve to a per-worktree `target/` and win as the closer config. On a fresh
+  machine, recreate it or set `CARGO_TARGET_DIR` to the root `target/`.
+
 - Immediately after merging, clean up the branch and worktree:
 
   ```bash

@@ -1,5 +1,9 @@
 /target
 /.worktrees
+# The root .cargo/config.toml is a local-only file: it points worktree builds
+# at the shared root target/ (see docs/development.md). Committing it would
+# place a closer copy inside each worktree and silently undo the sharing.
+/.cargo/
 /outputs/
 /benchmarks/results/*
 !/benchmarks/results/README.md
