@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
 import {
+  SESSION_HOVER_CARD_BRIDGE_MS,
   SESSION_HOVER_CARD_DELAY_MS,
   SESSION_HOVER_CARD_IDLE,
   SESSION_HOVER_CARD_SCOPE_SELECTOR,
@@ -26,6 +27,16 @@ export interface SessionHoverCardController {
     onMouseEnter: () => void;
     onMouseLeave: () => void;
   };
+  /**
+   * Hover bridge (design §7.3): the card survives the pointer crossing the gap
+   * between the row and the card, so its Open action is reachable. Row leave
+   * starts a short grace timer that entering the card cancels; leaving the
+   * card itself closes it at once.
+   */
+  cardProps: {
+    onMouseEnter: () => void;
+    onMouseLeave: () => void;
+  };
   dismiss: () => void;
 }
 
@@ -43,12 +54,20 @@ export function useSessionHoverCard(sessionId: string): SessionHoverCardControll
   const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const bridgeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const open = state.open === sessionId;
 
   const clearTimer = useCallback(() => {
     if (timerRef.current !== null) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
+    }
+  }, []);
+
+  const clearBridgeTimer = useCallback(() => {
+    if (bridgeTimerRef.current !== null) {
+      clearTimeout(bridgeTimerRef.current);
+      bridgeTimerRef.current = null;
     }
   }, []);
 
@@ -63,7 +82,13 @@ export function useSessionHoverCard(sessionId: string): SessionHoverCardControll
     return () => media.removeEventListener?.("change", read);
   }, []);
 
-  useEffect(() => clearTimer, [clearTimer]);
+  useEffect(
+    () => () => {
+      clearTimer();
+      clearBridgeTimer();
+    },
+    [clearTimer, clearBridgeTimer],
+  );
 
   // Track the row while the card is visible: the sidebar scrolls, the window
   // resizes, and the row can leave the viewport entirely.
@@ -109,23 +134,51 @@ export function useSessionHoverCard(sessionId: string): SessionHoverCardControll
     if (!pointerAvailable) {
       return;
     }
+    // Re-entering the row inside the bridge window keeps its card open.
+    clearBridgeTimer();
     dispatch({ type: "hover", sessionId });
     clearTimer();
     timerRef.current = setTimeout(() => {
       timerRef.current = null;
       dispatch({ type: "delay", sessionId });
     }, SESSION_HOVER_CARD_DELAY_MS);
-  }, [clearTimer, pointerAvailable, sessionId]);
+  }, [clearTimer, clearBridgeTimer, pointerAvailable, sessionId]);
+
+  const openRef = useRef(open);
+  openRef.current = open;
 
   const leave = useCallback(() => {
     clearTimer();
+    clearBridgeTimer();
+    if (!openRef.current) {
+      // Nothing open to bridge to — the leave is final at once. This matters
+      // after Escape: suppression ends when the pointer truly departs, and a
+      // delayed dispatch would swallow the next re-enter as "same hover".
+      dispatch({ type: "leave" });
+      return;
+    }
+    // Grace before closing: the card sits a few pixels from the row, so the
+    // pointer that is plainly heading for it should not watch it vanish mid
+    // crossing. Entering the card cancels this; anything else times it out.
+    bridgeTimerRef.current = setTimeout(() => {
+      bridgeTimerRef.current = null;
+      dispatch({ type: "leave" });
+    }, SESSION_HOVER_CARD_BRIDGE_MS);
+  }, [clearTimer, clearBridgeTimer]);
+
+  const cardEnter = useCallback(() => {
+    clearBridgeTimer();
+  }, [clearBridgeTimer]);
+
+  const cardLeave = useCallback(() => {
     dispatch({ type: "leave" });
-  }, [clearTimer]);
+  }, []);
 
   const dismiss = useCallback(() => {
     clearTimer();
+    clearBridgeTimer();
     dispatch({ type: "dismiss" });
-  }, [clearTimer]);
+  }, [clearTimer, clearBridgeTimer]);
 
   return {
     open,
@@ -134,6 +187,7 @@ export function useSessionHoverCard(sessionId: string): SessionHoverCardControll
     anchor,
     portalHost,
     rowProps: { onMouseEnter: enter, onMouseLeave: leave },
+    cardProps: { onMouseEnter: cardEnter, onMouseLeave: cardLeave },
     dismiss,
   };
 }

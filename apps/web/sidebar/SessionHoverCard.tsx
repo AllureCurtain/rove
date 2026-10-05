@@ -11,6 +11,7 @@ import {
   placeSessionHoverCard,
   type SessionHoverCardAnchor,
 } from "./session-hover-card";
+import { useSessionMessageCount } from "./session-message-count";
 import { useSessionModelSummary } from "./session-model-summary";
 import { formatDisplayPath, sessionStatusLabel, shortId } from "./session-labels";
 
@@ -24,15 +25,26 @@ export interface SessionHoverCardProps {
   anchor: SessionHoverCardAnchor | null;
   /** Portal target inside the shell; `document.body` when it is missing. */
   host: HTMLElement | null;
+  /**
+   * Hover bridge (design §7.3): these handlers keep the card alive while the
+   * pointer crosses the gap from its row, which is what makes the Open action
+   * reachable. The card closes the moment the pointer leaves the card itself.
+   */
+  cardProps?: {
+    onMouseEnter: () => void;
+    onMouseLeave: () => void;
+  };
+  /** §7.3: the card carries one action — opening the session it describes. */
+  onOpen?: () => void;
 }
 
 /**
- * Informational hover card for one sidebar session row (design F4).
+ * Informational hover card for one sidebar session row (design F4/§7.3).
  *
- * Read-only by design: the row itself already owns the actionable affordances,
- * and a second entry point inside a hover surface would only duplicate them.
- * The model row is the one piece of data the row does not carry, so it is read
- * lazily through `useSessionModelSummary` while the card is mounted.
+ * The card is read-mostly by design: the row owns every destructive action,
+ * and the card carries the facts the row cannot fit — run state, message
+ * count, fork provenance, project path, model — plus the one Open action the
+ * hover bridge exists to make reachable.
  */
 export function SessionHoverCard({
   id,
@@ -41,9 +53,12 @@ export function SessionHoverCard({
   parentTitle,
   anchor,
   host,
+  cardProps,
+  onOpen,
 }: SessionHoverCardProps) {
   const { t } = useCopy();
   const summary = useSessionModelSummary(session.id);
+  const messageCount = useSessionMessageCount(session.id);
   const cardRef = useRef<HTMLDivElement>(null);
   const [placement, setPlacement] = useState<{ top: number; left: number } | null>(null);
 
@@ -75,6 +90,14 @@ export function SessionHoverCard({
       : summary.status === "ready"
         ? summary.model
         : t("workspace.sessionCardUnavailable");
+  const messageValue =
+    messageCount === null || messageCount.status === "loading"
+      ? t("workspace.sessionCardLoading")
+      : messageCount.status === "ready"
+        ? messageCount.more
+          ? `${messageCount.count}+`
+          : String(messageCount.count)
+        : t("workspace.sessionCardUnavailable");
 
   return createPortal(
     <div
@@ -87,10 +110,20 @@ export function SessionHoverCard({
         left: placement?.left ?? anchor.right,
         visibility: placement ? "visible" : "hidden",
       }}
+      onMouseEnter={cardProps?.onMouseEnter}
+      onMouseLeave={cardProps?.onMouseLeave}
     >
       <p className="session-hover-card__title">{session.title}</p>
       <dl className="session-hover-card__facts">
-        <Fact label={t("workspace.sessionCardStatus")} value={sessionStatusLabel(session.status, t)} />
+        <Fact
+          label={t("workspace.sessionCardStatus")}
+          value={
+            session.archived
+              ? t("sessionHoverCard.archived")
+              : sessionStatusLabel(session.status, t)
+          }
+        />
+        <Fact label={t("workspace.sessionCardMessages")} value={messageValue} />
         <Fact label={t("workspace.sessionCardUpdated")} value={formatUtcTimestamp(session.updatedAt)} />
         <Fact label={t("workspace.sessionCardCreated")} value={formatUtcTimestamp(session.createdAt)} />
         {session.parentSessionId ? (
@@ -132,6 +165,15 @@ export function SessionHoverCard({
           </>
         ) : null}
       </dl>
+      {onOpen ? (
+        <button
+          type="button"
+          className="secondary session-hover-card__open"
+          onClick={onOpen}
+        >
+          {t("workspace.sessionCardOpen")}
+        </button>
+      ) : null}
     </div>,
     portalHost,
   );

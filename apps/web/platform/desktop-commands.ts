@@ -215,6 +215,30 @@ export async function openDesktopExternalLink(
   }
 }
 
+export function desktopRevealInFolderAvailable(): boolean {
+  return desktopTransport() !== null;
+}
+
+/**
+ * Reveal a workspace root in the OS file manager through the Desktop host.
+ *
+ * The host command is `show_in_folder`, bounded by the roots the host itself
+ * approved (the native picker and the app's own state directories), so this is
+ * never a general filesystem browser. In the plain browser build the command
+ * does not exist and callers hide the affordance instead of faking it.
+ */
+export async function revealDesktopPath(
+  path: string,
+  invokeImpl: DesktopInvoke = invoke,
+): Promise<void> {
+  if (!desktopRevealInFolderAvailable()) {
+    throw new Error(
+      "Revealing a path in the file manager requires the Rove Desktop host.",
+    );
+  }
+  await invokeImpl<unknown>("show_in_folder", { path });
+}
+
 export function desktopProviderCredentialPromptAvailable(): boolean {
   return desktopTransport() !== null;
 }

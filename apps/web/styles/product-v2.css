@@ -613,10 +613,13 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 
 .product-app-frame[data-ui-version="v2"] .session-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  min-height: 34px;
+  /* §7.2 status slot is first: shape+motion leads the row, never colour
+     alone. Then pin mark, title, queue count, badge, outcome dot. */
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  min-height: 28px;
   gap: 7px;
-  border-radius: var(--v2-radius-sm);
+  border-radius: var(--v2-radius-md);
   color: var(--v2-rail-muted);
   padding: 5px 7px;
   font-size: 12px;
@@ -699,7 +702,9 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
   padding: 10px 12px;
   font-size: 11px;
   overflow: auto;
-  pointer-events: none;
+  /* §7.3: the card carries an Open action reached across the hover bridge —
+     it must take pointer events; it still sits beside the row, not on it. */
+  pointer-events: auto;
 }
 
 .product-app-frame[data-ui-version="v2"] .session-hover-card__title {
@@ -4925,7 +4930,7 @@ body.is-resizing-column * {
    exit rather than jumping and watching a ghost slide out. The subtree keeps
    its expanded width through the animation (the `min-width` pin in the rail's
    base rule), and `inert` + `aria-hidden` — set in
-   `sidebar/WorkspaceTree.tsx` — take it out of the accessibility tree while
+   `sidebar/SessionRail.tsx` — take it out of the accessibility tree while
    it is on its way out. */
 .product-app-frame[data-ui-version="v2"] .product-body[data-nav-collapsed="true"] .product-sidebar {
   flex-basis: 0;
@@ -5963,4 +5968,265 @@ kbd[data-unbound="true"] {
   border-top: 1px solid var(--v2-border);
   color: var(--v2-ink-3);
   font-size: calc(12px * var(--font-scale, 1));
+}
+
+/* ─── §7 session rail zones (P2) ─── */
+
+/* Brand row: the mark sits left of the wordmark; collapse keeps both pinned
+   while the column shrinks (§7.1, §4.4). */
+.product-app-frame[data-ui-version="v2"] .product-sidebar__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--v2-rail-ink);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-sidebar__version {
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--v2-rail-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Zones: pinned shelf, flat session list, project tree. Each zone owns its
+   heading row so the eye can parse future/present/past in one pass. */
+.product-app-frame[data-ui-version="v2"] .rail-zone {
+  margin: 2px 0 14px;
+}
+
+.product-app-frame[data-ui-version="v2"] .rail-zone__heading {
+  margin: 0;
+  padding: 4px 6px;
+  color: var(--v2-rail-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.product-app-frame[data-ui-version="v2"] .rail-zone__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 2px;
+}
+
+.product-app-frame[data-ui-version="v2"] .rail-zone__toolbar .rail-zone__heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .rail-zone__toolbar .icon-button {
+  width: 26px;
+  min-width: 26px;
+  min-height: 26px;
+  padding: 3px;
+  border-color: transparent;
+  color: var(--v2-rail-muted);
+}
+
+.product-app-frame[data-ui-version="v2"] .rail-zone__toolbar .icon-button:hover:not(:disabled) {
+  background: var(--v2-rail-hover);
+  color: var(--v2-rail-ink);
+}
+
+/* The pinned strip caps its own scroll so it stays a shelf, not a second
+   home (§7.1). Same cap for the session zone's flat list. */
+.product-app-frame[data-ui-version="v2"] .rail-zone__pinned-list,
+.product-app-frame[data-ui-version="v2"] .rail-time-group__list {
+  max-height: 30vh;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+/* Flat lists (pinned, time groups) lose the tree indent and rail line that
+   nested project lists carry. */
+.product-app-frame[data-ui-version="v2"] .session-list--flat {
+  margin-left: 0;
+  padding-left: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-list--flat::before {
+  content: none;
+}
+
+/* Time groups: quiet heading rows inside the session zone. */
+.product-app-frame[data-ui-version="v2"] .rail-time-group {
+  margin-top: 6px;
+}
+
+.product-app-frame[data-ui-version="v2"] .rail-time-group__heading {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  padding: 4px 6px;
+  color: var(--v2-rail-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.product-app-frame[data-ui-version="v2"] .rail-time-group__count {
+  color: var(--v2-rail-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+.product-app-frame[data-ui-version="v2"] .rail-load-more {
+  width: 100%;
+  justify-content: flex-start;
+  min-height: 26px;
+  padding: 3px 7px;
+  border-color: transparent;
+  color: var(--v2-rail-muted);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .rail-load-more:hover:not(:disabled) {
+  background: var(--v2-rail-hover);
+  color: var(--v2-rail-ink);
+}
+
+/* Row states (§7.2): multi-select tints, archived dims, drop targets get an
+   insertion line instead of a highlight so "between" is readable. */
+.product-app-frame[data-ui-version="v2"] .session-item[data-multi-selected="true"] {
+  background: color-mix(in srgb, var(--v2-rail-signal) 14%, transparent);
+  color: var(--v2-rail-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item[data-archived="true"] {
+  opacity: 0.55;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-item__queue {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--v2-rail-hover);
+  color: var(--v2-rail-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+/* Error slot: a square, so the three live states are distinguishable without
+   colour — running spins, attention is a disc, error is a square. */
+.product-app-frame[data-ui-version="v2"] .session-item__error-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 1px;
+  background: var(--v2-danger);
+}
+
+/* Row action: the ... menu button appears with the rest of the row's hover
+   actions; the class only needs the tighter size. */
+.product-app-frame[data-ui-version="v2"] .session-item__menu-button {
+  width: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 2px;
+  border-color: transparent;
+}
+
+/* The session row menu portals next to the pointer, so it positions in
+   viewport coordinates, not against its row. */
+.product-app-frame[data-ui-version="v2"] .session-row-menu {
+  position: fixed;
+  z-index: 40;
+  top: auto;
+  right: auto;
+  min-width: 180px;
+}
+
+.product-app-frame[data-ui-version="v2"] .session-row-menu__divider {
+  height: 1px;
+  margin: 3px 2px;
+  background: var(--v2-rail-border);
+}
+
+/* An armed destructive item swaps to the danger tint so the second click is
+   unmistakably the commit step. */
+.product-app-frame[data-ui-version="v2"] .session-row-menu button[data-armed="true"],
+.product-app-frame[data-ui-version="v2"] .workspace-actions__menu button[data-armed="true"] {
+  background: color-mix(in srgb, var(--v2-danger) 16%, transparent);
+  color: var(--v2-danger);
+}
+
+/* Project rename field reuses the session-row editing skin. */
+.product-app-frame[data-ui-version="v2"] .workspace-group__rename {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+  padding: 2px 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-group__rename input {
+  width: 100%;
+  min-width: 0;
+  min-height: 26px;
+}
+
+/* Project drag-reorder: an insertion rule marks the slot; the dragged group
+   dims so the list reads as "lifted". Session→project drops share the same
+   indicator on the target group. */
+.product-app-frame[data-ui-version="v2"] .workspace-group[data-dragging="true"] {
+  opacity: 0.45;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-group[data-drop-target] {
+  position: relative;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-group[data-drop-target="before"]::before,
+.product-app-frame[data-ui-version="v2"] .workspace-group[data-drop-target="after"]::after {
+  position: absolute;
+  right: 4px;
+  left: 4px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--v2-rail-signal);
+  content: "";
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-group[data-drop-target="before"]::before {
+  top: -1px;
+}
+
+.product-app-frame[data-ui-version="v2"] .workspace-group[data-drop-target="after"]::after {
+  bottom: -1px;
+}
+
+/* Hover card open action: the card's single action spans its footer. */
+.product-app-frame[data-ui-version="v2"] .session-hover-card__open {
+  width: 100%;
+  justify-content: center;
+  margin-top: 8px;
+  min-height: 26px;
+  font-size: 11px;
+}
+
+/* §7.3: window blur suppresses rail hover skins so a refocused window does
+   not present a stale hover under an unwatched pointer. */
+.product-app-frame[data-ui-version="v2"] .product-sidebar[data-window-blur="true"] .session-item:hover:not(:disabled),
+.product-app-frame[data-ui-version="v2"] .product-sidebar[data-window-blur="true"] .workspace-group__button:hover:not(:disabled),
+.product-app-frame[data-ui-version="v2"] .product-sidebar[data-window-blur="true"] .session-branch:hover .session-item__actions {
+  background: none;
+  color: inherit;
+}
+
+.product-app-frame[data-ui-version="v2"] .product-sidebar[data-window-blur="true"] .session-branch:hover .session-item__actions {
+  display: none;
 }

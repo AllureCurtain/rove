@@ -44,10 +44,11 @@ describe("production Product UI boundary", () => {
     expect(continuity).toContain("productClient.revokeMessage");
 
     const shell = readFileSync(join(WEB_ROOT, "shell", "ProductApp.tsx"), "utf8");
-    const tree = readFileSync(join(WEB_ROOT, "sidebar", "WorkspaceTree.tsx"), "utf8");
+    const rail = readFileSync(join(WEB_ROOT, "sidebar", "SessionRail.tsx"), "utf8");
+    const row = readFileSync(join(WEB_ROOT, "sidebar", "SessionRow.tsx"), "utf8");
     expect(shell).toContain("server.forkSession(activeSession.id)");
-    expect(tree).toContain("forkPointRunId");
-    expect(tree).toContain('t("workspace.sessionsAndBranches")');
+    expect(row).toContain("forkPointRunId");
+    expect(rail).toContain('t("workspace.sessionsAndBranches")');
     expect(transcript).toContain('t("workspace.forked")');
   });
 });

@@ -93,11 +93,10 @@ import {
 import { createSettingsPlatformClient } from "../settings/settings-platform-client";
 import { HomeSurface } from "../sidebar/HomeSurface";
 import { sessionSubtitle } from "../sidebar/session-labels";
-import { WorkspaceTree } from "../sidebar/WorkspaceTree";
+import { SessionRail } from "../sidebar/SessionRail";
 import {
   findSession,
   findWorkspace,
-  sessionsForWorkspace,
   sortedWorkspaces,
 } from "../state/product-catalog";
 import { useProductRouteSync } from "../state/use-product-route-sync";
@@ -115,6 +114,10 @@ import type {
   ProductMessageDelivery,
 } from "../product/product-api-types";
 import type { WorkspaceKind } from "../state/product-types";
+import {
+  desktopRevealInFolderAvailable,
+  revealDesktopPath,
+} from "../platform/desktop-commands";
 import { M1MigrationGate } from "./M1MigrationGate";
 import { ConversationTopBar } from "./ConversationTopBar";
 import { TopBar } from "./TopBar";
@@ -441,13 +444,21 @@ function ServerProductApp({ draftStore }: {
     sessions: server.catalog.sessions,
     activeSessionId: activeSession?.id ?? null,
   });
-  const sessionsByWorkspace = useMemo(() => {
-    const map: Record<string, ReturnType<typeof sessionsForWorkspace>> = {};
-    for (const workspace of server.catalog.workspaces) {
-      map[workspace.id] = sessionsForWorkspace(server.catalog, workspace.id);
+  // §7.2 queue-count slot: only the open session's queue is in memory, so the
+  // rail's slot is real for that row and empty elsewhere until the catalog
+  // grows a queue-depth field.
+  const railQueueCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (activeSession?.id) {
+      const queued = continuity.messages.filter(
+        (message) => message.status === "queued",
+      ).length;
+      if (queued > 0) {
+        counts.set(activeSession.id, queued);
+      }
     }
-    return map;
-  }, [server.catalog]);
+    return counts;
+  }, [activeSession?.id, continuity.messages]);
 
   // §9.1: the home surface's recents are cross-workspace — the past stays one
   // click away regardless of which project the hero is targeting.
@@ -456,7 +467,9 @@ function ServerProductApp({ draftStore }: {
       server.catalog.workspaces.map((workspace) => workspace.id),
     );
     return server.catalog.sessions
-      .filter((session) => known.has(session.workspaceId))
+      .filter(
+        (session) => known.has(session.workspaceId) && !session.archived,
+      )
       .slice()
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .slice(0, HOME_RECENT_SESSION_LIMIT);
@@ -1030,6 +1043,78 @@ function ServerProductApp({ draftStore }: {
     } catch {
       // The state hook exposes the failure through catalogError.
     }
+  }
+
+  /**
+   * §7.3 row menu "Branch": forks any idle session at its latest turn — the
+   * same path the transcript fork button takes, generalized to an arbitrary
+   * row instead of the active session.
+   */
+  async function handleBranchSession(sessionId: string) {
+    const parent = server.catalogRef.current.sessions.find(
+      (session) => session.id === sessionId,
+    );
+    if (!parent) {
+      return;
+    }
+    const activeBefore = { ...server.catalogRef.current.active };
+    const navigationIntent = routing.captureNavigationIntent();
+    const child = await server.forkSession(sessionId);
+    const activeNow = server.catalogRef.current.active;
+    if (child === null) {
+      // The reason is already on screen as a shell alert; do not say it twice.
+      return;
+    }
+    toast.notify({
+      kind: "success",
+      message: t("toast.forkCreated", { title: child.title }),
+    });
+    if (
+      routing.isNavigationIntentCurrent(navigationIntent) &&
+      activeNow.workspaceId === activeBefore.workspaceId &&
+      activeNow.sessionId === activeBefore.sessionId
+    ) {
+      routing.navigateSession(parent.workspaceId, child.id);
+    }
+  }
+
+  /**
+   * §7.3 row menu "Delete": the rail arms first; this runs once armed. A
+   * removed active session leaves the conversation pointing at nothing, so the
+   * route falls back to its workspace — the workspace's next session, or its
+   * empty surface.
+   */
+  async function handleDeleteSession(sessionId: string): Promise<boolean> {
+    const session = server.catalogRef.current.sessions.find(
+      (item) => item.id === sessionId,
+    );
+    let wasActive: boolean;
+    try {
+      wasActive = await server.deleteSession(sessionId);
+    } catch {
+      // The state hook exposes the failure through catalogError.
+      return false;
+    }
+    if (wasActive && session) {
+      routing.navigateWorkspace(session.workspaceId);
+    }
+    return true;
+  }
+
+  /** §7.3 project menu "Open in file manager" — Desktop host only. */
+  function handleRevealWorkspace(workspaceId: string) {
+    const workspace = server.catalogRef.current.workspaces.find(
+      (item) => item.id === workspaceId,
+    );
+    if (!workspace) {
+      return;
+    }
+    void revealDesktopPath(workspace.rootPath).catch(() => {
+      toast.notify({
+        kind: "error",
+        message: t("toast.revealFailed"),
+      });
+    });
   }
 
   function composerDraftIdentity() {
@@ -1747,9 +1832,9 @@ function ServerProductApp({ draftStore }: {
             } as CSSProperties
           }
         >
-          <WorkspaceTree
+          <SessionRail
             workspaces={workspaces}
-            sessionsByWorkspace={sessionsByWorkspace}
+            sessions={server.catalog.sessions}
             activeWorkspaceId={server.catalog.active.workspaceId}
             activeSessionId={server.catalog.active.sessionId}
             mutationBusy={server.catalogMutationBusy}
@@ -1777,6 +1862,14 @@ function ServerProductApp({ draftStore }: {
             onTogglePin={(workspaceId) =>
               void server.togglePin(workspaceId).catch(() => undefined)
             }
+            onRenameWorkspace={async (workspaceId, displayName) => {
+              try {
+                await server.renameWorkspace(workspaceId, displayName);
+                return true;
+              } catch {
+                return false;
+              }
+            }}
             onRemoveWorkspace={(workspaceId) =>
               void handleRemoveWorkspace(workspaceId)
             }
@@ -1789,6 +1882,18 @@ function ServerProductApp({ draftStore }: {
                 return false;
               }
             }}
+            onArchiveSession={(sessionId, archived) =>
+              void server
+                .setSessionArchived(sessionId, archived)
+                .catch(() => undefined)
+            }
+            onDeleteSession={handleDeleteSession}
+            onBranchSession={(sessionId) => void handleBranchSession(sessionId)}
+            onRevealWorkspace={
+              desktopRevealInFolderAvailable() ? handleRevealWorkspace : undefined
+            }
+            queueCounts={railQueueCounts}
+            version={server.apiVersion}
             mobileOpen={mobileLayout && workspaceOpen}
             peekOpen={mobileLayout && workspacePeek}
             onOverlayPointerEnter={mobileLayout ? cancelPeekClose : undefined}

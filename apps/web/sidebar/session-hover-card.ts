@@ -17,6 +17,11 @@
  */
 
 export const SESSION_HOVER_CARD_DELAY_MS = 300;
+/**
+ * Grace after the pointer leaves the row before its card closes — the bridge
+ * that lets the pointer cross the gap onto the card itself (design §7.3).
+ */
+export const SESSION_HOVER_CARD_BRIDGE_MS = 180;
 export const SESSION_HOVER_CARD_WIDTH_PX = 320;
 export const SESSION_HOVER_CARD_GAP_PX = 8;
 export const SESSION_HOVER_CARD_VIEWPORT_MARGIN_PX = 8;
