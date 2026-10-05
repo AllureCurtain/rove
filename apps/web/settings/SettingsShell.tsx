@@ -353,11 +353,11 @@ function GeneralSettings({
         <div className="settings-segmented" role="group" aria-label={t("uiSkin.label")}>
           <button
             type="button"
-            aria-pressed={skin === "cool"}
-            data-active={skin === "cool"}
-            onClick={() => setSkin("cool")}
+            aria-pressed={skin === "graphite"}
+            data-active={skin === "graphite"}
+            onClick={() => setSkin("graphite")}
           >
-            {t("uiSkin.cool")}
+            {t("uiSkin.graphite")}
           </button>
           <button
             type="button"

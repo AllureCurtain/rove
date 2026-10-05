@@ -79,6 +79,8 @@ const enUS: CopyDictionary = {
     status_error: "Failed",
   },
   chrome: {
+    brandName: "rove",
+    brandTag: "local agent",
     loadError: "The action could not be completed. Refresh and retry.",
     partial: "Some records could not be loaded.",
     download: "Download {{name}}",
@@ -149,6 +151,8 @@ const enUS: CopyDictionary = {
     collapseInspector: "Collapse details",
     closeInspector: "Close details",
     newSession: "New session",
+    newTask: "New task",
+    search: "Search",
     searchWorkspace: "Search sessions",
   },
   chat: {
@@ -690,9 +694,9 @@ const enUS: CopyDictionary = {
   },
   uiSkin: {
     label: "Interface style",
-    desc: "Compare both visual directions before locking one in. Applies immediately on this machine.",
+    desc: "Graphite is the default; Warm ivory stays available as an alternative. Applies immediately on this machine.",
+    graphite: "Graphite",
     warm: "Warm ivory",
-    cool: "Cool steel",
   },
   migration: {
     importing: "Importing your workspace history",
