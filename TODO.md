@@ -1,10 +1,10 @@
 # TODO
 
-Updated: 2026-10-05
+Updated: 2026-10-06
 
 ## In progress
 
-- Web console rebuild per `docs/web-console-design.md` v2, one PR per phase: P0 skin and shell merged (PR #4); P1 conversation surface merged (PR #5); P2 session rail is on branch `feat/console-p2-sidebar` (pinned shelf, time groups with load-more, project groups with reorder, row menus + batch select, hover card, armed delete); P3 work panel and P4 polish remain
+- Web console rebuild per `docs/web-console-design.md` v2, one PR per phase: P0 skin and shell merged (PR #4); P1 conversation surface merged (PR #5); P2 session rail merged (PR #6); P3 work panel on branch `feat/console-p3-work-panel` pending PR (dynamic id-based tab strip with per-file tabs, evidence-first default, per-session strip persistence, maximize mode, files breadcrumbs + highlighted viewer, review diff totals, shared empty state, session-menu export dialog); P4 polish remains
 
 ## Next up
 

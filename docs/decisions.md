@@ -4,6 +4,13 @@ New decisions go on top. Do not delete overturned decisions; mark them "supersed
 
 Decisions before 2026-10-01 were distilled from the design documents of that period; the originals have been deleted.
 
+## 2026-10-06 Work panel: per-session id-based tab strip in localStorage
+
+- Status: active
+- Decision: the work-panel tab strip is a dynamic set identified by id (`file:<path>` for per-file viewer tabs, the kind otherwise), persisted per `workspace::session` pair in `localStorage` under `rove.ui-work-panel-tabs` (bounded to 24 sessions) alongside the existing width (`rove.ui-work-panel-width`) and open (`rove.ui-work-panel-open`) preferences. Maximize is deliberately a session-only mode and is never persisted. Two input details are load-bearing: pointer capture for tab drag-reorder is deferred until the press crosses the drag threshold — capturing on `pointerdown` retargets the click to the wrapper and silently swallows activation; and middle-click close rides on `pointerup` (`button === 1`) rather than `auxclick`, because a scrollable ancestor lets middle-click latch autoscroll, which suppresses `auxclick` entirely on Windows Chromium. Evidence export moved from the run tab to the session row menu (`onExportSession` → a modal hosting `ExportPanel`), keeping the panel reserved for per-run evidence.
+- Why: design §8 requires reopening a session to restore exactly the strip the user left, and per-file tabs cannot be expressed by a kind-keyed model; the two event-handling choices are the only forms verified to work across platforms (the deferred capture was measured swallowing `click`; `auxclick` never dispatched under autoscroll).
+- Rejected: persisting maximize — it is a browsing mode, not a preference; `onAuxClick` alone — works on Linux but is silently absent on Windows when any ancestor can scroll; capture-on-pointerdown — breaks plain click activation.
+
 ## 2026-10-05 Web rail: local order/pin preferences, no session-to-workspace moves
 
 - Status: active
