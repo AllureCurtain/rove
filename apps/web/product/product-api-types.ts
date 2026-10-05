@@ -153,6 +153,78 @@ export interface ProductSession {
   updated_at: string;
 }
 
+/** `GET /product/runtime` — bounded runtime facts for the rail footer (§7.1). */
+export const PRODUCT_CONNECTION_STATUSES = ["connected"] as const;
+export type ProductConnectionStatus =
+  (typeof PRODUCT_CONNECTION_STATUSES)[number];
+
+export const PRODUCT_STORE_STATUSES = ["ready", "unavailable"] as const;
+export type ProductStoreStatus = (typeof PRODUCT_STORE_STATUSES)[number];
+
+export const PRODUCT_RESUME_HEALTH_STATUSES = [
+  "healthy",
+  "needs_attention",
+] as const;
+export type ProductResumeHealthStatus =
+  (typeof PRODUCT_RESUME_HEALTH_STATUSES)[number];
+
+export const PRODUCT_EXECUTION_ADAPTERS = ["local"] as const;
+export type ProductExecutionAdapter =
+  (typeof PRODUCT_EXECUTION_ADAPTERS)[number];
+
+export const PRODUCT_EXECUTION_WORKSPACE_KINDS = [
+  "folder",
+  "repo",
+  "task",
+] as const;
+export type ProductExecutionWorkspaceKind =
+  (typeof PRODUCT_EXECUTION_WORKSPACE_KINDS)[number];
+
+export interface ProductExecutionCapabilities {
+  filesystem_read: boolean;
+  filesystem_write: boolean;
+  process_run: boolean;
+  process_stdio: boolean;
+  observations: boolean;
+  process_background: boolean;
+  process_pty: boolean;
+  workspace_checkpoints: boolean;
+  artifact_projection: boolean;
+}
+
+export interface ProductExecutionEnvironmentInfo {
+  adapter: ProductExecutionAdapter;
+  workspace_kind: ProductExecutionWorkspaceKind;
+  workspace_digest: string;
+  capabilities: ProductExecutionCapabilities;
+}
+
+export interface ProductAgentRuntimeInfo {
+  selector: string;
+  workspace_source_authorized: boolean;
+  workspace_instructions_enabled: boolean;
+  allow_remediation_procedures: boolean;
+  max_procedure_selections: number;
+}
+
+export interface ProductResumeHealth {
+  status: ProductResumeHealthStatus;
+  workspace_count: number;
+  session_count: number;
+  bound_session_count: number;
+  running_session_count: number;
+  needs_attention_session_count: number;
+}
+
+export interface ProductRuntimeInfo {
+  api_version: string;
+  connection: ProductConnectionStatus;
+  product_store: ProductStoreStatus;
+  execution_environment: ProductExecutionEnvironmentInfo;
+  agent: ProductAgentRuntimeInfo;
+  resume_health?: ProductResumeHealth;
+}
+
 export const PRODUCT_REVIEW_TARGET_KINDS = [
   "uncommitted",
   "base",
@@ -1887,6 +1959,142 @@ export function parseProductSession(
     schemaError(path, "both last_outcome and last_outcome_at, or neither");
   }
   return session;
+}
+
+function parseProductExecutionCapabilities(
+  value: unknown,
+  path: string,
+): ProductExecutionCapabilities {
+  const record = expectRecord(value, path);
+  return {
+    filesystem_read: expectBoolean(
+      record.filesystem_read,
+      `${path}.filesystem_read`,
+    ),
+    filesystem_write: expectBoolean(
+      record.filesystem_write,
+      `${path}.filesystem_write`,
+    ),
+    process_run: expectBoolean(record.process_run, `${path}.process_run`),
+    process_stdio: expectBoolean(record.process_stdio, `${path}.process_stdio`),
+    observations: expectBoolean(record.observations, `${path}.observations`),
+    process_background: expectBoolean(
+      record.process_background,
+      `${path}.process_background`,
+    ),
+    process_pty: expectBoolean(record.process_pty, `${path}.process_pty`),
+    workspace_checkpoints: expectBoolean(
+      record.workspace_checkpoints,
+      `${path}.workspace_checkpoints`,
+    ),
+    artifact_projection: expectBoolean(
+      record.artifact_projection,
+      `${path}.artifact_projection`,
+    ),
+  };
+}
+
+export function parseProductRuntimeInfo(
+  value: unknown,
+  path = "product runtime info",
+): ProductRuntimeInfo {
+  const record = expectRecord(value, path);
+  const environment = expectRecord(
+    record.execution_environment,
+    `${path}.execution_environment`,
+  );
+  const agent = expectRecord(record.agent, `${path}.agent`);
+  const info: ProductRuntimeInfo = {
+    api_version: expectString(record.api_version, `${path}.api_version`, {
+      nonEmpty: true,
+    }),
+    connection: expectEnum(
+      record.connection,
+      PRODUCT_CONNECTION_STATUSES,
+      `${path}.connection`,
+    ),
+    product_store: expectEnum(
+      record.product_store,
+      PRODUCT_STORE_STATUSES,
+      `${path}.product_store`,
+    ),
+    execution_environment: {
+      adapter: expectEnum(
+        environment.adapter,
+        PRODUCT_EXECUTION_ADAPTERS,
+        `${path}.execution_environment.adapter`,
+      ),
+      workspace_kind: expectEnum(
+        environment.workspace_kind,
+        PRODUCT_EXECUTION_WORKSPACE_KINDS,
+        `${path}.execution_environment.workspace_kind`,
+      ),
+      workspace_digest: expectString(
+        environment.workspace_digest,
+        `${path}.execution_environment.workspace_digest`,
+      ),
+      capabilities: parseProductExecutionCapabilities(
+        environment.capabilities,
+        `${path}.execution_environment.capabilities`,
+      ),
+    },
+    agent: {
+      selector: expectString(agent.selector, `${path}.agent.selector`),
+      workspace_source_authorized: expectBoolean(
+        agent.workspace_source_authorized,
+        `${path}.agent.workspace_source_authorized`,
+      ),
+      workspace_instructions_enabled: expectBoolean(
+        agent.workspace_instructions_enabled,
+        `${path}.agent.workspace_instructions_enabled`,
+      ),
+      allow_remediation_procedures: expectBoolean(
+        agent.allow_remediation_procedures,
+        `${path}.agent.allow_remediation_procedures`,
+      ),
+      max_procedure_selections: expectInteger(
+        agent.max_procedure_selections,
+        `${path}.agent.max_procedure_selections`,
+        { min: 0 },
+      ),
+    },
+  };
+  if (record.resume_health !== undefined && record.resume_health !== null) {
+    const health = expectRecord(record.resume_health, `${path}.resume_health`);
+    info.resume_health = {
+      status: expectEnum(
+        health.status,
+        PRODUCT_RESUME_HEALTH_STATUSES,
+        `${path}.resume_health.status`,
+      ),
+      workspace_count: expectInteger(
+        health.workspace_count,
+        `${path}.resume_health.workspace_count`,
+        { min: 0 },
+      ),
+      session_count: expectInteger(
+        health.session_count,
+        `${path}.resume_health.session_count`,
+        { min: 0 },
+      ),
+      bound_session_count: expectInteger(
+        health.bound_session_count,
+        `${path}.resume_health.bound_session_count`,
+        { min: 0 },
+      ),
+      running_session_count: expectInteger(
+        health.running_session_count,
+        `${path}.resume_health.running_session_count`,
+        { min: 0 },
+      ),
+      needs_attention_session_count: expectInteger(
+        health.needs_attention_session_count,
+        `${path}.resume_health.needs_attention_session_count`,
+        { min: 0 },
+      ),
+    };
+  }
+  return info;
 }
 
 function parseProductReviewTargetSpec(

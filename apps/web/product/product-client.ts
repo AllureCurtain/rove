@@ -31,6 +31,7 @@ import {
   parseProductReview,
   parseProductReviewFindingsResponse,
   parseProductReviewsResponse,
+  parseProductRuntimeInfo,
   parseProductSession,
   parseProductSessionModelConfigResponse,
   parseProductSessionRunModelsResponse,
@@ -78,6 +79,7 @@ import {
   type ProductProviderProfilesResponse,
   type ProductReview,
   type ProductReviewFindingsResponse,
+  type ProductRuntimeInfo,
   type ProductReviewsResponse,
   type ProductSession,
   type ProductSessionModelConfig,
@@ -186,6 +188,8 @@ export interface ProductApiClient {
     request: CreateProductWorkspaceRequest,
   ): Promise<ProductWorkspace>;
   deleteWorkspace(workspaceId: string): Promise<void>;
+  /** Bounded runtime facts (API version, connection) for the rail footer. */
+  getRuntimeInfo(): Promise<ProductRuntimeInfo>;
   /** Opens the OS folder dialog via the local API and returns the absolute path. */
   pickWorkspaceFolder(): Promise<
     | { status: "selected"; path: string }
@@ -692,6 +696,15 @@ export function createProductApiClient(
           apiPrefix,
           `/product/workspaces/${encodeURIComponent(workspaceId)}`,
         ),
+      );
+    },
+
+    getRuntimeInfo() {
+      return requestJson(
+        fetchImpl,
+        productUrl(apiPrefix, "/product/runtime"),
+        undefined,
+        parseProductRuntimeInfo,
       );
     },
 
