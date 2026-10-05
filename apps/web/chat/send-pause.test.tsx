@@ -108,7 +108,7 @@ describe("Composer while a transcript re-read is in flight", () => {
 
     await render({ store, sendPaused: false, onSend });
     expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend).toHaveBeenCalledWith("stop me", []);
+    expect(onSend).toHaveBeenCalledWith("stop me", [], undefined);
     expect(container.textContent).not.toContain("恢复完成后自动发送");
   });
 
