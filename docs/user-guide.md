@@ -38,9 +38,9 @@ Steps:
 2. Open <http://localhost:3000> and pick a folder or repository as the workspace.
 3. In Settings → Providers, create a profile, fill in the env var name holding the key, test the connection, then activate.
 4. Create a session and type a task. You can keep sending messages while it runs: they queue, and can be promoted to the front or withdrawn.
-5. Use the Inspector on the right to view files, diffs, artifacts, and usage; you can also export evidence (JSON, HTML, Markdown).
+5. The work panel on the right stays closed until you open it — use the floating button at the top-right corner of the conversation (or `Ctrl+.`); it shows files, diffs, artifacts, and usage, and remembers whether it was open. You can also export evidence (JSON, HTML, Markdown).
 
-Note: the browser never sees your key. Refreshing the page restores the conversation, and incomplete recovery is stated explicitly.
+Note: the browser never sees your key. Refreshing the page restores the conversation, and incomplete recovery is stated explicitly. Settings → General also offers a skin selector (graphite or warm).
 
 ## Desktop app (Windows)
 
