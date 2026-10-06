@@ -12,7 +12,6 @@ import {
   type Ref,
 } from "react";
 import {
-  MagnifyingGlassIcon,
   PaperPlaneIcon,
   PlusIcon,
   StopIcon,
@@ -70,7 +69,6 @@ import type {
   ProductMessageAttachmentRequest,
   ProductMessageDelivery,
   ProductProviderModelsResponse,
-  ProductReviewTargetSpec,
 } from "../product/product-api-types";
 
 /** Slash command offered in the composer menu, sourced by the product shell. */
@@ -125,16 +123,12 @@ export function Composer({
   commands,
   findFiles,
   queuedEditNotice,
-  reviewAvailable = false,
-  reviewBusy = false,
-  reviewError = null,
-  onCreateReview,
 }: {
   draftBinding?: ComposerDraftBinding;
   /**
    * §9.1: `"home"` is the same composer without the session furniture — the
-   * send slot, key bindings, and hint stay identical, while the model control,
-   * review launcher, and session-scoped rows only exist where a session does.
+   * send slot, key bindings, and hint stay identical, while the model control
+   * and session-scoped rows only exist where a session does.
    */
   variant?: "session" | "home";
   placeholder?: string;
@@ -191,18 +185,11 @@ export function Composer({
   commands?: ComposerCommand[];
   findFiles?: (query: string) => Promise<ComposerFileSuggestion[]>;
   queuedEditNotice?: string | null;
-  reviewAvailable?: boolean;
-  reviewBusy?: boolean;
-  reviewError?: string | null;
-  onCreateReview?: (target: ProductReviewTargetSpec) => Promise<boolean>;
 }) {
   const { t } = useCopy();
   const draft = useComposerDraft(draftBinding);
   const { text: message, submitting } = draft;
   const displayError = error || (draft.sendFailed ? t("chat.sendUnexpectedError") : null);
-  const [reviewOpen, setReviewOpen] = useState(false);
-  const [reviewKind, setReviewKind] = useState<ProductReviewTargetSpec["kind"]>("uncommitted");
-  const [reviewRevision, setReviewRevision] = useState("");
   const recallCursor = useRef(-1);
   // Paste attachments live in memory for this draft only. A session switch
   // starts with an empty set, matching the draft store's lifecycle.
@@ -989,76 +976,6 @@ export function Composer({
           ) : (
             <span>{t("chat.disabledSettings")}</span>
           )
-        ) : null}
-        {variant === "session" ? (
-        <div className="chat-composer__review">
-          <button
-            type="button"
-            className="ghost"
-            disabled={!reviewAvailable || reviewBusy}
-            onClick={() => setReviewOpen((current) => !current)}
-          >
-            <MagnifyingGlassIcon aria-hidden="true" />
-            {t("chat.review")}
-          </button>
-          {reviewOpen ? (
-            <div className="chat-composer__review-form" data-review-launcher>
-              <label htmlFor="review-target-kind">{t("chat.reviewTarget")}</label>
-              <select
-                id="review-target-kind"
-                value={reviewKind}
-                onChange={(event) => {
-                  const next = event.target.value as ProductReviewTargetSpec["kind"];
-                  setReviewKind(next);
-                  if (next === "uncommitted") setReviewRevision("");
-                }}
-                disabled={reviewBusy}
-              >
-                <option value="uncommitted">{t("chat.reviewUncommitted")}</option>
-                <option value="base">{t("chat.reviewBase")}</option>
-                <option value="commit">{t("chat.reviewCommit")}</option>
-              </select>
-              {reviewKind !== "uncommitted" ? (
-                <input
-                  value={reviewRevision}
-                  onChange={(event) => setReviewRevision(event.target.value)}
-                  placeholder={
-                    reviewKind === "base"
-                      ? t("chat.reviewBasePlaceholder")
-                      : t("chat.reviewCommitPlaceholder")
-                  }
-                  aria-label={t("chat.reviewRevision")}
-                  disabled={reviewBusy}
-                />
-              ) : null}
-              <button
-                type="button"
-                className="secondary"
-                disabled={
-                  !reviewAvailable ||
-                  reviewBusy ||
-                  (reviewKind !== "uncommitted" && !reviewRevision.trim())
-                }
-                onClick={() => {
-                  if (!onCreateReview) return;
-                  const target: ProductReviewTargetSpec =
-                    reviewKind === "uncommitted"
-                      ? { kind: "uncommitted" }
-                      : { kind: reviewKind, revision: reviewRevision.trim() };
-                  void onCreateReview(target).then((created) => {
-                    if (created) {
-                      setReviewOpen(false);
-                      setReviewRevision("");
-                    }
-                  });
-                }}
-              >
-                {reviewBusy ? t("chat.reviewStarting") : t("chat.reviewStart")}
-              </button>
-              {reviewError ? <span className="chat-error" role="alert">{reviewError}</span> : null}
-            </div>
-          ) : null}
-        </div>
         ) : null}
         </div>
         <div className="chat-composer__actions">

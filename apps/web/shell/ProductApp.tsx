@@ -37,7 +37,6 @@ import {
 } from "../chat/smart-stop";
 import { COMPOSER_FILE_SOURCE_LIMIT } from "../chat/Composer";
 import { CompactionPanel } from "../chat/CompactionPanel";
-import { branchPointForTurn } from "../chat/branch-at-message";
 import { reorderedQueueIds } from "../chat/queue-order";
 import { transcriptLocateTarget } from "../chat/transcript-locate";
 import { CopyProvider, useCopy } from "../copy/CopyProvider";
@@ -579,14 +578,6 @@ function ServerProductApp({ draftStore }: {
     sessionId: string;
     settled: ReadonlySet<string>;
   } | null>(null);
-  // R6: the pending "edit and branch" confirmation. The ledger `seq` is resolved
-  // before the dialog opens, so the confirmation cannot send a different point
-  // than the one the user saw.
-  const [branchRequest, setBranchRequest] = useState<{
-    content: string;
-    seq: number;
-  } | null>(null);
-  const branchConfirmRef = useRef<HTMLButtonElement>(null);
   // R7: which search surface is open. Both are overlays over the shell rather
   // than separate routes, so a hit can be located in the transcript behind them
   // and a refused term keeps the session the user was reading.
@@ -755,10 +746,6 @@ function ServerProductApp({ draftStore }: {
     activeSession?.status === "idle" &&
     Boolean(activeSession.activeRunId) &&
     !server.catalogMutationBusy;
-  // R6 shares the terminal-boundary fork's precondition: the parent must be idle
-  // with a completed latest run, because the server refuses a branch from an
-  // active session and the truncation point must belong to that run.
-  const branchAvailable = forkAvailable;
   const composerDisabledReason = awaitingInitialRestore
     ? t("chat.disabledRestoring")
     : continuity.restoreState.status === "loading"
@@ -805,26 +792,6 @@ function ServerProductApp({ draftStore }: {
     partialAbortBoundary,
     t,
   ]);
-
-  // R6: the confirmation is the only thing that creates the child session, so it
-  // takes focus and answers Escape with a cancel rather than leaving the
-  // keyboard behind.
-  useEffect(() => {
-    if (branchRequest === null) {
-      return;
-    }
-    const frame = window.requestAnimationFrame(() => branchConfirmRef.current?.focus());
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setBranchRequest(null);
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [branchRequest]);
 
   function cancelPeekClose() {
     if (peekCloseTimerRef.current !== null) {
@@ -1304,68 +1271,6 @@ function ServerProductApp({ draftStore }: {
     composerRef.current?.focus();
   }
 
-  /**
-   * R6: "edit and resend" also offers "edit and branch to a new session".
-   *
-   * The branch point is the *ledger* message of the turn, matched by the run it
-   * was delivered to plus its text; an ambiguous or absent match refuses the
-   * action instead of guessing a sequence, because the wrong `seq` would
-   * silently cut a different prefix. The confirmation is what creates the
-   * artifact, so it is asked before anything leaves the browser.
-   */
-  function handleRequestBranch(input: { runId: string | null; content: string }) {
-    const message = branchPointForTurn({
-      messages: continuity.messages,
-      content: input.content,
-      runId: input.runId,
-      forkAvailable: branchAvailable,
-    });
-    if (message === null) {
-      setStopNotice(t("chat.branchUnavailable"));
-      return;
-    }
-    setBranchRequest({ content: input.content, seq: message.seq });
-  }
-
-  async function handleConfirmBranch() {
-    if (branchRequest === null || !activeWorkspace || !activeSession) {
-      return;
-    }
-    const request = branchRequest;
-    setBranchRequest(null);
-    const activeBefore = { ...server.catalogRef.current.active };
-    const navigationIntent = routing.captureNavigationIntent();
-    const result = await server.branchSessionAtMessage(activeSession.id, request.seq);
-    if (!result.ok) {
-      setStopNotice(
-        result.code === "product_session_active"
-          ? t("chat.branchParentActive")
-          : t(
-              "chat.branchFailed",
-              { error: result.code ?? t("search.unknownError") },
-            ),
-      );
-      return;
-    }
-    // The endpoint never takes the text: the edited text is what the new
-    // session's first message will be, so it is placed in the child's composer
-    // draft before navigation rather than assumed to follow it.
-    draftStore.setText(
-      { workspaceId: activeWorkspace.id, productSessionId: result.session.id },
-      request.content,
-    );
-    toast.notify({
-      kind: "success",
-      message: t("chat.branchCreated", { title: result.session.title }),
-    });
-    if (
-      routing.isNavigationIntentCurrent(navigationIntent) &&
-      server.catalogRef.current.active.workspaceId === activeBefore.workspaceId &&
-      server.catalogRef.current.active.sessionId === activeBefore.sessionId
-    ) {
-      routing.navigateSession(activeWorkspace.id, result.session.id);
-    }
-  }
 
   function handleRetryMessage(content: string) {
     void continuity.send(content);
@@ -2073,34 +1978,6 @@ function ServerProductApp({ draftStore }: {
                  veil own the transition, not a full-screen loader. */
               <div className="chat-pane">
                 {stopNotice ? <p className="shell-alert" role="status">{stopNotice}</p> : null}
-                {branchRequest ? (
-                  <div
-                    className="settings-inline-confirm"
-                    role="alertdialog"
-                    aria-label={t("chat.branchFromMessage")}
-                  >
-                    <span>{t("chat.branchConfirm")}</span>
-                    {/* The known limit is stated before the branch is created,
-                        not discovered afterwards in the child's history. */}
-                    <span>{t("chat.branchInheritedNotice")}</span>
-                    <div className="field-actions">
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => setBranchRequest(null)}
-                      >
-                        {t("chat.branchCancel")}
-                      </button>
-                      <button
-                        ref={branchConfirmRef}
-                        type="button"
-                        onClick={() => void handleConfirmBranch()}
-                      >
-                        {t("chat.branchConfirmAction")}
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
                 {/* R9: manual compaction lives beside the send area, where the
                     waiting row's degraded "compacting" phase is also shown, so
                     the manual action and the automatic one are read together. */}
@@ -2180,8 +2057,6 @@ function ServerProductApp({ draftStore }: {
                           onEditMessage={handleEditTranscriptMessage}
                           onForkSession={() => void handleForkSession()}
                           forkAvailable={visible && paneSettled && forkAvailable}
-                          onBranchMessage={handleRequestBranch}
-                          branchAvailable={visible && paneSettled && branchAvailable}
                           locateRequest={visible ? locateRequest : null}
                           loadAttachment={handleLoadAttachment}
                         />
@@ -2245,16 +2120,6 @@ function ServerProductApp({ draftStore }: {
                   commands={composerCommands}
                   findFiles={findComposerFiles}
                   queuedEditNotice={editingQueuedMessageId ? t("chat.queuedEditing") : null}
-                  reviewAvailable={displayWorkspace.kind === "repo"}
-                  reviewBusy={reviews.creating}
-                  reviewError={reviews.error}
-                  onCreateReview={async (target) => {
-                    const created = await reviews.create(target);
-                    if (created) {
-                      panel.open("review");
-                    }
-                    return created;
-                  }}
                 />
                   </div>
                 </div>

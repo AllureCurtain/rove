@@ -69,7 +69,7 @@ Note: the grant binds to the exact directory and a config digest; any config cha
 
 Purpose: have the agent review current changes read-only, without modifying any files.
 
-Steps: run `rove review` in the terminal (optionally with `--base <rev>` or `--commit <sha>`), or click Review in a Web session.
+Steps: run `rove review` in the terminal (optionally with `--base <rev>` or `--commit <sha>`). The Web session's review pane lists finished reviews.
 
 ## Where data lives
 

@@ -623,73 +623,6 @@ export function useServerProductState() {
     [beginCatalogMutation, finishCatalogMutation, patchCatalog, productClient],
   );
 
-  /**
-   * R6: fork at a message instead of at the terminal boundary.
-   *
-   * The endpoint never takes the edited text; it only cuts the child's seed
-   * prefix after the parent ledger sequence named here, and the caller sends the
-   * edited text into the child as its first message. The parent must be idle —
-   * the endpoint answers 409 `product_session_active` otherwise — and the
-   * sequence must belong to a user message delivered to `fork_at_run_id`.
-   *
-   * The idempotency key is fresh for every confirmation on purpose: reusing the
-   * parent's terminal-fork key for a different truncation point is the same key
-   * with a different body, which the server refuses with
-   * `product_fork_conflict`. A confirmed branch is a new artifact each time.
-   */
-  const branchSessionAtMessage = useCallback(
-    async (
-      sessionId: string,
-      truncateAfterMessageSeq: number,
-    ): Promise<
-      { ok: true; session: SessionRecord } | { ok: false; code: string | null }
-    > => {
-      const parent = catalogRef.current.sessions.find((session) => session.id === sessionId);
-      if (!parent?.activeRunId || parent.status !== "idle") {
-        setCatalogError("A message can be branched only while its session is idle.");
-        return { ok: false, code: "product_session_active" };
-      }
-      if (!Number.isSafeInteger(truncateAfterMessageSeq) || truncateAfterMessageSeq < 1) {
-        setCatalogError("A branch needs a positive message sequence.");
-        return { ok: false, code: "product_invalid_input" };
-      }
-      const mutation = beginCatalogMutation();
-      if (mutation === null) {
-        return { ok: false, code: null };
-      }
-      try {
-        const response = await productClient.createFork(sessionId, {
-          fork_at_run_id: parent.activeRunId,
-          idempotency_key: newId("fork"),
-          truncate_after_message_seq: truncateAfterMessageSeq,
-        });
-        if (mutationGenerationRef.current !== mutation) {
-          return { ok: false, code: null };
-        }
-        const session = fromProductSession(response.session);
-        patchCatalog((current) => ({
-          ...current,
-          sessions: [
-            session,
-            ...current.sessions.filter((item) => item.id !== session.id),
-          ],
-        }));
-        return { ok: true, session };
-      } catch (error) {
-        if (mutationGenerationRef.current === mutation) {
-          setCatalogError(describeError(error));
-        }
-        return {
-          ok: false,
-          code: error instanceof ProductApiError ? error.code : null,
-        };
-      } finally {
-        finishCatalogMutation(mutation);
-      }
-    },
-    [beginCatalogMutation, finishCatalogMutation, patchCatalog, productClient],
-  );
-
   const togglePin = useCallback(
     async (workspaceId: string) => {
       const workspace = catalogRef.current.workspaces.find(
@@ -1216,7 +1149,6 @@ export function useServerProductState() {
     createSession,
     apiVersion,
     forkSession,
-    branchSessionAtMessage,
     togglePin,
     renameWorkspace,
     removeWorkspace,

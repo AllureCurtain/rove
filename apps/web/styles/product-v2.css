@@ -1526,6 +1526,22 @@ html[data-reading-resizing="true"] * {
   justify-content: flex-end;
 }
 
+/* The row is a column: the message body first, its hover actions below it.
+   Assistant columns keep the shared reading band; the user column hugs the
+   bubble's content width and right-aligns everything under it. */
+.product-app-frame[data-ui-version="v2"] .transcript-item__col {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .transcript-item__col[data-role="user"] {
+  align-items: flex-end;
+  width: auto;
+  max-width: 100%;
+}
+
 /* Activity folds are a single line collapsed; their intrinsic estimate is
    much smaller than a message row's. */
 .product-app-frame[data-ui-version="v2"] .transcript-item[data-kind="activity"] {
@@ -1559,8 +1575,8 @@ html[data-reading-resizing="true"] * {
   box-shadow: none;
 }
 
-.product-app-frame[data-ui-version="v2"] .chat-bubble[data-role="user"] .message-actions {
-  justify-content: flex-end;
+.product-app-frame[data-ui-version="v2"] .transcript-item__col[data-role="user"] .chat-bubble {
+  align-self: flex-end;
 }
 
 .product-app-frame[data-ui-version="v2"] .chat-bubble[data-status="streaming"] {
@@ -2841,58 +2857,12 @@ html[data-reading-resizing="true"] * {
   min-width: 0;
 }
 
-.product-app-frame[data-ui-version="v2"] .chat-composer__controls > span {
+.product-app-frame[data-ui-version="v2"] .chat-composer__tools > span {
   overflow: hidden;
   color: var(--v2-ink-3);
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.product-app-frame[data-ui-version="v2"] .chat-composer__review {
-  position: relative;
-}
-
-.product-app-frame[data-ui-version="v2"] .chat-composer__review > button {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.product-app-frame[data-ui-version="v2"] .chat-composer__review-form {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 8px);
-  z-index: var(--z-pane);
-  display: grid;
-  gap: 7px;
-  width: min(260px, calc(100vw - 32px));
-  border: 1px solid var(--v2-border);
-  border-radius: var(--v2-radius-sm);
-  padding: 10px;
-  background: var(--v2-surface-raised);
-  box-shadow: var(--v2-shadow-md);
-}
-
-.product-app-frame[data-ui-version="v2"] .chat-composer__review-form label {
-  color: var(--v2-ink-3);
-  font-size: 10px;
-}
-
-.product-app-frame[data-ui-version="v2"] .chat-composer__review-form select,
-.product-app-frame[data-ui-version="v2"] .chat-composer__review-form input {
-  width: 100%;
-  min-height: 30px;
-  border: 1px solid var(--v2-border);
-  border-radius: var(--v2-radius-xs);
-  background: var(--v2-bg);
-  color: var(--v2-ink);
-  font-size: 11px;
-}
-
-.product-app-frame[data-ui-version="v2"] .chat-composer__review-form .chat-error {
-  padding: 5px 6px;
-  font-size: 10px;
 }
 
 .product-app-frame[data-ui-version="v2"] .chat-composer__modes {
@@ -3027,37 +2997,34 @@ html[data-reading-resizing="true"] * {
   min-width: 0;
 }
 
+/* A one-line pill like the rest of the toolbar chips: icon, model name,
+   chevron — the provider detail stays inside the popover it opens. */
 .product-app-frame[data-ui-version="v2"] .quick-model__trigger {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 7px;
-  width: min(220px, 100%);
-  min-height: 34px;
-  padding: 4px 8px;
-  text-align: left;
-}
-
-.product-app-frame[data-ui-version="v2"] .quick-model__trigger > span {
-  display: grid;
-  min-width: 0;
-}
-
-.product-app-frame[data-ui-version="v2"] .quick-model__trigger strong,
-.product-app-frame[data-ui-version="v2"] .quick-model__trigger small {
-  overflow: hidden;
-  text-overflow: ellipsis;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: min(200px, 100%);
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--v2-radius-pill, 999px);
+  background: transparent;
+  color: var(--v2-ink-2);
+  font-size: 12px;
+  line-height: 1;
   white-space: nowrap;
 }
 
-.product-app-frame[data-ui-version="v2"] .quick-model__trigger strong {
-  color: var(--v2-ink-2);
-  font-size: 11px;
+.product-app-frame[data-ui-version="v2"] .quick-model__trigger:hover,
+.product-app-frame[data-ui-version="v2"] .quick-model[data-open="true"] .quick-model__trigger {
+  background: var(--v2-surface-hover);
+  color: var(--v2-ink);
 }
 
-.product-app-frame[data-ui-version="v2"] .quick-model__trigger small {
-  color: var(--v2-ink-3);
-  font-size: 10px;
-  font-weight: 500;
+.product-app-frame[data-ui-version="v2"] .quick-model__model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .product-app-frame[data-ui-version="v2"] .quick-model__popover {
@@ -4852,13 +4819,8 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
     white-space: normal;
   }
 
-  .product-app-frame[data-ui-version="v2"] .quick-model,
   .product-app-frame[data-ui-version="v2"] .quick-model__trigger {
-    width: 100%;
-  }
-
-  .product-app-frame[data-ui-version="v2"] .quick-model__trigger {
-    min-height: 44px;
+    min-height: 36px;
   }
 
   .product-app-frame[data-ui-version="v2"] .quick-model__popover {
@@ -5596,16 +5558,35 @@ body.is-resizing-column .product-app-frame[data-ui-version="v2"] .product-sideba
   font-size: 11px;
 }
 
+/* Hover furniture under a message: a quiet row of 24px icon chips that never
+   sits inside the bubble. It reveals on row hover or focus so the transcript
+   reads as prose until the pointer asks for actions. */
 .product-app-frame[data-ui-version="v2"] .message-actions {
   display: flex;
-  justify-content: flex-end;
-  margin-top: 4px;
+  align-items: center;
+  gap: 2px;
+  min-height: 24px;
+  margin-top: 2px;
   opacity: 0;
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-out);
 }
 
-.product-app-frame[data-ui-version="v2"] .chat-bubble:hover .message-actions,
-.product-app-frame[data-ui-version="v2"] .chat-bubble:focus-within .message-actions {
+.product-app-frame[data-ui-version="v2"] .transcript-item:hover .message-actions,
+.product-app-frame[data-ui-version="v2"] .transcript-item:focus-within .message-actions,
+.product-app-frame[data-ui-version="v2"] .message-actions:focus-within {
   opacity: 1;
+}
+
+.product-app-frame[data-ui-version="v2"] .message-actions .icon-button {
+  width: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .message-actions .icon-button svg {
+  width: 13px;
+  height: 13px;
 }
 
 

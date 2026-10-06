@@ -2462,42 +2462,6 @@ textarea:focus {
   }
 }
 
-.chat-composer__review {
-  position: relative;
-}
-
-.chat-composer__review > button {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.chat-composer__review-form {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 8px);
-  z-index: 4;
-  display: grid;
-  gap: 7px;
-  width: min(260px, calc(100vw - 32px));
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 10px;
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow-md);
-}
-
-.chat-composer__review-form label {
-  color: var(--muted);
-  font-size: 0.75rem;
-}
-
-.chat-composer__review-form select,
-.chat-composer__review-form input {
-  width: 100%;
-  min-height: 30px;
-}
-
 .error-code {
   margin-top: 8px;
   font-size: 11px;

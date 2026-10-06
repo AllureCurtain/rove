@@ -196,67 +196,6 @@ describe("Transcript", () => {
     expect(html).toContain('data-inherited="true"');
   });
 
-  it("offers edit-and-branch for a user turn, and only while branching is available", () => {
-    const onBranchMessage = vi.fn();
-    const timeline: TranscriptRunGroup[] = [
-      {
-        id: "run:run-1",
-        runId: "run-1",
-        runOrdinal: 1,
-        inherited: false,
-        sourceSessionId: null,
-        items: [
-          {
-            kind: "message",
-            entry: entry("message", "message-1", 1),
-            message: {
-              id: "message-1",
-              role: "user",
-              content: "original request",
-              status: "final",
-            },
-          },
-          {
-            kind: "message",
-            entry: entry("message", "message-2", 2),
-            message: {
-              id: "message-2",
-              role: "assistant",
-              content: "Restored answer",
-              status: "final",
-            },
-          },
-        ],
-      },
-    ];
-    const render = (available: boolean) =>
-      renderTranscript(
-        <Transcript
-          timeline={timeline}
-          approvalBusy={null}
-          inputBusy={null}
-          restoreState={{ status: "complete", sessionId: "session-1" }}
-          onRetryRestore={vi.fn()}
-          onStartNewSession={vi.fn()}
-          onApproval={vi.fn()}
-          onInputSubmit={vi.fn()}
-          onBranchMessage={onBranchMessage}
-          branchAvailable={available}
-        />,
-      );
-
-    const available = render(true);
-    expect(available).toContain("编辑并分支到新会话");
-    // Only one affordance, on the user turn: an assistant reply has no ledger
-    // sequence of its own to cut after.
-    expect(available.split("编辑并分支到新会话").length - 1).toBe(1);
-    expect(available).toContain("original request");
-
-    // A parent that cannot fork (running turn, or no completed run) offers no
-    // branch action at all rather than a control the server would refuse.
-    expect(render(false)).not.toContain("编辑并分支到新会话");
-  });
-
   it("offers the older server page only while the cursor exists", () => {
     const html = renderTranscript(
       <Transcript

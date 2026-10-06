@@ -4,7 +4,7 @@ Updated: 2026-10-06
 
 ## In progress
 
-- **Console density pass** on `feat/console-density`: per-turn usage/pruning evidence moved from the transcript to the run tab (§8 evidence surface); composer re-laid to input area + single toolbar row; sidebar project rows single-line (path moves to tooltip); `session-message-count` page size brought inside the API cap (128); `body` gains `suppressHydrationWarning` for extension-mutated DOM
+- **Console actions trim** on `feat/console-actions`: message actions moved out of the bubble into a quiet hover row below the message; edit-and-branch and the composer review launcher removed; the model control shrunk to a one-line pill
 
 ## Next up
 
