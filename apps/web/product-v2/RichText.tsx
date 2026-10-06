@@ -13,11 +13,18 @@ import {
 import { useCopy } from "../copy/CopyProvider";
 import { markdownSegmentPropsEqual, segmentMarkdown } from "../chat/streaming-blocks";
 
+// The dynamic() loading callback cannot own hooks, so the fallback is a real
+// component that reads localized copy from context.
+function RichRenderLoading({ labelKey }: { labelKey: string }) {
+  const { t } = useCopy();
+  return <div className="rich-render-loading" role="status">{t(labelKey)}</div>;
+}
+
 const RichCodeBlock = dynamic(() => import("./RichCodeBlock"), {
-  loading: () => <div className="rich-render-loading" role="status">Loading code renderer…</div>,
+  loading: () => <RichRenderLoading labelKey="richText.loadingCode" />,
 });
 const MermaidDiagram = dynamic(() => import("./MermaidDiagram"), {
-  loading: () => <div className="rich-render-loading" role="status">Loading diagram renderer…</div>,
+  loading: () => <RichRenderLoading labelKey="richText.loadingDiagram" />,
 });
 
 const MAX_MARKDOWN_CHARACTERS = 300_000;

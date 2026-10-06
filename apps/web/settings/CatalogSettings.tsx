@@ -113,23 +113,27 @@ function formatTimestamp(value: string): string {
   return formatUtcTimestamp(value);
 }
 
-function workspaceKindLabel(kind: WorkspaceRecord["kind"]): string {
+function workspaceKindLabel(
+  kind: WorkspaceRecord["kind"],
+  t: (path: string) => string,
+): string {
   switch (kind) {
     case "repo":
-      return "Repo";
+      return t("workspace.kindRepo");
     case "task":
-      return "Task";
+      return t("workspace.kindTask");
     default:
-      return "Folder";
+      return t("workspace.kindFolder");
   }
 }
 
 function StatusChip({ status }: { status: SessionRecord["status"] }) {
+  const { t } = useCopy();
   if (status === "idle") {
     return null;
   }
-  const label = status === "needs_attention" ? "Needs attention" :
-    status === "running" ? "Running" : "Error";
+  const label = status === "needs_attention" ? t("workspace.needsAttention") :
+    status === "running" ? t("workspace.running") : t("workspace.statusError");
   const className = status === "running" ? "status-chip status-chip--running" :
     "status-chip status-chip--failed";
   return <span className={className}>{label}</span>;
@@ -174,7 +178,7 @@ export function WorkspaceSettings({
       <div className="settings-card" aria-busy={sortedWorkspaces.some((item) => actions.isBusy(item.id))}>
         <h2>{t("workspace.known")}</h2>
         {sortedWorkspaces.length === 0 ? (
-          <p style={{ margin: 0, color: "var(--muted)" }}>
+          <p className="settings-text">
             {t("workspace.none")}
           </p>
         ) : (
@@ -186,30 +190,29 @@ export function WorkspaceSettings({
               const confirming = confirmingRemovalId === workspace.id;
               return (
                 <div
-                  className="profile-row"
+                  className="profile-row profile-row--top"
                   key={workspace.id}
                   aria-current={active ? "true" : undefined}
-                  style={{ alignItems: "flex-start" }}
                 >
-                  <div style={{ minWidth: 0, overflowWrap: "anywhere" }}>
-                    <strong>{workspace.displayName}{active ? " (active)" : ""}</strong>
-                    <span style={{ display: "block", marginTop: 3 }}>
-                      {workspaceKindLabel(workspace.kind)}
+                  <div>
+                    <strong>{workspace.displayName}{active ? t("workspace.active") : ""}</strong>
+                    <span className="profile-row__meta">
+                      {workspaceKindLabel(workspace.kind, t)}
                       {workspace.pinned ? ` · ${t("workspace.pinned")}` : ""}
-                      {` · Opened ${formatTimestamp(workspace.lastOpenedAt)}`}
+                      {` · ${t("workspace.opened", { time: formatTimestamp(workspace.lastOpenedAt) })}`}
                     </span>
-                    <span style={{ display: "block", marginTop: 3 }} title={workspace.rootPath}>
+                    <span className="profile-row__meta" title={workspace.rootPath}>
                       {workspace.rootPath}
                     </span>
                     {error ? (
-                      <div className="chat-error" role="alert" style={{ marginTop: 8 }}>
+                      <div className="chat-error settings-stack-8" role="alert">
                         {error}
                       </div>
                     ) : null}
                     {confirming ? (
-                      <div className="placeholder-note" role="alert" style={{ marginTop: 8 }}>
+                      <div className="placeholder-note settings-stack-8" role="alert">
                         {t("workspace.removeConfirm")}
-                        <div className="field-actions" style={{ marginTop: 10 }}>
+                        <div className="field-actions settings-stack-10">
                           <button
                             type="button"
                             className="secondary"
@@ -230,7 +233,7 @@ export function WorkspaceSettings({
                       </div>
                     ) : null}
                   </div>
-                  <div className="field-actions" style={{ justifyContent: "flex-end" }}>
+                  <div className="field-actions field-actions--end">
                     {!active ? (
                       <button
                         type="button"
@@ -328,24 +331,25 @@ function SessionRow({
 
   return (
     <div
-      className="profile-row"
+      className="profile-row profile-row--top"
       aria-current={active ? "true" : undefined}
       aria-busy={busy}
-      style={{ alignItems: "flex-start" }}
     >
-      <div style={{ minWidth: 0, flex: "1 1 260px" }}>
-        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-          <strong style={{ overflowWrap: "anywhere" }}>
-            {session.title}{active ? " (active)" : ""}
+      <div className="profile-row__body">
+        <div className="profile-row__title">
+          <strong className="settings-break">
+            {session.title}{active ? t("workspace.active") : ""}
           </strong>
           <StatusChip status={session.status} />
         </div>
-        <span style={{ display: "block", marginTop: 3 }}>
-          Updated {formatTimestamp(session.updatedAt)}
-          {session.hasDurableTurn ? " · Durable history" : " · No completed turn"}
+        <span className="profile-row__meta">
+          {t("workspace.updated", { time: formatTimestamp(session.updatedAt) })}
+          {session.hasDurableTurn
+            ? ` · ${t("workspace.durableHistory")}`
+            : ` · ${t("workspace.noCompletedTurn")}`}
         </span>
         {editing ? (
-          <form onSubmit={(event) => void handleRename(event)} style={{ marginTop: 10 }}>
+          <form className="settings-stack-10" onSubmit={(event) => void handleRename(event)}>
             <div className="field">
               <label htmlFor={`session-title-${session.id}`}>{t("workspace.sessionName")}</label>
               <input
@@ -357,7 +361,7 @@ function SessionRow({
                 onChange={(event) => setTitle(event.target.value)}
               />
             </div>
-            <div className="field-actions" style={{ marginTop: 8 }}>
+            <div className="field-actions settings-stack-8">
               <button type="submit" disabled={busy || title.trim().length === 0}>
                 <CheckIcon /> {busy ? t("common.saving") : t("common.save")}
               </button>
@@ -376,17 +380,16 @@ function SessionRow({
           </form>
         ) : null}
         {confirmingDelete ? (
-          <div className="placeholder-note" role="alert" style={{ marginTop: 10 }}>
-            Delete this session from the durable catalog? Running or unresolved sessions may be
-            rejected by the API.
-            <div className="field-actions" style={{ marginTop: 10 }}>
+          <div className="placeholder-note settings-stack-10" role="alert">
+            {t("workspace.sessionDeleteConfirm")}
+            <div className="field-actions settings-stack-10">
               <button
                 type="button"
                 className="secondary"
                 disabled={busy}
                 onClick={() => setConfirmingDelete(false)}
               >
-                <Cross2Icon /> Cancel
+                <Cross2Icon /> {t("common.cancel")}
               </button>
               <button
                 type="button"
@@ -400,12 +403,12 @@ function SessionRow({
           </div>
         ) : null}
         {error ? (
-          <div className="chat-error" role="alert" style={{ marginTop: 8 }}>
+          <div className="chat-error settings-stack-8" role="alert">
             {error}
           </div>
         ) : null}
       </div>
-      <div className="field-actions" style={{ justifyContent: "flex-end" }}>
+      <div className="field-actions field-actions--end">
         {!active ? (
           <button
             type="button"
@@ -475,7 +478,7 @@ export function SessionsSettings({
       {groups.length === 0 ? (
         <div className="settings-card">
           <h2>{t("workspace.noSessions")}</h2>
-          <p style={{ margin: 0, color: "var(--muted)" }}>
+          <p className="settings-text">
             {t("workspace.noSessionsBody")}
           </p>
         </div>
@@ -483,15 +486,20 @@ export function SessionsSettings({
         groups.map((group) => (
           <div className="settings-card" key={group.workspaceId}>
             <div>
-              <h2>{group.workspace?.displayName ?? "Unavailable workspace"}</h2>
-              <p style={{ margin: "4px 0 0", color: "var(--muted)", fontSize: "0.8rem" }}>
+              <h2>{group.workspace?.displayName ?? t("workspace.unavailableWorkspace")}</h2>
+              <p className="settings-text settings-text--detail">
                 {group.workspace
-                  ? `${workspaceKindLabel(group.workspace.kind)} · ${group.sessions.length} session${group.sessions.length === 1 ? "" : "s"}`
-                  : `Workspace ${group.workspaceId} is no longer present in the catalog.`}
+                  ? `${workspaceKindLabel(group.workspace.kind, t)} · ${t(
+                      group.sessions.length === 1
+                        ? "workspace.sessionCountOne"
+                        : "workspace.sessionCountMany",
+                      { count: group.sessions.length },
+                    )}`
+                  : t("workspace.workspaceGone", { id: group.workspaceId })}
               </p>
             </div>
             {group.sessions.length === 0 ? (
-              <p style={{ margin: 0, color: "var(--muted)" }}>No sessions in this workspace.</p>
+              <p className="settings-text">{t("workspace.noSessionsBody")}</p>
             ) : (
               <div className="profile-list">
                 {group.sessions.map((session) => {

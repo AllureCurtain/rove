@@ -6,6 +6,31 @@
  * change belongs in `styles/product-v2.css`.
  */
 
+/* Semantic z-index ladder (design §11 B4). Skin-independent: one scale for
+ * both skins. Read top-down — a later name always sits above an earlier one.
+ * Content furniture stays under pane overlays, which stay under portaled
+ * layers, which stay under shell chrome. Components consume `var(--z-*)`; a
+ * literal z-index in a rule is ladder drift. */
+.product-app-frame {
+  --z-inset: 1;    /* in-pane surfaces above siblings (inbox panel) */
+  --z-rail: 2;     /* the left rail above the body canvas */
+  --z-edge: 3;     /* resize + reading-band handles straddling pane edges */
+  --z-pane: 4;     /* pane-level furniture: minimap, review form */
+  --z-dock: 5;     /* composer dock and in-pane anchored floats */
+  --z-cover: 6;    /* transcript-scoped covers: settle veil, panel toggle */
+  --z-progress: 7; /* the 2px session-switch progress strip */
+  --z-popover: 25; /* anchored popovers inside a pane */
+  --z-menu: 30;    /* composer-level menus */
+  --z-float: 40;   /* portaled floats: hover card, row menus, mobile scrim */
+  --z-peek: 41;    /* narrow-screen rail summon strip, above the scrim */
+  --z-drawer: 42;  /* drawer overlays for rail + work panel at ≤960px */
+  --z-scrim: 50;   /* full-surface scrims (command palette backdrop) */
+  --z-palette: 51; /* the command palette above its own scrim */
+  --z-search: 52;  /* the search layer rides above the palette */
+  --z-chrome: 60;  /* topbar and the toast viewport */
+  --z-modal: 80;   /* dialogs sit above every other layer */
+}
+
 /* Warm ivory skin — Anthropic-inspired. Bridges every --v2-* token so unscoped rules recolor. */
 
 .product-app-frame[data-skin="warm"] {
@@ -59,9 +84,17 @@
   --cp-radius-lg: 12px;
   --cp-radius-xl: 18px;
 
-  --cp-shadow-xs: 0 1px 2px rgba(60, 40, 20, 0.05);
-  --cp-shadow-sm: 0 1px 2px rgba(60, 40, 20, 0.05), 0 2px 8px rgba(60, 40, 20, 0.06);
-  --cp-shadow-md: 0 4px 14px rgba(60, 40, 20, 0.08);
+  /* Same-hue alpha elevation (design §11 B4): every shadow and translucent
+   * raised wash draws from this warm ink channel instead of writing a raw
+   * rgb(). The stepped ramp covers resting/raised/floating surfaces; a one-off
+   * alpha uses `rgb(var(--cp-elev-ch) / <alpha>)` directly. */
+  --cp-elev-ch: 60 40 20;
+  --cp-elev-1: rgb(var(--cp-elev-ch) / 0.05);
+  --cp-elev-2: rgb(var(--cp-elev-ch) / 0.1);
+  --cp-elev-3: rgb(var(--cp-elev-ch) / 0.18);
+  --cp-shadow-xs: 0 1px 2px var(--cp-elev-1);
+  --cp-shadow-sm: 0 1px 2px var(--cp-elev-1), 0 2px 8px rgb(var(--cp-elev-ch) / 0.06);
+  --cp-shadow-md: 0 4px 14px rgb(var(--cp-elev-ch) / 0.08);
 
   /* Legacy aliases */
   --bg: var(--cp-bg);
@@ -126,6 +159,10 @@
   --v2-focus: var(--cp-accent);
   --v2-shadow-sm: var(--cp-shadow-xs);
   --v2-shadow-md: var(--cp-shadow-md);
+  --v2-elev-ch: var(--cp-elev-ch);
+  --v2-elev-1: var(--cp-elev-1);
+  --v2-elev-2: var(--cp-elev-2);
+  --v2-elev-3: var(--cp-elev-3);
   --v2-radius-sm: var(--cp-radius-sm);
   --v2-radius-md: var(--cp-radius-md);
   --v2-radius-lg: var(--cp-radius-lg);
@@ -237,8 +274,15 @@ html[data-theme="dark"] .product-app-frame[data-skin="warm"] {
   --v2-rail-border: rgba(247, 243, 236, 0.1);
   --v2-rail-signal: var(--cp-accent);
 
-  --v2-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.28);
-  --v2-shadow-md: 0 4px 14px rgba(0, 0, 0, 0.4);
+  /* Dark elevation keeps the ink family but drops to near-black: the warm
+     fg is cream, so depth reads as its inverse. */
+  --cp-elev-ch: 0 0 0;
+  --v2-elev-ch: var(--cp-elev-ch);
+  --v2-elev-1: rgb(var(--cp-elev-ch) / 0.28);
+  --v2-elev-2: rgb(var(--cp-elev-ch) / 0.4);
+  --v2-elev-3: rgb(var(--cp-elev-ch) / 0.5);
+  --v2-shadow-sm: 0 1px 2px rgb(var(--cp-elev-ch) / 0.28);
+  --v2-shadow-md: 0 4px 14px rgb(var(--cp-elev-ch) / 0.4);
 }
 
 /* Graphite skin — near-monochrome Codex-style console (design §4.1).
@@ -290,9 +334,15 @@ html[data-theme="dark"] .product-app-frame[data-skin="warm"] {
   --cp-radius-lg: 12px;
   --cp-radius-xl: 18px;
 
-  --cp-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
-  --cp-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.04);
-  --cp-shadow-md: 0 16px 48px rgba(0, 0, 0, 0.14);
+  /* Same-hue alpha elevation (design §11 B4): graphite's ink is near-black,
+     so every shadow and raised wash shares the `0 0 0` channel. */
+  --cp-elev-ch: 0 0 0;
+  --cp-elev-1: rgb(var(--cp-elev-ch) / 0.05);
+  --cp-elev-2: rgb(var(--cp-elev-ch) / 0.1);
+  --cp-elev-3: rgb(var(--cp-elev-ch) / 0.18);
+  --cp-shadow-xs: 0 1px 2px var(--cp-elev-1);
+  --cp-shadow-sm: 0 1px 2px rgb(var(--cp-elev-ch) / 0.1), 0 0 0 0.5px rgb(var(--cp-elev-ch) / 0.04);
+  --cp-shadow-md: 0 16px 48px rgb(var(--cp-elev-ch) / 0.14);
 
   /* Legacy aliases */
   --bg: var(--cp-bg);
@@ -357,6 +407,10 @@ html[data-theme="dark"] .product-app-frame[data-skin="warm"] {
   --v2-focus: var(--cp-accent);
   --v2-shadow-sm: var(--cp-shadow-xs);
   --v2-shadow-md: var(--cp-shadow-md);
+  --v2-elev-ch: var(--cp-elev-ch);
+  --v2-elev-1: var(--cp-elev-1);
+  --v2-elev-2: var(--cp-elev-2);
+  --v2-elev-3: var(--cp-elev-3);
   --v2-radius-sm: var(--cp-radius-sm);
   --v2-radius-md: var(--cp-radius-md);
   --v2-radius-lg: var(--cp-radius-lg);
@@ -407,9 +461,15 @@ html[data-theme="dark"] .product-app-frame[data-skin="graphite"] {
   --cp-selection: rgba(255, 255, 255, 0.16);
   --cp-overlay: rgba(0, 0, 0, 0.5);
 
-  --cp-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --cp-shadow-sm: 0 3px 8px rgba(0, 0, 0, 0.32);
-  --cp-shadow-md: 0 16px 48px rgba(0, 0, 0, 0.55);
+  /* Dark graphite elevation: near-black channel, stronger alphas so a raised
+     surface still reads as a step above the page. */
+  --cp-elev-ch: 0 0 0;
+  --cp-elev-1: rgb(var(--cp-elev-ch) / 0.3);
+  --cp-elev-2: rgb(var(--cp-elev-ch) / 0.36);
+  --cp-elev-3: rgb(var(--cp-elev-ch) / 0.55);
+  --cp-shadow-xs: 0 1px 2px rgb(var(--cp-elev-ch) / 0.4);
+  --cp-shadow-sm: 0 3px 8px rgb(var(--cp-elev-ch) / 0.32);
+  --cp-shadow-md: 0 16px 48px var(--cp-elev-3);
 
   --bg: var(--cp-bg);
   --bg-elevated: var(--cp-surface);
@@ -474,6 +534,10 @@ html[data-theme="dark"] .product-app-frame[data-skin="graphite"] {
 
   --v2-shadow-sm: var(--cp-shadow-xs);
   --v2-shadow-md: var(--cp-shadow-md);
+  --v2-elev-ch: var(--cp-elev-ch);
+  --v2-elev-1: var(--cp-elev-1);
+  --v2-elev-2: var(--cp-elev-2);
+  --v2-elev-3: var(--cp-elev-3);
 
   --overlay: rgba(0, 0, 0, 0.45);
   --scrollbar: rgba(255, 255, 255, 0.14);

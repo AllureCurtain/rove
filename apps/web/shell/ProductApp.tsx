@@ -19,6 +19,7 @@ import {
 
 import { Composer } from "../chat/Composer";
 import { QueuedPromptStack } from "../chat/QueuedPromptStack";
+import { TodoDock } from "../chat/TodoDock";
 import type {
   ComposerCommand,
   ComposerFileSuggestion,
@@ -2199,6 +2200,9 @@ function ServerProductApp({ draftStore }: {
                       persisted queue sits above the shell so the pending
                       prompts are next to the input that adds to them. */}
                   <div className="composer-stack">
+                  {/* §6: the plan fold leads the stack — progress the run is
+                      making belongs above the prompts still waiting for it. */}
+                  <TodoDock plan={continuity.runState.plan} />
                   <QueuedPromptStack
                     messages={activeMessages}
                     busy={continuity.controlBusy}

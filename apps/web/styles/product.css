@@ -378,7 +378,7 @@ textarea:focus {
   position: fixed;
   right: 16px;
   bottom: 16px;
-  z-index: 40;
+  z-index: var(--z-float, 40);
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
@@ -1490,6 +1490,112 @@ textarea:focus {
 .profile-row > div:first-child {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* Catalog and memory settings rows: static layout that used to live inline.
+   Vertical rhythm uses the .settings-stack-* spacing steps. */
+.profile-row--top {
+  align-items: flex-start;
+}
+
+.profile-row--selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.profile-row__body {
+  flex: 1 1 260px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.profile-row__title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.profile-row__meta {
+  display: block;
+  margin-top: 3px;
+}
+
+.settings-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.settings-text {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.settings-text--detail {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+}
+
+.settings-text--caption {
+  margin-top: 4px;
+  font-size: 0.85rem;
+}
+
+.settings-text--offset {
+  margin-top: 6px;
+}
+
+.settings-stack-8 {
+  margin-top: 8px;
+}
+
+.settings-stack-10 {
+  margin-top: 10px;
+}
+
+.settings-stack-12 {
+  margin-top: 12px;
+}
+
+.settings-break {
+  overflow-wrap: anywhere;
+}
+
+.settings-fill {
+  min-width: 0;
+}
+
+.field-actions--end {
+  justify-content: flex-end;
+}
+
+.settings-list-plain {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.settings-heading-sm {
+  margin: 0 0 6px;
+  font-size: 0.9rem;
+}
+
+.memory-content {
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-soft);
+  padding: 12px;
+  font: inherit;
+  line-height: 1.5;
 }
 
 .settings-panel kbd {

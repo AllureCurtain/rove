@@ -810,7 +810,8 @@ export function Transcript({
       <div
         ref={transcriptRef}
         className="chat-transcript"
-        aria-label="Conversation"
+        aria-label={t("chat.transcriptLabel")}
+        data-testid="conversation-log"
         role="log"
         aria-live="polite"
         aria-relevant="additions text"

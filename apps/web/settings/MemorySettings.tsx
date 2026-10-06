@@ -14,7 +14,6 @@ import {
   useReducer,
   useRef,
   useState,
-  type CSSProperties,
   type FormEvent,
 } from "react";
 
@@ -44,19 +43,6 @@ export interface MemorySettingsProps {
   workspaceId: string;
 }
 
-const mutedTextStyle: CSSProperties = {
-  margin: 0,
-  color: "var(--muted)",
-  lineHeight: 1.5,
-};
-
-const cardHeadingStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "flex-start",
-  justifyContent: "space-between",
-  gap: 12,
-  flexWrap: "wrap",
-};
 
 type MemoryEditorMode = "create" | "edit";
 
@@ -506,7 +492,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
       </p>
 
       <form className="settings-card" onSubmit={applyFilters}>
-        <div style={cardHeadingStyle}>
+        <div className="settings-card-head">
           <h2>{t("memory.find")}</h2>
           {hasActiveFilters ? (
             <button
@@ -602,7 +588,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
           aria-labelledby="memory-editor-heading"
           aria-busy={saving}
         >
-          <div style={cardHeadingStyle}>
+          <div className="settings-card-head">
             <h2 id="memory-editor-heading">
               {editorMode === "create" ? t("memory.newTopic") : t("memory.editTopicTitle")}
             </h2>
@@ -723,7 +709,7 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                 />
               </div>
             </div>
-            <div className="field" style={{ marginTop: 12 }}>
+            <div className="field settings-stack-12">
               <label htmlFor="memory-editor-content">{t("memory.content")}</label>
               <textarea
                 id="memory-editor-content"
@@ -739,11 +725,11 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
               />
             </div>
             {saveError ? (
-              <div className="chat-error" role="alert" style={{ marginTop: 12 }}>
+              <div className="chat-error settings-stack-12" role="alert">
                 {t(saveError)}
               </div>
             ) : null}
-            <div className="field-actions" style={{ marginTop: 12 }}>
+            <div className="field-actions settings-stack-12">
               <button type="submit" disabled={saving || deleteBusy}>
                 {editorMode === "create" ? (
                   <PlusIcon aria-hidden="true" />
@@ -766,11 +752,11 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
         aria-labelledby="memory-topics-heading"
         aria-busy={listBusy}
       >
-        <div style={cardHeadingStyle}>
+        <div className="settings-card-head">
           <div>
             <h2 id="memory-topics-heading">{t("memory.durableTopics")}</h2>
             {state.topics.length > 0 ? (
-              <p style={{ ...mutedTextStyle, marginTop: 4, fontSize: "0.85rem" }}>
+              <p className="settings-text settings-text--caption">
                 {t("memory.count", { count: state.topics.length })}
               </p>
             ) : null}
@@ -820,30 +806,21 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
 
         {state.topics.length > 0 ? (
           <ul
-            className="profile-list"
+            className="profile-list settings-list-plain"
             aria-label={t("memory.listLabel")}
-            style={{ listStyle: "none", margin: 0, padding: 0 }}
           >
             {state.topics.map((topic) => {
               const selected = topic.slug === state.selectedSlug;
               return (
                 <li
-                  className="profile-row"
+                  className={selected ? "profile-row profile-row--selected" : "profile-row"}
                   key={topic.slug}
-                  style={
-                    selected
-                      ? {
-                          borderColor: "var(--accent)",
-                          background: "var(--accent-soft)",
-                        }
-                      : undefined
-                  }
                 >
-                  <div style={{ minWidth: 0 }}>
-                    <strong style={{ overflowWrap: "anywhere" }}>
+                  <div>
+                    <strong className="settings-break">
                       {memoryTopicDisplayTitle(topic)}
                     </strong>
-                    <span style={{ display: "block", overflowWrap: "anywhere" }}>
+                    <span className="profile-row__meta">
                       {t("memory.summary", { type: t(`memory.type_${topic.memory_type}`), scope: t(`memory.scope_${topic.scope}`), confidence: Math.round(topic.confidence * 100) })}
                       {` · ${t(`memory.source_${topic.source}`)}`}
                       {topic.metadata_truncated ? ` · ${t("memory.metadataTruncated")}` : ""}
@@ -871,12 +848,12 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
           aria-labelledby="memory-topic-detail-heading"
           aria-busy={detailBusy || deleteBusy}
         >
-          <div style={cardHeadingStyle}>
-            <div style={{ minWidth: 0 }}>
-              <h2 id="memory-topic-detail-heading" style={{ overflowWrap: "anywhere" }}>
+          <div className="settings-card-head">
+            <div className="settings-fill">
+              <h2 id="memory-topic-detail-heading" className="settings-break">
                 {memoryTopicDisplayTitle(selectedTopic)}
               </h2>
-              <p style={{ ...mutedTextStyle, marginTop: 4, fontSize: "0.85rem" }}>
+              <p className="settings-text settings-text--caption">
                 {selectedTopic.slug}
               </p>
             </div>
@@ -961,21 +938,21 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
                 </div>
                 <div>
                   <span>{t("memory.created")}</span>
-                  <strong style={{ overflowWrap: "anywhere" }}>
+                  <strong className="settings-break">
                     {state.detail.topic.created_at?.trim() || t("memory.notRecorded")}
                   </strong>
                 </div>
                 <div>
                   <span>{t("memory.updated")}</span>
-                  <strong style={{ overflowWrap: "anywhere" }}>
+                  <strong className="settings-break">
                     {state.detail.topic.updated_at?.trim() || t("memory.notRecorded")}
                   </strong>
                 </div>
               </div>
 
               <div>
-                <h3 style={{ margin: "0 0 6px", fontSize: "0.9rem" }}>{t("memory.description")}</h3>
-                <p style={mutedTextStyle}>
+                <h3 className="settings-heading-sm">{t("memory.description")}</h3>
+                <p className="settings-text">
                   {state.detail.topic.description.trim() || t("memory.noDescription")}
                 </p>
               </div>
@@ -987,28 +964,16 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
               ) : null}
 
               <div>
-                <h3 style={{ margin: "0 0 6px", fontSize: "0.9rem" }}>{t("memory.content")}</h3>
+                <h3 className="settings-heading-sm">{t("memory.content")}</h3>
                 {state.detail.content.length > 0 ? (
                   <pre
                     aria-label={t("memory.contentLabel")}
-                    style={{
-                      margin: 0,
-                      maxHeight: 420,
-                      overflow: "auto",
-                      whiteSpace: "pre-wrap",
-                      overflowWrap: "anywhere",
-                      border: "1px solid var(--border)",
-                      borderRadius: "var(--radius-md)",
-                      background: "var(--surface-soft)",
-                      padding: 12,
-                      font: "inherit",
-                      lineHeight: 1.5,
-                    }}
+                    className="memory-content"
                   >
                     {state.detail.content}
                   </pre>
                 ) : (
-                  <p style={mutedTextStyle}>{t("memory.emptyBody")}</p>
+                  <p className="settings-text">{t("memory.emptyBody")}</p>
                 )}
               </div>
 
@@ -1029,15 +994,15 @@ export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
               <strong id="memory-delete-confirmation-heading">
                 {t("memory.deleteConfirm", { title: memoryTopicDisplayTitle(selectedTopic) })}
               </strong>
-              <p style={{ ...mutedTextStyle, marginTop: 6 }}>
+              <p className="settings-text settings-text--offset">
                 {t("memory.deleteWarning")}
               </p>
               {state.deleteError ? (
-                <div className="chat-error" role="alert" style={{ marginTop: 10 }}>
+                <div className="chat-error settings-stack-10" role="alert">
                   {t(state.deleteError)}
                 </div>
               ) : null}
-              <div className="field-actions" style={{ marginTop: 10 }}>
+              <div className="field-actions settings-stack-10">
                 <button
                   type="button"
                   className="secondary"

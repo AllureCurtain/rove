@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CONVERSATION_MINIMAP_PREVIEW_MAX_CHARS,
+  alignMinimapMarkers,
   buildConversationMinimapMarkers,
   shouldRenderConversationMinimap,
   type ConversationMinimapMessage,
@@ -101,5 +102,42 @@ describe("conversation minimap", () => {
     expect(
       shouldRenderConversationMinimap({ markerCount: 1, overflows: false, hasEarlier: true }),
     ).toBe(true);
+  });
+});
+
+describe("alignMinimapMarkers", () => {
+  // Track 400px, marker 14px, gap 3px → usable 386, pitch 17.
+  it("places each marker at its turn's fraction of the track", () => {
+    const tops = alignMinimapMarkers([0.1, 0.5, 0.9], 400, 14, 3);
+    expect(tops).toHaveLength(3);
+    [38.6, 193, 347.4].forEach((expected, index) => {
+      expect(tops[index]).toBeCloseTo(expected, 6);
+    });
+  });
+
+  it("spreads a dense cluster to the minimum pitch without reordering", () => {
+    const tops = alignMinimapMarkers([0.4, 0.41, 0.42, 0.43], 400, 14, 3);
+    for (let index = 1; index < tops.length; index += 1) {
+      expect(tops[index]).toBeGreaterThanOrEqual(tops[index - 1] + 17);
+    }
+  });
+
+  it("keeps the tail on the track when the spread would overflow", () => {
+    const tops = alignMinimapMarkers([0.5, 0.9, 0.95, 1], 400, 14, 3);
+    expect(tops.at(-1)).toBeLessThanOrEqual(386);
+    // Sorted even after the backward pass.
+    for (let index = 1; index < tops.length; index += 1) {
+      expect(tops[index]).toBeGreaterThanOrEqual(tops[index - 1]);
+    }
+  });
+
+  it("clamps degenerate density onto the track instead of losing markers", () => {
+    const fractions = Array.from({ length: 40 }, () => 0.5);
+    const tops = alignMinimapMarkers(fractions, 400, 14, 3);
+    expect(tops).toHaveLength(40);
+    for (const top of tops) {
+      expect(top).toBeGreaterThanOrEqual(0);
+      expect(top).toBeLessThanOrEqual(386);
+    }
   });
 });
