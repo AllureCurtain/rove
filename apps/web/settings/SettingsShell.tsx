@@ -557,7 +557,7 @@ function BrowserProvidersSettings({
 }: ProviderSettingsProps) {
   const { t } = useCopy();
   const toast = useToast();
-  const [label, setLabel] = useState("Local OpenAI");
+  const [label, setLabel] = useState(() => t("settings.providers.draftLabel"));
   const [providerType, setProviderType] = useState<ProviderType>("openai");
   const [apiBase, setApiBase] = useState(providerDefaultApiBase("openai"));
   const [apiKeyEnv, setApiKeyEnv] = useState(providerDefaultKeyEnv("openai"));
@@ -611,7 +611,7 @@ function BrowserProvidersSettings({
 
   function resetDraft() {
     setEditingProfileId(null);
-    setLabel("Local OpenAI");
+    setLabel(t("settings.providers.draftLabel"));
     setProviderType("openai");
     setApiBase(providerDefaultApiBase("openai"));
     setApiKeyEnv(providerDefaultKeyEnv("openai"));

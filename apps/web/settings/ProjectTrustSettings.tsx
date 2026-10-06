@@ -142,8 +142,8 @@ export function ProjectTrustSettings({
           <button
             type="button"
             className="secondary"
-            aria-label="Refresh project trust"
-            title="Refresh project trust"
+            aria-label={t("trust.refresh")}
+            title={t("trust.refresh")}
             disabled={busy}
             onClick={() => void load()}
           >

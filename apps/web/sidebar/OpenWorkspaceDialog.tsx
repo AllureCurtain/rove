@@ -138,7 +138,7 @@ export function WorkspaceOpenForm({
               invalidatePicker();
               setPath(event.target.value);
             }}
-            placeholder="D:\path\to\project"
+            placeholder={t("empty.pathPlaceholder")}
             autoFocus={autoFocus}
             aria-invalid={error ? "true" : undefined}
             aria-describedby={error ? errorId : undefined}

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
+import { useCopy } from "../copy/CopyProvider";
+
 const MAX_MERMAID_CHARACTERS = 20_000;
 
 export const MERMAID_TEXT_LABEL_CONFIG = {
@@ -10,6 +12,7 @@ export const MERMAID_TEXT_LABEL_CONFIG = {
 } as const;
 
 export default function MermaidDiagram({ source }: { source: string }) {
+  const { t } = useCopy();
   const reactId = useId();
   const hostRef = useRef<HTMLElement | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("light");
@@ -36,7 +39,7 @@ export default function MermaidDiagram({ source }: { source: string }) {
     if (source.length > MAX_MERMAID_CHARACTERS) {
       setState({
         status: "error",
-        error: "Diagram source exceeds the browser rendering limit.",
+        error: t("richText.diagramTooLarge"),
       });
       return () => {
         active = false;
@@ -77,7 +80,9 @@ export default function MermaidDiagram({ source }: { source: string }) {
         if (active) {
           setState({
             status: "error",
-            error: error instanceof Error ? error.message : "Diagram could not be rendered.",
+            error: error instanceof Error
+              ? error.message
+              : t("richText.diagramRenderFailed"),
           });
         }
       });
@@ -85,15 +90,15 @@ export default function MermaidDiagram({ source }: { source: string }) {
     return () => {
       active = false;
     };
-  }, [reactId, source, theme]);
+  }, [reactId, source, theme, t]);
 
   if (state.status === "loading") {
-    return <div ref={bindHost} className="mermaid-state" role="status">Rendering diagram…</div>;
+    return <div ref={bindHost} className="mermaid-state" role="status">{t("richText.renderingDiagram")}</div>;
   }
   if (state.status === "error") {
     return (
       <div ref={bindHost} className="mermaid-state" data-tone="error" role="note">
-        <strong>Diagram unavailable</strong>
+        <strong>{t("richText.diagramUnavailable")}</strong>
         <span>{state.error}</span>
         <pre>{source.slice(0, MAX_MERMAID_CHARACTERS)}</pre>
       </div>
@@ -103,7 +108,7 @@ export default function MermaidDiagram({ source }: { source: string }) {
     <figure
       ref={bindHost}
       className="mermaid-diagram"
-      aria-label="Mermaid diagram"
+      aria-label={t("richText.diagramLabel")}
       dangerouslySetInnerHTML={{ __html: state.svg }}
     />
   );

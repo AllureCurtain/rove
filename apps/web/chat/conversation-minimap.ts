@@ -50,6 +50,40 @@ function appendPreview(current: string, next: string): string {
 }
 
 /**
+ * Marker tops inside the rail's usable track, in pixels.
+ *
+ * Each marker hugs its turn's own position — the turn's fraction of the
+ * scrollable content maps onto the track — so the rail reads as a minimap
+ * rather than an index: dense runs spread to a minimum pitch instead of
+ * stacking on one spot, and a matching backward pass keeps the tail from
+ * overflowing the rail. Positions stay document-ordered and every marker is
+ * clamped onto the track, so a transcript that out-densifies the rail degrades
+ * to stacking at the ends rather than losing markers.
+ */
+export function alignMinimapMarkers(
+  fractions: readonly number[],
+  trackHeight: number,
+  markerHeight: number,
+  minGap: number,
+): number[] {
+  if (fractions.length === 0) {
+    return [];
+  }
+  const pitch = markerHeight + minGap;
+  const usable = Math.max(0, trackHeight - markerHeight);
+  const tops = fractions.map(
+    (fraction) => Math.min(1, Math.max(0, fraction)) * usable,
+  );
+  for (let index = 1; index < tops.length; index += 1) {
+    tops[index] = Math.max(tops[index], tops[index - 1] + pitch);
+  }
+  for (let index = tops.length - 2; index >= 0; index -= 1) {
+    tops[index] = Math.min(tops[index], tops[index + 1] - pitch);
+  }
+  return tops.map((top) => Math.min(usable, Math.max(0, top)));
+}
+
+/**
  * One user marker per user message, and one assistant marker per turn: a turn's
  * assistant prose can arrive as several messages (streamed chunks, an
  * intermediate note, the final answer), and they belong to the same marker.

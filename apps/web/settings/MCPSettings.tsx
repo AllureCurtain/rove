@@ -427,7 +427,7 @@ export function MCPSettings({
         </div>
 
         <div className="mcp-form-options">
-          <div className="settings-segmented" role="group" aria-label="MCP transport">
+          <div className="settings-segmented" role="group" aria-label={t("mcp.transport")}>
             {(["stdio", "streamable_http", "sse"] as const).map((transport) => (
               <button
                 key={transport}
@@ -559,8 +559,8 @@ export function MCPSettings({
           <button
             type="button"
             className="icon-button secondary"
-            aria-label="Refresh MCP servers"
-            title="Refresh MCP servers"
+            aria-label={t("mcp.refresh")}
+            title={t("mcp.refresh")}
             disabled={loading}
             onClick={() => void loadServers()}
           >
