@@ -24,7 +24,7 @@ import {
 function visibleTranscript(page: Page) {
   return page
     .locator('.session-pane[data-visible="true"]')
-    .getByLabel("Conversation");
+    .getByTestId("conversation-log");
 }
 
 const NOW = "2026-09-26T00:00:00.000Z";

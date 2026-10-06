@@ -16,7 +16,7 @@ async function pendingRun(page: Page) {
   await page.goto(`/w/${workspace.id}/s/${a.id}`);
   await page.getByRole("textbox", { name: /输入消息/ }).fill("Write a note");
   await page.getByRole("button", { name: "发送", exact: true }).click();
-  const inline = page.getByLabel("Conversation").getByRole("alert", { name: "审批", exact: true });
+  const inline = page.getByTestId("conversation-log").getByRole("alert", { name: "审批", exact: true });
   await expect(inline.getByRole("button", { name: "批准", exact: true })).toBeVisible();
   await expect(inline.getByText("destructive tool requires explicit approval")).toBeVisible();
   return { api, inline, workspace, a, b };

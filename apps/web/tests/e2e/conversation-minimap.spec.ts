@@ -80,7 +80,7 @@ async function openMultiTurnTranscript(page: Page) {
     activeSessionId: session.id,
   });
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  const scroller = page.getByLabel("Conversation");
+  const scroller = page.getByTestId("conversation-log");
   await expect(scroller.getByText("Third question")).toBeVisible();
   return scroller;
 }
@@ -100,6 +100,45 @@ test("the minimap marks every rendered turn of a long conversation", async ({ pa
   await expect(markers.first()).toHaveAttribute("title", "First question");
   await expect(markers.nth(1)).toHaveAttribute("title", /^answer line 1/);
   await expect(markers.first()).toBeVisible();
+});
+
+test("marker positions map to the turns' own place in the transcript", async ({ page }) => {
+  await openMultiTurnTranscript(page);
+
+  // Each marker's top is its turn's fraction of the scrollable content, so the
+  // tops are strictly increasing and the last marker sits below the first.
+  const tops = await page
+    .locator(".conversation-minimap__marker")
+    .evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().top));
+  for (let index = 1; index < tops.length; index += 1) {
+    expect(tops[index]).toBeGreaterThan(tops[index - 1]);
+  }
+  expect(tops[5] - tops[0]).toBeGreaterThan(60);
+
+  // The translucent band tracks the visible window: opened pinned to the
+  // newest turn, it sits at the bottom of the rail.
+  const railBottom = await page
+    .locator(".conversation-minimap")
+    .evaluate((node) => node.getBoundingClientRect().bottom);
+  const bandBottom = await page
+    .locator(".conversation-minimap__viewport")
+    .evaluate((node) => node.getBoundingClientRect().bottom);
+  expect(Math.abs(bandBottom - railBottom)).toBeLessThan(4);
+
+  // A real navigation move — the marker jump — releases follow and moves the
+  // band up with the viewport. The jump scrolls smoothly, so the band's final
+  // position is polled, not read in the same frame.
+  await page.locator(".conversation-minimap__marker").first().click();
+  const railTop = await page
+    .locator(".conversation-minimap")
+    .evaluate((node) => node.getBoundingClientRect().top);
+  await expect
+    .poll(async () =>
+      page
+        .locator(".conversation-minimap__viewport")
+        .evaluate((node) => node.getBoundingClientRect().top),
+    )
+    .toBeLessThan(railTop + 120);
 });
 
 test("a marker jump scrolls the turn into view and keeps follow released", async ({ page }) => {

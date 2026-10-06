@@ -104,7 +104,7 @@ test("a home send creates the session and delivers the first message", async ({
   // The send is armed before navigation and fires once the new session is
   // focused — one gesture, no lost first message.
   await expect(page).toHaveURL(/\/w\/ws-alpha\/s\/session-\d+$/u);
-  const conversation = page.getByLabel("Conversation");
+  const conversation = page.getByTestId("conversation-log");
   await expect(
     conversation.getByText("Summarize the runtime state"),
   ).toBeVisible();

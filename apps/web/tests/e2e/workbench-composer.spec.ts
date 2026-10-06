@@ -21,7 +21,7 @@ for (const shortcut of ["Enter", "Control+Enter", "Meta+Enter"]) {
     const { api, composer } = await openComposer(page);
     await composer.fill("  keyboard message  ");
     await composer.press(shortcut);
-    await expect(page.getByLabel("Conversation").getByText("keyboard message", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("conversation-log").getByText("keyboard message", { exact: true })).toBeVisible();
     await expect(composer).toHaveValue("");
     expect(api.jobs).toHaveLength(1);
   });
@@ -55,7 +55,7 @@ test("the mod-enter preference restores Enter for newlines", async ({ page }) =>
   await expect(composer).toHaveValue("first\n\n");
   expect(api.jobs).toHaveLength(0);
   await composer.press("Control+Enter");
-  await expect(page.getByLabel("Conversation").getByText("first", { exact: false })).toBeVisible();
+  await expect(page.getByTestId("conversation-log").getByText("first", { exact: false })).toBeVisible();
   await expect(composer).toHaveValue("");
   expect(api.jobs).toHaveLength(1);
 });

@@ -199,7 +199,7 @@ test("the rail hides on a narrow pane instead of covering the conversation", asy
   expect(geometry.overflowX).toBe(0);
   // The conversation itself is still usable: the transcript scrolls.
   const scrollable = await page
-    .getByLabel("Conversation")
+    .getByTestId("conversation-log")
     .evaluate((node) => (node as HTMLElement).scrollHeight > 0);
   expect(scrollable).toBe(true);
 });

@@ -170,7 +170,7 @@ test("a restored turn shows the published duration and no measured elapsed", asy
   });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  await expect(page.getByLabel("Conversation").getByText("Read the notes.", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("conversation-log").getByText("Read the notes.", { exact: true })).toBeVisible();
 
   // Nothing arrived live, so the head must not claim a measured duration.
   await expect(page.locator(".activity-group__elapsed")).toHaveCount(0);
@@ -197,7 +197,7 @@ test("a sub-second published duration is not badged", async ({ page }) => {
   });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  await expect(page.getByLabel("Conversation").getByText("Read the notes.", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("conversation-log").getByText("Read the notes.", { exact: true })).toBeVisible();
 
   await page.locator("button.activity-group__head").click();
   await expect(page.locator(".tool-card__duration")).toHaveCount(0);

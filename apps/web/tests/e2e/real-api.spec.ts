@@ -216,7 +216,7 @@ test.describe("real API product shell integration", () => {
       await page.goto(routeA);
       await expect(
         page
-          .getByLabel("Conversation")
+          .getByTestId("conversation-log")
           .getByText(`fake response: ${promptA1}`, { exact: true }),
       ).toBeVisible();
       const promptA2 = `real API A2 ${Date.now()}`;
@@ -228,7 +228,7 @@ test.describe("real API product shell integration", () => {
 
       await page.reload();
       await expect(page).toHaveURL(routeA);
-      const conversation = page.getByLabel("Conversation");
+      const conversation = page.getByTestId("conversation-log");
       await expect(conversation.getByText(promptA1, { exact: true })).toBeVisible();
       await expect(conversation.getByText(promptA2, { exact: true })).toBeVisible();
       const promptA3 = `real API A3 ${Date.now()}`;
@@ -351,7 +351,7 @@ test.describe("real API product shell integration", () => {
         approval.getByRole("button", { name: "Approve" }).click(),
       ]);
       await expect(
-        page.getByLabel("Conversation").getByText(/write_file.*done/u),
+        page.getByTestId("conversation-log").getByText(/write_file.*done/u),
       ).toBeVisible({ timeout: 30_000 });
       expect(await readFile(join(workspaceRoot, outputName), "utf8")).toBe(
         outputContent,
@@ -384,7 +384,7 @@ test.describe("real API product shell integration", () => {
         inputCard.getByRole("button", { name: "Send" }).click(),
       ]);
       await expect(
-        page.getByLabel("Conversation").getByText("main", { exact: true }),
+        page.getByTestId("conversation-log").getByText("main", { exact: true }),
       ).toBeVisible({ timeout: 30_000 });
       await cancelCurrentRun(page, true);
 
@@ -668,19 +668,19 @@ test.describe("real API product shell integration", () => {
       await page.reload();
       await expect(page).toHaveURL(childRoute);
       await expect(
-        page.getByLabel("Conversation").getByText(parentPrompt, { exact: true }),
+        page.getByTestId("conversation-log").getByText(parentPrompt, { exact: true }),
       ).toBeVisible();
       await expect(
-        page.getByLabel("Conversation").getByText(childPrompt, { exact: true }),
+        page.getByTestId("conversation-log").getByText(childPrompt, { exact: true }),
       ).toBeVisible();
       await expect(branches.locator('.session-branch[data-forked="true"]')).toHaveCount(1);
 
       await page.goto(parentRoute);
       await expect(
-        page.getByLabel("Conversation").getByText(parentPrompt, { exact: true }),
+        page.getByTestId("conversation-log").getByText(parentPrompt, { exact: true }),
       ).toBeVisible();
       await expect(
-        page.getByLabel("Conversation").getByText(childPrompt, { exact: true }),
+        page.getByTestId("conversation-log").getByText(childPrompt, { exact: true }),
       ).toHaveCount(0);
     } catch (error) {
       primaryError = error;
@@ -958,7 +958,7 @@ function expectServerOwnedProductMessageRequest(turn: StartedTurn) {
 
 async function expectTurnCompleted(page: Page, assistantText: string) {
   await expect(
-    page.getByLabel("Conversation").getByText(assistantText, { exact: true }),
+    page.getByTestId("conversation-log").getByText(assistantText, { exact: true }),
   ).toBeVisible({ timeout: 30_000 });
   await expectRunCompleted(page);
 }

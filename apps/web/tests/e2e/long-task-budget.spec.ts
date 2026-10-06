@@ -442,7 +442,7 @@ test("streaming a long markdown reply keeps its per-delta work flat", async ({ p
 
   // The stream is over when its last delta is on screen; the transcript follows
   // the tail while it grows, which is the work being measured.
-  const transcript = page.getByLabel("Conversation");
+  const transcript = page.getByTestId("conversation-log");
   await expect(page.getByText("STREAM-END-MARKER", { exact: false })).toBeVisible({
     timeout: 60_000,
   });

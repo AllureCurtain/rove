@@ -48,7 +48,7 @@ test("project trust exposes every state, capability decisions, and digest invali
     invalidated_capabilities: ["workspace_instructions"],
     granted_capabilities: ["project_configuration"],
   };
-  await trustCard.getByRole("button", { name: "Refresh project trust" }).click();
+  await trustCard.getByRole("button", { name: "刷新项目信任" }).click();
   await expect(trustCard).toContainText("Changed");
   await expect(trustCard).toContainText("Trusted");
 
