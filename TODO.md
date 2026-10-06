@@ -4,7 +4,7 @@ Updated: 2026-10-06
 
 ## In progress
 
-- **Console actions trim** on `feat/console-actions`: message actions moved out of the bubble into a quiet hover row below the message; edit-and-branch and the composer review launcher removed; the model control shrunk to a one-line pill
+- **Console chrome pass** on `feat/console-chrome`: 28px ghost attach button, compact model popover, reading band widenable past the 840 default up to the pane's usable width, assistant turns verified cardless across both skins
 
 ## Next up
 

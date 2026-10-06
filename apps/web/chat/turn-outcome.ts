@@ -51,7 +51,9 @@ export function runGroupOutcome(group: TranscriptRunGroup): TurnOutcome | null {
   });
   const outcome = {
     actions,
-    tokens: anyTokens ? tokens : null,
+    // A zero carries no information — "0 tokens" reads as noise under every
+    // finished turn, so the segment only appears once it can say something.
+    tokens: anyTokens && tokens > 0 ? tokens : null,
     durationMs: timing.frozenMs,
   };
   return outcome.actions > 0 || outcome.tokens !== null ? outcome : null;

@@ -168,7 +168,7 @@ All values land as design tokens (`styles/v3/tokens.css` skin block + the `--ds-
 | Radius | 4 / 6 / 8 / 10 / 12 / 14 / 16 / 18 / 20 / 24px + pill; message bubble 18px with an 8px corner on the user's own side; composer shell 20px |
 | Icon button | 28px square hit area, 10–12px radius, transparent → hover fill |
 | Toolbar height | 46px, shared by conversation topbar and work-panel header |
-| Content band | transcript and composer share one centered max width (~760px); reading-width handle kept |
+| Content band | transcript and composer share one centered band: 840px by default, widenable to the pane's own usable width (never edge-to-edge); reading-width handles kept |
 | Row pitch | 28px minimum for every sidebar row and group header; 1px gaps between rows, not border hairlines |
 
 ### 4.3 Motion
