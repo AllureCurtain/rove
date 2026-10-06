@@ -205,7 +205,7 @@ test("a successful fork is announced", async ({ page }) => {
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
   const userBubble = page
-    .locator('article.chat-bubble[data-role="user"]')
+    .locator('.transcript-item[data-role="user"]')
     .filter({ hasText: "Fork question" });
   await userBubble.hover();
   await userBubble.getByRole("button", { name: "复制会话" }).click();
@@ -250,7 +250,7 @@ test("reduced motion shows toasts without the slide", async ({ page }) => {
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
   const userBubble = page
-    .locator('article.chat-bubble[data-role="user"]')
+    .locator('.transcript-item[data-role="user"]')
     .filter({ hasText: "Fork question" });
   await userBubble.hover();
   await userBubble.getByRole("button", { name: "复制会话" }).click();

@@ -127,8 +127,6 @@ export function Transcript({
   onRetryMessage,
   onEditMessage,
   onForkSession,
-  onBranchMessage,
-  branchAvailable = false,
   forkAvailable = false,
   locateRequest = null,
   loadAttachment,
@@ -167,13 +165,6 @@ export function Transcript({
   onEditMessage?: (content: string) => void;
   /** Session-level fork surfaced from message actions. */
   onForkSession?: () => void;
-  /**
-   * R6: edit a user turn and continue in a new session. The callback receives
-   * the run the turn belongs to and its text, which is what identifies the
-   * turn's ledger message without inventing a second identity.
-   */
-  onBranchMessage?: (input: { runId: string | null; content: string }) => void;
-  branchAvailable?: boolean;
   forkAvailable?: boolean;
   /**
    * R7: reveal one message on request — the transcript half of a search hit.
@@ -909,17 +900,6 @@ export function Transcript({
                     entry.id === lastActionable.turnId ? onEditMessage : undefined
                   }
                   onFork={forkAvailable && entry.message.role === "user" ? onForkSession : undefined}
-                  onBranch={
-                    branchAvailable &&
-                    entry.message.role === "user" &&
-                    onBranchMessage
-                      ? () =>
-                          onBranchMessage({
-                            runId: group.runId,
-                            content: entry.message.content,
-                          })
-                      : undefined
-                  }
                 />
               ),
             )}
@@ -1144,7 +1124,6 @@ function MessageBubble({
   onRetry,
   onEdit,
   onFork,
-  onBranch,
 }: {
   message: ChatMessage;
   attachments?: readonly ProductMessageAttachmentRef[];
@@ -1154,11 +1133,11 @@ function MessageBubble({
   onRetry?: (content: string) => void;
   onEdit?: (content: string) => void;
   onFork?: () => void;
-  onBranch?: () => void;
 }) {
   const { t } = useCopy();
   return (
     <div className="transcript-item" data-kind="message" data-role={message.role}>
+      <div className="transcript-item__col" data-role={message.role}>
       <article
         className="chat-bubble"
         data-role={message.role}
@@ -1178,15 +1157,17 @@ function MessageBubble({
               <strong>{t("chat.aborted")}</strong> {t("chat.smartStopPartialAbort")}
             </p>
           ) : null}
-          <MessageActions
-            content={message.content}
-            retryContent={message.role === "assistant" ? retryContent : null}
-            onRetry={onRetry}
-            onEdit={message.role === "user" ? onEdit : undefined}
-            onFork={message.role === "user" ? onFork : undefined}
-            onBranch={message.role === "user" ? onBranch : undefined}
-          />
         </article>
+        {/* Quiet hover furniture below the message, never inside the bubble —
+            the body stays exactly what the model or the sender wrote. */}
+        <MessageActions
+          content={message.content}
+          retryContent={message.role === "assistant" ? retryContent : null}
+          onRetry={onRetry}
+          onEdit={message.role === "user" ? onEdit : undefined}
+          onFork={message.role === "user" ? onFork : undefined}
+        />
+      </div>
     </div>
   );
 }
@@ -1648,7 +1629,6 @@ function MessageActions({
   onRetry,
   onEdit,
   onFork,
-  onBranch,
 }: {
   content: string;
   /** Prompt to resend; present only on the final assistant reply. */
@@ -1656,7 +1636,6 @@ function MessageActions({
   onRetry?: (content: string) => void;
   onEdit?: (content: string) => void;
   onFork?: () => void;
-  onBranch?: () => void;
 }) {
   const { t } = useCopy();
   const [copied, setCopied] = useState(false);
@@ -1715,14 +1694,6 @@ function MessageActions({
           title={t("chat.forkSession")}
         >
           <FilePlusIcon />
-        </button>
-      ) : null}
-      {onBranch ? (
-        // Labelled rather than icon-only: this is the destructive-looking
-        // variant of edit-and-resend, and it must not be mistaken for the copy
-        // or the terminal-boundary fork next to it.
-        <button type="button" className="ghost" onClick={onBranch}>
-          {t("chat.branchFromMessage")}
         </button>
       ) : null}
       <button

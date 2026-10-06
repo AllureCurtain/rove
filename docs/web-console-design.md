@@ -205,7 +205,7 @@ The conversation surface keeps the last N visited session panes mounted (`Map<se
 ```
 
 - **User message**: right-aligned bubble, `max-content` width capped at 82%/600px, 18px radius with a small corner on the user's side, subtle tinted fill, no byline.
-- **Assistant message**: bare markdown prose at the shared content width — no bubble, no card, no per-message role label. Hover reveals quiet icon actions (copy / edit / branch / retry).
+- **Assistant message**: bare markdown prose at the shared content width — no bubble, no card, no per-message role label. Hover reveals quiet icon actions in a row *below* the message (copy / retry on the last turn; edit / copy-session on the user's own), never inside the body — the body stays exactly the model's or sender's text.
 - **Compaction**: a centered hairline-flanked label row.
 - **Offscreen economy**: rows carry `content-visibility:auto` with a ~140px intrinsic size — required for long transcripts.
 

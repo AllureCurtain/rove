@@ -200,8 +200,6 @@ export function QuickModelControl({
     );
   }, [inventoryReload, loadProviderModels, open, profileId]);
 
-  const activeProfile = profiles.find((profile) => profile.id === modelConfig.profileId);
-  const selectedProfile = profiles.find((profile) => profile.id === profileId);
   const loadedInventory =
     inventory?.profileId === profileId && inventory.status === "ready"
       ? inventory.response.models
@@ -256,7 +254,7 @@ export function QuickModelControl({
       <button
         ref={triggerRef}
         type="button"
-        className="quick-model__trigger secondary"
+        className="quick-model__trigger"
         aria-expanded={open}
         aria-controls={popoverId}
         aria-haspopup="dialog"
@@ -267,9 +265,8 @@ export function QuickModelControl({
         }}
       >
         <MixerHorizontalIcon />
-        <span>
-          <strong>{modelConfig.model || t("modelControl.runtimeDefault")}</strong>
-          <small>{activeProfile?.label ?? t("modelControl.runtimeProvider")}</small>
+        <span className="quick-model__model">
+          {modelConfig.model || t("modelControl.runtimeDefault")}
         </span>
         <ChevronDownIcon />
       </button>

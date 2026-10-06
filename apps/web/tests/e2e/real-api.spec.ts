@@ -621,7 +621,7 @@ test.describe("real API product shell integration", () => {
       );
       // The fork affordance lives on the user message it branches from.
       const parentBubble = page
-        .locator('article.chat-bubble[data-role="user"]')
+        .locator('.transcript-item[data-role="user"]')
         .filter({ hasText: parentPrompt });
       await parentBubble.hover();
       await parentBubble.getByRole("button", { name: "复制会话" }).click();
