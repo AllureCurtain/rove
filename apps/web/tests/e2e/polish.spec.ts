@@ -247,7 +247,7 @@ test("strict Mermaid rendering preserves visible SVG text labels", async ({
   });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  const diagram = page.getByRole("figure", { name: "Mermaid diagram" });
+  const diagram = page.locator(".mermaid-diagram");
   await expect(diagram).toBeVisible();
   await expect(diagram.locator("foreignObject")).toHaveCount(0);
   const labels = diagram.locator("svg text");

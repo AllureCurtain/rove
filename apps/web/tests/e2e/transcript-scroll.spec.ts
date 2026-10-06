@@ -38,7 +38,7 @@ async function openLongTranscript(page: Page) {
     activeSessionId: session.id,
   });
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  const scroller = page.getByLabel("Conversation");
+  const scroller = page.getByTestId("conversation-log");
   await expect(scroller.getByText("restored answer line 160")).toBeVisible();
   return scroller;
 }

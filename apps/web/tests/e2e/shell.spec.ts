@@ -28,7 +28,7 @@ test("empty -> open workspace -> run -> complete on live shell mock", async ({
   await page.getByRole("textbox", { name: /输入消息/ }).fill("Summarize the runtime state");
   await page.getByRole("button", { name: "发送" }).click();
 
-  const conversation = page.getByLabel("Conversation");
+  const conversation = page.getByTestId("conversation-log");
   await expect(conversation.getByText("Summarize the runtime state")).toBeVisible();
   await expect(conversation.getByText("Runtime summary complete")).toBeVisible();
   await expect(page.getByLabel("详情").getByText("已完成", { exact: true })).toBeVisible();
@@ -67,7 +67,7 @@ test("inline approval works in product shell", async ({ page }) => {
 
   // data-role="assistant" pins the bubble semantically; the tool-card article and
   // queued user messages are excluded without depending on byline copy.
-  const assistantReply = page.getByLabel("Conversation")
+  const assistantReply = page.getByTestId("conversation-log")
     .locator('article[data-role="assistant"]').filter({ hasText: "Approved write completed" });
   await expect(assistantReply).toHaveCount(1);
   await expect(assistantReply.getByText("Approved write completed", { exact: true })).toBeVisible();
@@ -103,7 +103,7 @@ test("inspector shows empty then completed states during a run", async ({ page }
 
   await page.getByRole("textbox", { name: /输入消息/ }).fill("Summarize the runtime state");
   await page.getByRole("button", { name: "发送" }).click();
-  await expect(page.getByLabel("Conversation").getByText("Runtime summary complete")).toBeVisible();
+  await expect(page.getByTestId("conversation-log").getByText("Runtime summary complete")).toBeVisible();
   await expect(inspector.getByText("已完成", { exact: true })).toBeVisible();
 });
 

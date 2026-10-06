@@ -46,7 +46,7 @@ async function openLongSession(
     });
   }
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  const scroller = page.getByLabel("Conversation");
+  const scroller = page.getByTestId("conversation-log");
   await expect(scroller.locator("[data-run-ordinal]").first()).toBeVisible();
   return { scroller, workspace, session };
 }

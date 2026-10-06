@@ -30,7 +30,7 @@ test("visual: completed run, folded activity, tool detail, actions, usage ring",
   await composer(page).fill("Summarize the runtime state");
   await page.getByRole("button", { name: "发送" }).click();
   await expect(
-    page.getByLabel("Conversation").getByText("Runtime summary complete"),
+    page.getByTestId("conversation-log").getByText("Runtime summary complete"),
   ).toBeVisible();
   // The default mock run has no tool calls: the transcript shows two bubbles.
   await shot(page, "01-shell-completed");
@@ -106,7 +106,7 @@ test("visual: approval card outside the fold", async ({ page }) => {
   // Approve: the tool runs to completion and the activity folds itself.
   await page.getByRole("button", { name: "批准" }).click();
   await expect(
-    page.getByLabel("Conversation").getByText("Approved write completed"),
+    page.getByTestId("conversation-log").getByText("Approved write completed"),
   ).toBeVisible();
   await expect(page.getByText(/工具调用 ×/).first()).toBeVisible();
   await shot(page, "13-activity-folded");

@@ -42,7 +42,7 @@ test("a message with a fenced block renders every segment around it", async ({ p
   });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  const conversation = page.getByLabel("Conversation");
+  const conversation = page.getByTestId("conversation-log");
 
   await expect(conversation.getByRole("heading", { name: "Heading" })).toBeVisible();
   await expect(conversation.getByText("Intro paragraph.")).toBeVisible();

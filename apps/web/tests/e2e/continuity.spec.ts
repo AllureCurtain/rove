@@ -30,7 +30,7 @@ test("root redirects to the server-preferred session and restores its transcript
   await page.goto("/");
 
   await expect(page).toHaveURL(`/w/${workspace.id}/s/${session.id}`);
-  const conversation = page.getByLabel("Conversation");
+  const conversation = page.getByTestId("conversation-log");
   await expect(conversation.getByText("Preferred question")).toBeVisible();
   await expect(conversation.getByText("Preferred answer")).toBeVisible();
 });
@@ -90,7 +90,7 @@ test("a deep session URL wins over stale server focus without a wrong-session fl
   await page.goto(`/w/${workspace.id}/s/${sessionB.id}`);
 
   await expect(page.getByRole("heading", { name: "Session B" })).toBeVisible();
-  await expect(page.getByLabel("Conversation").getByText("Answer B")).toBeVisible();
+  await expect(page.getByTestId("conversation-log").getByText("Answer B")).toBeVisible();
   const headings = await page.evaluate(
     () =>
       (window as typeof window & { __productSessionHeadings: string[] })
@@ -254,7 +254,7 @@ test("a missing selected profile fails before adding an optimistic turn", async 
       .getByText(/selected provider profile is no longer available/i),
   ).toBeVisible();
   await expect(
-    page.getByLabel("Conversation").getByText("Do not submit this turn", { exact: true }),
+    page.getByTestId("conversation-log").getByText("Do not submit this turn", { exact: true }),
   ).toHaveCount(0);
   expect(api.jobs).toHaveLength(0);
 });
@@ -310,10 +310,10 @@ test("reload restores bubbles and the next turn resumes the exact product sessio
   });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  await expect(page.getByLabel("Conversation").getByText("First turn done")).toBeVisible();
+  await expect(page.getByTestId("conversation-log").getByText("First turn done")).toBeVisible();
 
   await page.reload();
-  const conversation = page.getByLabel("Conversation");
+  const conversation = page.getByTestId("conversation-log");
   await expect(conversation.getByText("First turn", { exact: true })).toBeVisible();
   await expect(conversation.getByText("First turn done", { exact: true })).toBeVisible();
 
@@ -365,7 +365,7 @@ test("a committed job survives a disconnected response and delayed binding visib
   });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  const conversation = page.getByLabel("Conversation");
+  const conversation = page.getByTestId("conversation-log");
   await page.getByRole("textbox", { name: /输入消息/ }).fill("Write after disconnect");
   await page.getByRole("button", { name: "发送" }).click();
 
@@ -499,7 +499,7 @@ test("partial transcript remains distinct from a completed run and a run error",
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
 
-  const conversation = page.getByLabel("Conversation");
+  const conversation = page.getByTestId("conversation-log");
   await expect(conversation.getByText("部分较早的消息未能恢复").first()).toBeVisible();
   await expect(conversation.getByText("Visible answer")).toBeVisible();
   await expect(conversation.getByText(/Expected event 3, observed 4/)).toBeVisible();
@@ -531,7 +531,7 @@ test("a withheld event kind restores the rest of the transcript", async ({
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
 
-  const conversation = page.getByLabel("Conversation");
+  const conversation = page.getByTestId("conversation-log");
   // The known events around the withheld row still restore, and the reader is
   // told which durable position is missing rather than only that something is.
   await expect(conversation.getByText("Restored answer")).toBeVisible();
@@ -570,7 +570,7 @@ test("transcript failure is explicit and retry restores the canonical history", 
   await expect(page.getByRole("textbox", { name: /输入消息/ })).toBeDisabled();
 
   await restoreError.getByRole("button", { name: "重试恢复" }).click();
-  await expect(page.getByLabel("Conversation").getByText("Recovered answer")).toBeVisible();
+  await expect(page.getByTestId("conversation-log").getByText("Recovered answer")).toBeVisible();
   await expect(restoreError).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: /输入消息/ })).toBeEnabled();
 });
@@ -615,7 +615,7 @@ test("a delayed session restore cannot overwrite a faster session switch", async
     .click();
 
   await expect(page).toHaveURL(`/w/${workspace.id}/s/${sessionB.id}`);
-  const conversation = page.getByLabel("Conversation");
+  const conversation = page.getByTestId("conversation-log");
   await expect(conversation.getByText("Fast answer B")).toBeVisible();
   await page.waitForTimeout(650);
   await expect(conversation.getByText("Delayed answer A")).toHaveCount(0);
