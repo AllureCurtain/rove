@@ -105,6 +105,14 @@ async function openShell(page: Page, facts: Record<string, unknown> | null) {
   });
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
   await expect(page.getByText("The log was loud.", { exact: true })).toBeVisible();
+  // Per-turn evidence lives on the run tab of the work panel (§8) — the
+  // conversation surface itself no longer carries the measurement table.
+  await page.getByRole("button", { name: "展开详情面板" }).click();
+  await page.getByRole("button", { name: "打开一个页签", exact: true }).click();
+  await page
+    .getByRole("tabpanel")
+    .getByRole("button", { name: "运行", exact: true })
+    .click();
   return { workspace, session, panel: page.locator(".message-evidence") };
 }
 

@@ -36,6 +36,7 @@ import { ArtifactPanel } from "./ArtifactPanel";
 import { DiffPanel } from "./DiffPanel";
 import { FileViewerPane } from "./FileViewerPane";
 import { InspectorEmpty } from "./InspectorEmpty";
+import { MessageEvidence } from "./MessageEvidence";
 import { SessionAuthorizationPanel } from "./SessionAuthorizationPanel";
 import { FilesPanel } from "./FilesPanel";
 import { ReviewPanel } from "./ReviewPanel";
@@ -386,6 +387,15 @@ export function RunInspector({
     () => buildActivityTimeline(runState, waiting.length > 0, t),
     [runState, waiting.length, t],
   );
+  const evidenceMessages = useMemo(
+    () =>
+      runState.messages.filter(
+        (message) =>
+          message.role === "assistant" &&
+          (message.usage || message.promptBuild || message.promptCompaction),
+      ),
+    [runState.messages],
+  );
 
   function renderPane(tab: WorkPanelTab): ReactNode {
     switch (tab.kind) {
@@ -640,6 +650,16 @@ export function RunInspector({
                       </div>
                     ) : null}
                   </div>
+                  {evidenceMessages.length > 0 ? (
+                    // §2.2: measured per-turn detail is evidence for the panel,
+                    // not furniture for the conversation. One dl per turn that
+                    // published usage, a prompt build, or pruning facts.
+                    <div className="inspector-evidence">
+                      {evidenceMessages.map((message) => (
+                        <MessageEvidence key={message.id} message={message} />
+                      ))}
+                    </div>
+                  ) : null}
                 </section>
 
                 <section className="inspector-section">

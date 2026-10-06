@@ -18,7 +18,8 @@ import { createProductApiClient } from "../product/product-client";
  * - the cache is bounded, so browsing a long sidebar cannot grow it forever.
  */
 
-export const SESSION_MESSAGE_COUNT_PAGE_SIZE = 200;
+// Must stay within the API's message page cap (128); a larger ask is a 400.
+export const SESSION_MESSAGE_COUNT_PAGE_SIZE = 128;
 export const SESSION_MESSAGE_COUNT_MAX_PAGES = 5;
 export const SESSION_MESSAGE_COUNT_LIMIT = 64;
 

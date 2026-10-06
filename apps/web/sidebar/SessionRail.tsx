@@ -660,7 +660,6 @@ export function SessionRail({
                   </span>
                 ) : null}
               </span>
-              <span className="workspace-group__path">{formatDisplayPath(workspace.rootPath)}</span>
             </button>
           )}
           <ProjectActions
