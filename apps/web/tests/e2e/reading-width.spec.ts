@@ -11,11 +11,12 @@ import {
  * Conversation reading band handles.
  *
  * At 1440x900 the transcript scroller spans the 1165px pane minus the symmetric
- * scrollbar-gutter reserve, so the band has far more room than the 840px design
- * measure: `min(available, preferred)` renders at the 840px cap. Both handles
+ * scrollbar-gutter reserve, so the band has more room than the 840px default
+ * measure: `min(available, preferred)` renders at 840, while `aria-valuemax`
+ * exposes the pane-bound ceiling the preference can grow into. Both handles
  * move one centered band, so a 1px pointer move is a 2px width change.
  */
-const BAND_AVAILABLE = 840;
+const BAND_DEFAULT = 840;
 
 async function openSession(page: Page, width = 1440, height = 900) {
   await page.setViewportSize({ width, height });
@@ -63,16 +64,20 @@ test("the reading band resizes from either edge and keeps one measure", async ({
   const left = handles.first();
 
   // The band is `min(available, preferred)`: the column has room to spare, so
-  // it renders at the 840px design measure.
+  // it renders at the 840px default while the ceiling is the pane's own
+  // usable width (which is why the cap is read back, not restated here).
   await expect(handles).toHaveCount(2);
   await expect(left).toHaveAttribute("aria-valuemin", "560");
-  await expect(left).toHaveAttribute("aria-valuemax", String(BAND_AVAILABLE));
-  await expect(left).toHaveAttribute("aria-valuenow", String(BAND_AVAILABLE));
+  const bandMax = Number(await left.getAttribute("aria-valuemax"));
+  expect(bandMax, "the pane must leave the band room to widen").toBeGreaterThan(
+    BAND_DEFAULT,
+  );
+  await expect(left).toHaveAttribute("aria-valuenow", String(BAND_DEFAULT));
   await expect(left).toHaveAttribute("aria-valuetext", /840/);
 
   const content = await box(page, ".chat-transcript__content");
   const composer = await box(page, ".chat-composer");
-  expect(content.width).toBeCloseTo(BAND_AVAILABLE, 0);
+  expect(content.width).toBeCloseTo(BAND_DEFAULT, 0);
   expect(content.width).toBeCloseTo(composer.width, 0);
 
   // The handles straddle the band edges: this is what the CSS min()/max()
@@ -87,10 +92,10 @@ test("the reading band resizes from either edge and keeps one measure", async ({
 
   // Dragging inward narrows the band by twice the pointer distance.
   await dragHandle(page, left, 20);
-  await expect(left).toHaveAttribute("aria-valuenow", String(BAND_AVAILABLE - 40));
+  await expect(left).toHaveAttribute("aria-valuenow", String(BAND_DEFAULT - 40));
   const narrowed = await box(page, ".chat-transcript__content");
   const narrowedComposer = await box(page, ".chat-composer");
-  expect(narrowed.width).toBeCloseTo(BAND_AVAILABLE - 40, 0);
+  expect(narrowed.width).toBeCloseTo(BAND_DEFAULT - 40, 0);
   expect(narrowedComposer.width).toBeCloseTo(narrowed.width, 0);
   expect(
     Math.abs(narrowed.x - bandLeft) -
@@ -102,32 +107,35 @@ test("the reading band resizes from either edge and keeps one measure", async ({
   await page.reload({ waitUntil: "load" });
   await expect(page.getByText("Band answer", { exact: true })).toBeVisible();
   const reloaded = page.getByRole("separator", { name: /阅读宽度/ }).first();
-  await expect(reloaded).toHaveAttribute("aria-valuenow", String(BAND_AVAILABLE - 40));
+  await expect(reloaded).toHaveAttribute("aria-valuenow", String(BAND_DEFAULT - 40));
   expect((await box(page, ".chat-transcript__content")).width).toBeCloseTo(
-    BAND_AVAILABLE - 40,
+    BAND_DEFAULT - 40,
     0,
   );
 
-  // Double-click returns to the design measure.
+  // Double-click returns to the default measure.
   await reloaded.dblclick();
-  await expect(reloaded).toHaveAttribute("aria-valuenow", String(BAND_AVAILABLE));
+  await expect(reloaded).toHaveAttribute("aria-valuenow", String(BAND_DEFAULT));
 
   // Keyboard: arrows step toward or away from the centre per edge, Home resets,
-  // End spends the whole column.
+  // End spends the whole column. Widening now goes *past* the default — that
+  // headroom is the point of the preference ceiling.
   await reloaded.focus();
   await page.keyboard.press("ArrowRight");
-  await expect(reloaded).toHaveAttribute("aria-valuenow", String(BAND_AVAILABLE - 16));
+  await expect(reloaded).toHaveAttribute("aria-valuenow", String(BAND_DEFAULT - 16));
   await page.keyboard.press("Shift+ArrowRight");
-  await expect(reloaded).toHaveAttribute("aria-valuenow", String(BAND_AVAILABLE - 48));
+  await expect(reloaded).toHaveAttribute("aria-valuenow", String(BAND_DEFAULT - 48));
   await page.keyboard.press("Home");
-  await expect(reloaded).toHaveAttribute("aria-valuenow", String(BAND_AVAILABLE));
+  await expect(reloaded).toHaveAttribute("aria-valuenow", String(BAND_DEFAULT));
   await page.keyboard.press("ArrowLeft");
   await expect(
     reloaded,
-    "the left handle widens toward the column edge, capped by the design measure",
-  ).toHaveAttribute("aria-valuenow", String(BAND_AVAILABLE));
+    "the left handle widens past the default, toward the pane's own ceiling",
+  ).toHaveAttribute("aria-valuenow", String(BAND_DEFAULT + 16));
   await page.keyboard.press("End");
-  await expect(reloaded).toHaveAttribute("aria-valuenow", String(BAND_AVAILABLE));
+  await expect(reloaded).toHaveAttribute("aria-valuenow", String(bandMax));
+  await page.keyboard.press("Home");
+  await expect(reloaded).toHaveAttribute("aria-valuenow", String(BAND_DEFAULT));
 
   // The band must not have dragged the rest of the shell with it. The work
   // panel is closed by default (design §5.0), so its divider is not mounted;

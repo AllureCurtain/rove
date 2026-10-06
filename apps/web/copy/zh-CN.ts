@@ -676,7 +676,6 @@ const zhCN = {
   },
   modelControl: {
     change: "更改会话模型设置",
-    close: "关闭模型控件",
     provider: "会话模型服务",
     model: "会话模型",
     reasoning: "会话推理设置",

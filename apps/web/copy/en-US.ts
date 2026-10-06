@@ -702,7 +702,6 @@ const enUS: CopyDictionary = {
   },
   modelControl: {
     change: "Change session model settings",
-    close: "Close model control",
     provider: "Session provider profile",
     model: "Session model",
     reasoning: "Session reasoning",

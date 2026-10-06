@@ -3,7 +3,6 @@
 import {
   CheckIcon,
   ChevronDownIcon,
-  Cross2Icon,
   MixerHorizontalIcon,
   ReloadIcon,
 } from "@radix-ui/react-icons";
@@ -277,21 +276,9 @@ export function QuickModelControl({
           role="dialog"
           aria-label={t("modelControl.model")}
         >
-          <header>
-            <strong>{t("modelControl.model")}</strong>
-            <button
-              type="button"
-              className="ghost icon-button"
-              aria-label={t("modelControl.close")}
-              onClick={() => {
-                setOpen(false);
-                window.requestAnimationFrame(() => triggerRef.current?.focus());
-              }}
-            >
-              <Cross2Icon />
-            </button>
-          </header>
-          <p>{t("modelControl.applyNote")}</p>
+          {/* A transient menu, not a settings card: Escape and outside click
+              close it, so it carries no header chrome of its own. */}
+          <p className="quick-model__note">{t("modelControl.applyNote")}</p>
           <label>
             <span>{t("modelControl.provider")}</span>
             <select
@@ -342,35 +329,35 @@ export function QuickModelControl({
             <datalist id={modelListId}>
               {modelOptions.map((option) => <option value={option} key={option} />)}
             </datalist>
-            {profileId ? (
-              <span className="quick-model__inventory">
-                <small
-                  role={inventory?.status === "error" ? "alert" : "status"}
-                  data-tone={inventory?.status === "error" ? "error" : undefined}
-                >
-                  {inventory?.status === "loading"
-                    ? t("modelControl.loadingModels")
-                    : inventory?.status === "error"
-                      ? inventory.message
-                      : inventory?.status === "ready" && inventory.response.models.length === 0
-                        ? t("modelControl.noModels")
-                        : inventory?.status === "ready"
-                          ? `${inventory.response.models.length}`
-                          : t("modelControl.modelsNotLoaded")}
-                </small>
-                <button
-                  type="button"
-                  className="ghost icon-button"
-                  aria-label={t("modelControl.reloadModels")}
-                  title={t("modelControl.reloadModels")}
-                  disabled={inventory?.status === "loading"}
-                  onClick={() => setInventoryReload((value) => value + 1)}
-                >
-                  <ReloadIcon />
-                </button>
-              </span>
-            ) : null}
           </label>
+          {profileId ? (
+            <span className="quick-model__inventory">
+              <small
+                role={inventory?.status === "error" ? "alert" : "status"}
+                data-tone={inventory?.status === "error" ? "error" : undefined}
+              >
+                {inventory?.status === "loading"
+                  ? t("modelControl.loadingModels")
+                  : inventory?.status === "error"
+                    ? inventory.message
+                    : inventory?.status === "ready" && inventory.response.models.length === 0
+                      ? t("modelControl.noModels")
+                      : inventory?.status === "ready"
+                        ? `${inventory.response.models.length}`
+                        : t("modelControl.modelsNotLoaded")}
+              </small>
+              <button
+                type="button"
+                className="ghost icon-button"
+                aria-label={t("modelControl.reloadModels")}
+                title={t("modelControl.reloadModels")}
+                disabled={inventory?.status === "loading"}
+                onClick={() => setInventoryReload((value) => value + 1)}
+              >
+                <ReloadIcon />
+              </button>
+            </span>
+          ) : null}
           <label>
             <span>{t("modelControl.reasoning")}</span>
             <select

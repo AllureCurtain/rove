@@ -31,16 +31,19 @@ describe("reading band width preference", () => {
     expect(parseStoredReadingWidth(640)).toBeNull();
   });
 
-  it("caps the band at the pane instead of the preference", () => {
+  it("caps the band at the pane, and the preference at the upper bound", () => {
     expect(clampReadingWidth(840, 800)).toBe(800);
-    expect(clampReadingWidth(840, 1400)).toBe(READING_WIDTH_MAX);
+    // The pane is the everyday ceiling; the stored bound only stops a
+    // preference from outrunning any realistic column.
+    expect(clampReadingWidth(1400, 1400)).toBe(1400);
+    expect(clampReadingWidth(2000, 4000)).toBe(READING_WIDTH_MAX);
     // A pane narrower than the floor wins: the band draws narrow, silently.
     expect(clampReadingWidth(840, 480)).toBe(480);
     expect(clampReadingWidth(840, 0)).toBe(READING_WIDTH_MIN);
     expect(clampReadingWidth(840, Number.NaN)).toBe(READING_WIDTH_MIN);
   });
 
-  it("renders min(available, preferred) and never exceeds the design cap", () => {
+  it("renders min(available, preferred) and never exceeds the upper bound", () => {
     expect(effectiveReadingWidth(840, 808)).toBe(808);
     expect(effectiveReadingWidth(840, 900)).toBe(840);
     for (const available of [0, 500, 680, 840, 1600, 4000]) {
@@ -116,7 +119,8 @@ describe("reading band width preference", () => {
     expect(readingWidthFromKeyboard({ key: "Home", shiftKey: false }, 600, { side: "left", available: 1400 })).toBe(
       READING_WIDTH_DEFAULT,
     );
-    expect(readingWidthFromKeyboard({ key: "End", shiftKey: false }, 700, { side: "left", available: 1400 })).toBe(
+    expect(readingWidthFromKeyboard({ key: "End", shiftKey: false }, 700, { side: "left", available: 1400 })).toBe(1400);
+    expect(readingWidthFromKeyboard({ key: "End", shiftKey: false }, 700, { side: "left", available: 4000 })).toBe(
       READING_WIDTH_MAX,
     );
     expect(readingWidthFromKeyboard({ key: "End", shiftKey: false }, 700, { side: "left", available: 700 })).toBe(700);

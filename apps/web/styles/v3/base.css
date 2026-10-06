@@ -162,11 +162,12 @@
   border-left-color: var(--cp-danger);
 }
 
-/* Buttons / cards */
+/* Buttons / cards. The v2 layer owns `.chat-bubble` surfaces outright —
+   assistant prose must stay transparent, and the skin's card fill is what
+   re-painted it (equal specificity, later sheet). */
 .product-app-frame[data-skin="warm"] .settings-card,
 .product-app-frame[data-skin="warm"] .empty-state__card,
-.product-app-frame[data-skin="warm"] .modal-card,
-.product-app-frame[data-skin="warm"] .chat-bubble {
+.product-app-frame[data-skin="warm"] .modal-card {
   border-radius: var(--cp-radius-lg);
   border-color: var(--cp-border);
   background: var(--cp-surface);
@@ -393,11 +394,12 @@
   border-left-color: var(--cp-danger);
 }
 
-/* Elevated cards keep a hairline border */
+/* Elevated cards keep a hairline border. `.chat-bubble` is excluded on
+   purpose: the v2 layer owns it, and a skin fill here is what painted the
+   assistant turn back into a card (equal specificity, later sheet). */
 .product-app-frame[data-skin="graphite"] .settings-card,
 .product-app-frame[data-skin="graphite"] .empty-state__card,
-.product-app-frame[data-skin="graphite"] .modal-card,
-.product-app-frame[data-skin="graphite"] .chat-bubble {
+.product-app-frame[data-skin="graphite"] .modal-card {
   border-radius: var(--cp-radius-lg);
   border-color: var(--cp-border-soft);
   background: var(--cp-surface);

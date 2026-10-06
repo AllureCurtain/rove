@@ -2853,8 +2853,33 @@ html[data-reading-resizing="true"] * {
 .product-app-frame[data-ui-version="v2"] .chat-composer__actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   min-width: 0;
+}
+
+/* The attach button is toolbar chrome, not a primary action: a 28px ghost
+   circle in the row's quiet ink, matching the send/stop slot's scale. The
+   `button` element selector is needed to outrank `button.icon-button`'s
+   32px minimums, which carry the same class+attribute weight. */
+.product-app-frame[data-ui-version="v2"] button.chat-composer__attach {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] button.chat-composer__attach:hover:not(:disabled) {
+  background: var(--v2-surface-hover);
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] button.chat-composer__attach:disabled {
+  opacity: 0.45;
 }
 
 .product-app-frame[data-ui-version="v2"] .chat-composer__tools > span {
@@ -3005,6 +3030,8 @@ html[data-reading-resizing="true"] * {
   gap: 5px;
   max-width: min(200px, 100%);
   height: 26px;
+  /* The base `button` min-height (36px) would otherwise stretch the chip. */
+  min-height: 26px;
   padding: 0 8px;
   border: 0;
   border-radius: var(--v2-radius-pill, 999px);
@@ -3027,48 +3054,58 @@ html[data-reading-resizing="true"] * {
   text-overflow: ellipsis;
 }
 
+/* The picker opens as a compact menu anchored above its chip — narrow,
+   hairline-stroked, and padded like the other transient menus, not like a
+   settings card. */
 .product-app-frame[data-ui-version="v2"] .quick-model__popover {
   position: absolute;
-  bottom: calc(100% + 8px);
+  bottom: calc(100% + 6px);
   left: 0;
   z-index: var(--z-popover);
   display: grid;
-  gap: 10px;
-  width: min(360px, calc(100vw - 32px));
-  border: 1px solid var(--v2-border-strong);
-  border-radius: var(--v2-radius-md);
+  gap: 2px;
+  width: min(300px, calc(100vw - 24px));
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-lg);
   background: var(--v2-surface-raised);
   box-shadow: var(--v2-shadow-md);
-  padding: 12px;
+  padding: 6px;
 }
 
-.product-app-frame[data-ui-version="v2"] .quick-model__popover header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.product-app-frame[data-ui-version="v2"] .quick-model__popover header > strong {
-  font-size: 13px;
-}
-
-.product-app-frame[data-ui-version="v2"] .quick-model__popover > p {
+.product-app-frame[data-ui-version="v2"] .quick-model__note {
   margin: 0;
+  padding: 2px 6px 4px;
   color: var(--v2-ink-3);
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
+/* One label per row, control on the right — a menu's density, not a form's. */
 .product-app-frame[data-ui-version="v2"] .quick-model__popover label {
-  display: grid;
-  gap: 5px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  padding: 0 6px;
 }
 
 .product-app-frame[data-ui-version="v2"] .quick-model__popover label > span {
-  color: var(--v2-ink-3);
-  font-size: 10px;
-  font-weight: 650;
+  flex: 0 0 auto;
+  color: var(--v2-ink-2);
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__popover select,
+.product-app-frame[data-ui-version="v2"] .quick-model__popover input {
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 28px;
+  padding: 2px 8px;
+  border-color: var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-sunken);
+  font-size: 12px;
 }
 
 .product-app-frame[data-ui-version="v2"] .quick-model__popover .quick-model__inventory {
@@ -3077,8 +3114,28 @@ html[data-reading-resizing="true"] * {
   align-items: center;
   justify-content: space-between;
   gap: 6px;
+  min-height: 24px;
+  padding: 0 6px;
   color: var(--v2-ink-3);
-  font-weight: 500;
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__inventory .icon-button {
+  width: 22px;
+  min-width: 22px;
+  min-height: 22px;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__popover .field-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px 6px 2px;
+}
+
+.product-app-frame[data-ui-version="v2"] .quick-model__popover .field-actions button {
+  min-height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
 }
 
 .product-app-frame[data-ui-version="v2"] .quick-model__inventory small {

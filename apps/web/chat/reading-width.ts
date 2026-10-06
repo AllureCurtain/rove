@@ -8,11 +8,13 @@
  *
  * Two deliberate constraints:
  *
- * 1. Bounds. rove's design §3.3 documents a 680–840 measure, so the *upper*
- *    bound stays 840 (a wider line hurts readability regardless of how wide the
- *    window is); the *lower* bound drops to 560, because rove's conversation
- *    column can legitimately be narrower than the comfort band, and a control
- *    that cannot move is not a control.
+ * 1. Bounds. 840 stays the default measure the band resets to, but it is no
+ *    longer the ceiling: the upper bound only keeps a stored or dragged
+ *    preference inside realistic panes, while `clampReadingWidth` against
+ *    `available` stops the band at the column's own gutter. The *lower* bound
+ *    drops to 560, because rove's conversation column can legitimately be
+ *    narrower than the comfort band, and a control that cannot move is not a
+ *    control.
  * 2. `available` is measured from the transcript's content box (its own padding
  *    removed) instead of from the pane minus a hard-coded gutter. rove's
  *    transcript and composer padding lives in CSS, and duplicating it here is
@@ -21,8 +23,12 @@
 
 /** Lower bound, below the design's comfort measure. */
 export const READING_WIDTH_MIN = 560;
-/** Upper bound, from rove's design §3.3 reading measure. */
-export const READING_WIDTH_MAX = 840;
+/**
+ * Upper bound on the stored preference. The effective ceiling is still
+ * `min(READING_WIDTH_MAX, available)`, so a wide pane can widen the band well
+ * past the 840 default without filling the column edge to edge.
+ */
+export const READING_WIDTH_MAX = 1600;
 /** Default and reset target: the design's full measure. */
 export const READING_WIDTH_DEFAULT = 840;
 export const READING_WIDTH_KEYBOARD_STEP = 16;
