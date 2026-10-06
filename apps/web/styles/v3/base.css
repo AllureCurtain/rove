@@ -210,9 +210,6 @@
   color: var(--cp-fg);
 }
 
-.product-app-frame[data-skin="warm"] .workspace-group__path {
-  color: var(--cp-fg-2);
-}
 
 @media (prefers-reduced-motion: reduce) {
   .product-app-frame[data-skin="warm"] *,
@@ -440,9 +437,6 @@
   color: var(--cp-fg);
 }
 
-.product-app-frame[data-skin="graphite"] .workspace-group__path {
-  color: var(--cp-fg-2);
-}
 
 @media (prefers-reduced-motion: reduce) {
   .product-app-frame[data-skin="graphite"] *,

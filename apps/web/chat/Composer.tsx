@@ -942,6 +942,10 @@ export function Composer({
             ) : null}
           </ul>
         ) : null}
+      </div>
+      {controlError ? <p className="control-queue__error" role="alert">{controlError}</p> : null}
+      <div className="chat-composer__controls">
+        <div className="chat-composer__tools">
         {onUploadAttachment ? (
           <>
             <input
@@ -970,44 +974,6 @@ export function Composer({
             </button>
           </>
         ) : null}
-        {contextUsage && contextUsage.used > 0 ? <ContextUsageRing usage={contextUsage} /> : null}
-        {/* §6.1: send and stop share one slot. While a turn runs and the draft
-            is empty the slot is Stop; the moment the reader starts a draft the
-            slot is Send again, so queue (Enter) and interject (Alt+Enter) stay
-            explicit choices instead of a hidden stop behind a second button. */}
-        {busy && !hasDraft ? (
-          <button
-            // The two sides of the mutex must stay distinct elements: a stop
-            // click can hand the draft back synchronously, and reusing this
-            // node would leave a `type="submit"` button under the same pointer
-            // — the click's own default action would then send the restored
-            // draft right back out.
-            key="stop"
-            type="button"
-            className="chat-composer__slot"
-            data-slot="stop"
-            onClick={onCancel}
-            aria-label={t("chat.stop")}
-            title={t("chat.stop")}
-          >
-            <StopIcon />
-          </button>
-        ) : (
-          <button
-            key="send"
-            type="submit"
-            className="chat-composer__slot"
-            data-slot="send"
-            disabled={!canSubmit}
-            aria-label={t("chat.send")}
-            title={busy ? t("chat.sendWhileRunningHint") : t("chat.send")}
-          >
-            <PaperPlaneIcon />
-          </button>
-        )}
-      </div>
-      {controlError ? <p className="control-queue__error" role="alert">{controlError}</p> : null}
-      <div className="chat-composer__controls">
         {/* The model control and review launcher are session furniture: the
             home variant has no session yet, so its controls row carries only
             the persistent key hint. */}
@@ -1024,12 +990,6 @@ export function Composer({
             <span>{t("chat.disabledSettings")}</span>
           )
         ) : null}
-        {/* §6.2: the binding is persistent furniture, not placeholder copy —
-            it stays readable while a draft is being typed and follows the
-            send-key preference. */}
-        <span className="chat-composer__sendkey-hint">
-          {sendKeyHint(sendKey, t)}
-        </span>
         {variant === "session" ? (
         <div className="chat-composer__review">
           <button
@@ -1100,6 +1060,50 @@ export function Composer({
           ) : null}
         </div>
         ) : null}
+        </div>
+        <div className="chat-composer__actions">
+          {/* §6.2: the binding is persistent furniture, not placeholder copy —
+              it stays readable while a draft is being typed and follows the
+              send-key preference. */}
+          <span className="chat-composer__sendkey-hint">
+            {sendKeyHint(sendKey, t)}
+          </span>
+          {contextUsage && contextUsage.used > 0 ? <ContextUsageRing usage={contextUsage} /> : null}
+          {/* §6.1: send and stop share one slot. While a turn runs and the draft
+              is empty the slot is Stop; the moment the reader starts a draft the
+              slot is Send again, so queue (Enter) and interject (Alt+Enter) stay
+              explicit choices instead of a hidden stop behind a second button. */}
+          {busy && !hasDraft ? (
+            <button
+              // The two sides of the mutex must stay distinct elements: a stop
+              // click can hand the draft back synchronously, and reusing this
+              // node would leave a `type="submit"` button under the same pointer
+              // — the click's own default action would then send the restored
+              // draft right back out.
+              key="stop"
+              type="button"
+              className="chat-composer__slot"
+              data-slot="stop"
+              onClick={onCancel}
+              aria-label={t("chat.stop")}
+              title={t("chat.stop")}
+            >
+              <StopIcon />
+            </button>
+          ) : (
+            <button
+              key="send"
+              type="submit"
+              className="chat-composer__slot"
+              data-slot="send"
+              disabled={!canSubmit}
+              aria-label={t("chat.send")}
+              title={busy ? t("chat.sendWhileRunningHint") : t("chat.send")}
+            >
+              <PaperPlaneIcon />
+            </button>
+          )}
+        </div>
       </div>
     </form>
   );

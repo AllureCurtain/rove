@@ -4,7 +4,7 @@ Updated: 2026-10-06
 
 ## In progress
 
-(nothing)
+- **Console density pass** on `feat/console-density`: per-turn usage/pruning evidence moved from the transcript to the run tab (§8 evidence surface); composer re-laid to input area + single toolbar row; sidebar project rows single-line (path moves to tooltip); `session-message-count` page size brought inside the API cap (128); `body` gains `suppressHydrationWarning` for extension-mutated DOM
 
 ## Next up
 

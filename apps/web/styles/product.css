@@ -545,16 +545,6 @@ textarea:focus {
   color: var(--text);
 }
 
-.workspace-group__path {
-  display: block;
-  font-size: 0.72rem;
-  color: var(--muted);
-  font-weight: 500;
-  font-family: var(--font-mono);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .session-list {
   list-style: none;
