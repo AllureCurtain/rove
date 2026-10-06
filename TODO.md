@@ -4,16 +4,15 @@ Updated: 2026-10-06
 
 ## In progress
 
-- Web console rebuild per `docs/web-console-design.md` v2, one PR per phase: P0 skin and shell merged (PR #4); P1 conversation surface merged (PR #5); P2 session rail merged (PR #6); P3 work panel merged (PR #7); P4 polish on branch `feat/console-p4-polish` (TodoDock composer fold driven by `runState.plan`, proportional minimap with viewport band, category-B cleanup: hardcoded strings to copy files, settings inline styles to classes, DESIGN.md sidebar-token fix plus graphite ramp documentation, semantic `--z-*` ladder and same-hue `--cp-elev-*` elevation channels)
+(nothing)
 
 ## Next up
 
 Ordered by priority.
 
-1. ~~Implement the Web console rebuild per `docs/web-console-design.md` v2, one PR per phase — P0 skin and shell, P1 conversation surface, P2 sidebar, P3 work panel, P4 polish~~ moved to In progress
-2. F.4, TUI part: long sessions in the terminal can load earlier history on demand (CLI)
-3. F.5, TUI part: queued successor messages resume delivery after a TUI restart (CLI)
-4. Generate Web API types from `apps/api/openapi.json` instead of the hand-written `product-api-types.ts` and `rove-types.ts` (frontend)
+1. F.4, TUI part: long sessions in the terminal can load earlier history on demand (CLI)
+2. F.5, TUI part: queued successor messages resume delivery after a TUI restart (CLI)
+3. Generate Web API types from `apps/api/openapi.json` instead of the hand-written `product-api-types.ts` and `rove-types.ts` (frontend)
 
 ## Blocked
 
@@ -31,6 +30,7 @@ Ordered by priority.
 
 Keep only the last 10 entries.
 
+- 2026-10-06 Web console rebuild per `docs/web-console-design.md` v2 complete, one PR per phase: P0 skin and shell (PR #4), P1 conversation surface (PR #5), P2 session rail (PR #6), P3 work panel (PR #7), P4 polish (PR #8 — TodoDock composer fold on `runState.plan`, proportional minimap with viewport band, copy/inline-style cleanup, `--z-*` ladder and same-hue `--cp-elev-*` elevation channels)
 - 2026-10-05 Promoted `docs/web-console-design.md` to v2 (active implementation contract): added the graphite skin, shell/sidebar/composer/work-panel specs, and the P0–P4 phase plan; kept the verified defect list as acceptance criteria
 - 2026-10-05 CI: concurrency groups cancel superseded runs per ref; rust job installs libwayland-dev + wayland-protocols for rfd/ashpd
 - 2026-10-04 GitHub-facing cleanup for open-sourcing: renamed the env files to the standard .env.example/.env pair, standardized on rebase merge (repo now rebase-only + auto-delete-branch), aligned the PR template with the coding-standard minimal skeleton, added SECURITY.md
