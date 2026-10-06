@@ -1,6 +1,6 @@
 # Design rules
 
-Token values are authoritative in `apps/web/styles/v3/tokens.css` (current skin, `--cp-*` prefix); structural and motion tokens live in `apps/web/styles/product-v2.css` (`--v2-*`, `--motion-*` prefixes); base tokens live in `apps/web/styles/tokens.css`. This file only covers usage.
+Token values are authoritative in `apps/web/styles/v3/tokens.css` (skins, `--cp-*` prefix, plus the skin-independent `--z-*` ladder); structural and motion tokens live in `apps/web/styles/product-v2.css` (`--v2-*`, `--motion-*` prefixes); base tokens live in `apps/web/styles/tokens.css`. This file only covers usage.
 
 Styles are layered in three tiers, imported in order by `app/layout.tsx`: `product.css` (base reset and shared component rules) → `product-v2.css` (shell layout and structure, scoped by `data-ui-version="v2"`) → `v3/index.css` (tokens and skins only).
 
@@ -26,11 +26,21 @@ This file covers only visual and component rules; information architecture, defa
 - `tests/e2e/accessibility.spec.ts` verifies these pairings under both themes and both skins.
 - Theme switches via `html[data-theme="dark"]`; skin switches via `.product-app-frame[data-skin]`. Never write raw color values.
 
+### Graphite skin (`data-skin="graphite"`)
+
+The default skin is a near-monochrome console: the page is pure white (`--cp-bg: #ffffff`), the rail drops one tier (`--cp-surface-warm: #f3f3f3`), and the accent is the ink ramp itself — no hue. Selection and focus read as light-on-dark in dark mode (`--cp-accent: #ffffff`, `--cp-accent-on: #181818`). Status tones (`--cp-success/-warning/-danger/-info/-purple`) carry the only color, each with an opaque `-soft` wash and a measured `-on` fill so `accessibility.spec.ts` clears 4.5:1 in both themes. Dark mode inverts the same ramp (`--cp-bg: #181818`, surfaces `#212121`/`#282828`).
+
+## Depth and layering
+
+- Elevation is same-hue alpha, never a raw `rgb()`: every shadow and translucent raised wash draws from the skin's elevation channel `--cp-elev-ch` (bridged as `--v2-elev-ch`). Common steps are `--cp-elev-1` (resting ≈5%), `-2` (raised ≈10%), `-3` (floating ≈18%, higher in dark themes); a one-off alpha writes `rgb(var(--cp-elev-ch) / <alpha>)`.
+- `--cp-shadow-xs`/`-sm`/`-md` consume the channel; warm uses its brown ink (`60 40 20`), graphite and both dark themes use near-black.
+- Stacking uses the semantic `--z-*` ladder defined on `.product-app-frame`: `--z-inset` → `--z-edge` → `--z-pane` → `--z-dock` → `--z-cover` → `--z-progress` → `--z-popover` → `--z-menu` → `--z-float` → `--z-peek` → `--z-drawer` → `--z-scrim` → `--z-palette` → `--z-search` → `--z-chrome` → `--z-modal`. A literal `z-index` in a rule is ladder drift; pick the step whose name matches the element's role.
+
 ## Typography and spacing
 
 - Fonts: only `--font-ui` and `--font-mono`.
 - Radii: only `--radius-sm` / `--radius-md` / `--radius-lg` / `--radius-xl` / `--radius-pill`.
-- Shell dimensions use tokens: `--sidebar-width` (left rail, resizable 240–520px, default 275px), `--inspector-width`, `--topbar-height` (46px; shared by the conversation top bar and the work-panel header).
+- Shell dimensions use tokens: `--sidebar-nav-width` (left rail, resizable 240–520px, default 275px; bounds in `shell/use-sidebar-width.ts`), `--work-panel-request`/`--work-panel-resolved` (right panel width resolved against the shared 450px conversation floor), `--topbar-height` (46px; shared by the conversation top bar and the work-panel header). The legacy `--sidebar-width`/`--inspector-width` pair in `tokens.css` is not redefined in the v2 block — no v2 rule consumes it.
 - Motion:
   - Durations only via `var(--motion-duration-*)`; easings only via `var(--motion-ease-*)`, `linear`, or `steps(...)`.
   - `pnpm lint:style-tokens` enforces this.

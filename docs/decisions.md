@@ -4,6 +4,13 @@ New decisions go on top. Do not delete overturned decisions; mark them "supersed
 
 Decisions before 2026-10-01 were distilled from the design documents of that period; the originals have been deleted.
 
+## 2026-10-06 P4 polish: TodoDock on `runState.plan`, proportional minimap, stacking ladder
+
+- Status: active
+- Decision: the TodoDock composer fold reads `runState.plan` directly — the reducer already maintains `TaskPlan` from `plan_created`/`step_result` restore and live events, so no parallel plan store exists. The conversation minimap maps each rendered turn to its proportional document position (via `alignMinimapMarkers`, which clamps and spreads dense clusters to a minimum pitch) and draws a viewport band driven by the transcript scroller, replacing the uniform spacing that drifted from the real positions. Stacking is now a named ladder: `--z-inset…--z-modal` on `.product-app-frame` replaces 28 literal `z-index` values, and elevation derives from a per-skin `--cp-elev-ch` channel (warm ink `60 40 20`, graphite/dark near-black `0 0 0`) consumed by `--cp-shadow-*` and `rgb(var(--cp-elev-ch) / <alpha>)` washes. The transcript log exposes `data-testid="conversation-log"` so e2e selectors no longer depend on a hardcoded English `aria-label`. The stale `--sidebar-width`/`--inspector-width` redefinitions under the v2 scope were removed (the rail runs on `--sidebar-nav-width`, the panel on `--work-panel-resolved`), which is what the DESIGN.md 240/248 confusion traced to.
+- Why: design §6 puts the plan fold in the composer stack and §2.11 requires the minimap to align with the reading band; category B asks for a semantic ladder and same-hue alpha elevation.
+- Rejected: a separate plan store keyed by session — duplicates the reducer contract and can diverge on restore.
+
 ## 2026-10-06 Work panel: per-session id-based tab strip in localStorage
 
 - Status: active

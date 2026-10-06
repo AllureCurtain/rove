@@ -4,7 +4,7 @@ Updated: 2026-10-06
 
 ## In progress
 
-- Web console rebuild per `docs/web-console-design.md` v2, one PR per phase: P0 skin and shell merged (PR #4); P1 conversation surface merged (PR #5); P2 session rail merged (PR #6); P3 work panel on branch `feat/console-p3-work-panel` pending PR (dynamic id-based tab strip with per-file tabs, evidence-first default, per-session strip persistence, maximize mode, files breadcrumbs + highlighted viewer, review diff totals, shared empty state, session-menu export dialog); P4 polish remains
+- Web console rebuild per `docs/web-console-design.md` v2, one PR per phase: P0 skin and shell merged (PR #4); P1 conversation surface merged (PR #5); P2 session rail merged (PR #6); P3 work panel merged (PR #7); P4 polish on branch `feat/console-p4-polish` (TodoDock composer fold driven by `runState.plan`, proportional minimap with viewport band, category-B cleanup: hardcoded strings to copy files, settings inline styles to classes, DESIGN.md sidebar-token fix plus graphite ramp documentation, semantic `--z-*` ladder and same-hue `--cp-elev-*` elevation channels)
 
 ## Next up
 
