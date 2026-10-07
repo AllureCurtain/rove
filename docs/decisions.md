@@ -96,6 +96,13 @@ Decisions before 2026-10-01 were distilled from the design documents of that per
 - Why: user files must not be written into the workspace, and client-supplied filenames and MIME types are not trusted.
 - Rejected: none recorded
 
+## 2026-10-07 StreamEvent payloads join the OpenAPI surface
+
+- Status: active
+- Decision: `StreamEvent` and its payload graph derive `utoipa::ToSchema` in place (rove-models, rove-core, rove-runtime); `JobStreamEvent.event` references `StreamEvent` instead of a bare object, so the checked-in snapshot publishes all canonical event kinds. rove-protocol keeps its no-local-dependency rule: protocol IDs inside schema types are declared via `#[schema(value_type = String, format = "ulid")]` overrides rather than giving rove-protocol an utoipa dependency.
+- Why: generated Web clients need the SSE payload contract in the spec, and the hand-written `STREAM_EVENT_NAMES`/type union already drifted once.
+- Rejected: a schemars sidecar emitting only event schemas — it would create a second, drift-prone source of truth next to utoipa.
+
 ## 2026-09-17 Local HTML previews run on an isolated loopback origin
 
 - Status: active

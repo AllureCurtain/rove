@@ -155,7 +155,7 @@ impl ProcedureDocument {
 }
 
 /// An audit-grade pointer to a procedure, safe to persist and to show.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ProcedureReference {
     pub id: String,
     pub version: String,

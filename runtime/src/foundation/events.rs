@@ -18,7 +18,7 @@ use rove_models::{AssistantTurn, ToolCallRef, Usage};
 ///
 /// Consumers (CLI, API/SSE, Web) pattern-match on these to render output.
 /// Adding a new variant forces all consumers to handle it (exhaustive match).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
     /// A new run has started.
@@ -29,7 +29,9 @@ pub enum StreamEvent {
     /// not only in the request — because the trace is what a resume replays:
     /// blocks that live only in the request would silently vanish on resume.
     RunStarted {
+        #[schema(value_type = String, format = "ulid")]
         run_id: RunId,
+        #[schema(value_type = String, format = "ulid")]
         job_id: JobId,
         user_message: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -64,6 +66,7 @@ pub enum StreamEvent {
         content_hash: String,
         boundary: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schema(value_type = Option<String>, format = "ulid")]
         call_id: Option<CallId>,
     },
 
@@ -159,6 +162,7 @@ pub enum StreamEvent {
 
     /// A tool call has been requested by the LLM.
     ToolCallStarted {
+        #[schema(value_type = String, format = "ulid")]
         call_id: CallId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_use_id: Option<String>,
@@ -168,6 +172,7 @@ pub enum StreamEvent {
 
     /// A destructive tool call requires explicit approval before it may run.
     ToolCallApprovalNeeded {
+        #[schema(value_type = String, format = "ulid")]
         call_id: CallId,
         name: String,
         args: serde_json::Value,
@@ -175,10 +180,15 @@ pub enum StreamEvent {
     },
 
     /// A tool call completed successfully.
-    ToolCallCompleted { call_id: CallId, result: ToolResult },
+    ToolCallCompleted {
+        #[schema(value_type = String, format = "ulid")]
+        call_id: CallId,
+        result: ToolResult,
+    },
 
     /// A tool call failed.
     ToolCallFailed {
+        #[schema(value_type = String, format = "ulid")]
         call_id: CallId,
         error: ToolError,
         #[serde(default)]
@@ -190,6 +200,7 @@ pub enum StreamEvent {
     /// Carries only the reference. The payload never travels on the event
     /// stream, so a large artifact cannot bloat a trace or an SSE frame.
     ToolArtifactStored {
+        #[schema(value_type = String, format = "ulid")]
         call_id: CallId,
         artifact: Box<ToolArtifactRef>,
     },
@@ -199,6 +210,7 @@ pub enum StreamEvent {
     /// Emitted so a quota event stays visible in the trace and in
     /// diagnostics even though no payload was retained.
     ToolArtifactRejected {
+        #[schema(value_type = String, format = "ulid")]
         call_id: CallId,
         /// Position of the originating content block.
         block_ordinal: u32,
@@ -226,7 +238,11 @@ pub enum StreamEvent {
     },
 
     /// The `request_input` tool is waiting for user input.
-    InputNeeded { input_id: CallId, prompt: String },
+    InputNeeded {
+        #[schema(value_type = String, format = "ulid")]
+        input_id: CallId,
+        prompt: String,
+    },
 
     /// A plan has been drafted for this run.
     PlanCreated {

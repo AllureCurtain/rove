@@ -269,3 +269,60 @@ fn web_bundle_declares_the_contract_of_the_kinds_it_lists() {
         "this Web bundle lists every current kind, so it must declare the current contract"
     );
 }
+
+/// The checked-in OpenAPI snapshot is the published contract for the SSE event
+/// payloads: every canonical kind must surface as the `type` discriminator of
+/// one `StreamEvent` variant, or generated clients cannot decode the stream.
+/// Variants with `#[serde(flatten)]` fields carry the discriminator inside an
+/// `allOf` member, so both shapes are searched. The snapshot file is the
+/// artifact under test; `openapi_snapshot_matches_the_served_document` in
+/// `tests/api.rs` pins it to the served document.
+#[test]
+fn openapi_snapshot_exposes_every_canonical_event_kind() {
+    const OPENAPI_JSON: &str = "apps/api/openapi.json";
+
+    fn discriminator(variant: &serde_json::Value) -> Option<String> {
+        let inline = variant
+            .pointer("/properties/type/enum/0")
+            .and_then(serde_json::Value::as_str);
+        inline.map(str::to_string).or_else(|| {
+            variant.get("allOf")?.as_array()?.iter().find_map(|member| {
+                member
+                    .pointer("/properties/type/enum/0")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+        })
+    }
+
+    let document: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(workspace_path(OPENAPI_JSON))
+            .unwrap_or_else(|err| panic!("failed to read {OPENAPI_JSON}: {err}")),
+    )
+    .expect("openapi.json should parse");
+    let variants = document
+        .pointer("/components/schemas/StreamEvent/oneOf")
+        .and_then(serde_json::Value::as_array)
+        .expect("StreamEvent should be an internally tagged oneOf schema");
+
+    let kind_names: Vec<String> = rust_stream_event_kinds()
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+    let names: Vec<String> = variants.iter().filter_map(discriminator).collect();
+
+    assert_eq!(
+        names.len(),
+        variants.len(),
+        "every StreamEvent variant must carry the `type` discriminator"
+    );
+    assert_eq!(
+        names,
+        kind_names,
+        "the published StreamEvent schema and the canonical registry drifted.\n  \
+         only in OpenAPI: {:?}\n  only in registry: {:?}\n  \
+         Regenerate the snapshot with ROVE_UPDATE_OPENAPI=1.",
+        difference(&names, &kind_names),
+        difference(&kind_names, &names),
+    );
+}

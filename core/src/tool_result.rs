@@ -57,7 +57,7 @@ pub const MAX_DIAGNOSTIC_MESSAGE_BYTES: usize = 500;
 /// This is distinct from [`ToolExecutionStatus`], which stays as the coarse
 /// persisted status. `Indeterminate` and `TimedOutKnownNotSent` exist because
 /// a tool call can have external effects: only the latter is safe to retry.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolResultOutcome {
     #[default]
@@ -108,7 +108,7 @@ impl ToolResultOutcome {
 
 /// Where an error came from, so diagnostics stay classifiable without parsing
 /// a human-readable message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolErrorDomain {
     Transport,
@@ -128,7 +128,9 @@ pub enum ToolErrorDomain {
 ///
 /// Opaque on purpose: it is generated locally from validated bytes, so a
 /// remote filename or URI can never steer where a payload is written or read.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, utoipa::ToSchema,
+)]
 #[serde(transparent)]
 pub struct ArtifactId(String);
 
@@ -149,7 +151,7 @@ impl std::fmt::Display for ArtifactId {
 }
 
 /// What an artifact holds, as classified locally after validation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolArtifactKind {
     Text,
@@ -163,7 +165,7 @@ pub enum ToolArtifactKind {
 
 /// How sensitive an artifact's bytes are, which drives retention and whether a
 /// payload may be projected at all.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Sensitivity {
     #[default]
@@ -174,7 +176,7 @@ pub enum Sensitivity {
 
 /// How much the local runtime trusts an artifact's origin. Always
 /// `Untrusted` for anything a remote server produced.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactTrust {
     #[default]
@@ -183,7 +185,7 @@ pub enum ArtifactTrust {
 }
 
 /// Outcome of validating a claim against the retained bytes.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactValidation {
     #[default]
@@ -200,7 +202,7 @@ pub enum ArtifactValidation {
 /// Where an artifact came from. Every field is either locally generated or a
 /// hash, so provenance can be shown and audited without leaking a session
 /// value or a raw remote header.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ToolArtifactSource {
     pub run_id: String,
     pub call_id: String,
@@ -219,7 +221,7 @@ pub struct ToolArtifactSource {
 
 /// Reference to a durable artifact. The envelope carries references, never
 /// payload bytes, so a result stays small no matter how large the data was.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ToolArtifactRef {
     pub artifact_id: ArtifactId,
     pub kind: ToolArtifactKind,
@@ -343,7 +345,7 @@ pub fn recorded_uri_claim(claim: Option<&str>) -> Option<String> {
 
 /// Shared per-block facts. Every block records its position, what the remote
 /// claimed, and whether the retained form is complete.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ContentBlockMeta {
     /// Position in the tool's original result, preserved even when a block is
     /// truncated or promoted to an artifact.
@@ -381,7 +383,7 @@ impl ContentBlockMeta {
 /// Binary kinds never carry bytes here: they carry an artifact reference plus
 /// an optional bounded, non-executable preview. `Unknown` exists so a block
 /// type this build does not model is preserved rather than silently dropped.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolContentBlock {
     Text {
@@ -534,7 +536,7 @@ impl std::fmt::Display for StructuredContentRejection {
 }
 
 /// Structured content a tool returned, with its schema verdict.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct StructuredToolContent {
     pub value: Value,
     /// Whether a declared output schema was satisfied. `None` when the tool
@@ -602,7 +604,7 @@ fn check_structured_bounds(
 /// Every remote-derived value here is a hash or a locally validated name.
 /// There is deliberately no field for an Authorization header, a raw header
 /// map, or a readable session ID.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ToolProtocolMetadata {
     /// Protocol family, for example `mcp`. Absent for a purely local tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -632,7 +634,7 @@ pub struct ToolProtocolMetadata {
 }
 
 /// One classified, bounded diagnostic.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ToolDiagnostic {
     pub domain: ToolErrorDomain,
     /// Stable machine-readable code. Not a message.
@@ -655,7 +657,7 @@ impl ToolDiagnostic {
 ///
 /// Recorded so a Finalizer never claims an unverified external action
 /// succeeded, and so an indeterminate outcome stays visible.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ExternalEffect {
     /// What kind of effect, for example `mcp_tool_call` or `network_write`.
     pub kind: String,
@@ -687,7 +689,7 @@ pub fn truncate_utf8(value: &str, max_bytes: usize) -> (String, bool) {
 /// `summary_text` is the legacy text projection and is always populated, so
 /// every existing consumer keeps working unchanged while richer consumers read
 /// the blocks, structured content, and artifacts.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ToolOutputEnvelope {
     #[serde(default)]
     pub outcome: ToolResultOutcome,

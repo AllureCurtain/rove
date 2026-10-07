@@ -3501,7 +3501,6 @@ pub trait ProductTranscriptReader: Send + Sync {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct JobStreamEvent {
     pub seq: u64,
-    #[schema(value_type = Object)]
     pub event: StreamEvent,
 }
 

@@ -81,7 +81,7 @@ impl Default for AgentActivationConfig {
 }
 
 /// Stable, content-free identity safe for events, reports, and diagnostics.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct AgentProfileIdentity {
     pub selector: AgentSelector,
     pub agent_id: String,
@@ -126,7 +126,7 @@ impl AgentProfileIdentity {
 }
 
 /// One bounded diagnostic produced while resolving an Agent context.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct AgentDiagnostic {
     pub code: String,
     pub subject: String,

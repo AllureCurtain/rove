@@ -17,7 +17,19 @@ pub const MAX_AGENT_ID_LEN: usize = 64;
 
 /// Where an Agent package came from. Source determines trust; a package
 /// cannot declare its own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSource {
     /// Compiled into the runtime. Highest trust, not author-editable.
@@ -53,7 +65,9 @@ impl fmt::Display for AgentSource {
 }
 
 /// A fully qualified `<source>:<agent-id>` reference.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, utoipa::ToSchema,
+)]
 pub struct AgentSelector {
     pub source: AgentSource,
     pub agent_id: String,
