@@ -4,7 +4,7 @@ Updated: 2026-10-07
 
 ## In progress
 
-- **External-control productization** (PR series): PR 1 (`rove-api --web-dist` one-origin console + `scripts/serve.ps1` + `/health`) and PR 2 (loopback-only `POST /product/provider-onboarding` + browser paste-key form) merged; PR 3 in progress — `evidence/` directory convention + acceptance run + docs tidy; next — OpenAPI coverage for SSE event payloads, generated frontend API types
+- **External-control productization** (PR series): PR 1 (`rove-api --web-dist` one-origin console + `scripts/serve.ps1` + `/health`), PR 2 (loopback-only `POST /product/provider-onboarding` + browser paste-key form), and the interim fix `d2c4b57` (legacy trust-store size bound no longer applied to the live sqlite store) merged; PR 3 in progress — `evidence/` directory convention + first committed acceptance run + acceptance-run trust-store isolation + docs tidy; next — OpenAPI coverage for SSE event payloads, generated frontend API types
 - **Console chrome pass** on `feat/console-chrome`: 28px ghost attach button, compact model popover, reading band widenable past the 840 default up to the pane's usable width, assistant turns verified cardless across both skins
 
 ## Next up
