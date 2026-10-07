@@ -2,6 +2,13 @@
 
 New decisions go on top. Do not delete overturned decisions; mark them "superseded" and note which entry replaced them.
 
+## 2026-10-07 Router composition runs on a dedicated big-stack thread
+
+- Status: active
+- Decision: `rove_api::router()` composes the OpenApiRouter on a `spawn_scoped` thread with a 32 MiB stack, while `schedule_pending_followup_recovery` stays on the caller's stack because it needs the tokio context.
+- Why: utoipa walks the full schema tree more than once while composing — building `ApiDoc::openapi()`, then merging each route's component schemas — and that recursion overflows the 1 MiB stack Windows reserves for a binary's main thread, so `rove-api` crashed on startup after the StreamEvent schemas were registered. Tests never saw it because test threads get 2 MiB. One fix site inside `router()` covers the binary, the embedded desktop server, and tests.
+- Rejected: bumping the stack only in `main.rs` — the embedded `serve_state_listener` path composes the same router on tokio workers and would hit the same ceiling as the schema tree grows.
+
 Decisions before 2026-10-01 were distilled from the design documents of that period; the originals have been deleted.
 
 ## 2026-10-07 Web runtime validation retires to trust boundaries
