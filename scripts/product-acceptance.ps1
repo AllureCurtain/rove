@@ -25,6 +25,7 @@ $Checks = @(
     @{ id = "web-test"; group = "G3-G7"; description = "Web unit and component tests"; command = "pnpm"; arguments = @("test"); cwd = $WebRoot; required = $true; web = $true }
     @{ id = "web-build"; group = "G3-G7"; description = "Web production build"; command = "pnpm"; arguments = @("build"); cwd = $WebRoot; required = $true; web = $true }
     @{ id = "web-e2e"; group = "G1-G7"; description = "Browser-boundary Playwright suites"; command = "pnpm"; arguments = @("test:e2e"); cwd = $WebRoot; required = $true; web = $true; browser = $true }
+    @{ id = "web-serve-e2e"; group = "G1-G7"; description = "rove-api hosted bundle real-API suite"; command = "powershell"; arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/serve-acceptance.ps1"); cwd = $RepoRoot; required = $true; web = $true; browser = $true }
     @{ id = "mcp-filesystem-smoke"; group = "G7"; description = "Real MCP filesystem server smoke"; command = "cargo"; arguments = @("test", "-p", "rove-integration-tests", "--test", "it", "mcp::mcp_official_filesystem_server_smoke_when_enabled", "--", "--exact", "--nocapture"); cwd = $RepoRoot; required = $false; gated = $true; gateEnv = "ROVE_MCP_FILESYSTEM_SMOKE" }
 )
 
