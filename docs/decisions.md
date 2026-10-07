@@ -4,6 +4,13 @@ New decisions go on top. Do not delete overturned decisions; mark them "supersed
 
 Decisions before 2026-10-01 were distilled from the design documents of that period; the originals have been deleted.
 
+## 2026-10-07 Web runtime validation retires to trust boundaries
+
+- Status: active
+- Decision: with generated types in place, the ~7000-line response-validation layer in `product/product-api-types.ts` (and the platform half in `settings-platform-api-types.ts`) is retired for trusted same-origin `/api/*` JSON: `requestJson<T>` returns `JSON.parse` output typed by the generated schema instead of deep-checking every field. Runtime guards remain only where bytes did not come from the product API trust domain: SSE frames (`parseStreamEvent` checks the canonical `type` then casts), M1 `localStorage` migration payloads, API error envelopes (`parseApiErrorResponse`), and request validators the server would answer with 400 anyway (onboarding, reorder uniqueness, memory/MCP/trust request shapes, the settings CAS transform). Transcript semantic invariants that the structural schema cannot express (`parseProductTranscriptResponse`) also stay.
+- Why: duplicated hand-written validators were the drift source this whole migration exists to remove; keeping them under generated types would have shipped the same bug class under a new name. Boundaries stay guarded because a hostile or stale payload there is a real risk, not a theoretical one.
+- Rejected: validating every response anyway "to be safe" — it doubles the contract surface and silently tolerates spec drift; trusting unparsed SSE/localStorage bytes — those are genuinely untrusted.
+
 ## 2026-10-07 Web API types generated from OpenAPI; SSE event schemas registered first
 
 - Status: active

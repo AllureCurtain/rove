@@ -6,55 +6,15 @@ import {
   ProductApiSchemaError,
   parseApiErrorResponse,
   parseCreateProductControlRequest,
-  parseCreateProductForkRequest,
+  parseCreateProductMessageRequest,
   parseCreateProductReviewRequest,
-  parseCreateProductSessionRequest,
-  parseCreateProductWorkspaceRequest,
   parseM1BrowserMigrationRequest,
-  parseM1BrowserMigrationResponse,
-  parseProductAttachmentUpload,
-  parseProductPreferences,
-  parseProductControl,
-  parseProductControlsResponse,
-  parseProductMessage,
-  parseProductMessagesResponse,
-  parseProductMessagesSearchResponse,
-  parseProductQueueResponse,
-  parseProductSearchResponse,
-  parseProductSessionCompaction,
-  parseProductForkResponse,
-  parseProductForksResponse,
-  parseProductProviderProfile,
-  parseProductProviderModelsResponse,
-  parseProductProviderProfileRequest,
-  parseProductProviderProfilesResponse,
   parseOnboardProductProviderRequest,
-  parseProductProviderOnboardingReceipt,
-  parseProductReview,
-  parseProductReviewFindingsResponse,
-  parseProductReviewsResponse,
-  parseProductRuntimeInfo,
-  parseProductSession,
-  parseProductSessionModelConfigResponse,
-  parseProductSessionRunModelsResponse,
-  parseProductSessionUsageResponse,
-  parseProductFilesResponse,
-  parseProductFileContentEnvelope,
-  parseProductArtifactsResponse,
-  parseProductArtifactContentEnvelope,
-  parseProductSessionDiffResponse,
-  parseProductSessionsResponse,
-  parseProductTranscriptResponse,
-  parseProductAuthorizationsResponse,
-  parseCreateProductPreviewRequest,
-  parseProductPreviewSession,
-  parseProductWorkspace,
+  parseProductProviderProfileRequest,
   parsePromoteProductMessageRequest,
   parseReorderProductMessagesRequest,
-  parseUpdateProductSessionModelConfigRequest,
-  parseProductWorkspacesResponse,
+  parseProductTranscriptResponse,
   parseUpdateProductPreferencesRequest,
-  parseUpdateProductSessionRequest,
   type CreateProductProviderProfileRequest,
   type CreateProductControlRequest,
   type CreateProductForkRequest,
@@ -428,13 +388,12 @@ async function requestJson<T>(
   fetchImpl: typeof globalThis.fetch,
   url: string,
   init: RequestInit | undefined,
-  parse: (value: unknown) => T,
 ): Promise<T> {
   const response = await fetchImpl(url, init);
   if (!response.ok) {
     return throwProductApiError(response);
   }
-  return parse(await readUnknownJson(response));
+  return (await readUnknownJson(response)) as T;
 }
 
 async function requestNoContent(
@@ -683,21 +642,19 @@ export function createProductApiClient(
 
   return {
     listWorkspaces() {
-      return requestJson(
+      return requestJson<ProductWorkspacesResponse>(
         fetchImpl,
         productUrl(apiPrefix, "/product/workspaces"),
-        undefined,
-        parseProductWorkspacesResponse,
-      );
+        undefined
+      )
     },
 
     async createWorkspace(input) {
-      const request = parseCreateProductWorkspaceRequest(input);
-      return requestJson(
+      const request: CreateProductWorkspaceRequest = input;
+      return requestJson<ProductWorkspace>(
         fetchImpl,
         productUrl(apiPrefix, "/product/workspaces"),
-        jsonRequest("POST", JSON.stringify(request)),
-        parseProductWorkspace,
+        jsonRequest("POST", JSON.stringify(request))
       );
     },
 
@@ -712,21 +669,19 @@ export function createProductApiClient(
     },
 
     getRuntimeInfo() {
-      return requestJson(
+      return requestJson<ProductRuntimeInfo>(
         fetchImpl,
         productUrl(apiPrefix, "/product/runtime"),
-        undefined,
-        parseProductRuntimeInfo,
-      );
+        undefined
+      )
     },
 
     async pickWorkspaceFolder() {
-      const raw = await requestJson(
+      const raw = await requestJson<unknown>(
         fetchImpl,
         productUrl(apiPrefix, "/product/workspace-picker"),
-        { method: "POST" },
-        (value) => value,
-      );
+        { method: "POST" }
+      )
       const unavailable = {
         status: "unavailable" as const,
         reason: "native_folder_picker_unavailable",
@@ -765,71 +720,65 @@ export function createProductApiClient(
       if (query?.includeArchived !== undefined) {
         params.set("include_archived", String(query.includeArchived));
       }
-      return requestJson(
+      return requestJson<ProductSessionsResponse>(
         fetchImpl,
         productUrl(apiPrefix, `/product/sessions?${params.toString()}`),
-        undefined,
-        parseProductSessionsResponse,
+        undefined
       );
     },
 
     async createSession(input) {
-      const request = parseCreateProductSessionRequest(input);
-      return requestJson(
+      const request: CreateProductSessionRequest = input;
+      return requestJson<ProductSession>(
         fetchImpl,
         productUrl(apiPrefix, "/product/sessions"),
-        jsonRequest("POST", JSON.stringify(request)),
-        parseProductSession,
+        jsonRequest("POST", JSON.stringify(request))
       );
     },
 
     async updateSession(sessionId, input) {
-      const request = parseUpdateProductSessionRequest(input);
-      return requestJson(
+      const request: UpdateProductSessionRequest = input;
+      return requestJson<ProductSession>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}`,
         ),
-        jsonRequest("PATCH", JSON.stringify(request)),
-        parseProductSession,
+        jsonRequest("PATCH", JSON.stringify(request))
       );
     },
 
     async getSessionModelConfig(sessionId) {
-      return requestJson(
+      return requestJson<ProductSessionModelConfig>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/model-config`,
         ),
-        undefined,
-        parseProductSessionModelConfigResponse,
+        undefined
       );
     },
 
     async updateSessionModelConfig(sessionId, input) {
-      const request = parseUpdateProductSessionModelConfigRequest(input);
-      return requestJson(
+      const request: UpdateProductSessionModelConfigRequest = input;
+      return requestJson<ProductSessionModelConfig>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/model-config`,
         ),
-        jsonRequest("PUT", JSON.stringify(request)),
-        parseProductSessionModelConfigResponse,
+        jsonRequest("PUT", JSON.stringify(request))
       );
     },
 
     listSessionRunModels(sessionId) {
-      return requestJson(
+      return requestJson<ProductSessionRunModelsResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/run-models`,
         ),
-        undefined,
-        parseProductSessionRunModelsResponse,
+        undefined
       );
     },
 
@@ -840,27 +789,25 @@ export function createProductApiClient(
       if (query?.cursor) params.set("cursor", query.cursor);
       if (query?.limit !== undefined) params.set("limit", String(query.limit));
       const suffix = params.size ? `?${params.toString()}` : "";
-      return requestJson(
+      return requestJson<ProductFilesResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/workspaces/${encodeURIComponent(workspaceId)}/files${suffix}`,
         ),
-        undefined,
-        parseProductFilesResponse,
+        undefined
       );
     },
 
     getWorkspaceFileContent(workspaceId, path) {
       const params = new URLSearchParams({ path });
-      return requestJson(
+      return requestJson<ProductFileContentEnvelope>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/workspaces/${encodeURIComponent(workspaceId)}/files/content?${params.toString()}`,
         ),
-        undefined,
-        parseProductFileContentEnvelope,
+        undefined
       );
     },
 
@@ -907,26 +854,24 @@ export function createProductApiClient(
         params.set("include_system", includeSystem ? "true" : "false");
       }
       const suffix = params.size ? `?${params.toString()}` : "";
-      return requestJson(
+      return requestJson<ProductArtifactsResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/artifacts${suffix}`,
         ),
-        undefined,
-        parseProductArtifactsResponse,
+        undefined
       );
     },
 
     getArtifactContent(sessionId, artifactId) {
-      return requestJson(
+      return requestJson<ProductArtifactContentEnvelope>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifactId)}/content`,
         ),
-        undefined,
-        parseProductArtifactContentEnvelope,
+        undefined
       );
     },
 
@@ -993,7 +938,7 @@ export function createProductApiClient(
       if (!response.ok) {
         return throwProductApiError(response);
       }
-      return parseProductAttachmentUpload(await readUnknownJson(response));
+      return (await readUnknownJson(response)) as ProductAttachmentUpload;
     },
 
     fetchAttachment(sessionId, attachmentId) {
@@ -1030,14 +975,13 @@ export function createProductApiClient(
       const params = new URLSearchParams();
       if (scope) params.set("scope", scope);
       const suffix = params.size ? `?${params.toString()}` : "";
-      return requestJson(
+      return requestJson<ProductSessionDiffResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/diff${suffix}`,
         ),
-        undefined,
-        parseProductSessionDiffResponse,
+        undefined
       );
     },
 
@@ -1047,27 +991,25 @@ export function createProductApiClient(
         params.set("limit", String(query.limit));
       }
       const encoded = params.toString();
-      return requestJson(
+      return requestJson<ProductAuthorizationsResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/authorizations${encoded ? `?${encoded}` : ""}`,
         ),
-        undefined,
-        parseProductAuthorizationsResponse,
+        undefined
       );
     },
 
     createWorkspacePreview(workspaceId, request) {
-      const body = parseCreateProductPreviewRequest(request);
-      return requestJson(
+      const body: CreateProductPreviewRequest = request;
+      return requestJson<ProductPreviewSession>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/workspaces/${encodeURIComponent(workspaceId)}/previews`,
         ),
-        jsonRequest("POST", JSON.stringify(body)),
-        parseProductPreviewSession,
+        jsonRequest("POST", JSON.stringify(body))
       );
     },
 
@@ -1098,14 +1040,13 @@ export function createProductApiClient(
     },
 
     getSessionUsage(sessionId) {
-      return requestJson(
+      return requestJson<ProductSessionUsageResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/usage`,
         ),
-        undefined,
-        parseProductSessionUsageResponse,
+        undefined
       );
     },
 
@@ -1120,64 +1061,59 @@ export function createProductApiClient(
     },
 
     async createFork(sessionId, input) {
-      const request = parseCreateProductForkRequest(input);
-      return requestJson(
+      const request: CreateProductForkRequest = input;
+      return requestJson<ProductForkResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/forks`,
         ),
-        jsonRequest("POST", JSON.stringify(request)),
-        parseProductForkResponse,
+        jsonRequest("POST", JSON.stringify(request))
       );
     },
 
     listForks(sessionId) {
-      return requestJson(
+      return requestJson<ProductForksResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/forks`,
         ),
-        undefined,
-        parseProductForksResponse,
+        undefined
       );
     },
 
     async createReview(sessionId, input) {
       const request = parseCreateProductReviewRequest(input);
-      return requestJson(
+      return requestJson<ProductReview>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/reviews`,
         ),
-        jsonRequest("POST", JSON.stringify(request)),
-        parseProductReview,
+        jsonRequest("POST", JSON.stringify(request))
       );
     },
 
     listReviews(sessionId) {
-      return requestJson(
+      return requestJson<ProductReviewsResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/reviews`,
         ),
-        undefined,
-        parseProductReviewsResponse,
+        undefined
       );
     },
 
     getReview(reviewId) {
-      return requestJson(
+      return requestJson<ProductReview>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/reviews/${encodeURIComponent(reviewId)}`,
         ),
-        undefined,
-        parseProductReview,
+        undefined
       );
     },
 
@@ -1190,38 +1126,37 @@ export function createProductApiClient(
         params.set("cursor", String(query.cursor));
       }
       const suffix = params.size ? `?${params.toString()}` : "";
-      return requestJson(
+      return requestJson<ProductReviewFindingsResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/reviews/${encodeURIComponent(reviewId)}/findings${suffix}`,
         ),
-        undefined,
-        parseProductReviewFindingsResponse,
+        undefined
       );
     },
 
     cancelReview(reviewId) {
-      return requestJson(
+      return requestJson<ProductReview>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/reviews/${encodeURIComponent(reviewId)}/cancel`,
         ),
-        jsonRequest("POST", "{}"),
-        parseProductReview,
+        jsonRequest("POST", "{}")
       );
     },
 
     async getTranscript(sessionId, query) {
-      const transcript = await requestJson(
-        fetchImpl,
-        productUrl(
-          apiPrefix,
-          `/product/sessions/${encodeURIComponent(sessionId)}/transcript${transcriptPageQuery(query)}`,
+      const transcript = parseProductTranscriptResponse(
+        await requestJson<unknown>(
+          fetchImpl,
+          productUrl(
+            apiPrefix,
+            `/product/sessions/${encodeURIComponent(sessionId)}/transcript${transcriptPageQuery(query)}`,
+          ),
+          undefined,
         ),
-        undefined,
-        parseProductTranscriptResponse,
       );
       if (transcript.product_session_id !== sessionId) {
         throw new ProductApiSchemaError(
@@ -1242,12 +1177,11 @@ export function createProductApiClient(
     },
 
     async sendMessage(sessionId, input) {
-      const request = parseCreateProductControlRequest(input);
-      return requestJson(
+      const request = parseCreateProductMessageRequest(input);
+      return requestJson<ProductMessage>(
         fetchImpl,
         productUrl(apiPrefix, `/product/sessions/${encodeURIComponent(sessionId)}/messages`),
-        jsonRequest("POST", JSON.stringify(request)),
-        parseProductMessage,
+        jsonRequest("POST", JSON.stringify(request))
       );
     },
 
@@ -1263,14 +1197,13 @@ export function createProductApiClient(
         params.set("limit", String(query.limit));
       }
       const encoded = params.toString();
-      return requestJson(
+      return requestJson<ProductMessagesResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/messages${encoded ? `?${encoded}` : ""}`,
         ),
-        undefined,
-        parseProductMessagesResponse,
+        undefined
       );
     },
 
@@ -1281,24 +1214,22 @@ export function createProductApiClient(
         request === undefined
           ? "{}"
           : JSON.stringify(parsePromoteProductMessageRequest(request));
-      return requestJson(
+      return requestJson<ProductMessage>(
         fetchImpl,
         productUrl(apiPrefix, `/product/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/promote`),
-        jsonRequest("POST", body),
-        parseProductMessage,
+        jsonRequest("POST", body)
       );
     },
 
     async reorderMessages(sessionId, input) {
       const request = parseReorderProductMessagesRequest(input);
-      return requestJson(
+      return requestJson<ProductQueueResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/messages/reorder`,
         ),
-        jsonRequest("POST", JSON.stringify(request)),
-        parseProductQueueResponse,
+        jsonRequest("POST", JSON.stringify(request))
       );
     },
 
@@ -1308,14 +1239,13 @@ export function createProductApiClient(
       // rejection like every other refusal in this client, not as a synchronous
       // throw from an argument list.
       const suffix = searchPageQuery(query);
-      return requestJson(
+      return requestJson<ProductMessagesSearchResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/search${suffix}`,
         ),
-        undefined,
-        parseProductMessagesSearchResponse,
+        undefined
       );
     },
 
@@ -1323,23 +1253,21 @@ export function createProductApiClient(
       const scope = expectProductSearchScope(query.scope);
       const params = new URLSearchParams(searchPageQuery(query));
       params.set("scope", scope);
-      return requestJson(
+      return requestJson<ProductSearchResponse>(
         fetchImpl,
         productUrl(apiPrefix, `/product/search?${params.toString()}`),
-        undefined,
-        parseProductSearchResponse,
+        undefined
       );
     },
 
     async compactSession(sessionId) {
-      const compaction = await requestJson(
+      const compaction = await requestJson<ProductSessionCompaction>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/compact`,
         ),
-        jsonRequest("POST", "{}"),
-        parseProductSessionCompaction,
+        jsonRequest("POST", "{}")
       );
       if (compaction.product_session_id !== sessionId) {
         throw new ProductApiSchemaError(
@@ -1350,11 +1278,10 @@ export function createProductApiClient(
     },
 
     revokeMessage(sessionId, messageId) {
-      return requestJson(
+      return requestJson<ProductMessage>(
         fetchImpl,
         productUrl(apiPrefix, `/product/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/revoke`),
-        jsonRequest("POST", "{}"),
-        parseProductMessage,
+        jsonRequest("POST", "{}")
       );
     },
 
@@ -1370,70 +1297,64 @@ export function createProductApiClient(
 
     listControls(sessionId, filter) {
       const query = filter ? `?status=${encodeURIComponent(filter)}` : "";
-      return requestJson(
+      return requestJson<ProductControlsResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/controls${query}`,
         ),
-        undefined,
-        parseProductControlsResponse,
+        undefined
       );
     },
 
     revokeControl(sessionId, controlId) {
-      return requestJson(
+      return requestJson<ProductControl>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/controls/${encodeURIComponent(controlId)}/revoke`,
         ),
-        jsonRequest("POST", "{}"),
-        parseProductControl,
+        jsonRequest("POST", "{}")
       );
     },
 
     confirmFollowup(sessionId, controlId) {
-      return requestJson(
+      return requestJson<ProductControl>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}/controls/${encodeURIComponent(controlId)}/confirm`,
         ),
-        jsonRequest("POST", "{}"),
-        parseProductControl,
+        jsonRequest("POST", "{}")
       );
     },
 
     listProviderProfiles() {
-      return requestJson(
+      return requestJson<ProductProviderProfilesResponse>(
         fetchImpl,
         productUrl(apiPrefix, "/product/provider-profiles"),
-        undefined,
-        parseProductProviderProfilesResponse,
-      );
+        undefined
+      )
     },
 
     async createProviderProfile(input) {
       const request = parseProductProviderProfileRequest(input);
-      return requestJson(
+      return requestJson<ProductProviderProfile>(
         fetchImpl,
         productUrl(apiPrefix, "/product/provider-profiles"),
-        jsonRequest("POST", JSON.stringify(request)),
-        parseProductProviderProfile,
+        jsonRequest("POST", JSON.stringify(request))
       );
     },
 
     async updateProviderProfile(profileId, input) {
       const request = parseProductProviderProfileRequest(input);
-      return requestJson(
+      return requestJson<ProductProviderProfile>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/provider-profiles/${encodeURIComponent(profileId)}`,
         ),
-        jsonRequest("PUT", JSON.stringify(request)),
-        parseProductProviderProfile,
+        jsonRequest("PUT", JSON.stringify(request))
       );
     },
 
@@ -1451,14 +1372,13 @@ export function createProductApiClient(
     },
 
     listProviderModels(profileId) {
-      return requestJson(
+      return requestJson<ProductProviderModelsResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/provider-profiles/${encodeURIComponent(profileId)}/models`,
         ),
-        undefined,
-        parseProductProviderModelsResponse,
+        undefined
       );
     },
 
@@ -1467,41 +1387,37 @@ export function createProductApiClient(
       // Stringify once, then let the parsed object go out of scope — the
       // credential must not linger in client-side state.
       const body = JSON.stringify(request);
-      return requestJson(
+      return requestJson<ProductProviderOnboardingReceipt>(
         fetchImpl,
         productUrl(apiPrefix, "/product/provider-onboarding"),
-        jsonRequest("POST", body),
-        parseProductProviderOnboardingReceipt,
-      );
+        jsonRequest("POST", body)
+      )
     },
 
     getPreferences() {
-      return requestJson(
+      return requestJson<ProductPreferences>(
         fetchImpl,
         productUrl(apiPrefix, "/product/preferences"),
-        undefined,
-        parseProductPreferences,
-      );
+        undefined
+      )
     },
 
     async updatePreferences(input) {
       const request = parseUpdateProductPreferencesRequest(input);
-      return requestJson(
+      return requestJson<ProductPreferences>(
         fetchImpl,
         productUrl(apiPrefix, "/product/preferences"),
-        jsonRequest("PUT", JSON.stringify(request)),
-        parseProductPreferences,
+        jsonRequest("PUT", JSON.stringify(request))
       );
     },
 
     async migrateM1BrowserState(exact, options) {
       const body = canonicalM1MigrationBody(exact);
-      return requestJson(
+      return requestJson<M1BrowserMigrationResponse>(
         fetchImpl,
         productUrl(apiPrefix, "/product/migrations/m1-browser"),
-        jsonRequest("POST", body, options?.signal),
-        parseM1BrowserMigrationResponse,
-      );
+        jsonRequest("POST", body, options?.signal)
+      )
     },
   };
 }
@@ -1514,13 +1430,12 @@ async function createProductControl(
   input: CreateProductControlRequest,
 ): Promise<ProductControl> {
   const request = parseCreateProductControlRequest(input);
-  return requestJson(
+  return requestJson<ProductControl>(
     fetchImpl,
     productUrl(
       apiPrefix,
       `/product/sessions/${encodeURIComponent(sessionId)}/${endpoint}`,
     ),
-    jsonRequest("POST", JSON.stringify(request)),
-    parseProductControl,
-  );
+    jsonRequest("POST", JSON.stringify(request))
+      );
 }

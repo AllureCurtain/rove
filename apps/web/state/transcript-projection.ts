@@ -290,6 +290,8 @@ function restoredStatusText(status: ProductTranscriptRunSegment["run_status"]): 
       return "Run cancelled";
     case "interrupted":
       return "Run interrupted";
+    default:
+      return "Run ended";
   }
 }
 

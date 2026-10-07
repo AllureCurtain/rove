@@ -51,7 +51,7 @@ pub struct PendingApprovalResponse {
     #[schema(value_type = String, format = "ulid")]
     pub call_id: CallId,
     pub name: String,
-    #[schema(value_type = Object)]
+    #[schema(value_type = std::collections::HashMap<String, serde_json::Value>)]
     pub args: serde_json::Value,
     pub reason: String,
 }
@@ -72,7 +72,7 @@ pub struct CreateJobRequest {
     /// `workspace:<id>`). Workspace sources still require Project Trust.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
-    #[schema(value_type = String, example = "ask")]
+    #[schema(value_type = Option<String>, example = "ask")]
     pub approval: Option<ApprovalPolicy>,
     pub resume: Option<String>,
     pub workspace: Option<CreateJobWorkspace>,
@@ -132,10 +132,10 @@ pub struct CreateJobWorkspace {
     pub name: Option<String>,
     /// Task base directory (`kind = task` only). Defaults to
     /// `<server state_dir>/tasks` when omitted.
-    #[schema(value_type = String)]
+    #[schema(value_type = Option<String>)]
     pub base: Option<PathBuf>,
     /// Absolute local directory for `folder` / `repo` binding.
-    #[schema(value_type = String)]
+    #[schema(value_type = Option<String>)]
     pub root: Option<PathBuf>,
 }
 

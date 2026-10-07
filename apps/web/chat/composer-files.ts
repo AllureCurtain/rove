@@ -402,8 +402,8 @@ export function attachmentRequestKey(
 /** Durable references the transcript can render for one run. */
 export function attachmentsByRunId(
   messages: readonly {
-    run_id?: string;
-    successor_run_id?: string;
+    run_id?: string | null;
+    successor_run_id?: string | null;
     attachments?: readonly ProductMessageAttachmentRef[];
   }[],
 ): Map<string, ProductMessageAttachmentRef[]> {

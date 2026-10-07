@@ -4,7 +4,7 @@ Updated: 2026-10-07
 
 ## In progress
 
-- **External-control productization** (PR series): PR 1 (`rove-api --web-dist` one-origin console + `scripts/serve.ps1` + `/health`), PR 2 (loopback-only `POST /product/provider-onboarding` + browser paste-key form), PR 3 (`evidence/` directory + first committed acceptance run), and the interim fix `d2c4b57` (legacy trust-store size bound no longer applied to the live sqlite store) merged; PR 4 in progress — `StreamEvent` payload graph publishes through OpenAPI (`ToSchema` across rove-models/core/runtime) so generated Web clients can decode SSE events; next — openapi-typescript generated frontend types + retiring the hand-written validation layer
+- **External-control productization** (PR series): PR 1 (`rove-api --web-dist` one-origin console + `scripts/serve.ps1` + `/health`), PR 2 (loopback-only `POST /product/provider-onboarding` + browser paste-key form), PR 3 (`evidence/` directory + first committed acceptance run), and the interim fix `d2c4b57` (legacy trust-store size bound no longer applied to the live sqlite store) merged; PR 4 merged — `StreamEvent` payload graph publishes through OpenAPI; PR 5 in progress — `openapi-typescript` generated types (`apps/web/generated/api-types.ts`, `pnpm gen:api-types`/`check:api-types`), the 7k-line response-validation layer retired to boundary guards (SSE frames, localStorage/migration, API errors, request validators), and a mock↔OpenAPI route contract test (`apps/web/tests/product-api-mock.contract.test.ts`)
 - **Console chrome pass** on `feat/console-chrome`: 28px ghost attach button, compact model popover, reading band widenable past the 840 default up to the pane's usable width, assistant turns verified cardless across both skins
 
 ## Next up

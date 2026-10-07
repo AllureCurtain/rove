@@ -229,7 +229,7 @@ function ReviewDetails({
       {review.status === "error" ? (
         <p className="review-panel__state" data-tone="error">{t("review.errorBody")}</p>
       ) : null}
-      {result?.warnings.length ? (
+      {result?.warnings?.length ? (
         <p className="inspector-empty-line">{t("review.warningBody")}</p>
       ) : null}
     </div>

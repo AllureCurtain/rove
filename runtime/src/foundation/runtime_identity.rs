@@ -11,7 +11,7 @@ use rove_core::ToolDescriptor;
 ///
 /// This contract lives in Runtime so every shell can persist and compare it
 /// without making Runtime depend on first-party bootstrap configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct RunModelSnapshot {
     pub profile_id: String,
     pub provider_type: String,

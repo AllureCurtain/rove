@@ -292,7 +292,7 @@ export function FileViewerPane({
 
   const fileName = path.split("/").filter(Boolean).pop() ?? path;
   const textLines = useMemo(
-    () => (content?.text !== undefined ? content.text.split("\n") : null),
+    () => (content?.text != null ? content.text.split("\n") : null),
     [content],
   );
   const cappedLines = textLines ? textLines.slice(0, FILE_VIEWER_LINE_CAP) : null;
@@ -402,6 +402,7 @@ export function FileViewerPane({
             <p className="inspector-empty-line" role="alert">{t("chrome.invalidContent")}</p>
           ) : null}
           {content.text !== undefined &&
+          content.text != null &&
           isMarkdownPath(content.path) &&
           !sourceView ? (
             <div className="evidence-preview__markdown">

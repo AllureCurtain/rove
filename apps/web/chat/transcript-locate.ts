@@ -26,7 +26,7 @@ export function canonicalUserMessageId(runId: string): string {
 
 export interface LocatableMessage {
   /** The run the message was delivered to; absent while it is still queued. */
-  run_id?: string;
+  run_id?: string | null;
 }
 
 /**
@@ -38,7 +38,7 @@ export function transcriptLocateTarget(input: {
   message: LocatableMessage;
 }): string | null {
   const runId = input.message.run_id;
-  if (runId === undefined) {
+  if (!runId) {
     return null;
   }
   const group = input.timeline.find((candidate) => candidate.runId === runId);

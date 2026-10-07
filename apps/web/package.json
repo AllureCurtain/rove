@@ -13,7 +13,9 @@
     "test:e2e": "playwright test",
     "test:e2e:prod": "node scripts/run-e2e-prod.mjs",
     "lint:style-tokens": "node --test ../../scripts/check-web-style-tokens.test.mjs && node ../../scripts/check-web-style-tokens.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "gen:api-types": "openapi-typescript ../api/openapi.json -o generated/api-types.ts",
+    "check:api-types": "pnpm gen:api-types && git diff --exit-code -- generated/api-types.ts"
   },
   "dependencies": {
     "@radix-ui/react-icons": "^1.3.2",
@@ -34,6 +36,7 @@
     "@types/react": "19.2.15",
     "@types/react-dom": "19.2.3",
     "jsdom": "^30.1.1",
+    "openapi-typescript": "7.13.0",
     "typescript": "6.0.3",
     "vitest": "^4.1.7"
   }

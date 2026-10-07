@@ -69,5 +69,5 @@ Clients should branch on `code` and never parse the `error` text.
 
 1. Update types and utoipa annotations in `apps/api/src` (new fields need defaults and compatibility).
 2. Update the backend implementation and add tests (`apps/api` unit tests, or `tests/api.rs`).
-3. Sync the hand-written frontend types (`apps/web/product/product-api-types.ts`, `apps/web/lib/rove-types.ts`) and call sites.
+3. Regenerate the frontend types and fix call sites: `cd apps/web && pnpm gen:api-types` rewrites `generated/api-types.ts` from the snapshot; `pnpm check:api-types` fails CI on drift. The `Product*` exports in `product/product-api-types.ts`, `settings/settings-platform-api-types.ts`, and `lib/rove-types.ts` are compile-time aliases of the generated schemas — add a mapping when a schema is new, never a second declaration. Runtime parsing stays only at untrusted boundaries (SSE frames, `localStorage`/migration imports, API error payloads) and for request-side validation the server would reject.
 4. For event changes: the producer, persistence, SSE, Web consumers, and the contract test (`tests/event_contract.rs`) all change together.

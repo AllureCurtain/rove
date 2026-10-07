@@ -567,7 +567,10 @@
           },
           "approval": {
             "example": "ask",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "max_steps": {
             "format": "int32",
@@ -625,8 +628,7 @@
           }
         },
         "required": [
-          "message",
-          "approval"
+          "message"
         ],
         "type": "object"
       },
@@ -663,7 +665,10 @@
         "properties": {
           "base": {
             "description": "Task base directory (`kind = task` only). Defaults to\n`<server state_dir>/tasks` when omitted.",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "kind": {
             "example": "folder",
@@ -678,13 +683,14 @@
           },
           "root": {
             "description": "Absolute local directory for `folder` / `repo` binding.",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
-          "kind",
-          "base",
-          "root"
+          "kind"
         ],
         "type": "object"
       },
@@ -928,7 +934,7 @@
             ]
           },
           "target": {
-            "type": "object"
+            "$ref": "#/components/schemas/ReviewTargetSpec"
           }
         },
         "required": [
@@ -1301,6 +1307,47 @@
         },
         "type": "object"
       },
+      "ExecutionCapabilities": {
+        "properties": {
+          "artifact_projection": {
+            "default": false,
+            "type": "boolean"
+          },
+          "filesystem_read": {
+            "default": false,
+            "type": "boolean"
+          },
+          "filesystem_write": {
+            "default": false,
+            "type": "boolean"
+          },
+          "observations": {
+            "default": false,
+            "type": "boolean"
+          },
+          "process_background": {
+            "default": false,
+            "type": "boolean"
+          },
+          "process_pty": {
+            "default": false,
+            "type": "boolean"
+          },
+          "process_run": {
+            "default": false,
+            "type": "boolean"
+          },
+          "process_stdio": {
+            "default": false,
+            "type": "boolean"
+          },
+          "workspace_checkpoints": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "ExecutionDegradation": {
         "description": "Explicit, safe degradation fact. Fallbacks are never silent and do not\nchange permissions or erase previously recorded evidence.",
         "properties": {
@@ -1326,6 +1373,26 @@
           "code",
           "safe_summary",
           "occurred_at"
+        ],
+        "type": "object"
+      },
+      "ExecutionEnvironmentIdentity": {
+        "properties": {
+          "adapter": {
+            "type": "string"
+          },
+          "workspace_digest": {
+            "description": "A stable redacted identity. The canonical local path is never persisted\nin this structure or in resume diagnostics.",
+            "type": "string"
+          },
+          "workspace_kind": {
+            "$ref": "#/components/schemas/WorkspaceKind"
+          }
+        },
+        "required": [
+          "adapter",
+          "workspace_kind",
+          "workspace_digest"
         ],
         "type": "object"
       },
@@ -2150,6 +2217,10 @@
       "PendingApprovalResponse": {
         "properties": {
           "args": {
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            },
             "type": "object"
           },
           "call_id": {
@@ -2948,6 +3019,10 @@
       "ProductAuthorizationRecord": {
         "properties": {
           "args": {
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            },
             "type": "object"
           },
           "call_id": {
@@ -5128,9 +5203,13 @@
             "type": "string"
           },
           "conclusion": {
-            "type": [
-              "string",
-              "null"
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReviewConclusion"
+              }
             ]
           },
           "created_at": {
@@ -5160,7 +5239,14 @@
             "$ref": "#/components/schemas/ProductSessionId"
           },
           "result": {
-            "type": "object"
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReviewResult"
+              }
+            ]
           },
           "run_id": {
             "format": "ulid",
@@ -5180,7 +5266,7 @@
             "$ref": "#/components/schemas/ProductReviewStatus"
           },
           "target": {
-            "type": "object"
+            "$ref": "#/components/schemas/ReviewTargetSummary"
           },
           "unchecked_count": {
             "minimum": 0,
@@ -5215,7 +5301,7 @@
       "ProductReviewFinding": {
         "properties": {
           "finding": {
-            "type": "object"
+            "$ref": "#/components/schemas/ReviewFinding"
           },
           "sort_key": {
             "type": "string"
@@ -7008,6 +7094,382 @@
         ],
         "type": "object"
       },
+      "ReviewConclusion": {
+        "enum": [
+          "pass",
+          "findings",
+          "partial",
+          "stale",
+          "unavailable",
+          "cancelled",
+          "error"
+        ],
+        "type": "string"
+      },
+      "ReviewConfidence": {
+        "enum": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "type": "string"
+      },
+      "ReviewEvidence": {
+        "properties": {
+          "reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "snippet": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "snippet",
+          "source"
+        ],
+        "type": "object"
+      },
+      "ReviewFinding": {
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "confidence": {
+            "$ref": "#/components/schemas/ReviewConfidence"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewEvidence"
+            },
+            "type": "array"
+          },
+          "explanation": {
+            "type": "string"
+          },
+          "finding_id": {
+            "type": "string"
+          },
+          "location": {
+            "$ref": "#/components/schemas/ReviewLocation"
+          },
+          "location_status": {
+            "$ref": "#/components/schemas/ReviewLocationStatus"
+          },
+          "path": {
+            "type": "string"
+          },
+          "rule": {
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/ReviewSeverity"
+          },
+          "status": {
+            "type": "string"
+          },
+          "suggestion": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding_id",
+          "severity",
+          "confidence",
+          "category",
+          "path",
+          "location",
+          "location_status",
+          "title",
+          "explanation",
+          "rule",
+          "suggestion",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ReviewLocation": {
+        "properties": {
+          "end_col": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "end_line": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "start_col": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "start_line": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start_line",
+          "start_col",
+          "end_line",
+          "end_col"
+        ],
+        "type": "object"
+      },
+      "ReviewLocationStatus": {
+        "enum": [
+          "validated",
+          "unvalidated",
+          "invalid"
+        ],
+        "type": "string"
+      },
+      "ReviewResult": {
+        "properties": {
+          "capability_snapshot_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "conclusion": {
+            "$ref": "#/components/schemas/ReviewConclusion"
+          },
+          "execution_capabilities": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExecutionCapabilities"
+              }
+            ]
+          },
+          "execution_environment": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExecutionEnvironmentIdentity"
+              }
+            ]
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewFinding"
+            },
+            "type": "array"
+          },
+          "model_snapshot": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunModelSnapshot"
+              }
+            ]
+          },
+          "review_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/ReviewStats"
+          },
+          "target": {
+            "$ref": "#/components/schemas/ReviewTargetSummary"
+          },
+          "unchecked": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewUnchecked"
+            },
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "review_id",
+          "run_id",
+          "session_id",
+          "target",
+          "conclusion",
+          "findings",
+          "stats",
+          "unchecked"
+        ],
+        "type": "object"
+      },
+      "ReviewSeverity": {
+        "enum": [
+          "critical",
+          "high",
+          "medium",
+          "low",
+          "info"
+        ],
+        "type": "string"
+      },
+      "ReviewStats": {
+        "properties": {
+          "bytes_scanned": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "concurrency_limit": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "duration_ms": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "files_scanned": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "findings_total": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "truncated_findings": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "files_scanned",
+          "bytes_scanned",
+          "duration_ms",
+          "concurrency_limit",
+          "findings_total",
+          "truncated_findings"
+        ],
+        "type": "object"
+      },
+      "ReviewTargetKind": {
+        "enum": [
+          "uncommitted",
+          "base",
+          "commit"
+        ],
+        "type": "string"
+      },
+      "ReviewTargetSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ReviewTargetKind"
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "ReviewTargetSummary": {
+        "description": "Secret-free, bounded target projection used by CLI, API, Web, and durable\nReview results. Materialized bytes and diff payloads remain in the external\nReview snapshot store only.",
+        "properties": {
+          "captured_at": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "entries": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "entries_truncated": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "resolved_base": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schema_version": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/ReviewTargetSpec"
+          },
+          "workspace_digest": {
+            "type": "string"
+          },
+          "workspace_kind": {
+            "$ref": "#/components/schemas/WorkspaceKind"
+          }
+        },
+        "required": [
+          "schema_version",
+          "spec",
+          "workspace_kind",
+          "workspace_digest",
+          "captured_at",
+          "entries",
+          "digest"
+        ],
+        "type": "object"
+      },
+      "ReviewUnchecked": {
+        "properties": {
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "paths"
+        ],
+        "type": "object"
+      },
       "RiskLevel": {
         "description": "How risky following the procedure is.",
         "enum": [
@@ -7016,6 +7478,46 @@
           "high"
         ],
         "type": "string"
+      },
+      "RunModelSnapshot": {
+        "description": "Secret-free provider/model fact pinned for one run.\n\nThis contract lives in Runtime so every shell can persist and compare it\nwithout making Runtime depend on first-party bootstrap configuration.",
+        "properties": {
+          "catalog_revision": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "profile_id": {
+            "type": "string"
+          },
+          "provider_type": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "safe_config_digest": {
+            "type": "string"
+          },
+          "wire_protocol": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id",
+          "provider_type",
+          "wire_protocol",
+          "endpoint",
+          "model",
+          "reasoning",
+          "catalog_revision",
+          "safe_config_digest"
+        ],
+        "type": "object"
       },
       "RunSummaryResponse": {
         "properties": {
@@ -9873,6 +10375,15 @@
           "restricted",
           "trusted",
           "revoked"
+        ],
+        "type": "string"
+      },
+      "WorkspaceKind": {
+        "description": "The kind of workspace rove is operating in.",
+        "enum": [
+          "folder",
+          "repo",
+          "task"
         ],
         "type": "string"
       }

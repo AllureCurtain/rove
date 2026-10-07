@@ -1132,7 +1132,6 @@ impl ProductReviewStatus {
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateProductReviewRequest {
-    #[schema(value_type = Object)]
     pub target: ReviewTargetSpec,
     #[serde(default)]
     pub idempotency_key: Option<String>,
@@ -1157,11 +1156,9 @@ pub struct ProductReview {
     pub id: ProductReviewId,
     pub product_session_id: ProductSessionId,
     pub workspace_id: ProductWorkspaceId,
-    #[schema(value_type = Object)]
     pub target: ReviewTargetSummary,
     pub status: ProductReviewStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<String>)]
     pub conclusion: Option<ReviewConclusion>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<String>, format = "ulid")]
@@ -1173,7 +1170,6 @@ pub struct ProductReview {
     #[schema(value_type = Option<String>, format = "ulid")]
     pub run_id: Option<RunId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Object)]
     pub result: Option<ReviewResult>,
     pub findings_count: usize,
     pub unchecked_count: usize,
@@ -1192,7 +1188,6 @@ pub struct ProductReviewsResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductReviewFinding {
-    #[schema(value_type = Object)]
     pub finding: ReviewFinding,
     pub sort_key: String,
 }

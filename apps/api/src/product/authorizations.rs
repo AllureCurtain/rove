@@ -50,7 +50,7 @@ pub struct ProductAuthorizationRecord {
     pub job_id: String,
     pub run_id: String,
     pub tool: String,
-    #[schema(value_type = Object)]
+    #[schema(value_type = std::collections::HashMap<String, serde_json::Value>)]
     pub args: serde_json::Value,
     pub reason: String,
     /// `pending`, `approved`, `rejected`, `cancelled`, or `interrupted`.

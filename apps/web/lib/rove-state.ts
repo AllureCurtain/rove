@@ -828,6 +828,8 @@ function statusText(status: JobStateResponse["status"]): string {
       return "Run cancelled";
     case "interrupted":
       return "Run interrupted";
+    default:
+      return "Run ended";
   }
 }
 
@@ -845,6 +847,8 @@ function statusDetail(status: JobStateResponse["status"]): string {
       return "Run cancelled";
     case "interrupted":
       return "Run interrupted";
+    default:
+      return "Run ended";
   }
 }
 
@@ -1077,7 +1081,7 @@ function applyStreamEvent(
           pendingApproval: {
             call_id: event.call_id,
             name: event.name,
-            args: event.args,
+            args: event.args as PendingApproval["args"],
             reason: event.reason,
           },
         }),

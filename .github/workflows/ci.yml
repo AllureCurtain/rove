@@ -90,5 +90,8 @@ jobs:
       - name: pnpm typecheck
         run: pnpm typecheck
 
+      - name: generated API types match the OpenAPI snapshot
+        run: pnpm check:api-types
+
       - name: pnpm build
         run: pnpm build

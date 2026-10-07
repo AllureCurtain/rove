@@ -947,7 +947,7 @@ export function useServerProductState() {
       }
       const synchronized = {
         ...next,
-        approval: current.default_approval_policy,
+        approval: current.default_approval_policy ?? "ask",
       };
       setSelection(synchronized);
       try {

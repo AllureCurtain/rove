@@ -82,7 +82,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   }, [load]);
 
   const stats = useMemo(() => {
-    const perEntry = entries.map((entry) => diffEntryStats(entry.diff));
+    const perEntry = entries.map((entry) => diffEntryStats(entry.diff ?? undefined));
     return {
       perEntry,
       additions: perEntry.reduce((sum, entry) => sum + entry.additions, 0),

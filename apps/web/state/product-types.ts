@@ -163,10 +163,10 @@ export function fromProductProviderProfile(
     label: profile.label,
     providerType: profile.provider_type,
     apiBase: profile.api_base,
-    apiKeyEnv: profile.api_key_env,
-    credentialSource: profile.credential_source,
-    defaultModel: profile.default_model,
-    updatedAt: profile.updated_at,
+    apiKeyEnv: profile.api_key_env ?? undefined,
+    credentialSource: profile.credential_source ?? undefined,
+    defaultModel: profile.default_model ?? undefined,
+    updatedAt: profile.updated_at ?? undefined,
     catalogRevision: profile.catalog_revision,
   };
 }
@@ -176,7 +176,7 @@ export function fromProductSessionModelConfig(
 ): SessionModelConfig {
   return {
     sessionId: config.product_session_id,
-    profileId: config.profile_id,
+    profileId: config.profile_id ?? undefined,
     model: config.model,
     reasoning: config.reasoning,
     maxSteps: config.max_steps,

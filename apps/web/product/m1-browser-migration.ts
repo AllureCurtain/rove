@@ -903,7 +903,7 @@ export function validateM1MigrationAcknowledgement(
     [],
   );
   const preferences = pending.request.safe_preferences;
-  if (preferences.source_active_workspace_id !== undefined) {
+  if (preferences.source_active_workspace_id) {
     validateEntityCoverage(
       "active workspace preference",
       [preferences.source_active_workspace_id],
@@ -913,7 +913,7 @@ export function validateM1MigrationAcknowledgement(
       ["invalid_preference_reference"],
     );
   }
-  if (preferences.source_active_session_id !== undefined) {
+  if (preferences.source_active_session_id) {
     validateEntityCoverage(
       "active session preference",
       [preferences.source_active_session_id],
@@ -925,7 +925,7 @@ export function validateM1MigrationAcknowledgement(
   }
   const sourceProfileId =
     preferences.provider_selection?.source_profile_id;
-  if (sourceProfileId !== undefined) {
+  if (sourceProfileId) {
     validateEntityCoverage(
       "provider selection preference",
       [sourceProfileId],

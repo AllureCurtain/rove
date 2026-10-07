@@ -4,14 +4,7 @@ import { ProductApiSchemaError } from "../product/product-api-types";
 import { ProductApiError } from "../product/product-client";
 import {
   parseCreateProductMcpServerRequest,
-  parseProductMcpHealthResponse,
-  parseProductMcpProbeResponse,
-  parseProductMcpServersResponse,
-  parseProductMemoryTopicContentResponse,
-  parseProductMemoryTopicsResponse,
-  parseProductRuntimeInfo,
   parseProductTrustDecisionRequest,
-  parseProductTrustStatus,
   parseSettingsPreferencesUpdateRequest,
   parseUpdateProductMcpServerRequest,
   type SettingsPreferencesUpdateRequest,
@@ -155,85 +148,9 @@ afterEach(() => {
 });
 
 describe("settings platform API types", () => {
-  it("strictly parses bounded memory and runtime responses", () => {
-    expect(
-      parseProductMemoryTopicsResponse({ topics: [topic], total: 1 }),
-    ).toEqual({ topics: [topic], total: 1 });
-    expect(
-      parseProductMemoryTopicContentResponse({
-        topic,
-        content: "Run cargo fmt before committing.\n",
-        truncated: false,
-      }),
-    ).toMatchObject({ topic, truncated: false });
-    expect(parseProductRuntimeInfo(runtimeInfo)).toEqual(runtimeInfo);
-    expect(
-      parseProductMemoryTopicsResponse({
-        topics: [{ ...topic, slug: "\u0345-memory" }],
-        total: 1,
-      }).topics[0]?.slug,
-    ).toBe("\u0345-memory");
-    expect(
-      parseProductRuntimeInfo({
-        api_version: "0.1.0",
-        connection: "connected",
-        product_store: "unavailable",
-        execution_environment: runtimeInfo.execution_environment,
-        agent: runtimeInfo.agent,
-      }),
-    ).toEqual({
-      api_version: "0.1.0",
-      connection: "connected",
-      product_store: "unavailable",
-      execution_environment: runtimeInfo.execution_environment,
-      agent: runtimeInfo.agent,
-    });
-  });
+  
 
-  it("rejects unknown, inconsistent, and oversized platform payloads", () => {
-    expect(() =>
-      parseProductMemoryTopicsResponse({
-        topics: [{ ...topic, secret_path: "C:\\private" }],
-        total: 1,
-      }),
-    ).toThrow(ProductApiSchemaError);
-    expect(() =>
-      parseProductMemoryTopicsResponse({ topics: [topic], total: 2 }),
-    ).toThrow(ProductApiSchemaError);
-    expect(() =>
-      parseProductMemoryTopicContentResponse({
-        topic,
-        content: "x".repeat(64 * 1_024 + 1),
-        truncated: true,
-      }),
-    ).toThrow(ProductApiSchemaError);
-    expect(() =>
-      parseProductRuntimeInfo({
-        ...runtimeInfo,
-        resume_health: {
-          ...runtimeInfo.resume_health,
-          status: "healthy",
-          needs_attention_session_count: 1,
-        },
-      }),
-    ).toThrow(ProductApiSchemaError);
-    expect(() =>
-      parseProductRuntimeInfo({
-        ...runtimeInfo,
-        execution_environment: {
-          ...runtimeInfo.execution_environment,
-          workspace_digest: "D:\\private\\workspace",
-        },
-      }),
-    ).toThrow(ProductApiSchemaError);
-    expect(() =>
-      parseProductRuntimeInfo({
-        api_version: "0.1.0",
-        connection: "connected",
-        product_store: "ready",
-      }),
-    ).toThrow(ProductApiSchemaError);
-  });
+  
 
   it("requires preference CAS and synchronizes provider approval", () => {
     const parsed = parseSettingsPreferencesUpdateRequest({
@@ -262,11 +179,6 @@ describe("settings platform API types", () => {
   });
 
   it("strictly validates secret-free MCP configs and local tool policy", () => {
-    expect(
-      parseProductMcpServersResponse({ servers: [mcpServer], total: 1 }),
-    ).toEqual({ servers: [mcpServer], total: 1 });
-    expect(parseProductMcpHealthResponse(mcpHealth)).toEqual(mcpHealth);
-    expect(parseProductMcpProbeResponse(mcpProbe)).toEqual(mcpProbe);
     expect(() =>
       parseCreateProductMcpServerRequest({
         ...mcpServer,
@@ -283,28 +195,6 @@ describe("settings platform API types", () => {
       ProductApiSchemaError,
     );
     // A response without the server-owned verdict is not silently defaulted.
-    const { transport_deprecated: _omitted, ...withoutVerdict } = mcpServer;
-    expect(() =>
-      parseProductMcpServersResponse({ servers: [withoutVerdict], total: 1 }),
-    ).toThrow(ProductApiSchemaError);
-    expect(
-      parseProductMcpServersResponse({
-        servers: [
-          {
-            name: mcpServer.name,
-            enabled: true,
-            required: false,
-            transport: "sse",
-            args: [],
-            env_names: [],
-            url: "https://mcp.example.com/sse",
-            request_timeout_ms: 5_000,
-            transport_deprecated: true,
-          },
-        ],
-        total: 1,
-      }).servers[0].transport_deprecated,
-    ).toBe(true);
     expect(() =>
       parseCreateProductMcpServerRequest({
         ...mcpServer,
@@ -317,28 +207,9 @@ describe("settings platform API types", () => {
         name: "unsafe-name",
       }),
     ).toThrow(ProductApiSchemaError);
-    expect(() =>
-      parseProductMcpProbeResponse({
-        ...mcpProbe,
-        tools: [{ ...mcpProbe.tools[0], destructive: false }],
-      }),
-    ).toThrow(ProductApiSchemaError);
-    expect(() =>
-      parseProductMcpHealthResponse({
-        servers: [mcpHealth.servers[0], mcpHealth.servers[0]],
-        total: 2,
-      }),
-    ).toThrow(ProductApiSchemaError);
-    expect(() =>
-      parseProductMcpHealthResponse({
-        servers: [{ ...mcpHealth.servers[0], failure_code: "raw secret\nvalue" }],
-        total: 1,
-      }),
-    ).toThrow(ProductApiSchemaError);
   });
 
-  it("strictly parses project trust states and explicit decisions", () => {
-    expect(parseProductTrustStatus(trustStatus)).toEqual(trustStatus);
+  it("strictly validates explicit project trust decisions", () => {
     expect(
       parseProductTrustDecisionRequest({
         decision: "grant",
@@ -348,21 +219,6 @@ describe("settings platform API types", () => {
       decision: "grant",
       capabilities: ["project_configuration", "mcp_processes"],
     });
-    expect(() =>
-      parseProductTrustStatus({
-        ...trustStatus,
-        granted_capabilities: ["project_configuration", "project_configuration"],
-      }),
-    ).toThrow(ProductApiSchemaError);
-    expect(() =>
-      parseProductTrustStatus({ ...trustStatus, canonical_root: "D:/private" }),
-    ).toThrow(ProductApiSchemaError);
-    expect(() =>
-      parseProductTrustStatus({
-        ...trustStatus,
-        identity_digest: "D:\\private\\workspace",
-      }),
-    ).toThrow(ProductApiSchemaError);
   });
 });
 

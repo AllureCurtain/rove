@@ -34,7 +34,7 @@ const TRAVERSAL_SCAN_MULTIPLIER: usize = 8;
 const STDIO_PROCESS_REAP_TIMEOUT: Duration = Duration::from_secs(5);
 const STDIO_PROCESS_REAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ExecutionEnvironmentIdentity {
     pub adapter: String,
     pub workspace_kind: WorkspaceKind,
@@ -43,7 +43,7 @@ pub struct ExecutionEnvironmentIdentity {
     pub workspace_digest: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 #[serde(default)]
 pub struct ExecutionCapabilities {
     pub filesystem_read: bool,
