@@ -9880,6 +9880,105 @@ async fn web_console_statics_stay_public_while_the_api_keeps_auth() {
     }
 }
 
+// ─── Loopback-only provider credential entry ─────────────────────────────
+//
+// The onboarding route is the only HTTP surface that accepts a raw provider
+// secret, so these tests pin its guards — the bind-address gate, bounded and
+// typed bodies, and no secret echo — without ever reaching the keyring or the
+// network. A happy-path POST would write a real OS credential and probe a
+// real endpoint; that path stays in the in-process unit test that injects a
+// recording credential store instead.
+
+#[tokio::test]
+async fn provider_onboarding_refuses_a_non_loopback_bind() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut config = test_config();
+    config.api.bind_addr = "0.0.0.0:8787".to_string();
+    let app = router(ApiState::new(workspace, config));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/product/provider-onboarding")
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "label": "Remote Canary",
+                        "provider_type": "openai",
+                        "api_base": "https://provider.invalid/v1",
+                        "model": "canary-model",
+                        "credential": "sk-canary-provider-onboarding"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["code"], "provider_onboarding_loopback_required");
+    assert!(!String::from_utf8_lossy(&body).contains("sk-canary-provider-onboarding"));
+}
+
+#[tokio::test]
+async fn provider_onboarding_validates_bodies_without_touching_the_keyring() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+    let canary = "sk-canary-provider-onboarding";
+
+    // Every invalid body fails before the keyring write and before any
+    // network probe — that is exactly why these cases are safe over HTTP.
+    let cases = [
+        serde_json::json!({
+            "label": "x", "provider_type": "openai",
+            "api_base": "https://provider.invalid/v1", "model": "m",
+            "credential": canary, "surprise": true
+        }),
+        serde_json::json!({
+            "label": "x", "provider_type": "openai",
+            "api_base": "https://provider.invalid/v1", "model": "m"
+        }),
+        serde_json::json!({
+            "label": "x", "provider_type": "openai",
+            "api_base": "https://provider.invalid/v1", "model": "m",
+            "credential": "   "
+        }),
+        serde_json::json!({
+            "label": "x", "provider_type": "ollama",
+            "api_base": "http://127.0.0.1:1", "model": "m",
+            "credential": canary
+        }),
+    ];
+
+    for case in cases {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/product/provider-onboarding")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(case.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "case {case}");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&body).contains(canary));
+    }
+}
+
 #[tokio::test]
 async fn api_allows_configured_cors_origin_and_sets_headers() {
     let tmp = tempfile::TempDir::new().unwrap();

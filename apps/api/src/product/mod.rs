@@ -44,8 +44,9 @@ pub use files::{
 };
 pub use preview::{CreateProductPreviewRequest, ProductPreviewSession};
 pub use provider_onboarding::{
-    ProductProviderCatalogSelectionReceipt, ProductProviderOnboardingFailure,
-    ProductProviderOnboardingFailureCode, ProductProviderOnboardingProbe,
-    ProductProviderOnboardingReceipt, ProductProviderOnboardingRequest,
+    OnboardProductProviderRequest, ProductProviderCatalogSelectionReceipt,
+    ProductProviderOnboardingFailure, ProductProviderOnboardingFailureCode,
+    ProductProviderOnboardingProbe, ProductProviderOnboardingReceipt,
+    ProductProviderOnboardingRequest,
 };
 pub use rove_product_store::*;

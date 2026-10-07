@@ -1277,6 +1277,57 @@
         ],
         "type": "object"
       },
+      "OnboardProductProviderRequest": {
+        "additionalProperties": false,
+        "description": "The HTTP-visible onboarding body — the only Product payload that carries a\nsecret. The credential is accepted transiently, handed straight to the OS\nkeyring by the shared onboarding service, and never read back, logged, or\nserialized into any response. `write_only` marks it in the spec so generated\nclients know it is not returned.",
+        "properties": {
+          "api_base": {
+            "type": "string"
+          },
+          "credential": {
+            "description": "The raw provider key. Bounded, never persisted outside the OS keyring.",
+            "type": "string",
+            "writeOnly": true
+          },
+          "expected_revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "make_default": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string"
+          },
+          "profile_id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProductProviderProfileId",
+                "description": "Reuse an existing catalog profile id to rotate or repair its credential."
+              }
+            ]
+          },
+          "provider_type": {
+            "$ref": "#/components/schemas/ProductProviderType"
+          }
+        },
+        "required": [
+          "label",
+          "provider_type",
+          "api_base",
+          "model",
+          "credential"
+        ],
+        "type": "object"
+      },
       "PendingApprovalResponse": {
         "properties": {
           "args": {
@@ -3551,6 +3602,74 @@
         "required": [
           "profile_id",
           "models"
+        ],
+        "type": "object"
+      },
+      "ProductProviderOnboardingProbe": {
+        "properties": {
+          "inventory_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "native_tool_calls_supported": {
+            "type": "boolean"
+          },
+          "streaming_supported": {
+            "type": "boolean"
+          },
+          "usage_supported": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "inventory_count",
+          "streaming_supported",
+          "native_tool_calls_supported",
+          "usage_supported"
+        ],
+        "type": "object"
+      },
+      "ProductProviderOnboardingReceipt": {
+        "description": "Secret-free result safe to return across the Tauri command boundary or as\nan HTTP response.",
+        "properties": {
+          "api_base": {
+            "type": "string"
+          },
+          "catalog_revision": {
+            "type": "string"
+          },
+          "credential_source": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "probe": {
+            "$ref": "#/components/schemas/ProductProviderOnboardingProbe"
+          },
+          "profile_id": {
+            "$ref": "#/components/schemas/ProductProviderProfileId"
+          },
+          "provider_type": {
+            "$ref": "#/components/schemas/ProductProviderType"
+          },
+          "selected": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "profile_id",
+          "label",
+          "provider_type",
+          "api_base",
+          "model",
+          "catalog_revision",
+          "credential_source",
+          "probe",
+          "selected"
         ],
         "type": "object"
       },
@@ -7886,6 +8005,121 @@
               }
             },
             "description": "ProductStore is unavailable"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "tags": [
+          "Product"
+        ]
+      }
+    },
+    "/product/provider-onboarding": {
+      "post": {
+        "operationId": "onboard_product_provider",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnboardProductProviderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductProviderOnboardingReceipt"
+                }
+              }
+            },
+            "description": "Credential stored in the OS keyring and the provider profile published"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid onboarding request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Credential entry requires a loopback-bound API"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Provider catalog revision conflict or reconciliation required"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Provider inventory was rate limited"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Provider catalog operation failed"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Provider inventory failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "OS credential storage is unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Provider inventory timed out"
           }
         },
         "security": [

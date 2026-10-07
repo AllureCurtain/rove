@@ -390,6 +390,9 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(product::routes::update_product_provider_profile))
         .routes(routes!(product::routes::delete_product_provider_profile))
         .routes(routes!(product::routes::list_product_provider_models))
+        .routes(routes!(
+            product::provider_onboarding::onboard_product_provider
+        ))
         .routes(routes!(product::routes::get_product_preferences))
         .routes(routes!(product::routes::update_product_preferences))
         .routes(routes!(product::routes::create_product_session_steer))

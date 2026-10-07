@@ -1,13 +1,21 @@
 use std::fmt;
+use std::net::SocketAddr;
 
+use axum::Json;
+use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
+use axum::http::StatusCode;
 use rove_app_bootstrap::{
     CredentialReference, OnboardingCredential, ProviderOnboardingError, ProviderOnboardingRequest,
     ProviderOnboardingService, ProviderProbeFailureKind, ProviderProfileId,
 };
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+use zeroize::Zeroizing;
 
+use super::routes::product_json;
 use super::{ProductProviderProfileId, ProductProviderType};
-use crate::ApiState;
+use crate::{ApiError, ApiErrorResponse, ApiState, docs};
 
 /// Safe metadata accepted by the in-process Desktop onboarding facade.
 ///
@@ -25,7 +33,177 @@ pub struct ProductProviderOnboardingRequest {
     pub expected_revision: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// The HTTP-visible onboarding body — the only Product payload that carries a
+/// secret. The credential is accepted transiently, handed straight to the OS
+/// keyring by the shared onboarding service, and never read back, logged, or
+/// serialized into any response. `write_only` marks it in the spec so generated
+/// clients know it is not returned.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OnboardProductProviderRequest {
+    /// Reuse an existing catalog profile id to rotate or repair its credential.
+    #[serde(default)]
+    pub profile_id: Option<ProductProviderProfileId>,
+    pub label: String,
+    pub provider_type: ProductProviderType,
+    pub api_base: String,
+    pub model: String,
+    #[serde(default = "default_make_default")]
+    pub make_default: bool,
+    #[serde(default)]
+    pub expected_revision: Option<String>,
+    /// The raw provider key. Bounded, never persisted outside the OS keyring.
+    #[schema(write_only = true)]
+    pub credential: String,
+}
+
+fn default_make_default() -> bool {
+    true
+}
+
+/// A pasted credential is the whole point of this route; bound it to the
+/// largest plausible key rather than letting a request body grow unchecked.
+const MAX_PROVIDER_CREDENTIAL_BYTES: usize = 16 * 1024;
+const MAX_ONBOARDING_LABEL_BYTES: usize = 256;
+const MAX_ONBOARDING_MODEL_BYTES: usize = 1_024;
+const MAX_ONBOARDING_API_BASE_BYTES: usize = 2_048;
+
+#[utoipa::path(
+    post,
+    path = "/product/provider-onboarding",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    request_body = OnboardProductProviderRequest,
+    responses(
+        (status = 201, description = "Credential stored in the OS keyring and the provider profile published", body = ProductProviderOnboardingReceipt),
+        (status = 400, description = "Invalid onboarding request", body = ApiErrorResponse),
+        (status = 403, description = "Credential entry requires a loopback-bound API", body = ApiErrorResponse),
+        (status = 409, description = "Provider catalog revision conflict or reconciliation required", body = ApiErrorResponse),
+        (status = 429, description = "Provider inventory was rate limited", body = ApiErrorResponse),
+        (status = 500, description = "Provider catalog operation failed", body = ApiErrorResponse),
+        (status = 502, description = "Provider inventory failed", body = ApiErrorResponse),
+        (status = 503, description = "OS credential storage is unavailable", body = ApiErrorResponse),
+        (status = 504, description = "Provider inventory timed out", body = ApiErrorResponse)
+    )
+)]
+pub(crate) async fn onboard_product_provider(
+    State(state): State<ApiState>,
+    body: Result<Json<OnboardProductProviderRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<ProductProviderOnboardingReceipt>), ApiError> {
+    require_loopback_bind(&state)?;
+    let request = product_json(body)?;
+    validate_onboarding_body(&request)?;
+
+    // The secret leaves the request envelope here and only here: registered
+    // for redaction inside `onboard`, written to the keyring by the shared
+    // service, then zeroized. It never touches ProductStore or a response.
+    let secret = Zeroizing::new(request.credential);
+    let receipt = state
+        .onboard_product_provider(
+            ProductProviderOnboardingRequest {
+                profile_id: request.profile_id,
+                label: request.label,
+                provider_type: request.provider_type,
+                api_base: request.api_base,
+                model: request.model,
+                make_default: request.make_default,
+                expected_revision: request.expected_revision,
+            },
+            secret.as_str(),
+        )
+        .await
+        .map_err(map_onboarding_http_failure)?;
+    Ok((StatusCode::CREATED, Json(receipt)))
+}
+
+/// Credential entry is loopback-only: a remotely reachable socket would let
+/// whoever holds the bearer token push secrets into this machine's keyring.
+/// Checking the configured bind is equivalent to checking the remote peer —
+/// a loopback listener is unreachable from anywhere but this machine, and a
+/// non-loopback listener cannot distinguish local from remote callers.
+fn require_loopback_bind(state: &ApiState) -> Result<(), ApiError> {
+    let is_loopback = state
+        .inner
+        .config
+        .api
+        .bind_addr
+        .parse::<SocketAddr>()
+        .map(|addr| addr.ip().is_loopback())
+        .unwrap_or(false);
+    if !is_loopback {
+        return Err(ApiError::forbidden_with_code(
+            "provider_onboarding_loopback_required",
+            "provider credential entry is only available when the API binds a loopback address",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_onboarding_body(request: &OnboardProductProviderRequest) -> Result<(), ApiError> {
+    let invalid = |message: &'static str| {
+        ApiError::bad_request_with_code("provider_onboarding_invalid", message)
+    };
+    if request.credential.trim().is_empty() {
+        return Err(invalid("provider credential cannot be empty"));
+    }
+    if request.credential.len() > MAX_PROVIDER_CREDENTIAL_BYTES {
+        return Err(invalid("provider credential is too large"));
+    }
+    if request.label.trim().is_empty() || request.label.len() > MAX_ONBOARDING_LABEL_BYTES {
+        return Err(invalid("provider label is invalid"));
+    }
+    if request.model.trim().is_empty() || request.model.len() > MAX_ONBOARDING_MODEL_BYTES {
+        return Err(invalid("provider model is invalid"));
+    }
+    if request.api_base.trim().is_empty() || request.api_base.len() > MAX_ONBOARDING_API_BASE_BYTES
+    {
+        return Err(invalid("provider api base is invalid"));
+    }
+    Ok(())
+}
+
+/// Map the typed onboarding failure onto the API error envelope. The failure
+/// codes are already the outward contract (the Desktop command maps the same
+/// set); only the HTTP status is chosen here.
+fn map_onboarding_http_failure(failure: ProductProviderOnboardingFailure) -> ApiError {
+    let message = failure.message;
+    match failure.code.as_str() {
+        "provider_onboarding_invalid" => {
+            ApiError::bad_request_with_code("provider_onboarding_invalid", message)
+        }
+        "provider_authentication" => {
+            ApiError::bad_request_with_code("provider_authentication", message)
+        }
+        "provider_model_unavailable" => {
+            ApiError::bad_request_with_code("provider_model_unavailable", message)
+        }
+        "provider_rate_limited" => {
+            ApiError::too_many_requests_with_code("provider_rate_limited", message)
+        }
+        "provider_upstream" => ApiError::bad_gateway_with_code("provider_upstream", message),
+        "provider_transport" => ApiError::bad_gateway_with_code("provider_transport", message),
+        "provider_protocol_mismatch" => {
+            ApiError::bad_gateway_with_code("provider_protocol_mismatch", message)
+        }
+        "provider_timeout" => ApiError::gateway_timeout_with_code("provider_timeout", message),
+        "provider_credential_store" => {
+            ApiError::service_unavailable_with_code("provider_credential_store", message)
+        }
+        "product_revision_conflict" => {
+            ApiError::conflict_with_code("product_revision_conflict", message)
+        }
+        "provider_reconciliation_required" => {
+            ApiError::conflict_with_code("provider_reconciliation_required", message)
+        }
+        "provider_product_projection" => {
+            ApiError::conflict_with_code("provider_product_projection", message)
+        }
+        "provider_catalog" => ApiError::internal(message),
+        _ => ApiError::internal("provider onboarding failed"),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub struct ProductProviderOnboardingProbe {
     pub inventory_count: usize,
     pub streaming_supported: bool,
@@ -40,8 +218,9 @@ pub struct ProductProviderCatalogSelectionReceipt {
     pub catalog_revision: String,
 }
 
-/// Secret-free result safe to return across the Tauri command boundary.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Secret-free result safe to return across the Tauri command boundary or as
+/// an HTTP response.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub struct ProductProviderOnboardingReceipt {
     pub profile_id: ProductProviderProfileId,
     pub label: String,

@@ -631,6 +631,12 @@ const enUS: CopyDictionary = {
       model: "Model",
       apiBase: "API base",
       apiKey: "API key",
+      apiKeyHint:
+        "Sent once to the local Rove API and stored in the OS credential store; it is never shown or saved in this app.",
+      apiKeyRemoteHint:
+        "Pasting a key here is only available when this console is served by the local Rove API. Configure the key environment variable below otherwise.",
+      apiKeyPlaceholderEdit: "Leave blank to keep the stored key",
+      keySaved: "Key verified and stored securely.",
       apiKeyEnv: "API key env name",
       apiKeyEnvHint:
         "When set, the key is read from this environment variable first. You rarely need to change it.",

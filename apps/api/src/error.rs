@@ -96,6 +96,16 @@ impl ApiError {
         }
     }
 
+    /// `403`: the request reached a route that exists but refuses this caller —
+    /// a bind-address gate, a missing trust decision, and the like.
+    pub(crate) fn forbidden_with_code(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code,
+            message: message.into(),
+        }
+    }
+
     pub(crate) fn conflict(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::CONFLICT,

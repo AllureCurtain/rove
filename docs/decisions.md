@@ -4,6 +4,13 @@ New decisions go on top. Do not delete overturned decisions; mark them "supersed
 
 Decisions before 2026-10-01 were distilled from the design documents of that period; the originals have been deleted.
 
+## 2026-10-07 Loopback-only provider credential entry over HTTP
+
+- Status: active
+- Decision: `POST /product/provider-onboarding` is the single HTTP route that accepts a raw provider key (`credential`, marked `write_only` in OpenAPI). It is refused with `provider_onboarding_loopback_required` unless `api.bind_addr` parses to a loopback address — checking the configured bind, not the peer, because a loopback listener is unreachable remotely while a non-loopback one cannot distinguish callers. The body is bounded, `deny_unknown_fields`, and parsed through the fixed-error path; the secret is registered for redaction before onboarding, handed to the OS keyring via the shared `ProviderOnboardingService`, and wrapped in `zeroize::Zeroizing`. The receipt is secret-free. On the Web side the field is an uncontrolled input read once at submit, offered only when the page origin is itself loopback; Desktop keeps its native credential prompt. Stage two (token-authenticated browser hand-off: one-time URL, HttpOnly cookie, or login page) is deliberately undecided — with `api.token_auth` on, a browser that can authenticate could already use this route, so the hand-off remains a separate reviewed decision.
+- Why: paste-key onboarding existed only in Desktop (in-process Tauri command), leaving the browser control surface unable to configure a real provider without touching the CLI — a hard gap for "web-first" usage. Reusing the shared onboarding service keeps credential storage, probing, catalog CAS, and compensation on one implementation.
+- Rejected: letting the route trust the remote peer address — a `0.0.0.0` bind sees remote clients too; a dedicated "local mode" token or per-request handshake — the bind check already expresses the threat model and adds no moving parts; storing the key in ProductStore or returning a reference to it — keyring-only was already the established contract.
+
 ## 2026-10-07 rove-api hosts the Web bundle on one origin; the API answers under `/api` too
 
 - Status: active
