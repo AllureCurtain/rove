@@ -319,6 +319,26 @@ struct RunsQuery {
 
 pub fn router(state: ApiState) -> Router {
     schedule_pending_followup_recovery(&state);
+    // Composing the OpenApiRouter walks the whole schema tree more than once —
+    // materializing the document, then again while merging each route's
+    // components — and that recursion overflows the 1 MiB stack Windows gives
+    // the binary's main thread. Compose on a dedicated thread with a generous
+    // stack so the rove-api binary, the embedded desktop server, and tests all
+    // share the fix. The runtime-dependent followup recovery stays above: the
+    // composition thread carries no tokio context.
+    let compose_state = state.clone();
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("rove-router-build".into())
+            .stack_size(32 * 1024 * 1024)
+            .spawn_scoped(scope, move || router_composed(compose_state))
+            .expect("failed to spawn the router composition thread")
+            .join()
+            .expect("the router composition thread panicked")
+    })
+}
+
+fn router_composed(state: ApiState) -> Router {
     let migration_router: OpenApiRouter<ApiState> = OpenApiRouter::new()
         .routes(routes!(product::routes::migrate_m1_browser_state))
         .route_layer(DefaultBodyLimit::max(MAX_M1_BROWSER_MIGRATION_BODY_BYTES));
@@ -342,6 +362,12 @@ pub fn router(state: ApiState) -> Router {
     let attachment_read_router: OpenApiRouter<ApiState> = OpenApiRouter::new().routes(routes!(
         product::attachments::get_product_session_attachment
     ));
+    // Materializing the document walks the whole schema tree (StreamEvent's
+    // event-kind union alone nests several levels of payload schemas), which
+    // overflows the 1 MiB stack Windows hands to the binary's main thread.
+    // Build it on a dedicated thread with a generous stack so every caller —
+    // the rove-api binary, the embedded desktop server, and tests — shares
+    // the fix.
     let (api_router, api) = OpenApiRouter::with_openapi(docs::ApiDoc::openapi())
         .routes(routes!(list_provider_models))
         .routes(routes!(test_provider))
