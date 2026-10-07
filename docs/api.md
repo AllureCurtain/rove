@@ -11,9 +11,11 @@ Per-endpoint fields are authoritative in the runtime-generated OpenAPI: `GET /ap
   - `/providers/models`, `/providers/test`: provider probing
   - `/bench/*`: benchmarks
   - `/debug/*`: debugging
+- `GET /health`: liveness for launch scripts (`{"status":"ok","version":...}`), outside the OpenAPI surface like Swagger UI.
+- With `--web-dist` (or `ROVE_WEB_DIST`) the same process additionally serves the built Web console at the origin root and mounts the full API a second time under `/api` — the bundle's clients only ever call same-origin `/api/*`. Root paths keep working for existing clients (Desktop transport, `scripts/dev.ps1`, Swagger UI). Unknown paths fall back to `index.html` for client-side routing. Static assets and `/health` are public; the API keeps its auth.
 - Auth: with `api.token_auth` configured, business routes require `Authorization: Bearer <token>`, corresponding to `BearerAuth` in OpenAPI. Documentation endpoints need no auth.
-- The Web browser never carries a token directly: requests go through the Next.js server-side `/api/*` proxy, which injects `ROVE_API_TOKEN`.
-- CORS only allows origins in `ROVE_API_CORS_ORIGINS`. Rate limiting is per-process (`ROVE_API_RATE_LIMIT_PER_MINUTE`), not distributed.
+- The Web browser never carries a token directly: in dev it goes through the Next.js server-side `/api/*` proxy, which injects `ROVE_API_TOKEN`; under `--web-dist` serving, the bundle calls same-origin `/api/*` directly — that mode is meant for the zero-config loopback case (no `token_auth`), and a browser credential hand-off for the token-configured case is a separate decision.
+- CORS only allows origins in `ROVE_API_CORS_ORIGINS`; an `Origin` whose authority equals the request's `Host` is treated as same-origin, not cross-origin, and needs no allowlist entry. Rate limiting is per-process (`ROVE_API_RATE_LIMIT_PER_MINUTE`), not distributed.
 - Request bodies have a size cap; migration and attachment uploads have separate larger caps (`MAX_*_BODY_BYTES` in `apps/product-store/src/contracts.rs`).
 - Time: RFC 3339 / ISO 8601, UTC.
 

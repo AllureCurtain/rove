@@ -1,9 +1,10 @@
 # TODO
 
-Updated: 2026-10-06
+Updated: 2026-10-07
 
 ## In progress
 
+- **External-control productization** on `web-serve` (PR 1 of a series): `rove-api --web-dist` serves the built console on one origin (`scripts/serve.ps1` is the single-command path); next — loopback provider-key onboarding, acceptance evidence under `evidence/`, OpenAPI coverage for SSE event payloads, generated frontend API types
 - **Console chrome pass** on `feat/console-chrome`: 28px ghost attach button, compact model popover, reading band widenable past the 840 default up to the pane's usable width, assistant turns verified cardless across both skins
 
 ## Next up

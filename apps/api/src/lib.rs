@@ -61,6 +61,7 @@ mod product;
 mod provider;
 mod security;
 mod types;
+mod web;
 
 mod assembly;
 mod error;
@@ -86,6 +87,7 @@ use supervisor::*;
 use benchmark::BenchState;
 pub use product::*;
 pub use types::*;
+pub use web::console_root as web_console_root;
 
 use provider::{
     apply_provider_profile, normalize_provider_profile, provider_inventory, provider_key_env,
@@ -447,6 +449,13 @@ pub fn router(state: ApiState) -> Router {
     api_router.merge(SwaggerUi::new("/swagger-ui").url("/api/openapi.json", api))
 }
 
+/// Like [`router`], but additionally serves the Web console's static bundle
+/// at the origin root and mounts the same API under `/api` so the bundle's
+/// same-origin calls resolve without a proxy. See [`web::with_console`].
+pub fn router_with_web(state: ApiState, web_root: &FsPath) -> anyhow::Result<Router> {
+    web::with_console(router(state), web_root)
+}
+
 fn schedule_pending_followup_recovery(state: &ApiState) {
     if state.inner.shutdown_token.is_cancelled() || state.inner.job_starts.is_closed() {
         return;
@@ -458,7 +467,11 @@ fn schedule_pending_followup_recovery(state: &ApiState) {
     }));
 }
 
-pub async fn serve(addr: Option<SocketAddr>, cwd: PathBuf) -> anyhow::Result<()> {
+pub async fn serve(
+    addr: Option<SocketAddr>,
+    cwd: PathBuf,
+    web_root: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let shutdown = CancellationToken::new();
     let signal_shutdown = shutdown.clone();
     tokio::spawn(async move {
@@ -467,13 +480,14 @@ pub async fn serve(addr: Option<SocketAddr>, cwd: PathBuf) -> anyhow::Result<()>
         }
         signal_shutdown.cancel();
     });
-    serve_with_shutdown(addr, cwd, shutdown).await
+    serve_with_shutdown(addr, cwd, shutdown, web_root).await
 }
 
 pub async fn serve_with_shutdown(
     addr: Option<SocketAddr>,
     cwd: PathBuf,
     shutdown: CancellationToken,
+    web_root: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let workspace = Workspace::detect(&cwd)?;
     let config = AppConfig::load(
@@ -497,7 +511,24 @@ pub async fn serve_with_shutdown(
     let addr: SocketAddr = config.api.bind_addr.parse()?;
     let state = ApiState::with_shutdown(workspace, config, shutdown.clone());
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    serve_state_listener(listener, state).await
+    let app = match web_root.as_deref() {
+        Some(root) => {
+            let app = router_with_web(state.clone(), root)?;
+            tracing::info!(web_root = %root.display(), %addr, "serving the web console");
+            if state.inner.config.api.token_auth.is_some() {
+                // The bundle itself is public; the API still demands Bearer.
+                // There is no browser credential hand-off yet, so a served
+                // console under token auth cannot call its own API.
+                tracing::warn!(
+                    "api.token_auth is set: the served web console cannot authenticate; \
+                     serve without a token or use the desktop/next proxy path"
+                );
+            }
+            app
+        }
+        None => router(state.clone()),
+    };
+    serve_state_app(listener, state, app).await
 }
 
 /// Assemble API state for a trusted in-process delivery host. The API crate
@@ -540,9 +571,20 @@ pub async fn serve_state_listener(
     listener: tokio::net::TcpListener,
     state: ApiState,
 ) -> anyhow::Result<()> {
+    let app = router(state.clone());
+    serve_state_app(listener, state, app).await
+}
+
+/// Shared tail of the serve paths: preview listener, graceful shutdown, and
+/// the supervisor drain, identical no matter which router was assembled.
+async fn serve_state_app(
+    listener: tokio::net::TcpListener,
+    state: ApiState,
+    app: Router,
+) -> anyhow::Result<()> {
     let shutdown = state.inner.shutdown_token.clone();
     spawn_preview_listener(&state).await;
-    let result = serve_listener(listener, router(state.clone()), shutdown).await;
+    let result = serve_listener(listener, app, shutdown).await;
     state.inner.shutdown_token.cancel();
     drain_job_supervisors(&state).await;
     result

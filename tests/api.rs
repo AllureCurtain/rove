@@ -9745,6 +9745,142 @@ async fn api_rejects_browser_origin_when_cors_is_not_configured() {
 }
 
 #[tokio::test]
+async fn api_allows_same_origin_browser_requests_without_cors_config() {
+    // When the API itself serves the console (router_with_web), the browser's
+    // POSTs carry an Origin equal to the request's Host. That is a same-origin
+    // request, not a cross-origin one, so the CORS allowlist must not gate it.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/jobs/01ARZ3NDEKTSV4RRFFQ69G5FAV/state")
+                .header("host", "127.0.0.1:8787")
+                .header("origin", "http://127.0.0.1:8787")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // 404 (unknown job) proves the request passed the security layer; 403
+    // would mean the same-origin Origin was treated as a foreign browser.
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn api_rejects_an_origin_mismatching_the_host() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/jobs/01ARZ3NDEKTSV4RRFFQ69G5FAV/state")
+                .header("host", "127.0.0.1:8787")
+                .header("origin", "http://127.0.0.1:9999")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn web_console_bundle_serves_statics_health_and_api_prefix() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let web_root = tmp.path().join("web-dist");
+    std::fs::create_dir_all(web_root.join("_next/static")).unwrap();
+    std::fs::write(web_root.join("index.html"), "<html>rove</html>").unwrap();
+    std::fs::write(web_root.join("_next/static/app.js"), "// bundle").unwrap();
+
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app =
+        rove_api::router_with_web(ApiState::new(workspace, test_config()), &web_root).unwrap();
+
+    for (uri, status) in [
+        ("/", StatusCode::OK),
+        ("/w/abc/s/def", StatusCode::OK), // SPA fallback for a page navigation
+        ("/_next/static/app.js", StatusCode::OK),
+        ("/health", StatusCode::OK),
+        // The nested mount reaches the real API (unknown job → typed 404).
+        (
+            "/api/jobs/01ARZ3NDEKTSV4RRFFQ69G5FAV/state",
+            StatusCode::NOT_FOUND,
+        ),
+        // ...while an unmatched /api path is a JSON 404, never the SPA shell.
+        ("/api/xyz/unknown", StatusCode::NOT_FOUND),
+        // A missing chunk is a real 404 even for a browser-looking request.
+        ("/_next/static/missing.js", StatusCode::NOT_FOUND),
+    ] {
+        let request = Request::builder()
+            .uri(uri)
+            .header("accept", "text/html,application/xhtml+xml")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), status, "uri {uri}");
+    }
+
+    // The /api miss is the JSON error envelope, not the bundle's HTML.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/xyz/unknown")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["code"], "not_found");
+}
+
+#[tokio::test]
+async fn web_console_statics_stay_public_while_the_api_keeps_auth() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let web_root = tmp.path().join("web-dist");
+    std::fs::create_dir_all(&web_root).unwrap();
+    std::fs::write(web_root.join("index.html"), "<html>rove</html>").unwrap();
+
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut config = test_config();
+    config.api.token_auth = Some("secret".to_string());
+    let app = rove_api::router_with_web(ApiState::new(workspace, config), &web_root).unwrap();
+
+    // The bundle is public code: statics and liveness answer without a token.
+    for uri in ["/", "/health"] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "uri {uri}");
+    }
+
+    // ...while the API under both mounts still enforces Bearer.
+    for uri in [
+        "/api/jobs/01ARZ3NDEKTSV4RRFFQ69G5FAV/state",
+        "/jobs/01ARZ3NDEKTSV4RRFFQ69G5FAV/state",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "uri {uri}");
+    }
+}
+
+#[tokio::test]
 async fn api_allows_configured_cors_origin_and_sets_headers() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();

@@ -4,6 +4,13 @@ New decisions go on top. Do not delete overturned decisions; mark them "supersed
 
 Decisions before 2026-10-01 were distilled from the design documents of that period; the originals have been deleted.
 
+## 2026-10-07 rove-api hosts the Web bundle on one origin; the API answers under `/api` too
+
+- Status: active
+- Decision: `rove-api --web-dist <dir>` (or `ROVE_WEB_DIST`) serves the `pnpm build:web` static bundle (`apps/web/web-dist`) at the origin root with an `index.html` SPA fallback, and mounts the same router a second time under `/api` so the bundle's same-origin `/api/*` calls resolve without the Next.js proxy. `router()` stays API-only; `GET /health` and statics sit outside the security middleware, while both API mounts keep bearer auth. An `Origin` matching the request's `Host` is treated as same-origin rather than a CORS candidate. `scripts/serve.ps1` is the single-command product launcher (build + run); token-authenticated browser access is intentionally left for a separate credential hand-off decision, and startup warns when `--web-dist` and `api.token_auth` are combined.
+- Why: the external control surface had no product-shaped launch — it required two processes (`rove-api` + `next dev`) with a server-side proxy just to inject a token. One process serving both halves is the smallest change that makes the console independently runnable; the existing desktop bundle build is reused verbatim rather than inventing a second packaging path.
+- Rejected: `output: export` static export — `app/api/[...path]` is a route handler and the build cannot be fully static without deleting it; an `if path.starts_with("/api")` strip inside the security layer — mounting under `nest("/api")` is explicit routing, not path rewriting; a `rove serve` subcommand — `rove-api` is already the right binary and duplicating its arg surface in rove-cli adds a second launch path.
+
 ## 2026-10-06 P4 polish: TodoDock on `runState.plan`, proportional minimap, stacking ladder
 
 - Status: active
