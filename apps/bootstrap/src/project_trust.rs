@@ -621,15 +621,19 @@ fn migrate_legacy_json(source: &Path, destination: &Path) -> anyhow::Result<()> 
         return Ok(());
     }
     let bytes = std::fs::read(source)?;
-    if bytes.len() > 512 * 1024 {
-        anyhow::bail!("legacy project trust store exceeds the supported size");
-    }
+    // A store that does not decode as JSON (the migrated sqlite database opens
+    // through this path on every access) is not a legacy source. Sniff the
+    // payload before applying the legacy size bound so a healthy store can
+    // grow past it.
     if bytes
         .iter()
         .find(|byte| !byte.is_ascii_whitespace())
         .is_none_or(|byte| *byte != b'{')
     {
         return Ok(());
+    }
+    if bytes.len() > 512 * 1024 {
+        anyhow::bail!("legacy project trust store exceeds the supported size");
     }
     let legacy: LegacyTrustFile = serde_json::from_slice(&bytes)?;
     if legacy.schema_version != PROJECT_TRUST_SCHEMA_VERSION {
@@ -1999,6 +2003,55 @@ max_selected = 2
         assert!(!legacy_path.exists());
         assert!(legacy_path.with_extension("json.legacy").exists());
         assert!(repository.path().exists());
+    }
+
+    #[test]
+    fn migrated_store_larger_than_legacy_bound_still_opens() {
+        // Every open routes through the legacy check, so the 512 KiB bound must
+        // only apply to content that is actually a legacy JSON file. A migrated
+        // sqlite store accumulates records over time and can legitimately grow
+        // beyond that bound.
+        let temp = tempfile::TempDir::new().unwrap();
+        let store_path = temp.path().join(PROJECT_TRUST_FILE_NAME);
+        let connection = Connection::open(&store_path).unwrap();
+        initialize_trust_schema(&connection).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE pad(payload TEXT NOT NULL);
+                 INSERT INTO pad VALUES(hex(randomblob(300 * 1024)));",
+            )
+            .unwrap();
+        drop(connection);
+        assert!(std::fs::metadata(&store_path).unwrap().len() > 512 * 1024);
+
+        let repository = ProjectTrustRepository::new(&store_path);
+
+        assert!(repository.load().unwrap().is_empty());
+        assert!(!store_path.with_extension("json.legacy").exists());
+    }
+
+    #[test]
+    fn oversized_legacy_json_store_is_still_rejected() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let legacy_path = temp.path().join(PROJECT_TRUST_LEGACY_FILE_NAME);
+        let padding = " ".repeat(512 * 1024);
+        std::fs::write(
+            &legacy_path,
+            format!(
+                "{{\"schema_version\": {PROJECT_TRUST_SCHEMA_VERSION}, \"records\": []}}{padding}"
+            ),
+        )
+        .unwrap();
+        let destination = temp.path().join(PROJECT_TRUST_FILE_NAME);
+
+        let error = migrate_legacy_json(&legacy_path, &destination).unwrap_err();
+
+        assert!(
+            error.to_string().contains("exceeds the supported size"),
+            "unexpected error: {error}"
+        );
+        assert!(legacy_path.exists());
+        assert!(!destination.exists());
     }
 
     #[test]
