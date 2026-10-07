@@ -20,41 +20,16 @@ import type {
   ProductMessage,
   ProductMessageSearchHit,
   ProductSearchHit,
+  ProductSession,
+  ProductWorkspace,
 } from "../../product/product-api-types";
 
 const NOW = "2026-07-26T00:00:00.000Z";
 
-export interface MockWorkspace {
-  id: string;
-  canonical_root: string;
-  kind: "folder" | "repo";
-  display_name: string;
-  pinned: boolean;
-  last_opened_at: string;
-  created_at: string;
-  updated_at: string;
-}
+/** Mock fixtures are the generated wire types — the mock serves what the API declares. */
+export type MockWorkspace = ProductWorkspace;
 
-export interface MockSession {
-  id: string;
-  workspace_id: string;
-  title: string;
-  status: "idle" | "running" | "error" | "needs_attention" | "archived";
-  runtime_binding?: {
-    ordinal: number;
-    runtime_session_id: string;
-    latest_job_id: string;
-    latest_run_id: string;
-  };
-  created_at: string;
-  updated_at: string;
-  parent_session_id?: string;
-  fork_point_run_id?: string;
-  fork_point_seq?: number;
-  /** R3: the outcome of the most recently finished turn, when there is one. */
-  last_outcome?: "success" | "failed" | "cancelled";
-  last_outcome_at?: string;
-}
+export type MockSession = ProductSession;
 
 export type MockSessionStatus = MockSession["status"];
 
@@ -893,7 +868,7 @@ export async function installMockProductApi(
       state.trustRequests.push({ method, workspaceId, body: rawBody });
       const body = request.postDataJSON() as ProductTrustDecisionRequest;
       const capabilities =
-        body.capabilities.length > 0
+        body.capabilities !== undefined && body.capabilities.length > 0
           ? body.capabilities
           : body.decision === "grant"
             ? [...PRODUCT_TRUST_CAPABILITIES]
@@ -2195,7 +2170,7 @@ export async function installMockProductApi(
           confidence: body.confidence,
           created_at: timestamp,
           updated_at: timestamp,
-          description: body.description,
+          description: body.description ?? "",
           metadata_truncated: false,
         },
         content: body.content,
@@ -2260,7 +2235,7 @@ export async function installMockProductApi(
           updated_at: new Date(
             Date.parse(NOW) + state.memoryMutationRequests * 1_000,
           ).toISOString(),
-          description: body.description,
+          description: body.description ?? "",
         },
         content: body.content,
         truncated: false,
@@ -2377,9 +2352,21 @@ export async function installMockProductApi(
           );
         }
         const created: ProductMcpServerConfig = {
-          ...structuredClone(body),
+          name: body.name,
+          enabled: body.enabled ?? true,
+          required: body.required ?? false,
+          transport: body.transport,
+          args: body.args ?? [],
+          env_names: body.env_names ?? [],
+          request_timeout_ms: body.request_timeout_ms ?? 30_000,
           transport_deprecated: body.transport === "sse",
         };
+        if (body.command !== undefined && body.command !== null) {
+          created.command = body.command;
+        }
+        if (body.url !== undefined && body.url !== null) {
+          created.url = body.url;
+        }
         state.mcpServers[workspaceId] = [...servers, created].sort((left, right) =>
           left.name.localeCompare(right.name),
         );
@@ -2476,9 +2463,20 @@ export async function installMockProductApi(
         const body = request.postDataJSON() as UpdateProductMcpServerRequest;
         const updated: ProductMcpServerConfig = {
           name,
-          ...body,
+          enabled: body.enabled ?? true,
+          required: body.required ?? false,
+          transport: body.transport,
+          args: body.args ?? [],
+          env_names: body.env_names ?? [],
+          request_timeout_ms: body.request_timeout_ms ?? 30_000,
           transport_deprecated: body.transport === "sse",
         };
+        if (body.command !== undefined && body.command !== null) {
+          updated.command = body.command;
+        }
+        if (body.url !== undefined && body.url !== null) {
+          updated.url = body.url;
+        }
         servers[serverIndex] = updated;
         state.mcpServers[workspaceId] = [...servers].sort((left, right) =>
           left.name.localeCompare(right.name),

@@ -56,7 +56,7 @@ export function FilesPanel({
         if (!stale()) {
           setEntries(response.entries);
           setNextCursor(response.next_cursor ?? null);
-          setScanLimited(response.scan_limit_reached);
+          setScanLimited(response.scan_limit_reached ?? false);
         }
       } catch (caught) {
         if (!stale()) {
@@ -202,7 +202,7 @@ export function FilesPanel({
       if (!stale()) {
         setEntries((current) => [...current, ...response.entries]);
         setNextCursor(response.next_cursor ?? null);
-        setScanLimited(response.scan_limit_reached);
+        setScanLimited(response.scan_limit_reached ?? false);
       }
     } catch (caught) {
       if (!stale()) {

@@ -81,7 +81,7 @@ export function memoryTopicDraftFromDetail(
     description: detail.topic.description,
     content: detail.content,
   };
-  if (detail.topic.updated_at !== undefined) {
+  if (detail.topic.updated_at != null) {
     draft.expectedUpdatedAt = detail.topic.updated_at;
   }
   return draft;

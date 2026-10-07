@@ -107,7 +107,7 @@ async function defaultLoader(sessionId: string): Promise<SessionMessageCount> {
       limit: SESSION_MESSAGE_COUNT_PAGE_SIZE,
     });
     count += response.messages.length;
-    if (response.next_after_seq === undefined) {
+    if (response.next_after_seq == null) {
       return { status: "ready", count, more: false };
     }
     afterSeq = response.next_after_seq;

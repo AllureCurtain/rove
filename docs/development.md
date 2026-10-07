@@ -86,7 +86,7 @@ Before committing:
 - [ ] `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` pass
 - [ ] Tests pass for affected crates; run `cargo test --workspace` when shared boundaries changed (events, state, approval, MCP, providers, artifacts)
 - [ ] Web changed: `pnpm test`, `pnpm typecheck`, `pnpm build`; also `pnpm test:e2e` when browser-visible flows, SSE, approval/input/cancel/resume, or the API proxy changed
-- [ ] API changed: utoipa annotations, `apps/api/openapi.json` snapshot, hand-written frontend types, and both implementations are in sync
+- [ ] API changed: utoipa annotations, `apps/api/openapi.json` snapshot, `pnpm check:api-types` (generated `apps/web/generated/api-types.ts`), and both implementations are in sync
 - [ ] Schema changed: a new schema migration exists and an old database upgrades cleanly
 - [ ] UI changed: loading, empty, and error states were all checked
 - [ ] Touching tools, API, providers, state, MCP, artifacts, or Web: input size/path/timeout/concurrency have limits; untrusted content cannot become instructions or permissions; secrets are sanitized; approvals sit at the right boundary; retries are safe for side effects; recovery does not replay completed work

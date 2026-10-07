@@ -92,7 +92,7 @@ pub enum ReviewError {
     FindingsAlreadySubmitted,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewTargetKind {
     Uncommitted,
@@ -100,7 +100,7 @@ pub enum ReviewTargetKind {
     Commit,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewTargetSpec {
     pub kind: ReviewTargetKind,
@@ -254,7 +254,7 @@ impl ReviewTargetSnapshot {
 /// Secret-free, bounded target projection used by CLI, API, Web, and durable
 /// Review results. Materialized bytes and diff payloads remain in the external
 /// Review snapshot store only.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ReviewTargetSummary {
     pub schema_version: u32,
     pub spec: ReviewTargetSpec,
@@ -1166,7 +1166,7 @@ fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf, ReviewError> {
     Ok(resolved)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewConclusion {
     Pass,
@@ -1178,7 +1178,7 @@ pub enum ReviewConclusion {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewSeverity {
     Critical,
@@ -1188,7 +1188,7 @@ pub enum ReviewSeverity {
     Info,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewConfidence {
     High,
@@ -1196,7 +1196,7 @@ pub enum ReviewConfidence {
     Low,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewLocationStatus {
     Validated,
@@ -1204,7 +1204,7 @@ pub enum ReviewLocationStatus {
     Invalid,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 pub struct ReviewLocation {
     pub start_line: u32,
     pub start_col: u32,
@@ -1212,7 +1212,7 @@ pub struct ReviewLocation {
     pub end_col: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ReviewEvidence {
     pub snippet: String,
     pub source: String,
@@ -1220,7 +1220,7 @@ pub struct ReviewEvidence {
     pub reference: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ReviewFinding {
     pub finding_id: String,
     pub severity: ReviewSeverity,
@@ -1238,7 +1238,7 @@ pub struct ReviewFinding {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 pub struct ReviewStats {
     pub files_scanned: usize,
     pub bytes_scanned: u64,
@@ -1248,13 +1248,13 @@ pub struct ReviewStats {
     pub truncated_findings: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ReviewUnchecked {
     pub reason: String,
     pub paths: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ReviewResult {
     pub schema_version: u32,
     pub review_id: String,

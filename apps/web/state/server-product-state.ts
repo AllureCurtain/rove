@@ -20,12 +20,12 @@ export function selectionFromPreferences(
   if (!saved) {
     return {
       ...defaultProviderSelection(),
-      approval: preferences.default_approval_policy,
+      approval: preferences.default_approval_policy ?? "ask",
     };
   }
   return {
     mode: saved.profile_id ? "profile" : "default",
-    profileId: saved.profile_id,
+    profileId: saved.profile_id ?? undefined,
     model: saved.model,
     approval: saved.approval,
     maxSteps: saved.max_steps,

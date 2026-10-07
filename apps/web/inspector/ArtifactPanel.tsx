@@ -160,7 +160,7 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
                 <span>{artifact.safe_name}</span>
                 <small>
                   {t(`artifactLabels.${artifact.source_kind}`)} · {t(`artifactLabels.${artifact.availability}`)}
-                  {artifact.size !== undefined ? ` · ${formatBytes(artifact.size)}` : ""}
+                  {artifact.size != null ? ` · ${formatBytes(artifact.size)}` : ""}
                 </small>
               </button>
               {artifact.availability === "available" || artifact.availability === "too_large" ? (

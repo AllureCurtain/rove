@@ -45,7 +45,7 @@ const streamEventFixtures: StreamEvent[] = [
       version: 1,
       strategy: "plan_react",
       selection_source: "max_steps_and_plan_flag",
-      budgets: { max_step_attempts: 20, max_model_turns_per_step: 4 },
+      budgets: { max_step_attempts: 20, max_model_turns_per_step: 4, max_cost_microunits: null, max_finalization_turns: null, max_model_repairs: null, max_model_turns: null, max_plan_revisions: null, max_plan_steps: null, max_tool_calls: null, max_tool_calls_per_step: null, max_total_tokens: null, max_wall_time_ms: null },
       evaluator_mode: "rule_first_model_on_ambiguity",
       finalizer_policy: "deterministic",
     },
@@ -116,7 +116,8 @@ const streamEventFixtures: StreamEvent[] = [
     type: "execution_budget_updated",
     phase: "step",
     snapshot: {
-      limits: { max_step_attempts: 20, max_model_turns_per_step: 4 },
+      exhausted: null,
+      limits: { max_step_attempts: 20, max_model_turns_per_step: 4, max_cost_microunits: null, max_finalization_turns: null, max_model_repairs: null, max_model_turns: null, max_plan_revisions: null, max_plan_steps: null, max_tool_calls: null, max_tool_calls_per_step: null, max_total_tokens: null, max_wall_time_ms: null },
       consumed: {
         plan_steps: 1,
         step_attempts: 1,
@@ -297,6 +298,11 @@ const streamEventFixtures: StreamEvent[] = [
   },
   {
     type: "plan_step_started",
+    plan_id: "plan-1",
+    plan_revision_id: "rev-1",
+    started_at: "2026-07-26T00:00:00.000Z",
+    attempt: 1,
+    step_id: "1",
     index: 0,
     step: { id: "1", title: "Inspect", done: false },
   },

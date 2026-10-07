@@ -66,7 +66,7 @@ export function createInitialMemorySettingsState(): MemorySettingsState {
 
 function topicTimestamp(topic: ProductMemoryTopic): number {
   const value = topic.updated_at ?? topic.created_at;
-  if (value === undefined) {
+  if (value == null) {
     return Number.NEGATIVE_INFINITY;
   }
   const timestamp = Date.parse(value);

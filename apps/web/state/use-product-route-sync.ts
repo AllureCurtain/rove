@@ -96,7 +96,7 @@ export function useProductRouteSync({
         defaultWorkspaceHref(
           catalog,
           workspace.id,
-          preferences.active_session_id,
+          preferences.active_session_id ?? undefined,
         )
       ) {
         return true;
@@ -168,7 +168,7 @@ export function useProductRouteSync({
       const href = defaultWorkspaceHref(
         catalog,
         workspace.id,
-        preferences.active_session_id,
+        preferences.active_session_id ?? undefined,
       );
       if (href) {
         replaceRoute(href);

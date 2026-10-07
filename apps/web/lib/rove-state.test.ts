@@ -429,7 +429,7 @@ describe("workbenchReducer", () => {
         seq: 5,
         event: {
           type: "run_completed",
-          reason: "model_error",
+          reason: "error",
           output: "The run stopped after the read failed.",
         },
       },
@@ -653,6 +653,9 @@ describe("workbenchReducer", () => {
       seq: 4,
       event: {
         type: "plan_created",
+        plan_id: "plan-1",
+        plan_revision_id: "rev-1",
+        revision: 1,
         plan: {
           goal: "test",
           current_step: 0,
@@ -665,6 +668,9 @@ describe("workbenchReducer", () => {
       seq: 4,
       event: {
         type: "plan_created",
+        plan_id: "plan-1",
+        plan_revision_id: "rev-1",
+        revision: 1,
         plan: {
           goal: "test",
           current_step: 0,
@@ -862,6 +868,9 @@ describe("workbenchReducer", () => {
             seq: 3,
             event: {
               type: "plan_created",
+              plan_id: "plan-1",
+              plan_revision_id: "rev-1",
+              revision: 1,
               plan: {
                 goal: "summarize",
                 current_step: 0,
@@ -1254,7 +1263,7 @@ describe("workbenchReducer", () => {
         type: "tool_call_failed",
         call_id: "call-2",
         error: {
-          code: "rejected",
+          code: "execution_failed",
           reason: "user rejected",
         },
       },
@@ -1265,6 +1274,9 @@ describe("workbenchReducer", () => {
       },
       {
         type: "plan_created",
+        plan_id: "plan-1",
+        plan_revision_id: "rev-1",
+        revision: 1,
         plan: {
           goal: "summarize",
           current_step: 0,
@@ -1273,6 +1285,11 @@ describe("workbenchReducer", () => {
       },
       {
         type: "plan_step_started",
+        plan_id: "plan-1",
+        plan_revision_id: "rev-1",
+        started_at: "2026-07-26T00:00:00.000Z",
+        attempt: 1,
+        step_id: "1",
         index: 0,
         step: { id: "1", title: "Read", done: false },
       },

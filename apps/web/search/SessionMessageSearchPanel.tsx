@@ -19,7 +19,7 @@ export interface SessionMessageSearchPanelProps {
     searchSessionMessages: (
       sessionId: string,
       query: { q: string; cursor?: string; limit?: number },
-    ) => Promise<{ hits: ProductMessageSearchHit[]; next_cursor?: string }>;
+    ) => Promise<{ hits: ProductMessageSearchHit[]; next_cursor?: string | null }>;
   };
   /** Locate a hit inside the open session; the answer is rendered verbatim. */
   onLocateMessage: (messageSeq: number) => "located" | "not_loaded";

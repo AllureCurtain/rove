@@ -87,7 +87,8 @@ function nonEmptyLines(value: string): string[] {
 
 export function mcpServerRequestFromDraft(
   draft: McpServerDraft,
-): CreateProductMcpServerRequest {
+): CreateProductMcpServerRequest &
+  Pick<UpdateProductMcpServerRequest, "enabled" | "request_timeout_ms"> {
   const common = {
     name: draft.name.trim(),
     enabled: draft.enabled,
@@ -112,7 +113,8 @@ export function mcpServerRequestFromDraft(
 }
 
 function updateRequest(
-  request: CreateProductMcpServerRequest,
+  request: CreateProductMcpServerRequest &
+    Pick<UpdateProductMcpServerRequest, "enabled" | "request_timeout_ms">,
 ): UpdateProductMcpServerRequest {
   const { name: _name, ...update } = request;
   return update;

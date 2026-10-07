@@ -1,7 +1,6 @@
 import {
   ProductApiSchemaError,
   parseApiErrorResponse,
-  parseProductPreferences,
   type ProductApprovalPreference,
   type ProductPreferences,
 } from "../product/product-api-types";
@@ -13,16 +12,8 @@ import {
 import {
   parseCreateProductMcpServerRequest,
   parseCreateProductMemoryTopicRequest,
-  parseProductMcpProbeResponse,
-  parseProductMcpHealthResponse,
-  parseProductMcpServerConfig,
-  parseProductMcpServersResponse,
   parseProductMemoryListFilters,
-  parseProductMemoryTopicContentResponse,
-  parseProductMemoryTopicsResponse,
-  parseProductRuntimeInfo,
   parseProductTrustDecisionRequest,
-  parseProductTrustStatus,
   parseSettingsPreferencesUpdateRequest,
   parseUpdateProductMcpServerRequest,
   parseUpdateProductMemoryTopicRequest,
@@ -240,13 +231,12 @@ async function requestJson<T>(
   fetchImpl: typeof globalThis.fetch,
   url: string,
   init: RequestInit | undefined,
-  parse: (value: unknown) => T,
 ): Promise<T> {
   const response = await fetchImpl(url, init);
   if (!response.ok) {
     return throwPlatformApiError(response);
   }
-  return parse(await readUnknownJson(response));
+  return (await readUnknownJson(response)) as T;
 }
 
 async function requestNoContent(
@@ -288,7 +278,7 @@ async function requestMemoryMutation(
       `settings memory mutation expected status ${expectedStatus}, received ${response.status}`,
     );
   }
-  return parseProductMemoryTopicContentResponse(await readUnknownJson(response));
+  return (await readUnknownJson(response)) as ProductMemoryTopicContentResponse;
 }
 
 function validateMemoryMutationResponse(
@@ -339,7 +329,7 @@ async function requestMcpMutation(
       `settings MCP mutation expected status ${expectedStatus}, received ${response.status}`,
     );
   }
-  return parseProductMcpServerConfig(await readUnknownJson(response));
+  return (await readUnknownJson(response)) as ProductMcpServerConfig;
 }
 
 export function createSettingsPlatformClient(
@@ -363,7 +353,7 @@ export function createSettingsPlatformClient(
     requestOptions?: SettingsPlatformRequestOptions,
   ): Promise<ProductPreferences> => {
     const request = parseSettingsPreferencesUpdateRequest(input);
-    const response = await requestJson(
+    const response = await requestJson<ProductPreferences>(
       fetchImpl,
       productUrl(apiPrefix, "/product/preferences"),
       {
@@ -372,7 +362,6 @@ export function createSettingsPlatformClient(
         body: JSON.stringify(request),
         signal: requestOptions?.signal,
       },
-      parseProductPreferences,
     );
     if (response.revision !== request.expected_revision + 1) {
       throw new ProductApiSchemaError(
@@ -393,7 +382,7 @@ export function createSettingsPlatformClient(
       );
     }
     if (
-      response.provider_selection !== undefined &&
+      response.provider_selection != null &&
       response.provider_selection.approval !== response.default_approval_policy
     ) {
       throw new ProductApiSchemaError(
@@ -406,14 +395,13 @@ export function createSettingsPlatformClient(
   return {
     async getProjectTrust(workspaceId, requestOptions) {
       const validWorkspaceId = validateProductMemoryWorkspaceId(workspaceId);
-      const response = await requestJson(
+      const response = await requestJson<ProductTrustStatus>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/workspaces/${encodeURIComponent(validWorkspaceId)}/trust`,
         ),
-        getRequest(requestOptions?.signal),
-        parseProductTrustStatus,
+        getRequest(requestOptions?.signal)
       );
       if (response.workspace_id !== validWorkspaceId) {
         throw new ProductApiSchemaError(
@@ -426,7 +414,7 @@ export function createSettingsPlatformClient(
     async decideProjectTrust(workspaceId, input, requestOptions) {
       const validWorkspaceId = validateProductMemoryWorkspaceId(workspaceId);
       const request = parseProductTrustDecisionRequest(input);
-      const response = await requestJson(
+      const response = await requestJson<ProductTrustStatus>(
         fetchImpl,
         productUrl(
           apiPrefix,
@@ -437,8 +425,7 @@ export function createSettingsPlatformClient(
           headers: { "content-type": "application/json" },
           body: JSON.stringify(request),
           signal: requestOptions?.signal,
-        },
-        parseProductTrustStatus,
+        }
       );
       if (response.workspace_id !== validWorkspaceId) {
         throw new ProductApiSchemaError(
@@ -449,14 +436,13 @@ export function createSettingsPlatformClient(
     },
 
     listMemoryTopics(workspaceId, filters, requestOptions) {
-      return requestJson(
+      return requestJson<ProductMemoryTopicsResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/memory/topics?${memoryListQuery(workspaceId, filters)}`,
         ),
-        getRequest(requestOptions?.signal),
-        parseProductMemoryTopicsResponse,
+        getRequest(requestOptions?.signal)
       );
     },
 
@@ -500,7 +486,7 @@ export function createSettingsPlatformClient(
     },
 
     async getMemoryTopic(workspaceId, slug, requestOptions) {
-      const response = await requestJson(
+      const response = await requestJson<ProductMemoryTopicContentResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
@@ -508,8 +494,7 @@ export function createSettingsPlatformClient(
             validateProductMemorySlug(slug),
           )}?${memoryWorkspaceQuery(workspaceId)}`,
         ),
-        getRequest(requestOptions?.signal),
-        parseProductMemoryTopicContentResponse,
+        getRequest(requestOptions?.signal)
       );
       if (response.topic.slug !== slug) {
         throw new ProductApiSchemaError(
@@ -533,26 +518,24 @@ export function createSettingsPlatformClient(
     },
 
     listMcpServers(workspaceId, requestOptions) {
-      return requestJson(
+      return requestJson<ProductMcpServersResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/mcp/servers?${mcpWorkspaceQuery(workspaceId)}`,
         ),
-        getRequest(requestOptions?.signal),
-        parseProductMcpServersResponse,
+        getRequest(requestOptions?.signal)
       );
     },
 
     getMcpHealth(workspaceId, requestOptions) {
-      return requestJson(
+      return requestJson<ProductMcpHealthResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
           `/product/mcp/health?${mcpWorkspaceQuery(workspaceId)}`,
         ),
-        getRequest(requestOptions?.signal),
-        parseProductMcpHealthResponse,
+        getRequest(requestOptions?.signal)
       );
     },
 
@@ -616,7 +599,7 @@ export function createSettingsPlatformClient(
 
     async probeMcpServer(workspaceId, name, requestOptions) {
       const validName = validateProductMcpServerName(name);
-      const response = await requestJson(
+      const response = await requestJson<ProductMcpProbeResponse>(
         fetchImpl,
         productUrl(
           apiPrefix,
@@ -624,8 +607,7 @@ export function createSettingsPlatformClient(
             validName,
           )}/probe?${mcpWorkspaceQuery(workspaceId)}`,
         ),
-        { method: "POST", signal: requestOptions?.signal },
-        parseProductMcpProbeResponse,
+        { method: "POST", signal: requestOptions?.signal }
       );
       if (response.server_name !== validName) {
         throw new ProductApiSchemaError(
@@ -636,36 +618,35 @@ export function createSettingsPlatformClient(
     },
 
     getRuntimeInfo(requestOptions) {
-      return requestJson(
+      return requestJson<ProductRuntimeInfo>(
         fetchImpl,
         productUrl(apiPrefix, "/product/runtime"),
-        getRequest(requestOptions?.signal),
-        parseProductRuntimeInfo,
+        getRequest(requestOptions?.signal)
       );
     },
 
     getPreferences(requestOptions) {
-      return requestJson(
+      return requestJson<ProductPreferences>(
         fetchImpl,
         productUrl(apiPrefix, "/product/preferences"),
         getRequest(requestOptions?.signal),
-        parseProductPreferences,
       );
     },
 
     updatePreferences,
 
     updateDefaultApprovalPolicy(current, policy, requestOptions) {
-      const preferences = parseProductPreferences(current);
+      const preferences = current;
       return updatePreferences(
         {
           schema_version: preferences.schema_version,
-          expected_revision: preferences.revision,
+          expected_revision: preferences.revision ?? 0,
           theme: preferences.theme,
           default_approval_policy: policy,
-          active_workspace_id: preferences.active_workspace_id,
-          active_session_id: preferences.active_session_id,
-          provider_selection: preferences.provider_selection,
+          active_workspace_id:
+            preferences.active_workspace_id ?? undefined,
+          active_session_id: preferences.active_session_id ?? undefined,
+          provider_selection: preferences.provider_selection ?? undefined,
         },
         requestOptions,
       );

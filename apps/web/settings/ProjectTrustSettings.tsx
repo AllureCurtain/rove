@@ -53,7 +53,14 @@ export function ProjectTrustSettings({
       const next = await client.getProjectTrust(workspaceId, { signal });
       setStatus(next);
       if (next.granted_capabilities.length > 0) {
-        setSelected(new Set(next.granted_capabilities));
+        setSelected(
+        new Set(
+          next.granted_capabilities.filter(
+            (capability): capability is ProductTrustCapability =>
+              (PRODUCT_TRUST_CAPABILITIES as readonly string[]).includes(capability),
+          ),
+        ),
+      );
       }
     } catch (loadError) {
       if (!signal?.aborted) {

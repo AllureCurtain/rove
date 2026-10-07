@@ -25,6 +25,7 @@ fn workspace_path(rel: impl AsRef<Path>) -> PathBuf {
 
 const EVENTS_RS: &str = "runtime/src/foundation/events.rs";
 const WEB_TYPES_TS: &str = "apps/web/lib/rove-types.ts";
+const GENERATED_API_TYPES_TS: &str = "apps/web/generated/api-types.ts";
 
 /// Marker of the runtime's canonical-event registry.
 const KINDS_MARKER: &str = "STREAM_EVENT_KINDS: &[(&str, u32)] = &[";
@@ -115,12 +116,19 @@ fn web_const_names() -> Vec<String> {
 
 /// `type: "..."` discriminants of the Web `StreamEvent` union, in source order.
 fn web_union_names() -> Vec<String> {
-    let source = read_web_types();
+    // The Web `StreamEvent` type is an alias of
+    // `components["schemas"]["StreamEvent"]` in `generated/api-types.ts`
+    // (`pnpm gen:api-types`), so the union discriminants live in the
+    // generated file now.
+    let source = std::fs::read_to_string(workspace_path(GENERATED_API_TYPES_TS))
+        .unwrap_or_else(|err| panic!("failed to read {GENERATED_API_TYPES_TS}: {err}"));
     let start = source
-        .find("export type StreamEvent =")
-        .expect("rove-types.ts should declare export type StreamEvent");
+        .find("        StreamEvent: {")
+        .expect("generated/api-types.ts should declare a StreamEvent schema");
     let block = &source[start..];
-    let end = block.find("\n\nexport ").unwrap_or(block.len());
+    let end = block
+        .find("\n        };")
+        .expect("the StreamEvent schema should close its object");
     block[..end]
         .lines()
         .filter_map(|line| {

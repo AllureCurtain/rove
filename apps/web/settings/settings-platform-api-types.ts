@@ -1,65 +1,68 @@
+/**
+ * Settings platform API contract types, generated-facing.
+ *
+ * Every wire record here is a compile-time alias of `apps/api/openapi.json`
+ * through `generated/api-types.ts` (`pnpm gen:api-types`;
+ * `pnpm check:api-types` fails on drift). What remains hand-written:
+ * - `export const` enum arrays — runtime values the spec cannot express
+ *   (asserted exact against the generated unions below);
+ * - request validators and semantic guards (`validate*`, `parse*Request`,
+ *   `parseSettingsPreferencesUpdateRequest`) — the client still refuses
+ *   requests the server would reject, and the settings CAS transform is a
+ *   client-side semantic, not a wire shape;
+ * - `ProductMemoryListFilters` and `SettingsPreferencesUpdateRequest` —
+ *   client-side shapes with no OpenAPI component.
+ *
+ * Response parsing for trusted same-origin JSON is retired: the generated
+ * types are the contract.
+ */
+import type { components } from "../generated/api-types";
 import {
   PRODUCT_APPROVAL_PREFERENCES,
   ProductApiSchemaError,
-  parseUpdateProductPreferencesRequest,
   type ProductApprovalPreference,
   type ProductPreferences,
   type ProductProviderSelection,
   type ProductSessionId,
   type ProductThemePreference,
   type ProductWorkspaceId,
+  type UpdateProductPreferencesRequest,
 } from "../product/product-api-types";
 
+/** Schema lookup helper: `Schema<"X">` is the wire type of one OpenAPI component. */
+type Schema<K extends keyof components["schemas"]> = components["schemas"][K];
+
+/** Compile-time exact-match assertion between a const array and a union type. */
+type AssertExact<T extends true> = T;
 export const PRODUCT_MEMORY_TYPES = [
   "user",
   "feedback",
   "project",
   "reference",
 ] as const;
-export type ProductMemoryType = (typeof PRODUCT_MEMORY_TYPES)[number];
-
+export type ProductMemoryType = Schema<"ProductMemoryType">;
 export const PRODUCT_MEMORY_SCOPES = [
   "global",
   "project",
   "session",
 ] as const;
-export type ProductMemoryScope = (typeof PRODUCT_MEMORY_SCOPES)[number];
-
+export type ProductMemoryScope = Schema<"ProductMemoryScope">;
 export const PRODUCT_MEMORY_LAYERS = ["durable"] as const;
-export type ProductMemoryLayer = (typeof PRODUCT_MEMORY_LAYERS)[number];
-
+export type ProductMemoryLayer = Schema<"ProductMemoryLayer">;
 export const PRODUCT_MEMORY_SOURCES = [
   "product_settings",
   "llm_tool",
   "other",
   "unknown",
 ] as const;
-export type ProductMemorySource = (typeof PRODUCT_MEMORY_SOURCES)[number];
+export type ProductMemorySource = Schema<"ProductMemorySource">;
 
-export interface ProductMemoryTopic {
-  slug: string;
-  title: string;
-  layer: ProductMemoryLayer;
-  memory_type: ProductMemoryType;
-  scope: ProductMemoryScope;
-  source: ProductMemorySource;
-  confidence: number;
-  created_at?: string;
-  updated_at?: string;
-  description: string;
-  metadata_truncated: boolean;
-}
+export type ProductMemoryTopic = Schema<"ProductMemoryTopic">;
 
-export interface ProductMemoryTopicsResponse {
-  topics: ProductMemoryTopic[];
-  total: number;
-}
+export type ProductMemoryTopicsResponse = Schema<"ProductMemoryTopicsResponse">;
 
-export interface ProductMemoryTopicContentResponse {
-  topic: ProductMemoryTopic;
-  content: string;
-  truncated: boolean;
-}
+export type ProductMemoryTopicContentResponse =
+  Schema<"ProductMemoryTopicContentResponse">;
 
 export interface ProductMemoryListFilters {
   q?: string;
@@ -68,46 +71,19 @@ export interface ProductMemoryListFilters {
   source?: ProductMemorySource;
 }
 
-export interface CreateProductMemoryTopicRequest {
-  slug: string;
-  title: string;
-  memory_type: ProductMemoryType;
-  scope: ProductMemoryScope;
-  confidence: number;
-  description: string;
-  content: string;
-}
+export type CreateProductMemoryTopicRequest =
+  Schema<"CreateProductMemoryTopicRequest">;
 
-export interface UpdateProductMemoryTopicRequest {
-  title: string;
-  memory_type: ProductMemoryType;
-  scope: ProductMemoryScope;
-  confidence: number;
-  description: string;
-  content: string;
-  expected_updated_at?: string;
-}
+export type UpdateProductMemoryTopicRequest =
+  Schema<"UpdateProductMemoryTopicRequest">;
 
 export const PRODUCT_MCP_TRANSPORTS = ["stdio", "sse", "streamable_http"] as const;
-export type ProductMcpTransport = (typeof PRODUCT_MCP_TRANSPORTS)[number];
+export type ProductMcpTransport = Schema<"ProductMcpTransport">;
 
-export interface ProductMcpServerConfig {
-  name: string;
-  enabled: boolean;
-  required: boolean;
-  transport: ProductMcpTransport;
-  command?: string;
-  args: string[];
-  env_names: string[];
-  url?: string;
-  request_timeout_ms: number;
-  transport_deprecated: boolean;
-}
+/** The wire name is `ProductMcpServer`; the historical export name is kept. */
+export type ProductMcpServerConfig = Schema<"ProductMcpServer">;
 
-export interface ProductMcpServersResponse {
-  servers: ProductMcpServerConfig[];
-  total: number;
-}
+export type ProductMcpServersResponse = Schema<"ProductMcpServersResponse">;
 
 export const PRODUCT_MCP_HEALTH_STATUSES = [
   "ready",
@@ -115,59 +91,21 @@ export const PRODUCT_MCP_HEALTH_STATUSES = [
   "disabled",
   "unknown",
 ] as const;
-export type ProductMcpHealthStatus =
-  (typeof PRODUCT_MCP_HEALTH_STATUSES)[number];
+export type ProductMcpHealthStatus = Schema<"ProductMcpHealthStatus">;
 
-export interface ProductMcpHealthSnapshot {
-  server_name: string;
-  required: boolean;
-  transport: ProductMcpTransport;
-  status: ProductMcpHealthStatus;
-  server_config_hash?: string;
-  server_identity_hash?: string;
-  protocol_version?: string;
-  catalog_hash?: string;
-  capability_snapshot_id?: string;
-  tool_count: number;
-  failure_code?: string;
-  refreshed_at?: string;
-}
+export type ProductMcpHealthSnapshot = Schema<"ProductMcpHealthSnapshot">;
 
-export interface ProductMcpHealthResponse {
-  servers: ProductMcpHealthSnapshot[];
-  total: number;
-}
+export type ProductMcpHealthResponse = Schema<"ProductMcpHealthResponse">;
 
-export interface CreateProductMcpServerRequest {
-  name: string;
-  enabled: boolean;
-  required: boolean;
-  transport: ProductMcpTransport;
-  command?: string;
-  args: string[];
-  env_names: string[];
-  url?: string;
-  request_timeout_ms: number;
-}
+export type CreateProductMcpServerRequest =
+  Schema<"CreateProductMcpServerRequest">;
 
-export type UpdateProductMcpServerRequest = Omit<
-  CreateProductMcpServerRequest,
-  "name"
->;
+export type UpdateProductMcpServerRequest =
+  Schema<"UpdateProductMcpServerRequest">;
 
-export interface ProductMcpToolDescriptor {
-  name: string;
-  description: string;
-  destructive: true;
-  parallel_safe: false;
-}
+export type ProductMcpToolDescriptor = Schema<"ProductMcpToolDescriptor">;
 
-export interface ProductMcpProbeResponse {
-  server_name: string;
-  transport: ProductMcpTransport;
-  tools: ProductMcpToolDescriptor[];
-  tested_at: string;
-}
+export type ProductMcpProbeResponse = Schema<"ProductMcpProbeResponse">;
 
 export const PRODUCT_TRUST_STATES = [
   "unknown",
@@ -175,7 +113,7 @@ export const PRODUCT_TRUST_STATES = [
   "trusted",
   "revoked",
 ] as const;
-export type ProductTrustState = (typeof PRODUCT_TRUST_STATES)[number];
+export type ProductTrustState = Schema<"ProductTrustState">;
 
 export const PRODUCT_TRUST_CAPABILITIES = [
   "project_configuration",
@@ -185,73 +123,34 @@ export const PRODUCT_TRUST_CAPABILITIES = [
   "provider_credentials",
   "external_paths",
 ] as const;
-export type ProductTrustCapability =
-  (typeof PRODUCT_TRUST_CAPABILITIES)[number];
+export type ProductTrustCapability = Schema<"ProductTrustCapability">;
 
 export const PRODUCT_TRUST_DECISIONS = ["grant", "deny", "revoke"] as const;
-export type ProductTrustDecision = (typeof PRODUCT_TRUST_DECISIONS)[number];
+export type ProductTrustDecision = Schema<"ProductTrustDecision">;
 
-export interface ProductTrustStatus {
-  workspace_id: ProductWorkspaceId;
-  state: ProductTrustState;
-  identity_digest: string;
-  invalidated_capabilities: ProductTrustCapability[];
-  granted_capabilities: ProductTrustCapability[];
-}
+export type ProductTrustStatus = Schema<"ProductTrustStatus">;
 
-export interface ProductTrustDecisionRequest {
-  decision: ProductTrustDecision;
-  capabilities: ProductTrustCapability[];
-}
+export type ProductTrustDecisionRequest =
+  Schema<"ProductTrustDecisionRequest">;
 
-export type ProductConnectionStatus = "connected";
-export type ProductStoreStatus = "ready" | "unavailable";
-export type ProductResumeHealthStatus = "healthy" | "needs_attention";
-export type ProductExecutionAdapter = "local";
-export type ProductExecutionWorkspaceKind = "folder" | "repo" | "task";
+export type ProductConnectionStatus = Schema<"ProductConnectionStatus">;
+export type ProductStoreStatus = Schema<"ProductStoreStatus">;
+export type ProductResumeHealthStatus = Schema<"ProductResumeHealthStatus">;
+export type ProductExecutionAdapter = Schema<"ProductExecutionAdapter">;
+export type ProductExecutionWorkspaceKind =
+  Schema<"ProductExecutionWorkspaceKind">;
 
-export interface ProductExecutionCapabilities {
-  filesystem_read: boolean;
-  filesystem_write: boolean;
-  process_run: boolean;
-  process_stdio: boolean;
-  observations: boolean;
-  process_background: boolean;
-  process_pty: boolean;
-  workspace_checkpoints: boolean;
-  artifact_projection: boolean;
-}
+export type ProductExecutionCapabilities =
+  Schema<"ProductExecutionCapabilities">;
 
-export interface ProductExecutionEnvironmentInfo {
-  adapter: ProductExecutionAdapter;
-  workspace_kind: ProductExecutionWorkspaceKind;
-  workspace_digest: string;
-  capabilities: ProductExecutionCapabilities;
-}
-export interface ProductAgentRuntimeInfo {
-  selector: string;
-  workspace_source_authorized: boolean;
-  workspace_instructions_enabled: boolean;
-  allow_remediation_procedures: boolean;
-  max_procedure_selections: number;
-}
-export interface ProductResumeHealth {
-  status: ProductResumeHealthStatus;
-  workspace_count: number;
-  session_count: number;
-  bound_session_count: number;
-  running_session_count: number;
-  needs_attention_session_count: number;
-}
+export type ProductExecutionEnvironmentInfo =
+  Schema<"ProductExecutionEnvironmentInfo">;
 
-export interface ProductRuntimeInfo {
-  api_version: string;
-  connection: ProductConnectionStatus;
-  product_store: ProductStoreStatus;
-  execution_environment: ProductExecutionEnvironmentInfo;
-  agent: ProductAgentRuntimeInfo;
-  resume_health?: ProductResumeHealth;
-}
+export type ProductAgentRuntimeInfo = Schema<"ProductAgentRuntimeInfo">;
+
+export type ProductResumeHealth = Schema<"ProductResumeHealth">;
+
+export type ProductRuntimeInfo = Schema<"ProductRuntimeInfo">;
 
 export interface SettingsPreferencesUpdateRequest {
   schema_version: number;
@@ -262,6 +161,70 @@ export interface SettingsPreferencesUpdateRequest {
   active_session_id?: ProductSessionId;
   provider_selection?: ProductProviderSelection;
 }
+
+type _AssertPRODUCT_MEMORY_TYPESExact = AssertExact<
+  [(typeof PRODUCT_MEMORY_TYPES)[number]] extends [Schema<"ProductMemoryType">]
+    ? [Schema<"ProductMemoryType">] extends [(typeof PRODUCT_MEMORY_TYPES)[number]]
+      ? true
+      : false
+    : false
+>;
+type _AssertPRODUCT_MEMORY_SCOPESExact = AssertExact<
+  [(typeof PRODUCT_MEMORY_SCOPES)[number]] extends [Schema<"ProductMemoryScope">]
+    ? [Schema<"ProductMemoryScope">] extends [(typeof PRODUCT_MEMORY_SCOPES)[number]]
+      ? true
+      : false
+    : false
+>;
+type _AssertPRODUCT_MEMORY_LAYERSExact = AssertExact<
+  [(typeof PRODUCT_MEMORY_LAYERS)[number]] extends [Schema<"ProductMemoryLayer">]
+    ? [Schema<"ProductMemoryLayer">] extends [(typeof PRODUCT_MEMORY_LAYERS)[number]]
+      ? true
+      : false
+    : false
+>;
+type _AssertPRODUCT_MEMORY_SOURCESExact = AssertExact<
+  [(typeof PRODUCT_MEMORY_SOURCES)[number]] extends [Schema<"ProductMemorySource">]
+    ? [Schema<"ProductMemorySource">] extends [(typeof PRODUCT_MEMORY_SOURCES)[number]]
+      ? true
+      : false
+    : false
+>;
+type _AssertPRODUCT_MCP_TRANSPORTSExact = AssertExact<
+  [(typeof PRODUCT_MCP_TRANSPORTS)[number]] extends [Schema<"ProductMcpTransport">]
+    ? [Schema<"ProductMcpTransport">] extends [(typeof PRODUCT_MCP_TRANSPORTS)[number]]
+      ? true
+      : false
+    : false
+>;
+type _AssertPRODUCT_MCP_HEALTH_STATUSESExact = AssertExact<
+  [(typeof PRODUCT_MCP_HEALTH_STATUSES)[number]] extends [Schema<"ProductMcpHealthStatus">]
+    ? [Schema<"ProductMcpHealthStatus">] extends [(typeof PRODUCT_MCP_HEALTH_STATUSES)[number]]
+      ? true
+      : false
+    : false
+>;
+type _AssertPRODUCT_TRUST_STATESExact = AssertExact<
+  [(typeof PRODUCT_TRUST_STATES)[number]] extends [Schema<"ProductTrustState">]
+    ? [Schema<"ProductTrustState">] extends [(typeof PRODUCT_TRUST_STATES)[number]]
+      ? true
+      : false
+    : false
+>;
+type _AssertPRODUCT_TRUST_CAPABILITIESExact = AssertExact<
+  [(typeof PRODUCT_TRUST_CAPABILITIES)[number]] extends [Schema<"ProductTrustCapability">]
+    ? [Schema<"ProductTrustCapability">] extends [(typeof PRODUCT_TRUST_CAPABILITIES)[number]]
+      ? true
+      : false
+    : false
+>;
+type _AssertPRODUCT_TRUST_DECISIONSExact = AssertExact<
+  [(typeof PRODUCT_TRUST_DECISIONS)[number]] extends [Schema<"ProductTrustDecision">]
+    ? [Schema<"ProductTrustDecision">] extends [(typeof PRODUCT_TRUST_DECISIONS)[number]]
+      ? true
+      : false
+    : false
+>;
 
 const MAX_PRODUCT_TEXT_BYTES = 512;
 const MAX_MEMORY_TOPIC_SLUG_BYTES = 80;
@@ -398,20 +361,6 @@ function expectEnum<const T extends readonly string[]>(
   return value as T[number];
 }
 
-function optionalMetadata(
-  record: UnknownRecord,
-  key: string,
-  path: string,
-): string | undefined {
-  if (record[key] === undefined) {
-    return undefined;
-  }
-  return expectString(record[key], `${path}.${key}`, {
-    maxBytes: MAX_PRODUCT_TEXT_BYTES,
-    noControls: true,
-  });
-}
-
 function expectMemorySlug(value: unknown, path: string): string {
   const slug = expectString(value, path, {
     nonEmpty: true,
@@ -459,53 +408,6 @@ function expectTrustCapabilities(
     return schemaError(path, "free of duplicate capabilities");
   }
   return capabilities;
-}
-
-export function parseProductTrustStatus(
-  value: unknown,
-  path = "product trust status",
-): ProductTrustStatus {
-  const record = expectRecord(value, path);
-  expectOnlyKeys(
-    record,
-    [
-      "workspace_id",
-      "state",
-      "identity_digest",
-      "invalidated_capabilities",
-      "granted_capabilities",
-    ],
-    path,
-  );
-  const identityDigest = expectString(
-    record.identity_digest,
-    `${path}.identity_digest`,
-    {
-      nonEmpty: true,
-      maxBytes: MAX_TRUST_DIGEST_BYTES,
-      noControls: true,
-    },
-  );
-  if (!SHA256_DIGEST_PATTERN.test(identityDigest)) {
-    return schemaError(`${path}.identity_digest`, "a redacted sha256 digest");
-  }
-  return {
-    workspace_id: expectString(record.workspace_id, `${path}.workspace_id`, {
-      nonEmpty: true,
-      maxBytes: MAX_PRODUCT_TEXT_BYTES,
-      noControls: true,
-    }),
-    state: expectEnum(record.state, PRODUCT_TRUST_STATES, `${path}.state`),
-    identity_digest: identityDigest,
-    invalidated_capabilities: expectTrustCapabilities(
-      record.invalidated_capabilities,
-      `${path}.invalidated_capabilities`,
-    ),
-    granted_capabilities: expectTrustCapabilities(
-      record.granted_capabilities,
-      `${path}.granted_capabilities`,
-    ),
-  };
 }
 
 export function parseProductTrustDecisionRequest(
@@ -674,117 +576,6 @@ export function parseUpdateProductMemoryTopicRequest(
   return request;
 }
 
-export function parseProductMemoryTopic(
-  value: unknown,
-  path = "product memory topic",
-): ProductMemoryTopic {
-  const record = expectRecord(value, path);
-  expectOnlyKeys(
-    record,
-    [
-      "slug",
-      "title",
-      "layer",
-      "memory_type",
-      "scope",
-      "source",
-      "confidence",
-      "created_at",
-      "updated_at",
-      "description",
-      "metadata_truncated",
-    ],
-    path,
-  );
-  const topic: ProductMemoryTopic = {
-    slug: expectMemorySlug(record.slug, `${path}.slug`),
-    title: expectString(record.title, `${path}.title`, {
-      maxBytes: MAX_PRODUCT_TEXT_BYTES,
-      noControls: true,
-    }),
-    layer: expectEnum(
-      record.layer,
-      PRODUCT_MEMORY_LAYERS,
-      `${path}.layer`,
-    ),
-    memory_type: expectEnum(
-      record.memory_type,
-      PRODUCT_MEMORY_TYPES,
-      `${path}.memory_type`,
-    ),
-    scope: expectEnum(record.scope, PRODUCT_MEMORY_SCOPES, `${path}.scope`),
-    source: expectEnum(
-      record.source,
-      PRODUCT_MEMORY_SOURCES,
-      `${path}.source`,
-    ),
-    confidence: expectNumber(record.confidence, `${path}.confidence`, {
-      min: 0,
-      max: 1,
-    }),
-    description: expectString(record.description, `${path}.description`, {
-      maxBytes: MAX_PRODUCT_TEXT_BYTES,
-      noControls: true,
-    }),
-    metadata_truncated: expectBoolean(
-      record.metadata_truncated,
-      `${path}.metadata_truncated`,
-    ),
-  };
-  const createdAt = optionalMetadata(record, "created_at", path);
-  if (createdAt !== undefined) {
-    topic.created_at = createdAt;
-  }
-  const updatedAt = optionalMetadata(record, "updated_at", path);
-  if (updatedAt !== undefined) {
-    topic.updated_at = updatedAt;
-  }
-  return topic;
-}
-
-export function parseProductMemoryTopicsResponse(
-  value: unknown,
-  path = "product memory topics response",
-): ProductMemoryTopicsResponse {
-  const record = expectRecord(value, path);
-  expectOnlyKeys(record, ["topics", "total"], path);
-  if (!Array.isArray(record.topics)) {
-    return schemaError(`${path}.topics`, "an array");
-  }
-  if (record.topics.length > MAX_MEMORY_TOPICS) {
-    return schemaError(
-      `${path}.topics`,
-      `an array with at most ${MAX_MEMORY_TOPICS} items`,
-    );
-  }
-  const topics = record.topics.map((topic, index) =>
-    parseProductMemoryTopic(topic, `${path}.topics[${index}]`),
-  );
-  const total = expectInteger(record.total, `${path}.total`, {
-    min: 0,
-    max: MAX_MEMORY_TOPICS,
-  });
-  if (total !== topics.length) {
-    return schemaError(`${path}.total`, "equal to the number of topics");
-  }
-  return { topics, total };
-}
-
-export function parseProductMemoryTopicContentResponse(
-  value: unknown,
-  path = "product memory topic content response",
-): ProductMemoryTopicContentResponse {
-  const record = expectRecord(value, path);
-  expectOnlyKeys(record, ["topic", "content", "truncated"], path);
-  return {
-    topic: parseProductMemoryTopic(record.topic, `${path}.topic`),
-    content: expectString(record.content, `${path}.content`, {
-      maxBytes: MAX_MEMORY_CONTENT_BYTES,
-    }),
-    truncated: expectBoolean(record.truncated, `${path}.truncated`),
-  };
-}
-
 function expectMcpServerName(value: unknown, path: string): string {
   const name = expectString(value, path, {
     nonEmpty: true,
@@ -931,41 +722,6 @@ function parseProductMcpServerFields(
   return { ...common, url: expectMcpUrl(record.url, `${path}.url`) };
 }
 
-export function parseProductMcpServerConfig(
-  value: unknown,
-  path = "product MCP server",
-): ProductMcpServerConfig {
-  const record = expectRecord(value, path);
-  expectOnlyKeys(
-    record,
-    [
-      "name",
-      "enabled",
-      "required",
-      "transport",
-      "command",
-      "args",
-      "env_names",
-      "url",
-      "request_timeout_ms",
-      "transport_deprecated",
-    ],
-    path,
-  );
-  return {
-    name: expectMcpServerName(record.name, `${path}.name`),
-    ...parseProductMcpServerFields(record, path),
-    // Server-owned verdict, validated rather than re-derived so the client
-    // never disagrees with the server about which transport is legacy. It is
-    // deliberately absent from create/update requests: a client does not get
-    // to declare deprecation.
-    transport_deprecated: expectBoolean(
-      record.transport_deprecated,
-      `${path}.transport_deprecated`,
-    ),
-  };
-}
-
 export function parseCreateProductMcpServerRequest(
   value: unknown,
   path = "create product MCP server request",
@@ -1016,438 +772,12 @@ export function parseUpdateProductMcpServerRequest(
   return parseProductMcpServerFields(record, path);
 }
 
-export function parseProductMcpServersResponse(
-  value: unknown,
-  path = "product MCP servers response",
-): ProductMcpServersResponse {
-  const record = expectRecord(value, path);
-  expectOnlyKeys(record, ["servers", "total"], path);
-  if (!Array.isArray(record.servers) || record.servers.length > MAX_MCP_SERVERS) {
-    return schemaError(
-      `${path}.servers`,
-      `an array with at most ${MAX_MCP_SERVERS} items`,
-    );
-  }
-  const servers = record.servers.map((server, index) =>
-    parseProductMcpServerConfig(server, `${path}.servers[${index}]`),
-  );
-  if (new Set(servers.map((server) => server.name)).size !== servers.length) {
-    return schemaError(`${path}.servers`, "servers with unique names");
-  }
-  const total = expectInteger(record.total, `${path}.total`, {
-    min: 0,
-    max: MAX_MCP_SERVERS,
-  });
-  if (total !== servers.length) {
-    return schemaError(`${path}.total`, "equal to the number of servers");
-  }
-  return { servers, total };
-}
-
-export function parseProductMcpHealthResponse(
-  value: unknown,
-  path = "product MCP health response",
-): ProductMcpHealthResponse {
-  const record = expectRecord(value, path);
-  expectOnlyKeys(record, ["servers", "total"], path);
-  if (!Array.isArray(record.servers) || record.servers.length > MAX_MCP_SERVERS) {
-    return schemaError(`${path}.servers`, `an array with at most ${MAX_MCP_SERVERS} items`);
-  }
-  const optionalText = (
-    server: UnknownRecord,
-    key: string,
-    serverPath: string,
-  ): string | undefined =>
-    server[key] === undefined
-      ? undefined
-      : expectString(server[key], `${serverPath}.${key}`, {
-          nonEmpty: true,
-          maxBytes: MAX_PRODUCT_TEXT_BYTES,
-          noControls: true,
-        });
-  const servers = record.servers.map((value, index) => {
-    const serverPath = `${path}.servers[${index}]`;
-    const server = expectRecord(value, serverPath);
-    expectOnlyKeys(
-      server,
-      [
-        "server_name",
-        "required",
-        "transport",
-        "status",
-        "server_config_hash",
-        "server_identity_hash",
-        "protocol_version",
-        "catalog_hash",
-        "capability_snapshot_id",
-        "tool_count",
-        "failure_code",
-        "refreshed_at",
-      ],
-      serverPath,
-    );
-    const refreshedAt = optionalText(server, "refreshed_at", serverPath);
-    if (refreshedAt !== undefined && !Number.isFinite(Date.parse(refreshedAt))) {
-      return schemaError(`${serverPath}.refreshed_at`, "an ISO timestamp");
-    }
-    return {
-      server_name: expectMcpServerName(server.server_name, `${serverPath}.server_name`),
-      required: expectBoolean(server.required, `${serverPath}.required`),
-      transport: expectEnum(server.transport, PRODUCT_MCP_TRANSPORTS, `${serverPath}.transport`),
-      status: expectEnum(server.status, PRODUCT_MCP_HEALTH_STATUSES, `${serverPath}.status`),
-      server_config_hash: optionalText(server, "server_config_hash", serverPath),
-      server_identity_hash: optionalText(server, "server_identity_hash", serverPath),
-      protocol_version: optionalText(server, "protocol_version", serverPath),
-      catalog_hash: optionalText(server, "catalog_hash", serverPath),
-      capability_snapshot_id: optionalText(server, "capability_snapshot_id", serverPath),
-      tool_count: expectInteger(server.tool_count, `${serverPath}.tool_count`, {
-        min: 0,
-        max: MAX_MCP_TOOLS,
-      }),
-      failure_code: optionalText(server, "failure_code", serverPath),
-      refreshed_at: refreshedAt,
-    } satisfies ProductMcpHealthSnapshot;
-  });
-  if (new Set(servers.map((server) => server.server_name)).size !== servers.length) {
-    return schemaError(`${path}.servers`, "servers with unique names");
-  }
-  const total = expectInteger(record.total, `${path}.total`, {
-    min: 0,
-    max: MAX_MCP_SERVERS,
-  });
-  if (total !== servers.length) {
-    return schemaError(`${path}.total`, "equal to the number of servers");
-  }
-  return { servers, total };
-}
-
-function parseProductMcpToolDescriptor(
-  value: unknown,
-  path: string,
-): ProductMcpToolDescriptor {
-  const record = expectRecord(value, path);
-  expectOnlyKeys(
-    record,
-    ["name", "description", "destructive", "parallel_safe"],
-    path,
-  );
-  const destructive = expectBoolean(record.destructive, `${path}.destructive`);
-  const parallelSafe = expectBoolean(
-    record.parallel_safe,
-    `${path}.parallel_safe`,
-  );
-  if (!destructive || parallelSafe) {
-    return schemaError(path, "a locally restricted MCP tool descriptor");
-  }
-  return {
-    name: expectString(record.name, `${path}.name`, {
-      nonEmpty: true,
-      maxBytes: MAX_PRODUCT_TEXT_BYTES,
-      noControls: true,
-    }),
-    description: expectString(record.description, `${path}.description`, {
-      maxBytes: MAX_PRODUCT_TEXT_BYTES,
-      noControls: true,
-    }),
-    destructive: true,
-    parallel_safe: false,
-  };
-}
-
-export function parseProductMcpProbeResponse(
-  value: unknown,
-  path = "product MCP probe response",
-): ProductMcpProbeResponse {
-  const record = expectRecord(value, path);
-  expectOnlyKeys(record, ["server_name", "transport", "tools", "tested_at"], path);
-  if (!Array.isArray(record.tools) || record.tools.length > MAX_MCP_TOOLS) {
-    return schemaError(
-      `${path}.tools`,
-      `an array with at most ${MAX_MCP_TOOLS} items`,
-    );
-  }
-  const testedAt = expectString(record.tested_at, `${path}.tested_at`, {
-    nonEmpty: true,
-    maxBytes: MAX_PRODUCT_TEXT_BYTES,
-    noControls: true,
-  });
-  if (!Number.isFinite(Date.parse(testedAt))) {
-    return schemaError(`${path}.tested_at`, "an ISO timestamp");
-  }
-  return {
-    server_name: expectMcpServerName(
-      record.server_name,
-      `${path}.server_name`,
-    ),
-    transport: expectEnum(
-      record.transport,
-      PRODUCT_MCP_TRANSPORTS,
-      `${path}.transport`,
-    ),
-    tools: record.tools.map((tool, index) =>
-      parseProductMcpToolDescriptor(tool, `${path}.tools[${index}]`),
-    ),
-    tested_at: testedAt,
-  };
-}
-
-function parseProductResumeHealth(
-  value: unknown,
-  path: string,
-): ProductResumeHealth {
-  const record = expectRecord(value, path);
-  expectOnlyKeys(
-    record,
-    [
-      "status",
-      "workspace_count",
-      "session_count",
-      "bound_session_count",
-      "running_session_count",
-      "needs_attention_session_count",
-    ],
-    path,
-  );
-  const health: ProductResumeHealth = {
-    status: expectEnum(
-      record.status,
-      ["healthy", "needs_attention"] as const,
-      `${path}.status`,
-    ),
-    workspace_count: expectInteger(
-      record.workspace_count,
-      `${path}.workspace_count`,
-      { min: 0 },
-    ),
-    session_count: expectInteger(
-      record.session_count,
-      `${path}.session_count`,
-      { min: 0 },
-    ),
-    bound_session_count: expectInteger(
-      record.bound_session_count,
-      `${path}.bound_session_count`,
-      { min: 0 },
-    ),
-    running_session_count: expectInteger(
-      record.running_session_count,
-      `${path}.running_session_count`,
-      { min: 0 },
-    ),
-    needs_attention_session_count: expectInteger(
-      record.needs_attention_session_count,
-      `${path}.needs_attention_session_count`,
-      { min: 0 },
-    ),
-  };
-  if (
-    health.bound_session_count > health.session_count ||
-    health.running_session_count > health.session_count ||
-    health.needs_attention_session_count > health.session_count ||
-    health.running_session_count + health.needs_attention_session_count >
-      health.session_count
-  ) {
-    return schemaError(path, "internally consistent session counts");
-  }
-  const expectedStatus =
-    health.needs_attention_session_count === 0
-      ? "healthy"
-      : "needs_attention";
-  if (health.status !== expectedStatus) {
-    return schemaError(
-      `${path}.status`,
-      "consistent with needs_attention_session_count",
-    );
-  }
-  return health;
-}
-
-export function parseProductRuntimeInfo(
-  value: unknown,
-  path = "product runtime info",
-): ProductRuntimeInfo {
-  const record = expectRecord(value, path);
-  expectOnlyKeys(
-    record,
-    [
-      "api_version",
-      "connection",
-      "product_store",
-      "execution_environment",
-      "agent",
-      "resume_health",
-    ],
-    path,
-  );
-  const environmentPath = `${path}.execution_environment`;
-  const environment = expectRecord(record.execution_environment, environmentPath);
-  expectOnlyKeys(
-    environment,
-    ["adapter", "workspace_kind", "workspace_digest", "capabilities"],
-    environmentPath,
-  );
-  const capabilitiesPath = `${environmentPath}.capabilities`;
-  const capabilities = expectRecord(environment.capabilities, capabilitiesPath);
-  const agentPath = `${path}.agent`;
-  const agent = expectRecord(record.agent, agentPath);
-  expectOnlyKeys(
-    agent,
-    [
-      "selector",
-      "workspace_source_authorized",
-      "workspace_instructions_enabled",
-      "allow_remediation_procedures",
-      "max_procedure_selections",
-    ],
-    agentPath,
-  );
-  expectOnlyKeys(
-    capabilities,
-    [
-      "filesystem_read",
-      "filesystem_write",
-      "process_run",
-      "process_stdio",
-      "observations",
-      "process_background",
-      "process_pty",
-      "workspace_checkpoints",
-      "artifact_projection",
-    ],
-    capabilitiesPath,
-  );
-  const workspaceDigest = expectString(
-    environment.workspace_digest,
-    `${environmentPath}.workspace_digest`,
-    {
-      nonEmpty: true,
-      maxBytes: MAX_TRUST_DIGEST_BYTES,
-      noControls: true,
-    },
-  );
-  if (!SHA256_DIGEST_PATTERN.test(workspaceDigest)) {
-    return schemaError(
-      `${environmentPath}.workspace_digest`,
-      "a redacted sha256 digest",
-    );
-  }
-  const info: ProductRuntimeInfo = {
-    api_version: expectString(record.api_version, `${path}.api_version`, {
-      nonEmpty: true,
-      maxBytes: MAX_PRODUCT_TEXT_BYTES,
-      noControls: true,
-    }),
-    connection: expectEnum(
-      record.connection,
-      ["connected"] as const,
-      `${path}.connection`,
-    ),
-    product_store: expectEnum(
-      record.product_store,
-      ["ready", "unavailable"] as const,
-      `${path}.product_store`,
-    ),
-    execution_environment: {
-      adapter: expectEnum(
-        environment.adapter,
-        ["local"] as const,
-        `${environmentPath}.adapter`,
-      ),
-      workspace_kind: expectEnum(
-        environment.workspace_kind,
-        ["folder", "repo", "task"] as const,
-        `${environmentPath}.workspace_kind`,
-      ),
-      workspace_digest: workspaceDigest,
-      capabilities: {
-        filesystem_read: expectBoolean(
-          capabilities.filesystem_read,
-          `${capabilitiesPath}.filesystem_read`,
-        ),
-        filesystem_write: expectBoolean(
-          capabilities.filesystem_write,
-          `${capabilitiesPath}.filesystem_write`,
-        ),
-        process_run: expectBoolean(
-          capabilities.process_run,
-          `${capabilitiesPath}.process_run`,
-        ),
-        process_stdio: expectBoolean(
-          capabilities.process_stdio,
-          `${capabilitiesPath}.process_stdio`,
-        ),
-        observations: expectBoolean(
-          capabilities.observations,
-          `${capabilitiesPath}.observations`,
-        ),
-        process_background: expectBoolean(
-          capabilities.process_background,
-          `${capabilitiesPath}.process_background`,
-        ),
-        process_pty: expectBoolean(
-          capabilities.process_pty,
-          `${capabilitiesPath}.process_pty`,
-        ),
-        workspace_checkpoints: expectBoolean(
-          capabilities.workspace_checkpoints,
-          `${capabilitiesPath}.workspace_checkpoints`,
-        ),
-        artifact_projection: expectBoolean(
-          capabilities.artifact_projection,
-          `${capabilitiesPath}.artifact_projection`,
-        ),
-      },
-    },
-    agent: {
-      selector: expectString(agent.selector, `${agentPath}.selector`, {
-        nonEmpty: true,
-        maxBytes: 128,
-        noControls: true,
-      }),
-      workspace_source_authorized: expectBoolean(
-        agent.workspace_source_authorized,
-        `${agentPath}.workspace_source_authorized`,
-      ),
-      workspace_instructions_enabled: expectBoolean(
-        agent.workspace_instructions_enabled,
-        `${agentPath}.workspace_instructions_enabled`,
-      ),
-      allow_remediation_procedures: expectBoolean(
-        agent.allow_remediation_procedures,
-        `${agentPath}.allow_remediation_procedures`,
-      ),
-      max_procedure_selections: expectInteger(
-        agent.max_procedure_selections,
-        `${agentPath}.max_procedure_selections`,
-        { min: 1, max: 8 },
-      ),
-    },
-  };
-  if (record.resume_health !== undefined) {
-    info.resume_health = parseProductResumeHealth(
-      record.resume_health,
-      `${path}.resume_health`,
-    );
-  }
-  if (
-    (info.product_store === "ready") !== (info.resume_health !== undefined)
-  ) {
-    return schemaError(
-      `${path}.resume_health`,
-      info.product_store === "ready"
-        ? "present when the product store is ready"
-        : "omitted when the product store is unavailable",
-    );
-  }
-  return info;
-}
-
 export function parseSettingsPreferencesUpdateRequest(
   value: unknown,
   path = "settings preferences update request",
 ): SettingsPreferencesUpdateRequest {
-  const request = parseUpdateProductPreferencesRequest(value, path);
-  if (request.expected_revision === undefined) {
+  const request = value as UpdateProductPreferencesRequest;
+  if (request.expected_revision == null) {
     return schemaError(`${path}.expected_revision`, "a required CAS revision");
   }
   if (request.expected_revision >= Number.MAX_SAFE_INTEGER) {
@@ -1456,25 +786,31 @@ export function parseSettingsPreferencesUpdateRequest(
       `at most ${Number.MAX_SAFE_INTEGER - 1}`,
     );
   }
-  if (request.default_approval_policy === undefined) {
+  if (request.default_approval_policy == null) {
     return schemaError(
       `${path}.default_approval_policy`,
       `one of ${PRODUCT_APPROVAL_PREFERENCES.join(", ")}`,
     );
   }
+  if (request.theme == null) {
+    return schemaError(
+      `${path}.theme`,
+      `one of ${["light", "dark", "system"].join(", ")}`,
+    );
+  }
   const settingsRequest: SettingsPreferencesUpdateRequest = {
-    schema_version: request.schema_version,
+    schema_version: request.schema_version ?? 0,
     expected_revision: request.expected_revision,
     theme: request.theme,
     default_approval_policy: request.default_approval_policy,
   };
-  if (request.active_workspace_id !== undefined) {
+  if (request.active_workspace_id != null) {
     settingsRequest.active_workspace_id = request.active_workspace_id;
   }
-  if (request.active_session_id !== undefined) {
+  if (request.active_session_id != null) {
     settingsRequest.active_session_id = request.active_session_id;
   }
-  if (request.provider_selection !== undefined) {
+  if (request.provider_selection != null) {
     settingsRequest.provider_selection = {
       ...request.provider_selection,
       approval: request.default_approval_policy,

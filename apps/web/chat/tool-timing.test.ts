@@ -54,7 +54,7 @@ describe("tool arrival keys", () => {
       arrivalKeyForStreamEvent({
         type: "tool_call_failed",
         call_id: "call-4",
-        error: { code: "tool_failed", message: "boom" },
+        error: { code: "execution_failed", reason: "boom" },
       }),
     ).toBe("tool:call-4");
     expect(

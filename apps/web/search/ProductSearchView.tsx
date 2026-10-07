@@ -180,7 +180,7 @@ export function ProductSearchView({
           searchPartial({
             hitCount: page.hits.length,
             limit: SEARCH_PAGE_LIMIT,
-            nextCursor: page.next_cursor,
+            nextCursor: page.next_cursor ?? undefined,
           }),
         );
         setNotice(announceExpiry ? "expired" : null);
