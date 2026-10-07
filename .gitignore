@@ -14,6 +14,7 @@
 /apps/web/.next
 /apps/web/out
 /apps/web/desktop-dist
+/apps/web/web-dist
 /apps/web/.turbo
 /apps/web/test-results
 /apps/web/.env*

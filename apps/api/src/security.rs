@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::header::{
-    ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, AUTHORIZATION, ORIGIN, RETRY_AFTER,
-    VARY, WWW_AUTHENTICATE,
+    ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, AUTHORIZATION, HOST, ORIGIN,
+    RETRY_AFTER, VARY, WWW_AUTHENTICATE,
 };
 use axum::http::{HeaderValue, Method, Request, StatusCode};
 use axum::middleware::Next;
@@ -18,10 +18,15 @@ pub(crate) async fn api_security(
     next: Next,
 ) -> Response {
     let headers = request.headers().clone();
+    // A browser posting to the same origin that served its page still sends
+    // an Origin header; that is not a cross-origin request, so the CORS
+    // allowlist does not apply. This is what lets the API host the console
+    // itself (router_with_web) without any origin configuration.
     let origin = headers
         .get(ORIGIN)
         .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
+        .map(str::to_string)
+        .filter(|origin| !is_same_origin_request(&headers, origin));
 
     if let Some(origin) = origin.as_deref()
         && let Some(response) = disallowed_origin_response(&state, origin)
@@ -163,6 +168,23 @@ fn apply_cors_headers(headers: &mut axum::http::HeaderMap, origin: &str) {
         HeaderValue::from_static("GET, POST, PUT, PATCH, DELETE, OPTIONS"),
     );
     headers.insert(VARY, HeaderValue::from_static("origin"));
+}
+
+/// An Origin counts as same-origin when its authority matches the Host the
+/// request was addressed to. The scheme is deliberately not compared: this
+/// server only speaks plain HTTP, and a page served from it shares the scheme.
+fn is_same_origin_request(headers: &axum::http::HeaderMap, origin: &str) -> bool {
+    let Some(host) = headers.get(HOST).and_then(|value| value.to_str().ok()) else {
+        return false;
+    };
+    origin_authority(origin).is_some_and(|authority| authority.eq_ignore_ascii_case(host.trim()))
+}
+
+fn origin_authority(origin: &str) -> Option<&str> {
+    origin
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split('/').next())
+        .filter(|authority| !authority.is_empty())
 }
 
 fn is_origin_allowed(state: &ApiState, origin: &str) -> bool {

@@ -33,6 +33,7 @@ Config options are authoritative in the environment layer of `apps/bootstrap/src
 | `ROVE_API_CORS_ORIGINS` / `ROVE_API_RATE_LIMIT_PER_MINUTE` | CORS allowlist and per-minute request cap |
 | `ROVE_API_UNSAFE_REMOTE_WITHOUT_AUTH` | Allow binding a non-loopback address without auth; only when the risk is understood |
 | `ROVE_WEB_API_BASE` | Upstream API address for the Web proxy |
+| `ROVE_WEB_DIST` | Web bundle directory for `rove-api` to serve (same effect as `--web-dist`) |
 | `ROVE_MCP_CONFIG` | Explicit MCP catalog file |
 | `ROVE_DISABLE_NATIVE_FOLDER_PICKER` | Disable the native folder picker, for headless environments |
 | `ROVE_STATE_*` / `ROVE_MEMORY_*` / `ROVE_CONTEXT_*` / `ROVE_SHELL_*` / `ROVE_ROUTING_*` | Overrides for the corresponding config sections; semantics in `config.rs` |
@@ -43,8 +44,9 @@ Config options are authoritative in the environment layer of `apps/bootstrap/src
 | --- | --- |
 | Keyless TUI | `cargo run -p rove-cli -- --model fake` |
 | REPL / one-shot | `cargo run -p rove-cli -- repl --model fake` / `cargo run -p rove-cli -- exec --model fake "<task>"` |
+| Product mode (one process) | `powershell -ExecutionPolicy Bypass -File scripts/serve.ps1` — builds `apps/web` (`pnpm build:web` → `web-dist/`), then runs `rove-api --web-dist`; add `-Provider` for a real provider, `-SkipWebBuild` to reuse an existing bundle |
 | Start API + Web (fake) | `powershell -ExecutionPolicy Bypass -File scripts/dev.ps1` (add `-Provider` for a real provider) |
-| API only | `cargo run -p rove-api` |
+| API only | `cargo run -p rove-api` (add `--web-dist apps/web/web-dist` to also serve the built console on the same origin) |
 | Web dev | `cd apps/web && pnpm dev` |
 | Desktop dev / package | `cd apps/desktop && pnpm dlx @tauri-apps/cli@2 dev` / `... build --target x86_64-pc-windows-msvc` |
 | Format & lint | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` |

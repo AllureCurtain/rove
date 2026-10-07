@@ -4,7 +4,14 @@ import { fileURLToPath } from "node:url";
 
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const nextRoot = join(webRoot, ".next");
-const outputRoot = join(webRoot, "desktop-dist");
+// --out <dir-name> picks the output folder under apps/web: "desktop-dist" for
+// the Tauri host, "web-dist" for the bundle rove-api serves directly.
+const outFlag = process.argv.indexOf("--out");
+const outputName = outFlag >= 0 ? process.argv[outFlag + 1] : "desktop-dist";
+if (!outputName || outputName.includes("/") || outputName.includes("\\") || outputName.includes("..")) {
+  throw new Error(`--out must be a single directory name, got ${outputName}`);
+}
+const outputRoot = join(webRoot, outputName);
 const sourceHtml = join(nextRoot, "server", "app", "index.html");
 
 await stat(sourceHtml);
@@ -25,5 +32,5 @@ try {
 
 const html = await readFile(join(outputRoot, "index.html"), "utf8");
 if (!html.includes("/_next/static/")) {
-  throw new Error("desktop HTML does not reference the expected Next static assets");
+  throw new Error("bundle HTML does not reference the expected Next static assets");
 }
