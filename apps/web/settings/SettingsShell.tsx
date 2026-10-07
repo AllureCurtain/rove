@@ -757,9 +757,9 @@ function BrowserProvidersSettings({
         model: defaultModel.trim() || undefined,
       });
       setTestResult(response);
-      if (response.status === "ok" && (response.key_present || !providerRequiresKey(providerType))) {
+      if (response.status === "pass" && (response.key_present || !providerRequiresKey(providerType))) {
         outcome = "pass";
-      } else if (response.status === "ok") {
+      } else if (response.status === "pass") {
         outcome = "incomplete";
       } else {
         detail = t("settings.providers.unreachable");
@@ -982,9 +982,9 @@ function BrowserProvidersSettings({
         {status ? <div className="placeholder-note" role="status">{status}</div> : null}
         {testResult ? (
           <div className="placeholder-note testline" data-status={testResult.status}>
-            {testResult.status === "ok" && (testResult.key_present || !providerRequiresKey(providerType))
+            {testResult.status === "pass" && (testResult.key_present || !providerRequiresKey(providerType))
               ? t("settings.providers.connected", { count: testResult.models_count })
-              : testResult.status === "ok" && !testResult.key_present
+              : testResult.status === "pass" && !testResult.key_present
                 ? t("settings.providers.keyMissing")
                 : t("settings.providers.unreachable")}
           </div>

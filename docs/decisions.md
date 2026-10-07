@@ -2,6 +2,13 @@
 
 New decisions go on top. Do not delete overturned decisions; mark them "superseded" and note which entry replaced them.
 
+## 2026-10-07 Attaching to an evicted live job is terminal, not an error
+
+- Status: active
+- Decision: when `RunController.attach` fails with `404 job not found`, `use-session-continuity` records the binding in `terminatedBindingRef` and runs the normal terminal reconciliation instead of reporting "Conversation restore failed". The durable transcript restore then carries the finished run's result.
+- Why: the live job registry drops a job once its run ends; a fast turn (fake model, single-step task) can terminate before the focused window re-attaches, so the attach path raced real job eviction and surfaced a false restore failure that disabled the composer until manual retry.
+- Rejected: retrying the attach on a delay — the job is gone for good, not slow; treating every attach failure as terminal — a network or auth failure should still surface as an error.
+
 ## 2026-10-07 Router composition runs on a dedicated big-stack thread
 
 - Status: active

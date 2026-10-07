@@ -27,6 +27,10 @@ Test-CommandAvailable "pnpm"
 Test-CommandAvailable "cargo"
 
 if (-not $SkipWebBuild -or -not (Test-Path -LiteralPath (Join-Path $WebDist "index.html"))) {
+    # The real-API spec asserts English copy; the product shell defaults to
+    # zh-CN unless ROVE_DEFAULT_LOCALE is baked in at build time.
+    $savedLocale = [Environment]::GetEnvironmentVariable("ROVE_DEFAULT_LOCALE", "Process")
+    [Environment]::SetEnvironmentVariable("ROVE_DEFAULT_LOCALE", "en-US", "Process")
     Write-Host "building web bundle -> apps/web/web-dist"
     Push-Location $WebRoot
     try {
@@ -36,6 +40,7 @@ if (-not $SkipWebBuild -or -not (Test-Path -LiteralPath (Join-Path $WebDist "ind
         }
     } finally {
         Pop-Location
+        [Environment]::SetEnvironmentVariable("ROVE_DEFAULT_LOCALE", $savedLocale, "Process")
     }
 }
 
@@ -78,7 +83,11 @@ New-Item -ItemType Directory -Force -Path $Workspace, $DataRoot | Out-Null
 $scopedEnv = @{
     ROVE_PROVIDER = "fake"
     ROVE_MODEL = "fake"
+    # Isolate the spawned server from the operator's real state: product data,
+    # the Project Trust store, and the user config root that hosts the
+    # provider catalog all stay under the scratch directory.
     ROVE_DATA_ROOT = $DataRoot
+    ROVE_CONFIG_ROOT = (Join-Path $DataRoot "config")
     ROVE_PROJECT_TRUST_STORE = (Join-Path $DataRoot "project-trust.sqlite")
 }
 $savedEnv = @{}
@@ -120,6 +129,9 @@ try {
 
     $env:ROVE_REAL_API_E2E = "1"
     $env:PLAYWRIGHT_BASE_URL = "http://$ApiAddr"
+    # The suite shares one product catalog and trust store; keep the browser
+    # fan-out serial so assertions observe exactly one client's mutations.
+    $env:ROVE_E2E_WORKERS = "1"
     Push-Location $WebRoot
     try {
         pnpm exec playwright test tests/e2e/real-api.spec.ts
@@ -137,5 +149,6 @@ try {
     foreach ($key in $scopedEnv.Keys) {
         [Environment]::SetEnvironmentVariable($key, $savedEnv[$key], "Process")
     }
+    Remove-Item Env:\ROVE_REAL_API_E2E, Env:\PLAYWRIGHT_BASE_URL, Env:\ROVE_E2E_WORKERS -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $Scratch -Recurse -Force -ErrorAction SilentlyContinue
 }
