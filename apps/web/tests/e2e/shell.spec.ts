@@ -185,7 +185,9 @@ test("settings providers can test and list models without raw keys", async ({
   await page.getByRole("button", { name: "列出模型" }).click();
   await expect(page.getByText("可用模型（2）", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "测试连接" }).click();
-  await expect(page.getByText(/已连接/)).toBeVisible();
+  await expect(
+    page.locator(".testline").getByText(/已连接/u),
+  ).toBeVisible();
 
   await expect.poll(() => sawModels).toBe(true);
   await expect.poll(() => sawTest).toBe(true);

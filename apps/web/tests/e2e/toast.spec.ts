@@ -276,7 +276,7 @@ test("a provider test whose panel is gone still reports", async ({ page }) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
-        status: "ok",
+        status: "pass",
         provider: "gateway.test",
         provider_type: "openai",
         api_base: "https://gateway.test/v1",
