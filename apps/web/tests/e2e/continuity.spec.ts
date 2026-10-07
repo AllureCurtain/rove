@@ -277,6 +277,17 @@ test("an empty transcript for a live session stays fail-closed when reattach fai
     activeWorkspaceId: workspace.id,
     activeSessionId: session.id,
   });
+  // A 404 attach now means "the run already left the live registry" and falls
+  // back to the durable transcript; keep exercising the fail-closed error
+  // surface with a 500 so a genuinely unhealthy API still blocks the composer.
+  // (Later page.route registrations shadow the mock's catch-all.)
+  await page.route(/\/api\/jobs\/job-live-missing\/state$/u, async (route) => {
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ code: "internal", error: "state backend unavailable" }),
+    });
+  });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
 
