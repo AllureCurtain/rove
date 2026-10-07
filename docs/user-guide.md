@@ -81,5 +81,5 @@ Steps: run `rove review` in the terminal (optionally with `--base <rev>` or `--c
 - Local single user only: no accounts, cloud sync, or billing.
 - Shell tools are policy-constrained and approval-gated, but not container-sandboxed.
 - No vector search; the agent learns the project by reading files and searching code.
-- No sub-agent delegation.
+- No sub-agent delegation yet; the work panel's subagent launcher is present but the backend is not implemented.
 - macOS and Linux packages are not yet verified.
