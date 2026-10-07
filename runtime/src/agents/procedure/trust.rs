@@ -11,7 +11,19 @@ use serde::{Deserialize, Serialize};
 /// How much authority a procedure source carries.
 ///
 /// Ordered most to least trusted, so `Ord` can be used for policy comparisons.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcedureTrust {
     /// Shipped inside the runtime or a builtin Agent package.

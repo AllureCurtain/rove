@@ -62,7 +62,7 @@ Clients should branch on `code` and never parse the `error` text.
 
 - `GET /jobs/{job_id}/events`: replays persisted events first, then streams live events; replay still works after a server restart.
 - `GET /product/events`: the product journal, capped at the latest 10000 lines. Resume with SSE `id:` + `Last-Event-ID`; no polling needed.
-- Event payloads are the canonical `StreamEvent`, sanitized once more before sending.
+- Event payloads are the canonical `StreamEvent`, sanitized once more before sending. `JobStreamEvent.event` is typed `StreamEvent` in OpenAPI: every variant is a `oneOf` member discriminated by `type` (variants with flattened fields carry the discriminator inside `allOf`), and `tests/event_contract.rs` pins the published kinds to `STREAM_EVENT_KINDS`.
 - Clients declare `event_contract` in the request to select a transcript event contract version. Without it, the old contract applies and bytes are unchanged; the server never infers the contract from UA or other fields.
 
 ## Change process

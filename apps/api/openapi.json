@@ -1,6 +1,98 @@
 {
   "components": {
     "schemas": {
+      "AgentDiagnostic": {
+        "description": "One bounded diagnostic produced while resolving an Agent context.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "subject",
+          "message"
+        ],
+        "type": "object"
+      },
+      "AgentProfileIdentity": {
+        "description": "Stable, content-free identity safe for events, reports, and diagnostics.",
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "definition_version": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "instruction_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "manifest_hash": {
+            "type": "string"
+          },
+          "package_hash": {
+            "type": "string"
+          },
+          "procedures": {
+            "items": {
+              "$ref": "#/components/schemas/ProcedureReference"
+            },
+            "type": "array"
+          },
+          "profile_hash": {
+            "type": "string"
+          },
+          "selector": {
+            "$ref": "#/components/schemas/AgentSelector"
+          }
+        },
+        "required": [
+          "selector",
+          "agent_id",
+          "display_name",
+          "definition_version",
+          "manifest_hash",
+          "package_hash",
+          "profile_hash"
+        ],
+        "type": "object"
+      },
+      "AgentSelector": {
+        "description": "A fully qualified `<source>:<agent-id>` reference.",
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/AgentSource"
+          }
+        },
+        "required": [
+          "source",
+          "agent_id"
+        ],
+        "type": "object"
+      },
+      "AgentSource": {
+        "description": "Where an Agent package came from. Source determines trust; a package\ncannot declare its own.",
+        "enum": [
+          "builtin",
+          "workspace"
+        ],
+        "type": "string"
+      },
       "ApiErrorResponse": {
         "properties": {
           "code": {
@@ -16,6 +108,66 @@
           "code",
           "error"
         ],
+        "type": "object"
+      },
+      "ArtifactId": {
+        "description": "Opaque durable artifact identity.\n\nOpaque on purpose: it is generated locally from validated bytes, so a\nremote filename or URI can never steer where a payload is written or read.",
+        "type": "string"
+      },
+      "ArtifactTrust": {
+        "description": "How much the local runtime trusts an artifact's origin. Always\n`Untrusted` for anything a remote server produced.",
+        "enum": [
+          "untrusted",
+          "local_tool"
+        ],
+        "type": "string"
+      },
+      "ArtifactValidation": {
+        "description": "Outcome of validating a claim against the retained bytes.",
+        "enum": [
+          "validated",
+          "claim_rejected",
+          "quota_exceeded"
+        ],
+        "type": "string"
+      },
+      "AssistantTurn": {
+        "description": "Normalized assistant result consumed by Core and Runtime.",
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/components/schemas/ContentBlock"
+            },
+            "type": "array"
+          },
+          "provenance": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TurnProvenance"
+              }
+            ]
+          },
+          "schema_version": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stop_reason": {
+            "$ref": "#/components/schemas/StopReason"
+          },
+          "tool_calls": {
+            "items": {
+              "$ref": "#/components/schemas/ToolCall"
+            },
+            "type": "array"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          }
+        },
         "type": "object"
       },
       "BenchArtifactsResponse": {
@@ -269,6 +421,138 @@
           "artifacts",
           "check_results",
           "failures"
+        ],
+        "type": "object"
+      },
+      "CapabilityMutationClass": {
+        "enum": [
+          "read_only",
+          "mutating"
+        ],
+        "type": "string"
+      },
+      "ContentBlock": {
+        "description": "Provider-neutral content in an assistant or tool result.\n\nRich content is deliberately a bounded reference.  The model layer does\nnot fetch a URI or persist a remote payload as part of request projection.",
+        "oneOf": [
+          {
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "text"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "mime_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reference": {
+                "type": "string"
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "rich_reference"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "reference",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A locally verified raster image, carried as base64.\n\nThe bytes come from the product attachment store, which has already\nsniffed the type and hashed the payload, so `mime_type` is the\nserver-verified value and never a client claim. The base64 `data` is\nbounded by [`MAX_CONTENT_BYTES`] like every other content, which is\nwhat makes an oversized image a labelled degradation at the injection\nsite instead of a provider-side rejection mid-run.",
+            "properties": {
+              "data": {
+                "type": "string"
+              },
+              "mime_type": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "image"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "mime_type",
+              "data",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ContentBlockMeta": {
+        "description": "Shared per-block facts. Every block records its position, what the remote\nclaimed, and whether the retained form is complete.",
+        "properties": {
+          "audience": {
+            "description": "Validated audience annotation. Advisory only: it never changes who may\nread a block, only how a UI may present it.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "mime_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ordinal": {
+            "description": "Position in the tool's original result, preserved even when a block is\ntruncated or promoted to an artifact.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "priority": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "truncated": {
+            "description": "True when the retained inline form is shorter than what the tool sent.",
+            "type": "boolean"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/ArtifactValidation"
+          }
+        },
+        "required": [
+          "ordinal"
         ],
         "type": "object"
       },
@@ -695,6 +979,541 @@
         ],
         "type": "object"
       },
+      "EvaluatorMode": {
+        "description": "Whether semantic plan ambiguity may invoke the model evaluator.",
+        "enum": [
+          "rule_only",
+          "rule_first_model_on_ambiguity"
+        ],
+        "type": "string"
+      },
+      "ExecutionBudgetDimension": {
+        "description": "A specific exhausted execution dimension.",
+        "enum": [
+          "plan_steps",
+          "step_attempts",
+          "model_turns",
+          "model_turns_per_step",
+          "tool_calls",
+          "tool_calls_per_step",
+          "plan_revisions",
+          "model_repairs",
+          "finalization_turns",
+          "wall_time",
+          "total_tokens",
+          "cost"
+        ],
+        "type": "string"
+      },
+      "ExecutionBudgetExhaustion": {
+        "description": "Typed budget refusal emitted before new work begins, or immediately after\nan indivisible model response crosses a token/cost boundary.",
+        "properties": {
+          "consumed": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dimension": {
+            "$ref": "#/components/schemas/ExecutionBudgetDimension"
+          },
+          "limit": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/ExecutionPhase"
+          },
+          "safe_summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "dimension",
+          "phase",
+          "limit",
+          "consumed",
+          "safe_summary"
+        ],
+        "type": "object"
+      },
+      "ExecutionBudgetLimits": {
+        "description": "Independent limits for the lifecycle phases and their observable work.\n`None` means that this phase has not resolved that dimension yet.",
+        "properties": {
+          "max_cost_microunits": {
+            "default": null,
+            "description": "Cost enforcement is deferred until provider price metadata exists.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_finalization_turns": {
+            "default": null,
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_model_repairs": {
+            "default": null,
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_model_turns": {
+            "default": null,
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_model_turns_per_step": {
+            "default": null,
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_plan_revisions": {
+            "default": null,
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_plan_steps": {
+            "default": null,
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_step_attempts": {
+            "default": null,
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_tool_calls": {
+            "default": null,
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_tool_calls_per_step": {
+            "default": null,
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_total_tokens": {
+            "default": null,
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_wall_time_ms": {
+            "default": null,
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ExecutionBudgetSnapshot": {
+        "description": "Public resolved budget snapshot used by events, checkpoints, state, API,\nreports, and UIs.",
+        "properties": {
+          "consumed": {
+            "default": {
+              "cost_microunits": 0,
+              "evaluator_turns": 0,
+              "finalization_turns": 0,
+              "model_repairs": 0,
+              "model_turns": 0,
+              "plan_revisions": 0,
+              "plan_steps": 0,
+              "planner_turns": 0,
+              "replanner_turns": 0,
+              "step_attempts": 0,
+              "tool_calls": 0,
+              "total_tokens": 0,
+              "wall_time_ms": 0
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ExecutionBudgetUsage"
+              }
+            ]
+          },
+          "cost_enforced": {
+            "default": false,
+            "description": "Cost is enforceable only when priced usage has been supplied. Generic\nprovider clients expose zero here rather than claiming enforcement.",
+            "type": "boolean"
+          },
+          "exhausted": {
+            "default": null,
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExecutionBudgetExhaustion"
+              }
+            ]
+          },
+          "limits": {
+            "default": {
+              "max_cost_microunits": null,
+              "max_finalization_turns": null,
+              "max_model_repairs": null,
+              "max_model_turns": null,
+              "max_model_turns_per_step": null,
+              "max_plan_revisions": null,
+              "max_plan_steps": null,
+              "max_step_attempts": null,
+              "max_tool_calls": null,
+              "max_tool_calls_per_step": null,
+              "max_total_tokens": null,
+              "max_wall_time_ms": null
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ExecutionBudgetLimits"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ExecutionBudgetUsage": {
+        "description": "Counters consumed by an execution policy.",
+        "properties": {
+          "cost_microunits": {
+            "default": 0,
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "evaluator_turns": {
+            "default": 0,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "finalization_turns": {
+            "default": 0,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "model_repairs": {
+            "default": 0,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "model_turns": {
+            "default": 0,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "plan_revisions": {
+            "default": 0,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "plan_steps": {
+            "default": 0,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "planner_turns": {
+            "default": 0,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "replanner_turns": {
+            "default": 0,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "step_attempts": {
+            "default": 0,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tool_calls": {
+            "default": 0,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_tokens": {
+            "default": 0,
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "wall_time_ms": {
+            "default": 0,
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "ExecutionDegradation": {
+        "description": "Explicit, safe degradation fact. Fallbacks are never silent and do not\nchange permissions or erase previously recorded evidence.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "degradation_id": {
+            "type": "string"
+          },
+          "occurred_at": {
+            "type": "string"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/ExecutionPhase"
+          },
+          "safe_summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "degradation_id",
+          "phase",
+          "code",
+          "safe_summary",
+          "occurred_at"
+        ],
+        "type": "object"
+      },
+      "ExecutionPhase": {
+        "description": "Lifecycle phases used in budget and degradation facts. These values are\nsafe diagnostics; they do not contain model reasoning.",
+        "enum": [
+          "planner",
+          "step",
+          "evaluator",
+          "replanner",
+          "finalizer",
+          "run"
+        ],
+        "type": "string"
+      },
+      "ExecutionPolicy": {
+        "description": "A resolved, inspectable execution policy.",
+        "properties": {
+          "budgets": {
+            "$ref": "#/components/schemas/ExecutionBudgetLimits"
+          },
+          "evaluator_mode": {
+            "$ref": "#/components/schemas/EvaluatorMode"
+          },
+          "finalizer_policy": {
+            "$ref": "#/components/schemas/FinalizerPolicy"
+          },
+          "selection_source": {
+            "$ref": "#/components/schemas/StrategySelectionSource"
+          },
+          "strategy": {
+            "$ref": "#/components/schemas/ExecutionStrategy"
+          },
+          "version": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "strategy",
+          "selection_source",
+          "budgets"
+        ],
+        "type": "object"
+      },
+      "ExecutionStrategy": {
+        "description": "Explicit runtime execution strategies.",
+        "enum": [
+          "react",
+          "plan_react"
+        ],
+        "type": "string"
+      },
+      "ExternalEffect": {
+        "description": "An effect outside the workspace that a tool reported causing.\n\nRecorded so a Finalizer never claims an unverified external action\nsucceeded, and so an indeterminate outcome stays visible.",
+        "properties": {
+          "indeterminate": {
+            "description": "True when it is unknown whether the effect happened.",
+            "type": "boolean"
+          },
+          "kind": {
+            "description": "What kind of effect, for example `mcp_tool_call` or `network_write`.",
+            "type": "string"
+          },
+          "target": {
+            "description": "Display-safe target description. Never a credential-bearing URL.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "target"
+        ],
+        "type": "object"
+      },
+      "FinalOutcomeStatus": {
+        "description": "User-visible terminal classification. This is deliberately separate from\nprocess-level `RunStatus` and compatibility `TerminationReason`.",
+        "enum": [
+          "success",
+          "partial",
+          "blocked",
+          "rejected",
+          "cancelled",
+          "interrupted",
+          "exhausted",
+          "indeterminate",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "FinalizationMode": {
+        "enum": [
+          "direct",
+          "model",
+          "deterministic",
+          "deterministic_fallback"
+        ],
+        "type": "string"
+      },
+      "FinalizationPhase": {
+        "enum": [
+          "started",
+          "completed"
+        ],
+        "type": "string"
+      },
+      "FinalizationRecord": {
+        "description": "Durable finalization record. The output is bounded before persistence by\nthe Finalizer and contains only user-visible synthesis, never hidden model\nreasoning.",
+        "properties": {
+          "budget_after": {
+            "$ref": "#/components/schemas/ExecutionBudgetUsage"
+          },
+          "budget_before": {
+            "$ref": "#/components/schemas/ExecutionBudgetUsage"
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "finalization_id": {
+            "type": "string"
+          },
+          "finish_reason": {
+            "$ref": "#/components/schemas/PlanFinishReason"
+          },
+          "incomplete_step_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/FinalizationMode"
+          },
+          "outcome": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FinalOutcomeStatus"
+              }
+            ]
+          },
+          "output": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "phase": {
+            "$ref": "#/components/schemas/FinalizationPhase"
+          },
+          "started_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "finalization_id",
+          "phase",
+          "finish_reason",
+          "mode",
+          "started_at"
+        ],
+        "type": "object"
+      },
+      "FinalizerPolicy": {
+        "description": "How the independent run finalizer is allowed to synthesize the user answer.",
+        "enum": [
+          "deterministic",
+          "model_preferred"
+        ],
+        "type": "string"
+      },
+      "InternalCallId": {
+        "description": "Stable Rove identity for a tool invocation.",
+        "type": "string"
+      },
       "JobStateResponse": {
         "properties": {
           "answer_aborted": {
@@ -757,7 +1576,7 @@
       "JobStreamEvent": {
         "properties": {
           "event": {
-            "type": "object"
+            "$ref": "#/components/schemas/StreamEvent"
           },
           "seq": {
             "format": "int64",
@@ -1367,6 +2186,449 @@
           "prompt"
         ],
         "type": "object"
+      },
+      "PlanAmbiguity": {
+        "properties": {
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PlanAmbiguityKind"
+          },
+          "safe_summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "safe_summary"
+        ],
+        "type": "object"
+      },
+      "PlanAmbiguityKind": {
+        "description": "Semantic uncertainty that deterministic lifecycle rules cannot resolve.\nThis marker is produced only from a validated structured step conclusion;\narbitrary prose never grants access to the model evaluator.",
+        "enum": [
+          "remaining_work_may_be_unnecessary",
+          "plan_assumption_may_be_invalid",
+          "recoverable_alternative_may_exist",
+          "goal_may_be_partially_satisfied",
+          "remaining_dependencies_may_need_reordering"
+        ],
+        "type": "string"
+      },
+      "PlanDecision": {
+        "description": "Rule-first decision made after a terminal step record.",
+        "properties": {
+          "decision_id": {
+            "type": "string"
+          },
+          "finish_reason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlanFinishReason"
+              }
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PlanDecisionKind"
+          },
+          "remaining_work_requirements": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "safe_reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "safe_summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision_id",
+          "kind",
+          "safe_summary"
+        ],
+        "type": "object"
+      },
+      "PlanDecisionKind": {
+        "enum": [
+          "continue",
+          "replace_remaining",
+          "finish"
+        ],
+        "type": "string"
+      },
+      "PlanDecisionRecord": {
+        "description": "Persisted correlation between one terminal step fact and its rule-first\nplan decision.",
+        "properties": {
+          "decided_at": {
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/PlanDecision"
+          },
+          "evaluation_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_turns_used": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repairs_used": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/PlanDecisionSource"
+          },
+          "trigger_step_record_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "trigger_step_record_id",
+          "decided_at",
+          "decision"
+        ],
+        "type": "object"
+      },
+      "PlanDecisionSource": {
+        "enum": [
+          "rule",
+          "model",
+          "safe_fallback"
+        ],
+        "type": "string"
+      },
+      "PlanFinishReason": {
+        "enum": [
+          "completed",
+          "partial",
+          "blocked",
+          "budget_exhausted",
+          "failed",
+          "cancelled",
+          "interrupted",
+          "rejected",
+          "indeterminate"
+        ],
+        "type": "string"
+      },
+      "PlanIdentity": {
+        "description": "Stable identity for one logical plan and one immutable-compatible\nrevision.  The current runtime uses the identity to correlate the\nappend-only step ledger while retaining the legacy `TaskPlan` wire shape.",
+        "properties": {
+          "plan_id": {
+            "default": "",
+            "type": "string"
+          },
+          "plan_revision_id": {
+            "default": "",
+            "type": "string"
+          },
+          "revision": {
+            "default": 0,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "PlanRevision": {
+        "description": "An immutable revision of the remaining plan.",
+        "properties": {
+          "budget_snapshot": {
+            "$ref": "#/components/schemas/ExecutionBudgetUsage"
+          },
+          "capability_snapshot_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "decision_id": {
+            "type": "string"
+          },
+          "parent_revision_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "remaining_steps": {
+            "items": {
+              "$ref": "#/components/schemas/PlanStep"
+            },
+            "type": "array"
+          },
+          "retained_step_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "revision_id": {
+            "type": "string"
+          },
+          "safe_reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "superseded_remaining_step_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "trigger_step_record_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "plan_id",
+          "revision_id",
+          "revision",
+          "created_at",
+          "decision_id"
+        ],
+        "type": "object"
+      },
+      "PlanStep": {
+        "properties": {
+          "done": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "done"
+        ],
+        "type": "object"
+      },
+      "ProcedureApplication": {
+        "description": "Bounded procedure material supplied to one execution boundary.\n\n`hydration_hash` identifies the exact section projection admitted to the\nmodel. The source body remains pinned by `reference.content_hash` and the\nAgent profile snapshot.",
+        "properties": {
+          "application_id": {
+            "type": "string"
+          },
+          "boundary": {
+            "type": "string"
+          },
+          "capability_bindings": {
+            "items": {
+              "$ref": "#/components/schemas/ProcedureCapabilityBinding"
+            },
+            "type": "array"
+          },
+          "capability_snapshot_id": {
+            "type": "string"
+          },
+          "hydration_hash": {
+            "type": "string"
+          },
+          "reference": {
+            "$ref": "#/components/schemas/ProcedureReference"
+          },
+          "risk_level": {
+            "$ref": "#/components/schemas/RiskLevel"
+          },
+          "section_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "side_effects": {
+            "items": {
+              "$ref": "#/components/schemas/SideEffect"
+            },
+            "type": "array"
+          },
+          "step_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "application_id",
+          "reference",
+          "hydration_hash",
+          "capability_snapshot_id",
+          "risk_level",
+          "boundary"
+        ],
+        "type": "object"
+      },
+      "ProcedureCapabilityBinding": {
+        "description": "One concrete tool binding visible to a procedure at a run/step boundary.\nA binding describes availability and policy; it never grants permission.",
+        "properties": {
+          "approval_required": {
+            "type": "boolean"
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "capability_id": {
+            "type": "string"
+          },
+          "mutation_class": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CapabilityMutationClass"
+              }
+            ]
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "tool_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "capability_id"
+        ],
+        "type": "object"
+      },
+      "ProcedureDeviation": {
+        "description": "Safe, persisted deviation fact. It can inform evaluation, but cannot\nweaken approval, schema, workspace, or capability enforcement.",
+        "properties": {
+          "application_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deviation_id": {
+            "type": "string"
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "material": {
+            "type": "boolean"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/ProcedureDeviationReason"
+          },
+          "reference": {
+            "$ref": "#/components/schemas/ProcedureReference"
+          },
+          "safe_summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "deviation_id",
+          "reference",
+          "reason",
+          "safe_summary"
+        ],
+        "type": "object"
+      },
+      "ProcedureDeviationReason": {
+        "description": "Typed reason why execution departed from selected procedure guidance.",
+        "enum": [
+          "evidence_contradiction",
+          "capability_unavailable",
+          "preconditions_unsatisfied",
+          "user_constraint",
+          "procedure_stale",
+          "safer_alternative",
+          "runtime_failure"
+        ],
+        "type": "string"
+      },
+      "ProcedureReference": {
+        "description": "An audit-grade pointer to a procedure, safe to persist and to show.",
+        "properties": {
+          "content_hash": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "source_path": {
+            "type": "string"
+          },
+          "trust": {
+            "$ref": "#/components/schemas/ProcedureTrust"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "trust",
+          "source_path",
+          "content_hash"
+        ],
+        "type": "object"
+      },
+      "ProcedureTrust": {
+        "description": "How much authority a procedure source carries.\n\nOrdered most to least trusted, so `Ord` can be used for policy comparisons.",
+        "enum": [
+          "builtin_trusted",
+          "workspace_trusted",
+          "user_installed",
+          "external_untrusted"
+        ],
+        "type": "string"
       },
       "ProductAgentRuntimeInfo": {
         "properties": {
@@ -5305,6 +6567,178 @@
         },
         "type": "object"
       },
+      "PromptBuildMetadata": {
+        "properties": {
+          "dropped_history_messages": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "history_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "included_history_messages": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prompt_cache_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt_hash": {
+            "type": "string"
+          },
+          "pruned_excerpt_bytes": {
+            "description": "Serialized bytes those messages occupy as the request carries them, so\nthe elision is measurable rather than implied.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pruned_omitted_bytes": {
+            "description": "Serialized bytes those messages occupied, and therefore the material the\nrequest did not carry. Recorded beside the count because \"three messages\"\nand \"three kilobytes\" are different answers to \"how much was left out\".",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pruned_omitted_messages": {
+            "description": "Older messages left out so the request itself stayed within its byte and\nmessage bounds. Zero when the whole dropped prefix fit.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pruned_payload_bytes": {
+            "description": "Serialized bytes the pruned messages occupied before the projection, so\n`pruned_payload_bytes - pruned_excerpt_bytes` is the whole loss: the\nelided payload text, the blocks that repeated it, and the framing.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pruned_payload_digests": {
+            "description": "Bounded list (newest first, capped by the compaction policy) of\n`result id + content digest` for the elided payloads.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pruned_tool_results": {
+            "description": "How many oversized tool payloads the compaction probe's request elided.\n\nBounded pruning facts of one turn's shrink request. They are `None`-free\nand omitted while zero/empty, so a build that pruned nothing serializes\nexactly the bytes it serialized before this field existed.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pruning_policy": {
+            "description": "Which pruning rule produced the excerpt above, so a trace reader can tell\ntwo policies apart. Absent when nothing was pruned.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "referenced_tool_results": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stable_prefix_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stable_prefix_hash": {
+            "type": "string"
+          },
+          "system_prompt_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "token_estimate": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tool_signature": {
+            "type": "string"
+          },
+          "total_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "workspace_fingerprint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "prompt_hash",
+          "stable_prefix_hash",
+          "workspace_fingerprint",
+          "tool_signature",
+          "token_estimate",
+          "included_history_messages",
+          "dropped_history_messages"
+        ],
+        "type": "object"
+      },
+      "PromptCompactionMode": {
+        "enum": [
+          "none",
+          "deterministic",
+          "model_generated",
+          "automatic",
+          "degraded",
+          "disabled"
+        ],
+        "type": "string"
+      },
+      "PromptCompactionState": {
+        "properties": {
+          "auto_triggered": {
+            "type": "boolean"
+          },
+          "circuit_open": {
+            "type": "boolean"
+          },
+          "consecutive_failures": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "degraded": {
+            "type": "boolean"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "$ref": "#/components/schemas/PromptCompactionMode"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_attempt_after": {
+            "description": "When the automatic path may next probe a tripped breaker, as an RFC 3339\ntimestamp.\n\nThe breaker is a session fact, so its cooldown has to be one too: the\ncount is cleared only by a successful summary, and a count that survives\na restart without a deadline would either retry a known-broken model on\nevery turn or — once seeded — never compact again. `None` means no window\nis armed, which an older snapshot also decodes to: a missing deadline is\nread as expired, so the worst case of a legacy or corrupt value is one\nbounded probe, never a session that can no longer compact itself.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_message_count": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mode",
+          "auto_triggered",
+          "degraded",
+          "consecutive_failures",
+          "circuit_open"
+        ],
+        "type": "object"
+      },
       "ProviderModelsRequest": {
         "description": "Request body for listing models available on a provider endpoint.\n\nRequires a typed provider profile (`provider_type` + `api_base`).\nFor OpenAI/Anthropic families the API key is read from `api_key_env` on the\nserver process; Ollama and Fake do not need a key.",
         "properties": {
@@ -5574,6 +7008,15 @@
         ],
         "type": "object"
       },
+      "RiskLevel": {
+        "description": "How risky following the procedure is.",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "type": "string"
+      },
       "RunSummaryResponse": {
         "properties": {
           "has_report": {
@@ -5610,6 +7053,26 @@
           "has_report"
         ],
         "type": "object"
+      },
+      "Sensitivity": {
+        "description": "How sensitive an artifact's bytes are, which drives retention and whether a\npayload may be projected at all.",
+        "enum": [
+          "normal",
+          "sensitive"
+        ],
+        "type": "string"
+      },
+      "SideEffect": {
+        "description": "Declared side effects.",
+        "enum": [
+          "read_only",
+          "writes_workspace",
+          "writes_external_state",
+          "deletes_data",
+          "restarts_service",
+          "sends_notification"
+        ],
+        "type": "string"
       },
       "StartBenchRunRequest": {
         "properties": {
@@ -5648,6 +7111,1537 @@
         ],
         "type": "object"
       },
+      "StepAttempt": {
+        "description": "Identity persisted while a planned step attempt is in flight.\n\nIt deliberately contains no model/tool output.  If a process disappears\nafter this projection is written, resume can close the attempt as\n`interrupted` without replaying an unknown side effect.",
+        "properties": {
+          "attempt": {
+            "default": 0,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "plan_id": {
+            "default": "",
+            "type": "string"
+          },
+          "plan_revision_id": {
+            "default": "",
+            "type": "string"
+          },
+          "started_at": {
+            "default": "",
+            "type": "string"
+          },
+          "step_id": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "StepCompletionBasis": {
+        "description": "Safe explanation for how a step was concluded.",
+        "enum": [
+          "model_conclusion",
+          "deterministic_rule",
+          "user_decision",
+          "runtime_failure"
+        ],
+        "type": "string"
+      },
+      "StepRecord": {
+        "description": "Append-only facts for a terminal step attempt.",
+        "properties": {
+          "ambiguity": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlanAmbiguity"
+              }
+            ]
+          },
+          "artifact_refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "attempt": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "completion_basis": {
+            "$ref": "#/components/schemas/StepCompletionBasis"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "finished_at": {
+            "type": "string"
+          },
+          "model_turns_used": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mutations": {
+            "items": {
+              "$ref": "#/components/schemas/ToolMutation"
+            },
+            "type": "array"
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "plan_revision_id": {
+            "type": "string"
+          },
+          "procedure_applications": {
+            "items": {
+              "$ref": "#/components/schemas/ProcedureApplication"
+            },
+            "type": "array"
+          },
+          "procedure_deviations": {
+            "items": {
+              "$ref": "#/components/schemas/ProcedureDeviation"
+            },
+            "type": "array"
+          },
+          "record_id": {
+            "type": "string"
+          },
+          "safe_error_summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/StepRecordStatus"
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "supersedes_record_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token_usage": {
+            "$ref": "#/components/schemas/Usage"
+          },
+          "tool_call_ids": {
+            "items": {
+              "format": "ulid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tool_calls_used": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "record_id",
+          "plan_id",
+          "plan_revision_id",
+          "step_id",
+          "attempt",
+          "status",
+          "started_at",
+          "finished_at",
+          "summary",
+          "completion_basis",
+          "model_turns_used",
+          "tool_calls_used"
+        ],
+        "type": "object"
+      },
+      "StepRecordStatus": {
+        "description": "Terminal outcome of one bounded step attempt.",
+        "enum": [
+          "succeeded",
+          "partial",
+          "failed",
+          "blocked",
+          "rejected",
+          "skipped",
+          "budget_exhausted",
+          "cancelled",
+          "interrupted",
+          "indeterminate"
+        ],
+        "type": "string"
+      },
+      "StopReason": {
+        "description": "Normalized provider stop state.",
+        "oneOf": [
+          {
+            "enum": [
+              "end_turn"
+            ],
+            "type": "string"
+          },
+          {
+            "enum": [
+              "tool_use"
+            ],
+            "type": "string"
+          },
+          {
+            "enum": [
+              "max_tokens"
+            ],
+            "type": "string"
+          },
+          {
+            "enum": [
+              "content_filter"
+            ],
+            "type": "string"
+          },
+          {
+            "enum": [
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          {
+            "enum": [
+              "error"
+            ],
+            "type": "string"
+          },
+          {
+            "enum": [
+              "incomplete"
+            ],
+            "type": "string"
+          },
+          {
+            "properties": {
+              "other": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "other"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "StrategySelectionSource": {
+        "description": "Where the selected strategy came from.",
+        "enum": [
+          "request",
+          "session",
+          "config",
+          "compatibility_default",
+          "max_steps_and_plan_flag"
+        ],
+        "type": "string"
+      },
+      "StreamEvent": {
+        "description": "All events emitted by the engine's streaming main loop.\n\nConsumers (CLI, API/SSE, Web) pattern-match on these to render output.\nAdding a new variant forces all consumers to handle it (exhaustive match).",
+        "oneOf": [
+          {
+            "description": "A new run has started.\n\n`content_blocks` carries the image content the run's user message\nprojects (additive, omitted when empty, so every pre-image trace line,\nAPI frame, and snapshot parses unchanged). It rides on the event —\nnot only in the request — because the trace is what a resume replays:\nblocks that live only in the request would silently vanish on resume.",
+            "properties": {
+              "content_blocks": {
+                "items": {
+                  "$ref": "#/components/schemas/ContentBlock"
+                },
+                "type": "array"
+              },
+              "job_id": {
+                "format": "ulid",
+                "type": "string"
+              },
+              "run_id": {
+                "format": "ulid",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "run_started"
+                ],
+                "type": "string"
+              },
+              "user_message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "run_id",
+              "job_id",
+              "user_message",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Immutable Agent profile selected before planner/model work begins.",
+            "properties": {
+              "diagnostics": {
+                "items": {
+                  "$ref": "#/components/schemas/AgentDiagnostic"
+                },
+                "type": "array"
+              },
+              "identity": {
+                "$ref": "#/components/schemas/AgentProfileIdentity"
+              },
+              "resumed_from_snapshot": {
+                "type": "boolean"
+              },
+              "type": {
+                "enum": [
+                  "agent_profile_activated"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "identity",
+              "resumed_from_snapshot",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Trusted workspace instruction bundle admitted for this run.",
+            "properties": {
+              "bundle_hash": {
+                "type": "string"
+              },
+              "layer_count": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rejected_count": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "truncated": {
+                "type": "boolean"
+              },
+              "type": {
+                "enum": [
+                  "workspace_instructions_resolved"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "bundle_hash",
+              "layer_count",
+              "rejected_count",
+              "truncated",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Resolved execution policy selected before planner/model work begins.",
+            "properties": {
+              "policy": {
+                "$ref": "#/components/schemas/ExecutionPolicy"
+              },
+              "type": {
+                "enum": [
+                  "execution_strategy_selected"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "policy",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A nested workspace instruction became active for a concrete model-turn\ntarget. The body is intentionally absent from the event/trace.",
+            "properties": {
+              "boundary": {
+                "type": "string"
+              },
+              "call_id": {
+                "format": "ulid",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "content_hash": {
+                "type": "string"
+              },
+              "scope": {
+                "type": "string"
+              },
+              "source_path": {
+                "type": "string"
+              },
+              "target_path": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "instruction_overlay_applied"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "target_path",
+              "scope",
+              "source_path",
+              "content_hash",
+              "boundary",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Deterministic procedure selection, by identity only.",
+            "properties": {
+              "considered_count": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "excluded_count": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "profile_hash": {
+                "type": "string"
+              },
+              "selected": {
+                "items": {
+                  "$ref": "#/components/schemas/ProcedureReference"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "procedures_selected"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "profile_hash",
+              "considered_count",
+              "excluded_count",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A selected procedure body was admitted into the bounded prompt prefix.",
+            "properties": {
+              "dropped_bytes": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "hydration_hash": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reference": {
+                "$ref": "#/components/schemas/ProcedureReference"
+              },
+              "step_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "truncated": {
+                "type": "boolean"
+              },
+              "type": {
+                "enum": [
+                  "procedure_hydrated"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reference",
+              "truncated",
+              "dropped_bytes",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A bounded procedure projection was supplied to a concrete execution\nboundary. The body is never included; the application fact is enough\nfor resume, diagnostics, and evidence correlation.",
+            "properties": {
+              "application": {
+                "$ref": "#/components/schemas/ProcedureApplication"
+              },
+              "type": {
+                "enum": [
+                  "procedure_applied"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "application",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A step explicitly departed from selected procedure guidance. This is a\nfact for evaluation, not a permission or approval signal.",
+            "properties": {
+              "deviation": {
+                "$ref": "#/components/schemas/ProcedureDeviation"
+              },
+              "record_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "procedure_deviation"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "record_id",
+              "deviation",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Monotonic multidimensional budget projection after a lifecycle phase or\nat an exhaustion boundary.",
+            "properties": {
+              "phase": {
+                "$ref": "#/components/schemas/ExecutionPhase"
+              },
+              "snapshot": {
+                "$ref": "#/components/schemas/ExecutionBudgetSnapshot",
+                "description": "Boxed to keep the canonical event small; the wire shape is unchanged."
+              },
+              "type": {
+                "enum": [
+                  "execution_budget_updated"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "phase",
+              "snapshot",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Explicit fallback/degradation fact. Safe summaries never contain hidden\nreasoning or provider payloads.",
+            "properties": {
+              "record": {
+                "$ref": "#/components/schemas/ExecutionDegradation"
+              },
+              "type": {
+                "enum": [
+                  "execution_degraded"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "record",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A chunk of streaming text from the LLM.",
+            "properties": {
+              "delta": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "llm_chunk"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "delta",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A safe runtime progress note. This must not contain hidden reasoning text.",
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "model_status"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "message",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A model call is being retried under the run loop's recovery budget.\n\n`attempt` is the 1-based index of the attempt that is about to run, so\nthe first retry is attempt 2, and `max_attempts` is that failure class'\ntotal budget including the first call. `reason` is a whitelisted summary\n(`rate_limited` or `transient:<error code>`) and never carries provider\npayloads, messages, or secrets.",
+            "properties": {
+              "attempt": {
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "delay_ms": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "max_attempts": {
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "phase": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "provider_retry"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "attempt",
+              "max_attempts",
+              "delay_ms",
+              "reason",
+              "phase",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The LLM finished producing a complete message.\n\nThe same variant also carries a salvaged cancelled turn: text the user\nhad already seen, persisted instead of dropped when a cancel cut the\nmodel turn short. `aborted` is the marker that separates the two facts.",
+            "properties": {
+              "aborted": {
+                "description": "Set when this message was salvaged from a cancelled turn rather than\ndelivered as a complete model response. The run's terminal state\nstays `cancelled`; a complete message and a cancelled run are\nseparate facts. Traces written before this field existed are\n`false`, which is exactly the pre-salvage meaning.",
+                "type": "boolean"
+              },
+              "assistant_turn": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/AssistantTurn",
+                    "description": "Canonical assistant turn. Older traces omit this additive field\nand are reconstructed through the legacy message projection."
+                  }
+                ]
+              },
+              "full": {
+                "type": "string"
+              },
+              "tool_calls": {
+                "items": {
+                  "$ref": "#/components/schemas/ToolCallRef"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "llm_message"
+                ],
+                "type": "string"
+              },
+              "usage": {
+                "$ref": "#/components/schemas/Usage"
+              }
+            },
+            "required": [
+              "full",
+              "usage",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A tool call has been requested by the LLM.",
+            "properties": {
+              "args": {},
+              "call_id": {
+                "format": "ulid",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "tool_use_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "tool_call_started"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "name",
+              "args",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A destructive tool call requires explicit approval before it may run.",
+            "properties": {
+              "args": {},
+              "call_id": {
+                "format": "ulid",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "tool_call_approval_needed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "name",
+              "args",
+              "reason",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A tool call completed successfully.",
+            "properties": {
+              "call_id": {
+                "format": "ulid",
+                "type": "string"
+              },
+              "result": {
+                "$ref": "#/components/schemas/ToolResult"
+              },
+              "type": {
+                "enum": [
+                  "tool_call_completed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "result",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A tool call failed.",
+            "properties": {
+              "call_id": {
+                "format": "ulid",
+                "type": "string"
+              },
+              "error": {
+                "$ref": "#/components/schemas/ToolError"
+              },
+              "metadata": {
+                "$ref": "#/components/schemas/ToolExecutionMetadata"
+              },
+              "type": {
+                "enum": [
+                  "tool_call_failed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "error",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A tool payload became a durable artifact.\n\nCarries only the reference. The payload never travels on the event\nstream, so a large artifact cannot bloat a trace or an SSE frame.",
+            "properties": {
+              "artifact": {
+                "$ref": "#/components/schemas/ToolArtifactRef"
+              },
+              "call_id": {
+                "format": "ulid",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "tool_artifact_stored"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "artifact",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A tool payload was refused by an artifact quota.\n\nEmitted so a quota event stays visible in the trace and in\ndiagnostics even though no payload was retained.",
+            "properties": {
+              "block_ordinal": {
+                "description": "Position of the originating content block.",
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "call_id": {
+                "format": "ulid",
+                "type": "string"
+              },
+              "observed_bytes": {
+                "description": "Bytes observed before the read was stopped.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "description": "Stable machine-readable rejection code.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "tool_artifact_rejected"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "block_ordinal",
+              "reason",
+              "observed_bytes",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A configured MCP server is unavailable or retained its last catalog\nafter a failed refresh. Fields are bounded codes/identities only.",
+            "properties": {
+              "failure_code": {
+                "type": "string"
+              },
+              "required": {
+                "type": "boolean"
+              },
+              "server_config_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "mcp_server_degraded"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "server_config_id",
+              "required",
+              "failure_code",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A complete MCP catalog replaced the namespace used by future runs.",
+            "properties": {
+              "added": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "changed": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "removed": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "server_config_id": {
+                "type": "string"
+              },
+              "snapshot_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "mcp_capabilities_refreshed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "server_config_id",
+              "snapshot_id",
+              "added",
+              "removed",
+              "changed",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The `request_input` tool is waiting for user input.",
+            "properties": {
+              "input_id": {
+                "format": "ulid",
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "input_needed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "input_id",
+              "prompt",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PlanIdentity",
+                "description": "Stable identity for the logical plan/revision. Flattening keeps\nthe wire shape readable and lets older events deserialize with\ndefault metadata."
+              },
+              {
+                "properties": {
+                  "plan": {
+                    "$ref": "#/components/schemas/TaskPlan"
+                  },
+                  "plan_revision": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/PlanRevision",
+                        "description": "Full immutable initial revision. Older events omit this field."
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "plan"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A plan has been drafted for this run.",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "plan_created"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "A plan has been drafted for this run."
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/StepAttempt",
+                "description": "Stable identity of the in-flight attempt."
+              },
+              {
+                "properties": {
+                  "budget": {
+                    "$ref": "#/components/schemas/ExecutionBudgetSnapshot",
+                    "description": "Boxed to keep the canonical event small; the wire shape is unchanged."
+                  },
+                  "index": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "step": {
+                    "$ref": "#/components/schemas/PlanStep"
+                  }
+                },
+                "required": [
+                  "step",
+                  "index"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A persisted plan step is about to run.",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "plan_step_started"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "A persisted plan step is about to run."
+          },
+          {
+            "description": "Canonical terminal result for one planned step attempt.\n\nThis is the append-only lifecycle fact used by resume, UI projection,\nand stream consumers. Compatibility `plan_step_completed` /\n`plan_step_failed` dual-fire events are intentionally not emitted.",
+            "properties": {
+              "record": {
+                "$ref": "#/components/schemas/StepRecord"
+              },
+              "type": {
+                "enum": [
+                  "step_result"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "record",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Rule-first lifecycle decision for one terminal step record.",
+            "properties": {
+              "record": {
+                "$ref": "#/components/schemas/PlanDecisionRecord"
+              },
+              "type": {
+                "enum": [
+                  "plan_decision"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "record",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Immutable replacement of only the remaining plan work.",
+            "properties": {
+              "plan": {
+                "$ref": "#/components/schemas/TaskPlan"
+              },
+              "revision": {
+                "$ref": "#/components/schemas/PlanRevision"
+              },
+              "type": {
+                "enum": [
+                  "plan_revised"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "plan",
+              "revision",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Independent finalizer boundary. The started record contains no output.",
+            "properties": {
+              "record": {
+                "$ref": "#/components/schemas/FinalizationRecord"
+              },
+              "type": {
+                "enum": [
+                  "finalization_started"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "record",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Finalizer terminal fact with a typed outcome and bounded output.",
+            "properties": {
+              "record": {
+                "$ref": "#/components/schemas/FinalizationRecord"
+              },
+              "type": {
+                "enum": [
+                  "finalization_completed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "record",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Prompt history was compacted for future resume.",
+            "properties": {
+              "state": {
+                "$ref": "#/components/schemas/PromptCompactionState"
+              },
+              "summary": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "prompt_compacted"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Durable-worthy notes were flushed from the soon-to-be-compacted history\nto session memory before compaction collapsed the detail away.",
+            "properties": {
+              "notes": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "memory_flushed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "notes",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Prompt context has been assembled for a model turn.\n\nThe metadata is boxed for the same reason `ToolArtifactStored` boxes its\nartifact: this event travels through per-item kernel streams, and the\npayload is large enough that holding it inline would make `StreamEvent`\nthe outlier variant of every small enum that wraps one. The wire shape is\nunchanged — `serde` is transparent over the indirection.",
+            "properties": {
+              "metadata": {
+                "$ref": "#/components/schemas/PromptBuildMetadata"
+              },
+              "type": {
+                "enum": [
+                  "prompt_built"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "metadata",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The run has completed.",
+            "properties": {
+              "output": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reason": {
+                "$ref": "#/components/schemas/TerminationReason"
+              },
+              "type": {
+                "enum": [
+                  "run_completed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A steer message was accepted at a declared safe point and will shape\nthe next model turn. Emitted at the safe point, not at submission.",
+            "properties": {
+              "content": {
+                "description": "The steer text supplied by the user. Not secret; persisted to trace.",
+                "type": "string"
+              },
+              "id": {
+                "description": "Stable steer id (matches the control record idempotency key).",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "steer_accepted"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "content",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A previously accepted steer has been incorporated into a model request\nwhose stream has been successfully polled. This is deliberately\ndistinct from acceptance: a cancellation, token limit, or runtime\nfailure can still intervene after the safe point and before a model\nturn begins.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "steer_applied"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A previously-queued steer was dropped without being applied, typically\nbecause the run reached a terminal state (cancel/error) before the\nnext safe point.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "steer_dropped"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "reason",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A follow-up message has been durably queued and will execute after the\ncurrent assistant final. If the run ends with `Final`, the follow-up's\ncontent immediately starts the next turn; otherwise it remains in the\ndurable queue for explicit confirmation.",
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "followup_queued"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "content",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A queued follow-up has been dequeued and is about to drive a new turn\n(continuation of an existing job, or — on crash/restart — a freshly\nclaimed product turn).",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "followup_dequeued"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A queued follow-up was abandoned because the run ended with a\nnon-final, potentially-indeterminate outcome. The control stays in\nthe ProductStore with status `abandoned` until the user revokes or\nexplicitly restarts.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "followup_abandoned"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "reason",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "One unified product message was durably accepted for FIFO delivery.",
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "message_queued"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "content",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The same queued identity won the CAS race for current-run delivery.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "message_intervention_requested"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Harness included the intervention in a successfully-polled model turn.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "message_applied_current_run"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The terminal transition claimed this message for one successor turn.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "message_claimed_successor"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Delivery stopped at an ambiguous or failed boundary and needs recovery.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "message_needs_attention"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "reason",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The still-eligible message was revoked through the durable authority.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "message_revoked"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "StructuredToolContent": {
+        "description": "Structured content a tool returned, with its schema verdict.",
+        "properties": {
+          "schema_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schema_valid": {
+            "description": "Whether a declared output schema was satisfied. `None` when the tool\ndeclared no output schema.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "value": {}
+        },
+        "required": [
+          "value"
+        ],
+        "type": "object"
+      },
       "SubmitApprovalRequest": {
         "properties": {
           "decision": {
@@ -5668,6 +8662,912 @@
         },
         "required": [
           "answer"
+        ],
+        "type": "object"
+      },
+      "TaskPlan": {
+        "properties": {
+          "current_step": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "goal": {
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/PlanStep"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "goal",
+          "steps",
+          "current_step"
+        ],
+        "type": "object"
+      },
+      "TerminationReason": {
+        "description": "Why a run terminated.",
+        "enum": [
+          "final",
+          "step_limit",
+          "token_limit",
+          "time_limit",
+          "error",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "ToolArtifactKind": {
+        "description": "What an artifact holds, as classified locally after validation.",
+        "enum": [
+          "text",
+          "image",
+          "audio",
+          "resource",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "ToolArtifactRef": {
+        "description": "Reference to a durable artifact. The envelope carries references, never\npayload bytes, so a result stays small no matter how large the data was.",
+        "properties": {
+          "artifact_id": {
+            "$ref": "#/components/schemas/ArtifactId"
+          },
+          "audience": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "byte_length": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ToolArtifactKind"
+          },
+          "last_modified": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mime_type": {
+            "description": "MIME type as validated locally. `None` when the claim was rejected or\nabsent; it is never guessed from a filename or from the bytes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "original_uri": {
+            "description": "URI the remote claimed, retained for provenance only. It is not\nresolved, fetched, or used to build a local path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "priority": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "sensitivity": {
+            "$ref": "#/components/schemas/Sensitivity"
+          },
+          "sha256": {
+            "description": "Hash of the exact retained bytes.",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ToolArtifactSource"
+          },
+          "storage_ref": {
+            "description": "Locally generated storage locator. Never a remote-supplied path.",
+            "type": "string"
+          },
+          "trust": {
+            "$ref": "#/components/schemas/ArtifactTrust"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/ArtifactValidation"
+          },
+          "validation_detail": {
+            "description": "Why validation did not pass, when it did not.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "artifact_id",
+          "kind",
+          "byte_length",
+          "sha256",
+          "storage_ref",
+          "source"
+        ],
+        "type": "object"
+      },
+      "ToolArtifactSource": {
+        "description": "Where an artifact came from. Every field is either locally generated or a\nhash, so provenance can be shown and audited without leaking a session\nvalue or a raw remote header.",
+        "properties": {
+          "block_ordinal": {
+            "description": "Position of the originating content block in the tool's result.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "captured_at": {
+            "type": "string"
+          },
+          "remote_tool_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "server_config_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "server_identity_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "run_id",
+          "call_id",
+          "block_ordinal",
+          "captured_at"
+        ],
+        "type": "object"
+      },
+      "ToolCall": {
+        "description": "Normalized tool call emitted by a provider stream.",
+        "properties": {
+          "arguments": {},
+          "internal_call_id": {
+            "$ref": "#/components/schemas/InternalCallId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "wire_reference": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WireCallReference"
+              }
+            ]
+          }
+        },
+        "required": [
+          "internal_call_id",
+          "name",
+          "arguments"
+        ],
+        "type": "object"
+      },
+      "ToolCallRef": {
+        "description": "A tool call reference recorded on an assistant message for provider replay.",
+        "properties": {
+          "args": {},
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "args"
+        ],
+        "type": "object"
+      },
+      "ToolContentBlock": {
+        "description": "One piece of a tool result.\n\nBinary kinds never carry bytes here: they carry an artifact reference plus\nan optional bounded, non-executable preview. `Unknown` exists so a block\ntype this build does not model is preserved rather than silently dropped.",
+        "oneOf": [
+          {
+            "properties": {
+              "meta": {
+                "$ref": "#/components/schemas/ContentBlockMeta"
+              },
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "text"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "meta",
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "artifact": {
+                "$ref": "#/components/schemas/ToolArtifactRef"
+              },
+              "meta": {
+                "$ref": "#/components/schemas/ContentBlockMeta"
+              },
+              "type": {
+                "enum": [
+                  "image"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "meta",
+              "artifact",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "artifact": {
+                "$ref": "#/components/schemas/ToolArtifactRef"
+              },
+              "meta": {
+                "$ref": "#/components/schemas/ContentBlockMeta"
+              },
+              "type": {
+                "enum": [
+                  "audio"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "meta",
+              "artifact",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A link the remote offered. Recorded, never followed here.",
+            "properties": {
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "meta": {
+                "$ref": "#/components/schemas/ContentBlockMeta"
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "resource_link"
+                ],
+                "type": "string"
+              },
+              "uri": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "meta",
+              "uri",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "artifact": {
+                "$ref": "#/components/schemas/ToolArtifactRef"
+              },
+              "meta": {
+                "$ref": "#/components/schemas/ContentBlockMeta"
+              },
+              "preview": {
+                "description": "Bounded, text-only preview. Absent for sensitive or active content.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "embedded_resource"
+                ],
+                "type": "string"
+              },
+              "uri": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "meta",
+              "artifact",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A block whose declared type this build does not model. The declared\ntype name and a bounded body are kept so nothing is lost.",
+            "properties": {
+              "declared_type": {
+                "type": "string"
+              },
+              "meta": {
+                "$ref": "#/components/schemas/ContentBlockMeta"
+              },
+              "retained": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "unknown"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "meta",
+              "declared_type",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ToolDiagnostic": {
+        "description": "One classified, bounded diagnostic.",
+        "properties": {
+          "code": {
+            "description": "Stable machine-readable code. Not a message.",
+            "type": "string"
+          },
+          "domain": {
+            "$ref": "#/components/schemas/ToolErrorDomain"
+          },
+          "message": {
+            "description": "Redacted, bounded human-readable detail.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain",
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ToolError": {
+        "description": "Errors from the runtime-neutral tool execution boundary.",
+        "oneOf": [
+          {
+            "properties": {
+              "code": {
+                "enum": [
+                  "unknown_tool"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "code"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "code": {
+                "enum": [
+                  "invalid_args"
+                ],
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "code"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "code": {
+                "enum": [
+                  "artifact_unavailable"
+                ],
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "code"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "code": {
+                "enum": [
+                  "invalid_input"
+                ],
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "code"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The request was well-formed but Runtime-owned context must be applied\nbefore the operation can be reconsidered. No tool dispatch occurred.",
+            "properties": {
+              "code": {
+                "enum": [
+                  "precondition_required"
+                ],
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "code"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "code": {
+                "enum": [
+                  "hook_blocked"
+                ],
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "code"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "code": {
+                "enum": [
+                  "permission_denied"
+                ],
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "code"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "code": {
+                "enum": [
+                  "execution_failed"
+                ],
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "code"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "code": {
+                "enum": [
+                  "timeout"
+                ],
+                "type": "string"
+              },
+              "timeout_ms": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "timeout_ms",
+              "code"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ToolErrorDomain": {
+        "description": "Where an error came from, so diagnostics stay classifiable without parsing\na human-readable message.",
+        "enum": [
+          "transport",
+          "http",
+          "json_rpc",
+          "protocol",
+          "remote_tool",
+          "input_schema",
+          "output_schema",
+          "artifact",
+          "policy",
+          "internal"
+        ],
+        "type": "string"
+      },
+      "ToolExecutionMetadata": {
+        "properties": {
+          "affected_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "diff_summary": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "read_only": {
+            "type": "boolean"
+          },
+          "risk_level": {
+            "$ref": "#/components/schemas/ToolRiskLevel"
+          },
+          "security_event_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/ToolExecutionStatus"
+          },
+          "workspace_changed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "status",
+          "risk_level",
+          "read_only",
+          "workspace_changed"
+        ],
+        "type": "object"
+      },
+      "ToolExecutionStatus": {
+        "enum": [
+          "ok",
+          "error",
+          "rejected",
+          "partial_success"
+        ],
+        "type": "string"
+      },
+      "ToolMutation": {
+        "properties": {
+          "diff": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operation": {
+            "$ref": "#/components/schemas/ToolMutationOperation"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "operation"
+        ],
+        "type": "object"
+      },
+      "ToolMutationOperation": {
+        "enum": [
+          "create",
+          "update",
+          "delete",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "ToolOutputEnvelope": {
+        "description": "The one rich tool result shape.\n\n`summary_text` is the legacy text projection and is always populated, so\nevery existing consumer keeps working unchanged while richer consumers read\nthe blocks, structured content, and artifacts.",
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/ToolArtifactRef"
+            },
+            "type": "array"
+          },
+          "content_blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ToolContentBlock"
+            },
+            "type": "array"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/ToolDiagnostic"
+            },
+            "type": "array"
+          },
+          "external_effects": {
+            "items": {
+              "$ref": "#/components/schemas/ExternalEffect"
+            },
+            "type": "array"
+          },
+          "mutations": {
+            "items": {
+              "$ref": "#/components/schemas/ToolMutation"
+            },
+            "type": "array"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/ToolResultOutcome"
+          },
+          "protocol_metadata": {
+            "$ref": "#/components/schemas/ToolProtocolMetadata"
+          },
+          "structured_content": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StructuredToolContent"
+              }
+            ]
+          },
+          "summary_text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "summary_text"
+        ],
+        "type": "object"
+      },
+      "ToolProtocolMetadata": {
+        "description": "Display-safe protocol facts about how a result was produced.\n\nEvery remote-derived value here is a hash or a locally validated name.\nThere is deliberately no field for an Authorization header, a raw header\nmap, or a readable session ID.",
+        "properties": {
+          "attempt_count": {
+            "description": "How many dispatch attempts produced this result. Zero means the tool\nwas local and never dispatched over a protocol.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "capability_snapshot_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "connection_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_ms": {
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "protocol": {
+            "description": "Protocol family, for example `mcp`. Absent for a purely local tool.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "protocol_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remote_tool_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request_id_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "server_config_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "server_identity_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ToolResult": {
+        "properties": {
+          "call_id": {
+            "format": "ulid",
+            "type": "string"
+          },
+          "envelope": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ToolOutputEnvelope",
+                "description": "Rich result detail, when the tool produced one.\n\nAdditive and skipped when absent, so an artifact written by an older\nbuild still deserializes and a consumer that only reads `output` and\n`metadata` is unaffected. Boxed to keep `ToolResult` small."
+              }
+            ]
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/ToolExecutionMetadata"
+          },
+          "mutations": {
+            "items": {
+              "$ref": "#/components/schemas/ToolMutation"
+            },
+            "type": "array"
+          },
+          "output": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "call_id",
+          "output"
+        ],
+        "type": "object"
+      },
+      "ToolResultOutcome": {
+        "description": "Why a tool result ended the way it did, at the granularity a caller needs\nto decide whether retrying is safe.\n\nThis is distinct from [`ToolExecutionStatus`], which stays as the coarse\npersisted status. `Indeterminate` and `TimedOutKnownNotSent` exist because\na tool call can have external effects: only the latter is safe to retry.",
+        "enum": [
+          "success",
+          "partial",
+          "error",
+          "rejected",
+          "cancelled",
+          "timed_out_known_not_sent",
+          "indeterminate"
+        ],
+        "type": "string"
+      },
+      "ToolRiskLevel": {
+        "enum": [
+          "low",
+          "high"
+        ],
+        "type": "string"
+      },
+      "TurnProvenance": {
+        "description": "Safe provider provenance.  Wire payloads, signatures, and headers remain\nprivate to the provider adapter.",
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "response_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "model",
+          "protocol"
         ],
         "type": "object"
       },
@@ -5918,6 +9818,53 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "Usage": {
+        "description": "Token usage from a single model call.",
+        "properties": {
+          "cached_tokens": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "completion_tokens": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prompt_tokens": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_tokens": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prompt_tokens",
+          "completion_tokens",
+          "total_tokens"
+        ],
+        "type": "object"
+      },
+      "WireCallReference": {
+        "description": "Provider/protocol-bound call identity.  It is never used as a Runtime\napproval or artifact identity.",
+        "properties": {
+          "protocol": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocol",
+          "value"
+        ],
         "type": "object"
       },
       "WorkspaceActivationState": {

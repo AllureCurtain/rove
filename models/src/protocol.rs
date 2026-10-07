@@ -21,7 +21,7 @@ pub const MAX_TOOL_ARGUMENT_BYTES: usize = 1024 * 1024;
 ///
 /// Rich content is deliberately a bounded reference.  The model layer does
 /// not fetch a URI or persist a remote payload as part of request projection.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     Text {
@@ -123,7 +123,9 @@ impl ContentBlock {
 }
 
 /// Stable Rove identity for a tool invocation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Ord, PartialOrd)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Ord, PartialOrd, utoipa::ToSchema,
+)]
 #[serde(transparent)]
 pub struct InternalCallId(String);
 
@@ -152,7 +154,7 @@ impl std::fmt::Display for InternalCallId {
 
 /// Provider/protocol-bound call identity.  It is never used as a Runtime
 /// approval or artifact identity.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, utoipa::ToSchema)]
 pub struct WireCallReference {
     pub protocol: String,
     pub value: String,
@@ -182,7 +184,7 @@ impl WireCallReference {
 }
 
 /// Normalized tool call emitted by a provider stream.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct ToolCall {
     pub internal_call_id: InternalCallId,
     pub name: String,
@@ -293,7 +295,7 @@ impl ToolResult {
 }
 
 /// Normalized provider stop state.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     #[default]
@@ -309,7 +311,7 @@ pub enum StopReason {
 
 /// Safe provider provenance.  Wire payloads, signatures, and headers remain
 /// private to the provider adapter.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct TurnProvenance {
     pub model: String,
     pub protocol: String,
@@ -318,7 +320,7 @@ pub struct TurnProvenance {
 }
 
 /// Normalized assistant result consumed by Core and Runtime.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct AssistantTurn {
     #[serde(default = "default_canonical_schema_version")]
     pub schema_version: u16,
@@ -539,7 +541,7 @@ pub struct Message {
 }
 
 /// A tool call reference recorded on an assistant message for provider replay.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ToolCallRef {
     pub id: String,
     pub name: String,
@@ -749,7 +751,7 @@ pub(crate) fn recovery_shaped_conversation() -> Vec<Message> {
 }
 
 /// Token usage from a single model call.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,

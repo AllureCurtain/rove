@@ -33,7 +33,7 @@ pub fn planned_step_failure_message(step_title: &str, reason: &str) -> String {
 }
 
 /// Explicit runtime execution strategies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionStrategy {
     React,
@@ -56,7 +56,7 @@ impl ExecutionStrategy {
 }
 
 /// Where the selected strategy came from.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StrategySelectionSource {
     Request,
@@ -70,7 +70,7 @@ pub enum StrategySelectionSource {
 }
 
 /// Whether semantic plan ambiguity may invoke the model evaluator.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EvaluatorMode {
     /// Deterministic decision table only. This is retained for legacy embedded
@@ -83,7 +83,7 @@ pub enum EvaluatorMode {
 }
 
 /// How the independent run finalizer is allowed to synthesize the user answer.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FinalizerPolicy {
     /// Use a deterministic evidence-grounded answer. React finals remain
@@ -97,7 +97,7 @@ pub enum FinalizerPolicy {
 
 /// Independent limits for the lifecycle phases and their observable work.
 /// `None` means that this phase has not resolved that dimension yet.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(default)]
 pub struct ExecutionBudgetLimits {
     pub max_plan_steps: Option<u32>,
@@ -181,7 +181,7 @@ impl ExecutionBudgetLimits {
 }
 
 /// Counters consumed by an execution policy.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(default)]
 pub struct ExecutionBudgetUsage {
     pub plan_steps: u32,
@@ -200,7 +200,7 @@ pub struct ExecutionBudgetUsage {
 }
 
 /// A resolved, inspectable execution policy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ExecutionPolicy {
     pub version: u32,
     pub strategy: ExecutionStrategy,
@@ -236,7 +236,7 @@ impl ExecutionPolicy {
 
 /// Lifecycle phases used in budget and degradation facts. These values are
 /// safe diagnostics; they do not contain model reasoning.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionPhase {
     Planner,
@@ -248,7 +248,7 @@ pub enum ExecutionPhase {
 }
 
 /// A specific exhausted execution dimension.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionBudgetDimension {
     PlanSteps,
@@ -267,7 +267,7 @@ pub enum ExecutionBudgetDimension {
 
 /// Typed budget refusal emitted before new work begins, or immediately after
 /// an indivisible model response crosses a token/cost boundary.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ExecutionBudgetExhaustion {
     pub dimension: ExecutionBudgetDimension,
     pub phase: ExecutionPhase,
@@ -278,7 +278,7 @@ pub struct ExecutionBudgetExhaustion {
 
 /// Public resolved budget snapshot used by events, checkpoints, state, API,
 /// reports, and UIs.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(default)]
 pub struct ExecutionBudgetSnapshot {
     pub limits: ExecutionBudgetLimits,
@@ -578,7 +578,7 @@ impl ExecutionBudgetTracker {
 }
 
 /// Terminal outcome of one bounded step attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StepRecordStatus {
     Succeeded,
@@ -594,7 +594,7 @@ pub enum StepRecordStatus {
 }
 
 /// Safe explanation for how a step was concluded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StepCompletionBasis {
     ModelConclusion,
@@ -605,7 +605,7 @@ pub enum StepCompletionBasis {
 
 /// One concrete tool binding visible to a procedure at a run/step boundary.
 /// A binding describes availability and policy; it never grants permission.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ProcedureCapabilityBinding {
     pub capability_id: String,
     #[serde(default)]
@@ -625,7 +625,7 @@ pub struct ProcedureCapabilityBinding {
 /// `hydration_hash` identifies the exact section projection admitted to the
 /// model. The source body remains pinned by `reference.content_hash` and the
 /// Agent profile snapshot.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ProcedureApplication {
     pub application_id: String,
     pub reference: ProcedureReference,
@@ -673,7 +673,7 @@ impl ProcedureApplication {
 }
 
 /// Typed reason why execution departed from selected procedure guidance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcedureDeviationReason {
     EvidenceContradiction,
@@ -687,7 +687,7 @@ pub enum ProcedureDeviationReason {
 
 /// Safe, persisted deviation fact. It can inform evaluation, but cannot
 /// weaken approval, schema, workspace, or capability enforcement.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ProcedureDeviation {
     pub deviation_id: String,
     pub reference: ProcedureReference,
@@ -724,7 +724,7 @@ impl ProcedureDeviation {
 /// Semantic uncertainty that deterministic lifecycle rules cannot resolve.
 /// This marker is produced only from a validated structured step conclusion;
 /// arbitrary prose never grants access to the model evaluator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanAmbiguityKind {
     RemainingWorkMayBeUnnecessary,
@@ -734,7 +734,7 @@ pub enum PlanAmbiguityKind {
     RemainingDependenciesMayNeedReordering,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PlanAmbiguity {
     pub kind: PlanAmbiguityKind,
     pub safe_summary: String,
@@ -763,7 +763,7 @@ impl PlanAmbiguity {
 }
 
 /// Append-only facts for a terminal step attempt.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct StepRecord {
     pub record_id: String,
     pub plan_id: String,
@@ -778,6 +778,7 @@ pub struct StepRecord {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schema(value_type = Vec<String>, format = "ulid")]
     pub tool_call_ids: Vec<CallId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifact_refs: Vec<String>,
@@ -842,7 +843,7 @@ impl StepRecord {
 /// Stable identity for one logical plan and one immutable-compatible
 /// revision.  The current runtime uses the identity to correlate the
 /// append-only step ledger while retaining the legacy `TaskPlan` wire shape.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(default)]
 pub struct PlanIdentity {
     pub plan_id: String,
@@ -877,7 +878,7 @@ impl PlanIdentity {
 /// It deliberately contains no model/tool output.  If a process disappears
 /// after this projection is written, resume can close the attempt as
 /// `interrupted` without replaying an unknown side effect.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(default)]
 pub struct StepAttempt {
     pub plan_id: String,
@@ -963,7 +964,7 @@ pub struct StepLedgerCheckpoint {
 }
 
 /// An immutable revision of the remaining plan.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PlanRevision {
     pub plan_id: String,
     pub revision_id: String,
@@ -1041,7 +1042,7 @@ impl PlanRevision {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanDecisionKind {
     Continue,
@@ -1049,7 +1050,7 @@ pub enum PlanDecisionKind {
     Finish,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanFinishReason {
     Completed,
@@ -1063,7 +1064,7 @@ pub enum PlanFinishReason {
     Indeterminate,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanDecisionSource {
     #[default]
@@ -1073,7 +1074,7 @@ pub enum PlanDecisionSource {
 }
 
 /// Rule-first decision made after a terminal step record.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PlanDecision {
     pub decision_id: String,
     pub kind: PlanDecisionKind,
@@ -1122,7 +1123,7 @@ impl PlanDecision {
 
 /// Persisted correlation between one terminal step fact and its rule-first
 /// plan decision.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PlanDecisionRecord {
     pub trigger_step_record_id: String,
     pub decided_at: String,
@@ -1226,7 +1227,7 @@ pub struct PlanLifecycleCheckpoint {
 
 /// User-visible terminal classification. This is deliberately separate from
 /// process-level `RunStatus` and compatibility `TerminationReason`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FinalOutcomeStatus {
     Success,
@@ -1240,7 +1241,7 @@ pub enum FinalOutcomeStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FinalizationMode {
     Direct,
@@ -1249,7 +1250,7 @@ pub enum FinalizationMode {
     DeterministicFallback,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FinalizationPhase {
     Started,
@@ -1259,7 +1260,7 @@ pub enum FinalizationPhase {
 /// Durable finalization record. The output is bounded before persistence by
 /// the Finalizer and contains only user-visible synthesis, never hidden model
 /// reasoning.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct FinalizationRecord {
     pub finalization_id: String,
     pub phase: FinalizationPhase,
@@ -1284,7 +1285,7 @@ pub struct FinalizationRecord {
 
 /// Explicit, safe degradation fact. Fallbacks are never silent and do not
 /// change permissions or erase previously recorded evidence.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ExecutionDegradation {
     pub degradation_id: String,
     pub phase: ExecutionPhase,

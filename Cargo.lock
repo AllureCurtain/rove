@@ -4404,6 +4404,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "utoipa",
 ]
 
 [[package]]
@@ -4478,6 +4479,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "utoipa",
 ]
 
 [[package]]
@@ -4541,6 +4543,7 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "ulid",
+ "utoipa",
  "walkdir",
 ]
 

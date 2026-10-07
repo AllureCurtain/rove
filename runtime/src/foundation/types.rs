@@ -243,7 +243,7 @@ impl PromptCheckpoint {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct PromptCompactionState {
     pub mode: PromptCompactionMode,
     pub auto_triggered: bool,
@@ -312,7 +312,7 @@ impl PromptCompactionState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptCompactionMode {
     None,
@@ -323,14 +323,14 @@ pub enum PromptCompactionMode {
     Disabled,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct PlanStep {
     pub id: String,
     pub title: String,
     pub done: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct TaskPlan {
     pub goal: String,
     pub steps: Vec<PlanStep>,
@@ -359,7 +359,7 @@ impl TaskPlan {
 }
 
 /// Why a run terminated.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminationReason {
     /// LLM produced a final answer.

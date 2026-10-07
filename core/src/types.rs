@@ -71,8 +71,9 @@ pub struct ToolCapability {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ToolResult {
+    #[schema(value_type = String, format = "ulid")]
     pub call_id: CallId,
     pub output: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -88,7 +89,7 @@ pub struct ToolResult {
     pub envelope: Option<Box<crate::tool_result::ToolOutputEnvelope>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ToolMutation {
     pub path: String,
     pub operation: ToolMutationOperation,
@@ -96,7 +97,7 @@ pub struct ToolMutation {
     pub diff: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolMutationOperation {
     Create,
@@ -105,7 +106,7 @@ pub enum ToolMutationOperation {
     Unknown,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolExecutionStatus {
     #[default]
@@ -115,7 +116,7 @@ pub enum ToolExecutionStatus {
     PartialSuccess,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolRiskLevel {
     #[default]
@@ -123,7 +124,7 @@ pub enum ToolRiskLevel {
     High,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ToolExecutionMetadata {
     pub status: ToolExecutionStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]

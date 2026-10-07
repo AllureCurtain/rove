@@ -7,7 +7,7 @@ use rove_models::Message;
 const MESSAGE_OVERHEAD_TOKENS: usize = 4;
 const CHARS_PER_TOKEN: usize = 4;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct PromptBuildMetadata {
     pub prompt_hash: String,
     pub stable_prefix_hash: String,

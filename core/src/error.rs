@@ -16,7 +16,7 @@ pub enum AgentError {
 }
 
 /// Errors from the runtime-neutral tool execution boundary.
-#[derive(Debug, Clone, Error, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Error, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum ToolError {
     #[error("Unknown tool: {name}")]
