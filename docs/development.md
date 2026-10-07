@@ -44,7 +44,7 @@ Config options are authoritative in the environment layer of `apps/bootstrap/src
 | --- | --- |
 | Keyless TUI | `cargo run -p rove-cli -- --model fake` |
 | REPL / one-shot | `cargo run -p rove-cli -- repl --model fake` / `cargo run -p rove-cli -- exec --model fake "<task>"` |
-| Product mode (one process) | `powershell -ExecutionPolicy Bypass -File scripts/serve.ps1` — builds `apps/web` (`pnpm build:web` → `web-dist/`), then runs `rove-api --web-dist`; add `-Provider` for a real provider, `-SkipWebBuild` to reuse an existing bundle |
+| Product mode (one process) | `powershell -ExecutionPolicy Bypass -File scripts/serve.ps1` — builds `apps/web` (`pnpm build:web` → `web-dist/`), then runs `rove-api --web-dist`; add `-Provider` for a real provider, `-SkipWebBuild` to reuse an existing bundle. Liveness: `GET /health` |
 | Start API + Web (fake) | `powershell -ExecutionPolicy Bypass -File scripts/dev.ps1` (add `-Provider` for a real provider) |
 | API only | `cargo run -p rove-api` (add `--web-dist apps/web/web-dist` to also serve the built console on the same origin) |
 | Web dev | `cd apps/web && pnpm dev` |
@@ -58,7 +58,7 @@ Config options are authoritative in the environment layer of `apps/bootstrap/src
 | Web style-token check | `pnpm lint:style-tokens` (local gate; CI does not run it) |
 | Benchmarks | `cargo run -p rove-bench -- <suite>` |
 | Local full-stack smoke | `scripts/integration-smoke.ps1` |
-| Aggregated acceptance | `scripts/product-acceptance.ps1` or `.sh`; writes `PRODUCT_ACCEPTANCE_REPORT.json`, never edit by hand |
+| Aggregated acceptance | `scripts/product-acceptance.ps1` or `.sh`; writes `PRODUCT_ACCEPTANCE_REPORT.json`, never edit by hand. A completed run's report plus a hand-written record land under `evidence/acceptance/<date>-<sha>/` (see `evidence/README.md`) |
 | Real-provider integration | `scripts/provider-integration.ps1 -Provider <type> -Model <id> -ApiBase <url> -ApiKeyEnv <VAR>` |
 | State migration smoke | `scripts/state-migration-smoke.ps1` |
 | TUI PTY smoke (Unix) | `python scripts/tui-pty-smoke.py --run` |

@@ -4,6 +4,13 @@ New decisions go on top. Do not delete overturned decisions; mark them "supersed
 
 Decisions before 2026-10-01 were distilled from the design documents of that period; the originals have been deleted.
 
+## 2026-10-07 Web API types generated from OpenAPI; SSE event schemas registered first
+
+- Status: active
+- Decision: the hand-written REST types in `apps/web/product/product-api-types.ts` are replaced by `openapi-typescript` output generated from the checked-in `apps/api/openapi.json`; a small hand-written validation layer stays at trust boundaries (responses are still runtime-checked where a wrong shape would corrupt state). SSE event payloads are out of scope for `openapi.json` until their types carry `ToSchema`: `StreamEvent` and its payload graph get `utoipa::ToSchema` derives and register in the `ApiDoc` components so `event` stops being a bare `object`. The hand-maintained e2e mock `tests/e2e/product-api-mock.ts` is then type-checked against the generated types instead of the removed hand-written ones.
+- Why: the API's utoipa annotations are already authoritative; hand-written TypeScript mirrors drift silently (there is a snapshot test for the spec itself, but nothing guards the TS side). Generating removes the drift class; registering event schemas in OpenAPI is what makes the generated types useful for streams rather than only request/response envelopes.
+- Rejected: schemars side-car schema export for `StreamEvent` — produces a second schema pipeline that can disagree with utoipa; keeping runtime validators everywhere — overkill once types are generated, validators stay only where a malformed payload is a real risk.
+
 ## 2026-10-07 Loopback-only provider credential entry over HTTP
 
 - Status: active

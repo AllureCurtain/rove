@@ -30,7 +30,7 @@ Every product surface is a shell: it resolves the workspace, loads the config sn
 | rove-app-bootstrap | `apps/bootstrap/` | `AppConfig` layered loading, user provider catalog `~/.rove/config.toml`, Project Trust store, user state directory and legacy `.rove/` migration, provider factories, product tool registry, Engine assembly |
 | rove-cli | `apps/cli/` | The `rove` binary: full-screen TUI by default, plus `repl`, `exec`, `review`, `sessions`, `state`, `trust`, `provider` subcommands |
 | rove-product-store | `apps/product-store/` | Product control-plane contract types (`/product/*` request/response, `ProductStore` trait, error codes) and the SQLite implementation (`product.sqlite` schema migrations and repositories), attachment path rules, pricing tables. No HTTP dependency |
-| rove-api | `apps/api/` | Axum routes, job lifecycle and SSE, OpenAPI, auth/CORS/rate limiting, product routes and transcript projection, benchmark routes. Re-exports rove-product-store via `rove_api::product` |
+| rove-api | `apps/api/` | Axum routes, job lifecycle and SSE, OpenAPI, auth/CORS/rate limiting, product routes and transcript projection, benchmark routes. With `--web-dist`/`ROVE_WEB_DIST` it also serves the built Web bundle on the same origin (API additionally mounted under `/api`, SPA fallback for browser navigation, `/health` for liveness). Re-exports rove-product-store via `rove_api::product` |
 | rove-bench | `apps/bench/` | Runs deterministic, network-free benchmarks from JSON definitions |
 | rove-desktop | `apps/desktop/` | Tauri 2 host: starts an embedded API on a random loopback port, injects the bearer token before page scripts run, loads the same Web static build, native folder picker, credentials written to the Windows Credential Manager |
 | Web | `apps/web/` | Next.js product UI: workspace → session → chat, Inspector, Settings; the server-side `/api/*` proxy injects `ROVE_API_TOKEN` upstream |
@@ -39,7 +39,7 @@ Every product surface is a shell: it resolves the workspace, loads the config sn
 
 - Web talks to `rove-api` over REST + SSE. The contract is the utoipa-generated `/api/openapi.json` at runtime; general conventions in docs/api.md.
 - Web's API types are currently hand-written (`apps/web/product/product-api-types.ts`, `apps/web/lib/rove-types.ts`), not generated from OpenAPI. Frontend and backend types must change together when the API changes.
-- The browser never sees raw provider keys; keys stay in server-side or Desktop process env vars and the credential store.
+- The browser never retains raw provider keys: keys live in server-side or Desktop env vars and the OS credential store. The single exception is `POST /product/provider-onboarding`, a loopback-bind-only route whose body carries a pasted key transiently into the keyring — the Web form offers it only on a loopback-served page and never stores the value.
 - Desktop depends on `rove-api` only within the local package; it does not own a second Engine or ProductStore.
 
 ## Authentication and permissions
