@@ -105,6 +105,17 @@ if (Test-Path -LiteralPath $LogDir) {
 }
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
+# The API contract suite resolves the operator-owned Project Trust store
+# through ProjectTrustRepository::operator_default(). Pin it to a fresh
+# per-run path so acceptance neither depends on nor accumulates records in
+# the operator's real state directory.
+$AcceptanceStateDir = Join-Path $RepoRoot ".rove/acceptance-state"
+if (Test-Path -LiteralPath $AcceptanceStateDir) {
+    Remove-Item -LiteralPath $AcceptanceStateDir -Recurse -Force
+}
+New-Item -ItemType Directory -Force -Path $AcceptanceStateDir | Out-Null
+$env:ROVE_PROJECT_TRUST_STORE = Join-Path $AcceptanceStateDir "project-trust.sqlite"
+
 $results = [System.Collections.Generic.List[object]]::new()
 $startedAt = Get-Date
 
