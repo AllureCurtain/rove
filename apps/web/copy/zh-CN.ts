@@ -607,6 +607,11 @@ const zhCN = {
       model: "模型",
       apiBase: "API 地址",
       apiKey: "API 密钥",
+      apiKeyHint: "仅提交一次到本机 Rove API 并存入系统凭据管理器，不会在本页面显示或保存。",
+      apiKeyRemoteHint:
+        "仅当本控制台由本机 Rove API 托管时才能直接粘贴密钥，其他情况请使用下方密钥环境变量。",
+      apiKeyPlaceholderEdit: "留空则保留已保存的密钥",
+      keySaved: "密钥已验证并安全保存。",
       apiKeyEnv: "密钥环境变量名",
       apiKeyEnvHint: "设置后优先从环境变量读取密钥，一般无需修改。",
       keyEnvAdvanced: "密钥环境变量名",

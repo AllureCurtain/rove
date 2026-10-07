@@ -2065,4 +2065,74 @@ describe("attachment transport", () => {
       attachment.attachment_id,
     ]);
   });
+
+  it("onboards a provider credential through the loopback endpoint", async () => {
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    const receipt = {
+      profile_id: providerProfile.id,
+      label: "Gateway",
+      provider_type: "openai",
+      api_base: "https://gateway.example.test/v1",
+      model: "test/model",
+      catalog_revision: "sha256:provider-catalog-2",
+      credential_source: "keyring",
+      probe: {
+        inventory_count: 3,
+        streaming_supported: true,
+        native_tool_calls_supported: true,
+        usage_supported: false,
+      },
+      selected: true,
+    };
+    const fetchMock: typeof globalThis.fetch = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({
+          url: String(input),
+          method: init?.method ?? "GET",
+          body: typeof init?.body === "string" ? init.body : undefined,
+        });
+        return jsonResponse(receipt, 201);
+      },
+    );
+    const client = createProductApiClient({ fetch: fetchMock });
+
+    const result = await client.onboardProvider({
+      label: "Gateway",
+      provider_type: "openai",
+      api_base: "https://gateway.example.test/v1",
+      model: "test/model",
+      make_default: true,
+      credential: "sk-test-only",
+    });
+
+    expect(calls[0]?.url).toBe("/api/product/provider-onboarding");
+    expect(calls[0]?.method).toBe("POST");
+    expect(JSON.parse(calls[0]?.body ?? "")).toEqual({
+      label: "Gateway",
+      provider_type: "openai",
+      api_base: "https://gateway.example.test/v1",
+      model: "test/model",
+      make_default: true,
+      credential: "sk-test-only",
+    });
+    // The parsed receipt carries no secret material.
+    expect(result).toEqual(receipt);
+    expect(JSON.stringify(result)).not.toContain("sk-test-only");
+  });
+
+  it("rejects an onboarding request with a blank credential before fetch", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({}));
+    const client = createProductApiClient({ fetch: fetchMock });
+
+    await expect(
+      client.onboardProvider({
+        label: "Gateway",
+        provider_type: "openai",
+        api_base: "https://gateway.example.test/v1",
+        model: "test/model",
+        credential: "   ",
+      }),
+    ).rejects.toBeInstanceOf(ProductApiSchemaError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

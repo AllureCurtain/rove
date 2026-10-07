@@ -28,6 +28,8 @@ import {
   parseProductProviderModelsResponse,
   parseProductProviderProfileRequest,
   parseProductProviderProfilesResponse,
+  parseOnboardProductProviderRequest,
+  parseProductProviderOnboardingReceipt,
   parseProductReview,
   parseProductReviewFindingsResponse,
   parseProductReviewsResponse,
@@ -101,6 +103,8 @@ import {
   type PromoteProductMessageRequest,
   type ReorderProductMessagesRequest,
   type UpdateProductPreferencesRequest,
+  type OnboardProductProviderRequest,
+  type ProductProviderOnboardingReceipt,
   type UpdateProductProviderProfileRequest,
   type UpdateProductSessionModelConfigRequest,
   type UpdateProductSessionRequest,
@@ -359,6 +363,14 @@ export interface ProductApiClient {
   ): Promise<ProductProviderProfile>;
   deleteProviderProfile(profileId: string, expectedRevision?: string): Promise<void>;
   listProviderModels(profileId: string): Promise<ProductProviderModelsResponse>;
+  /**
+   * Store a raw provider credential in the OS credential store and publish
+   * the profile in one step. Loopback-only on the server; the credential is
+   * transient and must not be retained by the caller.
+   */
+  onboardProvider(
+    request: OnboardProductProviderRequest,
+  ): Promise<ProductProviderOnboardingReceipt>;
   getPreferences(): Promise<ProductPreferences>;
   updatePreferences(
     request: UpdateProductPreferencesRequest,
@@ -1447,6 +1459,19 @@ export function createProductApiClient(
         ),
         undefined,
         parseProductProviderModelsResponse,
+      );
+    },
+
+    async onboardProvider(input) {
+      const request = parseOnboardProductProviderRequest(input);
+      // Stringify once, then let the parsed object go out of scope — the
+      // credential must not linger in client-side state.
+      const body = JSON.stringify(request);
+      return requestJson(
+        fetchImpl,
+        productUrl(apiPrefix, "/product/provider-onboarding"),
+        jsonRequest("POST", body),
+        parseProductProviderOnboardingReceipt,
       );
     },
 

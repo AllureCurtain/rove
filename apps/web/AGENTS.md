@@ -27,7 +27,7 @@ tests/e2e/    Playwright
 
 - State management uses only React's built-in capabilities plus stores under `state/`; no Redux, Zustand, TanStack, or similar. Server data is authoritative via the API; the client only projects and caches.
 - API calls go through `product/product-client.ts` and `lib/rove-client.ts`; components never call `fetch` directly.
-- The browser only requests same-origin `/api/*`. Under `next dev`/`next start` that is forwarded server-side by `lib/rove-api-proxy.ts` with `ROVE_API_TOKEN` injected; in the `pnpm build:web` bundle served by `rove-api --web-dist` it resolves directly against the API mounted at `/api` on the same origin. Raw provider keys never enter browser state, `localStorage`, or request bodies.
+- The browser only requests same-origin `/api/*`. Under `next dev`/`next start` that is forwarded server-side by `lib/rove-api-proxy.ts` with `ROVE_API_TOKEN` injected; in the `pnpm build:web` bundle served by `rove-api --web-dist` it resolves directly against the API mounted at `/api` on the same origin. Raw provider keys never enter browser state, `localStorage`, or logs — with exactly one exception: `POST /product/provider-onboarding` carries the pasted credential transiently (uncontrolled input, read once at submit), and the API only accepts it on a loopback bind (see docs/api.md).
 - API types are hand-written; when the API changes, the Rust side and these types change together (see docs/api.md).
 - Real-time data goes over SSE with `Last-Event-ID` resume; prefer push over polling wherever possible.
 - A product session has at most one active turn; when a task-start response is ambiguous, perform a bounded reconciliation first — never auto-resubmit.

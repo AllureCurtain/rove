@@ -547,16 +547,31 @@ function ProvidersSettings(props: ProviderSettingsProps) {
   );
 }
 
+function isLoopbackBrowserOrigin(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const host = window.location.hostname;
+  return (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host === "[::1]"
+  );
+}
+
 function BrowserProvidersSettings({
   profiles,
   selection,
   onCreateProfile,
   onUpdateProfile,
   onDeleteProfile,
+  onRefreshProviderProfiles,
   onSelectionChange,
 }: ProviderSettingsProps) {
   const { t } = useCopy();
   const toast = useToast();
+  const client = useMemo(() => createProductApiClient(), []);
   const [label, setLabel] = useState(() => t("settings.providers.draftLabel"));
   const [providerType, setProviderType] = useState<ProviderType>("openai");
   const [apiBase, setApiBase] = useState(providerDefaultApiBase("openai"));
@@ -571,7 +586,15 @@ function BrowserProvidersSettings({
   const [testResult, setTestResult] = useState<ProviderTestResponse | null>(null);
   const [modelsResult, setModelsResult] = useState<ProviderModelsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  // The credential is read from an uncontrolled input at submit time so it
+  // never enters React state, props, or the render tree.
+  const apiKeyInputRef = useRef<HTMLInputElement>(null);
+  // Hydration-safe: the server render and first client render both assume the
+  // field is unavailable; mount reveals whether the page is served loopback.
+  const [loopbackOrigin, setLoopbackOrigin] = useState(false);
   const profileDeleteBusy = deletingProfileId !== null;
+  const credentialCapable = loopbackOrigin && providerRequiresKey(providerType);
   // The provider test's inline result lives here, so this panel is what decides
   // whether the result still has somewhere to appear.
   const mountedRef = useRef(true);
@@ -582,6 +605,10 @@ function BrowserProvidersSettings({
     },
     [],
   );
+
+  useEffect(() => {
+    setLoopbackOrigin(isLoopbackBrowserOrigin());
+  }, []);
 
   const activeProfile = useMemo(
     () => profiles.find((profile) => profile.id === selection.profileId) ?? null,
@@ -619,6 +646,9 @@ function BrowserProvidersSettings({
     setTestResult(null);
     setModelsResult(null);
     setError(null);
+    if (apiKeyInputRef.current) {
+      apiKeyInputRef.current.value = "";
+    }
   }
 
   function startEdit(profile: ProviderProfileRecord) {
@@ -643,7 +673,35 @@ function BrowserProvidersSettings({
     event.preventDefault();
     setSaveBusy(true);
     setError(null);
+    setStatus(null);
+    // Read the secret once, then clear the field regardless of outcome.
+    const credential = apiKeyInputRef.current?.value.trim() ?? "";
     try {
+      if (credential) {
+        const editing = editingProfileId
+          ? profiles.find((profile) => profile.id === editingProfileId)
+          : undefined;
+        const receipt = await client.onboardProvider({
+          profile_id: editingProfileId ?? undefined,
+          label: label.trim() || providerDisplayName(providerType),
+          provider_type: providerType,
+          api_base: apiBase.trim().replace(/\/+$/u, ""),
+          model: defaultModel.trim(),
+          make_default: true,
+          expected_revision: editing?.catalogRevision,
+          credential,
+        });
+        await onRefreshProviderProfiles();
+        onSelectionChange({
+          ...selection,
+          mode: "profile",
+          profileId: receipt.profile_id,
+          model: receipt.model,
+        });
+        resetDraft();
+        setStatus(t("settings.providers.keySaved"));
+        return;
+      }
       const saved = editingProfileId
         ? await onUpdateProfile(editingProfileId, profileInput())
         : await onCreateProfile(profileInput());
@@ -659,8 +717,11 @@ function BrowserProvidersSettings({
       }
       resetDraft();
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : String(saveError));
+      setError(describeProviderProbeFailure(saveError));
     } finally {
+      if (apiKeyInputRef.current) {
+        apiKeyInputRef.current.value = "";
+      }
       setSaveBusy(false);
     }
   }
@@ -869,6 +930,28 @@ function BrowserProvidersSettings({
             />
           </div>
         </div>
+        {providerRequiresKey(providerType) ? (
+          <div className="field">
+            <label htmlFor="profile-api-key">{t("settings.providers.apiKey")}</label>
+            <input
+              id="profile-api-key"
+              ref={apiKeyInputRef}
+              type="password"
+              autoComplete="off"
+              disabled={saveBusy || !credentialCapable}
+              placeholder={
+                editingProfileId
+                  ? t("settings.providers.apiKeyPlaceholderEdit")
+                  : "sk-…"
+              }
+            />
+            <p className="settings-inline-note">
+              {credentialCapable
+                ? t("settings.providers.apiKeyHint")
+                : t("settings.providers.apiKeyRemoteHint")}
+            </p>
+          </div>
+        ) : null}
         <details>
           <summary>{t("chrome.advanced")}</summary>
           <div className="field">
@@ -896,6 +979,7 @@ function BrowserProvidersSettings({
           </button>
         </div>
         {error ? <div className="chat-error" role="alert">{t("chrome.settingsError")}</div> : null}
+        {status ? <div className="placeholder-note" role="status">{status}</div> : null}
         {testResult ? (
           <div className="placeholder-note testline" data-status={testResult.status}>
             {testResult.status === "ok" && (testResult.key_present || !providerRequiresKey(providerType))

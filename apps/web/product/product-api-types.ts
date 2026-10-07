@@ -808,6 +808,42 @@ export interface CreateProductProviderProfileRequest {
 export type UpdateProductProviderProfileRequest =
   CreateProductProviderProfileRequest;
 
+/**
+ * `POST /product/provider-onboarding` — the only request body that carries a
+ * raw provider credential. The server hands it to the OS credential store and
+ * never returns it; the client must not persist it either (no state, no
+ * localStorage, no logs).
+ */
+export interface OnboardProductProviderRequest {
+  profile_id?: ProductProviderProfileId;
+  label: string;
+  provider_type: ProductProviderType;
+  api_base: string;
+  model: string;
+  make_default?: boolean;
+  expected_revision?: string;
+  credential: string;
+}
+
+export interface ProductProviderOnboardingProbe {
+  inventory_count: number;
+  streaming_supported: boolean;
+  native_tool_calls_supported: boolean;
+  usage_supported: boolean;
+}
+
+export interface ProductProviderOnboardingReceipt {
+  profile_id: ProductProviderProfileId;
+  label: string;
+  provider_type: ProductProviderType;
+  api_base: string;
+  model: string;
+  catalog_revision: string;
+  credential_source: string;
+  probe: ProductProviderOnboardingProbe;
+  selected: boolean;
+}
+
 export interface UpdateProductPreferencesRequest {
   schema_version: number;
   expected_revision?: number;
@@ -3368,6 +3404,126 @@ export function parseProductProviderProfileRequest(
     optionalString(record, "expected_revision", path, { nonEmpty: true }),
   );
   return request;
+}
+
+/**
+ * Validate the onboarding body before it is serialized — including the
+ * credential's bound — but never inspect, transform, or retain its content.
+ */
+export function parseOnboardProductProviderRequest(
+  value: unknown,
+  path = "provider onboarding request",
+): OnboardProductProviderRequest {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(
+    record,
+    [
+      "profile_id",
+      "label",
+      "provider_type",
+      "api_base",
+      "model",
+      "make_default",
+      "expected_revision",
+      "credential",
+    ],
+    path,
+  );
+  const request: OnboardProductProviderRequest = {
+    label: expectString(record.label, `${path}.label`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    }),
+    provider_type: expectEnum(
+      record.provider_type,
+      PRODUCT_PROVIDER_TYPES,
+      `${path}.provider_type`,
+    ),
+    api_base: expectString(record.api_base, `${path}.api_base`, {
+      maxBytes: MAX_PRODUCT_API_BASE_BYTES,
+    }),
+    model: expectString(record.model, `${path}.model`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES * 2,
+    }),
+    credential: expectString(record.credential, `${path}.credential`, {
+      nonEmpty: true,
+      maxBytes: 16 * 1024,
+    }),
+  };
+  assignOptional(
+    request,
+    "profile_id",
+    optionalString(record, "profile_id", path, { nonEmpty: true }),
+  );
+  assignOptional(
+    request,
+    "make_default",
+    optionalBoolean(record, "make_default", path),
+  );
+  assignOptional(
+    request,
+    "expected_revision",
+    optionalString(record, "expected_revision", path, { nonEmpty: true }),
+  );
+  return request;
+}
+
+export function parseProductProviderOnboardingReceipt(
+  value: unknown,
+  path = "provider onboarding receipt",
+): ProductProviderOnboardingReceipt {
+  const record = expectRecord(value, path);
+  const probe = expectRecord(record.probe, `${path}.probe`);
+  return {
+    profile_id: expectId(record.profile_id, `${path}.profile_id`),
+    label: expectString(record.label, `${path}.label`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    }),
+    provider_type: expectEnum(
+      record.provider_type,
+      PRODUCT_PROVIDER_TYPES,
+      `${path}.provider_type`,
+    ),
+    api_base: expectString(record.api_base, `${path}.api_base`, {
+      maxBytes: MAX_PRODUCT_API_BASE_BYTES,
+    }),
+    model: expectString(record.model, `${path}.model`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES * 2,
+    }),
+    catalog_revision: expectString(
+      record.catalog_revision,
+      `${path}.catalog_revision`,
+      { nonEmpty: true },
+    ),
+    credential_source: expectString(
+      record.credential_source,
+      `${path}.credential_source`,
+      { nonEmpty: true, maxBytes: 64 },
+    ),
+    probe: {
+      inventory_count: expectInteger(
+        probe.inventory_count,
+        `${path}.probe.inventory_count`,
+        { min: 0 },
+      ),
+      streaming_supported: expectBoolean(
+        probe.streaming_supported,
+        `${path}.probe.streaming_supported`,
+      ),
+      native_tool_calls_supported: expectBoolean(
+        probe.native_tool_calls_supported,
+        `${path}.probe.native_tool_calls_supported`,
+      ),
+      usage_supported: expectBoolean(
+        probe.usage_supported,
+        `${path}.probe.usage_supported`,
+      ),
+    },
+    selected: expectBoolean(record.selected, `${path}.selected`),
+  };
 }
 
 export function parseUpdateProductPreferencesRequest(
