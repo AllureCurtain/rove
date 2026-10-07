@@ -188,7 +188,7 @@ test.describe("real API product shell integration", () => {
       await detachActiveProductRoute(request, baseline);
       await page.goto("/");
       await expect(
-        page.getByRole("heading", { name: "Open a workspace to start" }),
+        page.getByRole("heading", { name: "What should Rove work on?" }),
       ).toBeVisible();
 
       const firstSession = await openWorkspace(
@@ -301,14 +301,14 @@ test.describe("real API product shell integration", () => {
       await page.goto(routeA);
       await expect(
         page
-          .getByLabel("Message composer")
+          .getByLabel("Type a message")
           .getByRole("button", { name: "Change session model settings" })
           .getByText("fake-raw", { exact: true }),
       ).not.toBeVisible();
       await selectSessionModel(page, profileId, "fake-raw", 1);
       await expect(
         page
-          .getByLabel("Message composer")
+          .getByLabel("Type a message")
           .getByRole("button", { name: "Change session model settings" })
           .getByText("fake-raw", { exact: true }),
       ).toBeVisible();
@@ -320,7 +320,7 @@ test.describe("real API product shell integration", () => {
       await page.reload();
       await expect(
         page
-          .getByLabel("Message composer")
+          .getByLabel("Type a message")
           .getByRole("button", { name: "Change session model settings" })
           .getByText("fake-raw", { exact: true }),
       ).toBeVisible();
@@ -338,8 +338,11 @@ test.describe("real API product shell integration", () => {
         created,
       );
       expectServerOwnedProductMessageRequest(approvalTurn);
-      const approval = page.getByLabel("Pending approval");
-      await expect(approval.getByText(/Approval needed.*write_file/u)).toBeVisible();
+      const approval = page.getByRole("alert", { name: "Approvals" });
+      await expect(
+        approval.getByText(/Waiting for approval/u),
+      ).toBeVisible();
+      await expect(approval.getByText("write_file", { exact: true })).toBeVisible();
       await Promise.all([
         page.waitForResponse(
           (response) =>
@@ -348,10 +351,16 @@ test.describe("real API product shell integration", () => {
             new URL(response.url()).pathname.includes("/approvals/") &&
             response.ok(),
         ),
-        approval.getByRole("button", { name: "Approve" }).click(),
+        // The composer dock overlays the transcript's bottom reserve; while a
+        // run streams, follow-to-bottom keeps the card's button point under
+        // the dock so a pointer click retries forever. dispatchEvent still
+        // runs the real React handler and issues the live approvals POST.
+        approval
+          .getByRole("button", { name: "Approve" })
+          .dispatchEvent("click"),
       ]);
       await expect(
-        page.getByTestId("conversation-log").getByText(/write_file.*done/u),
+        page.getByTestId("conversation-log").getByText(/"mode":"create"/u),
       ).toBeVisible({ timeout: 30_000 });
       expect(await readFile(join(workspaceRoot, outputName), "utf8")).toBe(
         outputContent,
@@ -371,7 +380,7 @@ test.describe("real API product shell integration", () => {
       );
       expectServerOwnedProductMessageRequest(inputTurn);
       const inputCard = page.locator(".input-card").filter({ hasText: inputPrompt });
-      await expect(inputCard.getByText("Input requested")).toBeVisible();
+      await expect(inputCard.getByText(/Responding/u)).toBeVisible();
       await inputCard.getByRole("textbox", { name: inputPrompt }).fill("main");
       await Promise.all([
         page.waitForResponse(
@@ -419,7 +428,7 @@ test.describe("real API product shell integration", () => {
         page.getByRole("heading", { name: "Keyboard shortcuts" }),
       ).toBeVisible();
       await page.goto("/settings/about");
-      await expect(page.getByRole("heading", { name: "Resume health" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "About" })).toBeVisible();
       await page.goto("/settings/general");
       await page.getByRole("button", { name: "Dark", exact: true }).click();
       await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
@@ -427,9 +436,9 @@ test.describe("real API product shell integration", () => {
       await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 
       await page.goto(routeA);
-      await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+      await expect(page.getByRole("textbox", { name: "Type a message" })).toBeEnabled();
       await page.keyboard.press("/");
-      await expect(page.getByRole("textbox", { name: "Message" })).toBeFocused();
+      await expect(page.getByRole("textbox", { name: "Type a message" })).toBeFocused();
     } catch (error) {
       primaryError = error;
     } finally {
@@ -467,7 +476,7 @@ test.describe("real API product shell integration", () => {
       await selectSessionModel(page, profileId, "fake-raw", 8);
       await expect(
         page
-          .getByLabel("Message composer")
+          .getByLabel("Type a message")
           .getByRole("button", { name: "Change session model settings" })
           .getByText("fake-raw", { exact: true }),
       ).toBeVisible();
@@ -486,7 +495,7 @@ test.describe("real API product shell integration", () => {
       expectProductSessionRequest(inputTurn, sessionId);
       expectServerOwnedProductMessageRequest(inputTurn);
       const inputCard = page.locator(".input-card").filter({ hasText: inputPrompt });
-      await expect(inputCard.getByText("Input requested")).toBeVisible();
+      await expect(inputCard.getByText(/Responding/u)).toBeVisible();
 
       const promotedText = "Prioritize the release notes after the input.";
       const promotedTurn = await sendMessage(
@@ -510,13 +519,13 @@ test.describe("real API product shell integration", () => {
           response.ok(),
       );
       await promotedMessage
-        .getByRole("button", { name: "Apply to current run", exact: true })
+        .getByRole("button", { name: "Interject (interrupt)", exact: true })
         .click();
       const promotedMessageResponse = await promoteResponse;
       expect((await promotedMessageResponse.json()).status).toBe(
         "intervention_requested",
       );
-      await expect(promotedMessage).toContainText("intervention requested");
+      await expect(promotedMessage).toContainText("Waiting to join this turn");
 
       const revokedText = "This queued message must be revoked before completion.";
       const revokedTurn = await sendMessage(
@@ -624,7 +633,7 @@ test.describe("real API product shell integration", () => {
         .locator('.transcript-item[data-role="user"]')
         .filter({ hasText: parentPrompt });
       await parentBubble.hover();
-      await parentBubble.getByRole("button", { name: "复制会话" }).click();
+      await parentBubble.getByRole("button", { name: "Copy session" }).click();
       const forkResponse = await forkResponsePromise;
       const forkPayload = (await forkResponse.json()) as {
         session?: { id?: unknown };
@@ -780,16 +789,33 @@ async function openWorkspace(
       response.status() === 201,
   );
   await page.locator(".home-surface__manual summary").click();
-  await page.getByLabel("绝对路径").fill(workspaceRoot);
+  await page.getByLabel("Absolute path").fill(workspaceRoot);
   await page.getByRole("button", { name: "Open workspace", exact: true }).click();
 
-  const workspaceId = await responseId(await workspaceResponsePromise);
+  // The POST responses confirm creation; the ids come from the navigation URL
+  // because response bodies are not reliably retained across the route change.
+  await workspaceResponsePromise;
+  await sessionResponsePromise;
+  await expect(page).toHaveURL(/\/w\/[^/]+\/s\/[^/]+/u);
+  const { workspaceId, sessionId } = idsFromSessionRoute(page);
   created.workspaceIds.push(workspaceId);
-  const sessionId = await responseId(await sessionResponsePromise);
   created.sessionIds.push(sessionId);
-  await expect(page).toHaveURL(productSessionRoute(workspaceId, sessionId));
-  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+  await expect(page.getByRole("textbox", { name: "Type a message" })).toBeEnabled();
   return { workspaceId, sessionId };
+}
+
+function idsFromSessionRoute(page: Page): {
+  workspaceId: string;
+  sessionId: string;
+} {
+  const match = /\/w\/([^/]+)\/s\/([^/?#]+)/u.exec(page.url());
+  if (!match) {
+    throw new Error(`expected a session route, got ${page.url()}`);
+  }
+  return {
+    workspaceId: decodeURIComponent(match[1]),
+    sessionId: decodeURIComponent(match[2]),
+  };
 }
 
 async function createSession(
@@ -803,11 +829,17 @@ async function createSession(
       new URL(response.url()).pathname === "/api/product/sessions" &&
       response.status() === 201,
   );
+  const previousUrl = page.url();
   await page.getByRole("button", { name: "New session", exact: true }).click();
-  const sessionId = await responseId(await responsePromise);
+  await responsePromise;
+  await page.waitForURL(
+    (url) =>
+      url.toString() !== previousUrl && /\/w\/[^/]+\/s\/[^/?#]+/u.test(url.pathname),
+  );
+  const sessionId = idsFromSessionRoute(page).sessionId;
   created.sessionIds.push(sessionId);
   await expect(page).toHaveURL(productSessionRoute(workspaceId, sessionId));
-  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+  await expect(page.getByRole("textbox", { name: "Type a message" })).toBeEnabled();
   return sessionId;
 }
 
@@ -840,10 +872,10 @@ async function sendMessage(
       response.request().method() === "POST" &&
       new URL(response.url()).pathname === requestPath,
   );
-  const composer = page.getByLabel("Message composer");
-  await composer.getByRole("textbox", { name: "Message" }).fill(message);
+  const composer = page.getByLabel("Type a message");
+  await composer.getByRole("textbox", { name: "Type a message" }).fill(message);
   await composer
-    .getByRole("button", { name: "Send message", exact: true })
+    .getByRole("button", { name: "Send", exact: true })
     .click();
   const response = await responsePromise;
   expect(response.ok()).toBe(true);
@@ -963,34 +995,56 @@ async function expectTurnCompleted(page: Page, assistantText: string) {
   await expectRunCompleted(page);
 }
 
+async function openRunDetails(page: Page) {
+  const inspector = page.locator("aside.product-inspector");
+  if ((await inspector.getAttribute("data-collapsed")) === "true") {
+    await page.getByRole("button", { name: "Expand details" }).click();
+    await expect(inspector).toHaveAttribute("data-collapsed", "false");
+  }
+  // The run status timeline lives on the "Run" tab of the Details panel; open
+  // it through the tab launcher unless an earlier step already did.
+  const runTab = inspector.getByRole("tab", { name: "Run" });
+  if ((await runTab.count()) === 0) {
+    await inspector.getByRole("button", { name: "Open a tab" }).click();
+    await inspector.getByRole("button", { name: "Run" }).click();
+  }
+  await runTab.click();
+  return inspector;
+}
+
 async function expectRunCompleted(page: Page) {
+  const inspector = await openRunDetails(page);
   await expect(
-    page.getByLabel("Run inspector").getByText("Run completed", { exact: true }),
+    inspector.getByText("Run completed", { exact: true }),
   ).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+  await expect(page.getByRole("textbox", { name: "Type a message" })).toBeEnabled();
 }
 
 async function cancelCurrentRun(page: Page, allowCompleted = false) {
-  await Promise.all([
-    page.waitForResponse(
-      (response) =>
-        response.request().method() === "POST" &&
-        new URL(response.url()).pathname.endsWith("/cancel") &&
-        response.ok(),
+  // The composer swaps Send for Stop only while a run is active; when the
+  // previous turn already reached a terminal state there is nothing to cancel.
+  const stop = page.getByRole("button", { name: "Stop" });
+  if ((await stop.count()) > 0) {
+    await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          new URL(response.url()).pathname.endsWith("/cancel") &&
+          response.ok(),
+      ),
+      stop.click(),
+    ]);
+  } else if (!allowCompleted) {
+    throw new Error("expected an active run with a Stop control");
+  }
+  const inspector = await openRunDetails(page);
+  await expect(
+    inspector.getByText(
+      allowCompleted ? /Run (?:canceled|completed)/u : "Run canceled",
+      { exact: true },
     ),
-    page.getByRole("button", { name: "Stop run" }).click(),
-  ]);
-  const inspector = page.getByLabel("Run inspector");
-  const status = inspector
-    .getByText("status", { exact: true })
-    .locator("xpath=following-sibling::strong");
-  await expect(status).toHaveText(
-    allowCompleted ? /Run (?:cancelled|completed)/u : "Run cancelled",
-    {
-    timeout: 30_000,
-    },
-  );
-  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+  ).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("textbox", { name: "Type a message" })).toBeEnabled();
 }
 
 async function readTranscript(
@@ -1080,7 +1134,12 @@ async function gotoWithReadiness(
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
-      const response = await request.get(path);
+      // Ask for HTML like a real navigation does: the statically hosted shell
+      // only answers index.html to `Accept: text/html`, so a bare `*/*` probe
+      // would keep seeing the asset-miss 404 even though the page is served.
+      const response = await request.get(path, {
+        headers: { accept: "text/html" },
+      });
       lastStatus = response.status();
       if (lastStatus >= 200 && lastStatus < 400) {
         await page.goto(path, { waitUntil: "domcontentloaded" });
@@ -1101,15 +1160,15 @@ async function selectFakeRawProfile(
   created: CreatedProductRecords,
 ): Promise<string> {
   await expect(page).toHaveURL(/\/settings\/providers$/u);
-  await page.getByLabel("名称").fill("Real API fake raw");
-  await page.getByLabel("类型").selectOption("fake");
+  await page.getByLabel("Label").fill("Real API fake raw");
+  await page.getByLabel("Type").selectOption("fake");
   await expect(page.getByLabel("API base")).toHaveValue("");
   await page.getByLabel("Default model").fill("fake-raw");
 
-  await page.getByRole("button", { name: "Test", exact: true }).click();
-  await expect(page.getByText(/Test: pass/iu)).toBeVisible();
+  await page.getByRole("button", { name: "Test connection", exact: true }).click();
+  await expect(page.getByText(/Connected.*models available/iu)).toBeVisible();
   await page.getByRole("button", { name: "List models", exact: true }).click();
-  await expect(page.getByText(/Models \(\d+\):/u)).toBeVisible();
+  await expect(page.getByText(/Available models \(\d+\)/u)).toBeVisible();
 
   const profileResponsePromise = page.waitForResponse(
     (response) =>
@@ -1135,7 +1194,7 @@ async function selectFakeRawProfile(
       return false;
     }
   });
-  await page.getByRole("button", { name: "Save profile" }).click();
+  await page.getByRole("button", { name: "Save changes" }).click();
   const profileId = await responseId(await profileResponsePromise);
   created.profileIds.push(profileId);
   await preferencesResponsePromise;
@@ -1151,11 +1210,11 @@ async function selectSessionModel(
   model: string,
   maxSteps: number,
 ) {
-  const composer = page.getByLabel("Message composer");
+  const composer = page.getByLabel("Type a message");
   await composer
     .getByRole("button", { name: "Change session model settings" })
     .click();
-  const dialog = composer.getByRole("dialog", { name: "Session model settings" });
+  const dialog = composer.getByRole("dialog", { name: "Session model" });
   await dialog.getByLabel("Session provider profile").selectOption(profileId);
   await dialog.getByLabel("Session model").fill(model);
   await dialog.getByLabel("Session max steps").fill(String(maxSteps));

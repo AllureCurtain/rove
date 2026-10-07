@@ -33,6 +33,7 @@ import {
   type ProductTranscriptResponse,
   type ProductTranscriptRunSegment,
 } from "../product/product-api-types";
+import { RoveApiError } from "../lib/rove-client";
 import { ProductApiError, type ProductApiClient } from "../product/product-client";
 import {
   NO_OLDER_HISTORY,
@@ -401,6 +402,18 @@ export function useSessionContinuity({
           focusedSessionRef.current !== sessionId ||
           controllerRef.current !== controller
         ) {
+          return;
+        }
+        if (error instanceof RoveApiError && error.status === 404) {
+          // The run ended and left the live job registry before this window
+          // could attach. That is a terminal outcome, not a failed restore:
+          // reconcile like a just-finished run and let the durable transcript
+          // carry the result instead of showing a restore error.
+          terminatedBindingRef.current = { sessionId, jobId, runId };
+          terminalReconciliationRef.current?.(sessionId, controller, {
+            jobId,
+            runId,
+          });
           return;
         }
         const detail = `Live follow could not reconnect: ${describeError(error)}. Durable transcript restore remains available.`;

@@ -58,6 +58,7 @@ Config options are authoritative in the environment layer of `apps/bootstrap/src
 | Web style-token check | `pnpm lint:style-tokens` (local gate; CI does not run it) |
 | Benchmarks | `cargo run -p rove-bench -- <suite>` |
 | Local full-stack smoke | `scripts/integration-smoke.ps1` |
+| Hosted-bundle acceptance | `scripts/serve-acceptance.ps1` — builds `apps/web/web-dist`, runs `rove-api --web-dist` against an isolated scratch state root, and drives the `real-api.spec.ts` Playwright suite against it (`-SkipWebBuild`/`-SkipCargoBuild` to reuse artifacts, `ROVE_SERVE_ACCEPTANCE_ADDR` to move the bind address) |
 | Aggregated acceptance | `scripts/product-acceptance.ps1` or `.sh`; writes `PRODUCT_ACCEPTANCE_REPORT.json`, never edit by hand. A completed run's report plus a hand-written record land under `evidence/acceptance/<date>-<sha>/` (see `evidence/README.md`) |
 | Real-provider integration | `scripts/provider-integration.ps1 -Provider <type> -Model <id> -ApiBase <url> -ApiKeyEnv <VAR>` |
 | State migration smoke | `scripts/state-migration-smoke.ps1` |
