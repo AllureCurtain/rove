@@ -2061,9 +2061,14 @@ function ServerProductApp({ draftStore }: {
                           loadAttachment={handleLoadAttachment}
                           onOpenFile={(reference) => {
                             // §8 + #27/#28: a tool-card path opens its own tab —
-                            // an .html file goes to the isolated preview tab, any
-                            // other path to the file viewer at the named line.
-                            if (/\.(html|htm)$/i.test(reference.path)) {
+                            // a bare .html file goes to the isolated preview
+                            // tab, while a path:line reference keeps the file
+                            // viewer (a line anchor only means something in
+                            // source).
+                            if (
+                              /\.(html|htm)$/i.test(reference.path) &&
+                              reference.line == null
+                            ) {
                               panel.openPreview(reference.path);
                             } else {
                               panel.openFile(reference.path, reference.line ?? null);
