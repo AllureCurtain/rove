@@ -3787,6 +3787,27 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
   overflow-wrap: anywhere;
 }
 
+/* #29: a mutation row's path is a quiet link to that file's tab. */
+.product-app-frame[data-ui-version="v2"] .mutation-list__path {
+  display: block;
+  overflow-wrap: anywhere;
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--v2-signal);
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .mutation-list__path:hover {
+  text-decoration-style: solid;
+}
+
 .product-app-frame[data-ui-version="v2"] .tool-list__detail,
 .product-app-frame[data-ui-version="v2"] .mutation-list li span {
   display: block;
@@ -5664,7 +5685,7 @@ body.is-resizing-column .product-app-frame[data-ui-version="v2"] .product-sideba
 .product-app-frame[data-ui-version="v2"] .tool-card__url:hover,
 .product-app-frame[data-ui-version="v2"] .tool-card__ref:focus-visible,
 .product-app-frame[data-ui-version="v2"] .tool-card__url:focus-visible {
-  color: var(--v2-accent);
+  color: var(--v2-signal);
   text-decoration-style: solid;
 }
 
@@ -5674,7 +5695,7 @@ body.is-resizing-column .product-app-frame[data-ui-version="v2"] .product-sideba
 }
 
 .product-app-frame[data-ui-version="v2"] .tool-card__summary--link {
-  color: var(--v2-accent);
+  color: var(--v2-signal);
   text-decoration: underline;
   text-decoration-style: dotted;
   text-underline-offset: 2px;
@@ -5689,6 +5710,146 @@ body.is-resizing-column .product-app-frame[data-ui-version="v2"] .product-sideba
   margin: 4px 0 0;
   color: var(--v2-ink-3);
   font-size: 11px;
+}
+
+/* §5.4 + issue #29: a file-mutating call is a change card — one line of
+   mark/path/counts, diff hunks on expand. It shares the tool card's quiet
+   furniture so a run reads as one family. */
+.product-app-frame[data-ui-version="v2"] .change-card {
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface);
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__head {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: none;
+  padding: 7px 4px 7px 10px;
+  font: inherit;
+  color: var(--v2-ink-2);
+  text-align: left;
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__tail {
+  display: flex;
+  flex: none;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  border: none;
+  background: none;
+  padding: 7px 10px 7px 4px;
+  font: inherit;
+  color: var(--v2-ink-2);
+  text-align: left;
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__head:not([disabled]),
+.product-app-frame[data-ui-version="v2"] .change-card__tail:not([disabled]) {
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__head:not([disabled]):hover,
+.product-app-frame[data-ui-version="v2"] .change-card__tail:not([disabled]):hover {
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__mark {
+  flex: none;
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__mark[data-status="create"] {
+  background: var(--v2-success-soft);
+  color: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__mark[data-status="delete"] {
+  background: var(--v2-danger-soft);
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__mark[data-status="update"] {
+  background: var(--v2-signal-soft);
+  color: var(--v2-signal);
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__mark[data-status="unknown"] {
+  background: var(--v2-surface-sunken);
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  border: none;
+  background: none;
+  padding: 7px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--v2-ink-2);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__path--link {
+  color: var(--v2-signal);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__path--link:hover {
+  text-decoration-style: solid;
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__counts {
+  flex: none;
+  display: inline-flex;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__count[data-kind="add"] {
+  color: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__count[data-kind="del"] {
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__details {
+  border-top: 1px solid var(--v2-border);
+  padding: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .change-card__rollback-note {
+  margin: 8px 0 0;
+  color: var(--v2-ink-3);
+  font-size: 10.5px;
 }
 
 /* Hover furniture under a message: a quiet row of 24px icon chips that never

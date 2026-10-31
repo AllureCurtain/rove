@@ -544,7 +544,16 @@ export function RunInspector({
                 <ul className="mutation-list">
                   {mutations.map(({ tool, mutation }, index) => (
                     <li key={`${tool.id}-${mutation.path}-${index}`}>
-                      <strong>{mutation.path}</strong>
+                      {/* #29: a mutation row names its file and opens it as a
+                          file tab — the same deep-link the finding rows use. */}
+                      <button
+                        type="button"
+                        className="mutation-list__path"
+                        title={t("chat.openFileRef")}
+                        onClick={() => openFile(mutation.path, null)}
+                      >
+                        {mutation.path}
+                      </button>
                       <span>{mutation.operation}</span>
                     </li>
                   ))}
