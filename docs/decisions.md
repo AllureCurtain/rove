@@ -2,6 +2,13 @@
 
 New decisions go on top. Do not delete overturned decisions; mark them "superseded" and note which entry replaced them.
 
+## 2026-10-31 Subagent attribution via a wrapped `subagent_event` envelope
+
+- Status: active
+- Decision: subagent delegation (issue #31) uses Fork A — the delegated agent runs inline inside the parent run/trace — and every event it emits is wrapped in a single new `StreamEvent::SubagentEvent { parent_call_id, event }` variant (contract version 4). `parent_call_id` is the tool `call_id` of the parent `delegate`/`task` call and is the only edge a consumer needs to group a child's events. `event` is the child's own event, unchanged; the field's OpenAPI schema is a bare `$ref` to `StreamEvent` (`schema_with`), not an inline resolution, because resolving `Box<StreamEvent>`'s `ToSchema` re-enters `StreamEvent` while its schema is still under construction and recurses without bound.
+- Why: a wrapped envelope keeps the parent's stream flat while attribution survives, and — decisive over scattering `parent_call_id` onto the four tool variants — it attributes *every* child event kind (including `llm_chunk`/`thinking_delta`/`llm_message`, which the work-panel mini-transcript needs), not just tool calls. Consumers that know nothing about delegation see one unknown top-level variant and wildcard-ignore it, so the wrapped event is never misattributed to the parent; model-history projection and recovery, which only match top-level kinds, drop it automatically.
+- Rejected: a `parent_call_id` field added to each tool variant — it cannot attribute non-tool child events and forces every tool-variant match site to thread an optional field; new `SubagentStarted`/`SubagentCompleted` event kinds — they mark the boundary but still leave the child's intermediate events unattributed; Fork B (a real `RunId` per subagent) — it needs a `product_session_runs` schema migration and a new concurrency surface, and is the later end-state rather than the fast path to the UX.
+
 ## 2026-10-31 Reasoning streams as `thinking_delta`, kept out of the answer
 
 - Status: active

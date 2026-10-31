@@ -476,6 +476,11 @@ const streamEventFixtures: StreamEvent[] = [
   { type: "message_claimed_successor", id: "message-2" },
   { type: "message_needs_attention", id: "message-2", reason: "restart" },
   { type: "message_revoked", id: "message-3" },
+  {
+    type: "subagent_event",
+    parent_call_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    event: { type: "llm_chunk", delta: "child" },
+  },
 ];
 
 const providerProfileFixtures = [

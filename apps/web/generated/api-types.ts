@@ -4106,6 +4106,12 @@ export interface components {
             id: string;
             /** @enum {string} */
             type: "message_revoked";
+        } | {
+            event: components["schemas"]["StreamEvent"];
+            /** Format: ulid */
+            parent_call_id: string;
+            /** @enum {string} */
+            type: "subagent_event";
         };
         /** @description Structured content a tool returned, with its schema verdict. */
         StructuredToolContent: {

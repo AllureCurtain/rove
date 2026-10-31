@@ -1407,6 +1407,11 @@ impl From<&StreamEvent> for RunViewUpdate {
                 status: MessageDeliveryStatus::Revoked,
                 reason: None,
             },
+            // A delegated run's events are flattened into the parent's view:
+            // the TUI has no nesting affordance, so project the wrapped event
+            // as if it were the parent's own rather than dropping the child
+            // run's progress entirely.
+            StreamEvent::SubagentEvent { event, .. } => Self::from(event.as_ref()),
         }
     }
 }
