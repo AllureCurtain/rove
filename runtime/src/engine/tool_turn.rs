@@ -165,6 +165,17 @@ pub(crate) struct ToolTurnContext<'a> {
     pub tool_artifacts: Option<Arc<ToolArtifactStore>>,
     pub agent_profile: Option<Arc<AgentRuntimeProfile>>,
     pub run_mode: crate::types::RunMode,
+    /// Live model client, present whenever the engine has one at run time.
+    /// `None` in embeddings that build a `ToolTurnContext` without delegation —
+    /// the `task` tool then degrades cleanly through the absent
+    /// `SubRunSpawner` extension.
+    pub model: Option<Arc<dyn rove_models::ModelClient>>,
+    /// Depth the run attaching this context is at. `0` for a top-level run; a
+    /// `SubRunSpawner` at `>= MAX_DELEGATION_DEPTH` refuses to spawn.
+    pub subagent_depth: u8,
+    /// Shared sink a delegated sub-run's kernel counters land in. The owning
+    /// run loop drains it when it charges its `ExecutionBudgetTracker`.
+    pub subagent_usage_ledger: Arc<std::sync::Mutex<crate::tools::delegate::SubUsageLedger>>,
 }
 
 #[derive(Debug)]
@@ -204,6 +215,9 @@ struct ToolExecution {
 #[derive(Debug)]
 enum ToolExecutionItem {
     InputNeeded(RegisteredUserInput),
+    /// A delegated subagent's event, already `SubagentEvent`-wrapped by the
+    /// spawner, forwarded live while the `task` call is still running.
+    Event(StreamEvent),
     Finished(Box<ToolExecution>),
     Cancelled,
 }
@@ -279,6 +293,7 @@ impl<'a> ToolTurnContext<'a> {
         call: ToolCallAction,
         approval_decision: ApprovalDecision,
         input_events: Option<mpsc::Sender<RegisteredUserInput>>,
+        subagent_events: Option<mpsc::Sender<StreamEvent>>,
     ) -> ToolExecution {
         if let Err(error) = self.check_agent_capability(&call.name) {
             return ToolExecution {
@@ -287,7 +302,7 @@ impl<'a> ToolTurnContext<'a> {
             };
         }
         let executor = Executor::with_hooks(self.registry, self.hooks.clone());
-        let tool_context = runtime_tool_context_with_mode_and_artifacts(
+        let mut tool_context = runtime_tool_context_with_mode_and_artifacts(
             call.call_id,
             self.workspace,
             self.memory_paths.clone(),
@@ -298,6 +313,9 @@ impl<'a> ToolTurnContext<'a> {
             self.tool_artifacts.clone(),
             self.run_mode,
         );
+        if let Some(spawner) = self.build_subrun_spawner(call.call_id, subagent_events) {
+            tool_context = tool_context.with_extension(Arc::new(spawner));
+        }
         let result = executor
             .run_with_input_events(
                 &tool_context,
@@ -308,6 +326,46 @@ impl<'a> ToolTurnContext<'a> {
             )
             .await;
         ToolExecution { call, result }
+    }
+
+    /// Attach the delegation surface for this one call, when the engine has a
+    /// model and a side-channel to feed. A `task` call in an embedding with no
+    /// spawner degrades through `DelegateTool`'s own absent-extension error.
+    fn build_subrun_spawner(
+        &self,
+        parent_call_id: CallId,
+        events: Option<mpsc::Sender<StreamEvent>>,
+    ) -> Option<crate::tools::delegate::SubRunSpawner> {
+        let (model, events) = (self.model.as_ref()?, events?);
+        // Snapshot so an MCP catalog refresh cannot change the child's tool
+        // surface mid-run. `task` stays registered (a `ToolRegistry` has no
+        // remove API) but the child's schemas filter it out and its tool
+        // context is built without a model or side-channel, so a dispatched
+        // `task` there degrades through `DelegateTool`'s absent-spawner error.
+        let registry = self.registry.snapshot();
+        Some(crate::tools::delegate::SubRunSpawner::new(
+            Arc::clone(model),
+            registry,
+            crate::tools::runtime_context::RuntimeToolServices {
+                workspace: self.workspace.clone(),
+                environment: Arc::clone(&self.environment),
+                memory_paths: self.memory_paths.clone(),
+                approval_policy: self.approval_policy,
+                input_provider: self.input_provider.clone(),
+                tool_artifacts: self.tool_artifacts.clone(),
+                run_mode: self.run_mode,
+            },
+            crate::tools::delegate::SubRunApprovalParts {
+                approval_decision: self.approval_decision,
+                approval_provider: self.approval_provider.clone(),
+                hooks: self.hooks.clone(),
+                run_mode: self.run_mode,
+            },
+            events,
+            parent_call_id,
+            self.subagent_depth.saturating_add(1),
+            Arc::clone(&self.subagent_usage_ledger),
+        ))
     }
 
     fn check_agent_capability(&self, tool_name: &str) -> Result<(), ToolError> {
@@ -335,13 +393,20 @@ impl<'a> ToolTurnContext<'a> {
     ) -> BoxStream<'b, ToolExecutionItem> {
         Box::pin(stream! {
             let (input_events, mut input_requests) = mpsc::channel(1);
+            // A bounded side-channel a `task` call's sub-run pushes wrapped
+            // events into; drained below so a child's lifecycle reaches the
+            // parent stream while the call is still running. Closed-sender
+            // is fine — the channel only exists for the receiver to poll.
+            let (subagent_events, mut subagent_stream) = mpsc::channel(64);
             let execution = self.execute_tool_call_with_decision(
                 call,
                 approval_decision,
                 Some(input_events),
+                Some(subagent_events),
             );
             tokio::pin!(execution);
             let mut input_requests_open = true;
+            let mut subagent_stream_open = true;
 
             loop {
                 tokio::select! {
@@ -356,6 +421,12 @@ impl<'a> ToolTurnContext<'a> {
                             None => input_requests_open = false,
                         }
                     }
+                    event = subagent_stream.recv(), if subagent_stream_open => {
+                        match event {
+                            Some(event) => yield ToolExecutionItem::Event(event),
+                            None => subagent_stream_open = false,
+                        }
+                    }
                     execution = &mut execution => {
                         yield ToolExecutionItem::Finished(Box::new(execution));
                         return;
@@ -366,11 +437,12 @@ impl<'a> ToolTurnContext<'a> {
     }
 
     async fn execute_parallel_tool_batch(&self, calls: Vec<ToolCallAction>) -> Vec<ToolExecution> {
-        join_all(
-            calls.into_iter().map(|call| {
-                self.execute_tool_call_with_decision(call, self.approval_decision, None)
-            }),
-        )
+        join_all(calls.into_iter().map(|call| {
+            // A parallel batch never carries a delegation side-channel:
+            // `task` is `parallel_safe: false`, so it can never reach this
+            // path anyway.
+            self.execute_tool_call_with_decision(call, self.approval_decision, None, None)
+        }))
         .await
     }
 }
@@ -434,6 +506,9 @@ pub(crate) fn run_tool_turn<'a>(
                                 prompt: input.request.prompt,
                             });
                             let _ = input.acknowledged.send(());
+                        }
+                        ToolExecutionItem::Event(event) => {
+                            yield ToolTurnItem::Event(event);
                         }
                         ToolExecutionItem::Finished(execution) => {
                             executions.push(*execution);
@@ -517,6 +592,9 @@ pub(crate) fn run_tool_turn<'a>(
                                         prompt: input.request.prompt,
                                     });
                                     let _ = input.acknowledged.send(());
+                                }
+                                ToolExecutionItem::Event(event) => {
+                                    yield ToolTurnItem::Event(event);
                                 }
                                 ToolExecutionItem::Finished(execution) => {
                                     failed = execution.result.is_err();
@@ -850,6 +928,11 @@ mod tests {
             tool_artifacts: None,
             agent_profile: None,
             run_mode: crate::types::RunMode::Normal,
+            model: None,
+            subagent_depth: 0,
+            subagent_usage_ledger: Arc::new(std::sync::Mutex::new(
+                crate::tools::delegate::SubUsageLedger::default(),
+            )),
         };
 
         assert!(base.can_run_parallel_batch(&calls));
@@ -882,6 +965,11 @@ mod tests {
             tool_artifacts: None,
             agent_profile: None,
             run_mode: crate::types::RunMode::Normal,
+            model: None,
+            subagent_depth: 0,
+            subagent_usage_ledger: Arc::new(std::sync::Mutex::new(
+                crate::tools::delegate::SubUsageLedger::default(),
+            )),
         };
         let action = ToolAction::Call(ToolCallAction {
             call_id: CallId::new(),
@@ -931,6 +1019,11 @@ mod tests {
             tool_artifacts: Some(Arc::clone(&store)),
             agent_profile: None,
             run_mode: crate::types::RunMode::Normal,
+            model: None,
+            subagent_depth: 0,
+            subagent_usage_ledger: Arc::new(std::sync::Mutex::new(
+                crate::tools::delegate::SubUsageLedger::default(),
+            )),
         };
         let items = run_tool_turn(
             ctx,

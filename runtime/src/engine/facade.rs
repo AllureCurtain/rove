@@ -207,7 +207,10 @@ impl Default for EngineConfig {
 /// Owns the model client, tool registry, context manager, and config.
 /// Produces a `Stream<Item = StreamEvent>` that any interface can consume.
 pub struct Engine {
-    model: Box<dyn ModelClient>,
+    /// Shared ownership so a `task` call's `SubRunSpawner` can hold the same
+    /// client for a delegated sub-run. Constructors still take `Box` for
+    /// source compatibility and wrap it here.
+    model: Arc<dyn ModelClient>,
     registry: ToolRegistry,
     capability_snapshot: CapabilitySnapshot,
     context_manager: ContextManager,
@@ -317,7 +320,7 @@ impl Engine {
         )
         .expect("builtin legacy Agent activation is infallible");
         Self {
-            model,
+            model: Arc::from(model),
             registry,
             capability_snapshot,
             context_manager,
@@ -1159,6 +1162,7 @@ impl Engine {
                 }
                 let loop_context = LoopContext {
                     model: self.model.as_ref(),
+                    model_shared: Some(Arc::clone(&self.model)),
                     registry: &run_registry,
                     capability_snapshot: &run_capability_snapshot,
                     context_manager: &self.context_manager,
@@ -1193,6 +1197,9 @@ impl Engine {
                             .join("runs")
                             .join(run_id.to_string()),
                     ))),
+                    subagent_usage_ledger: Arc::new(Mutex::new(
+                        crate::tools::delegate::SubUsageLedger::default(),
+                    )),
                 };
 
                 let mut runtime: BoxStream<'_, LoopItem> = match execution_policy.strategy {

@@ -740,6 +740,22 @@ pub(crate) fn run_planned_loop<'a>(
             ) {
                 budget.mark_exhausted(exhaustion);
             }
+            // Charge any delegated sub-runs `task` calls inside this step
+            // spent. Entries land in the shared ledger as each call finishes;
+            // draining here charges them through the same limits path as the
+            // step's own usage, once each.
+            for (model_turns, tool_calls, repairs, usage) in ctx
+                .subagent_usage_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .drain()
+            {
+                if let Err(exhaustion) =
+                    budget.record_step_usage(model_turns, tool_calls, repairs, &usage)
+                {
+                    budget.mark_exhausted(exhaustion);
+                }
+            }
             yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
                 phase: ExecutionPhase::Step,
                 snapshot: Box::new(budget.snapshot()),
