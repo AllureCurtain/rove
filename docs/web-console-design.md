@@ -275,7 +275,7 @@ Default **Enter sends, Shift+Enter newlines**; a preference restores Ctrl/Cmd+En
 
 ### 6.3 Queued prompts
 
-Server-persisted FIFO stays above the shell; each row: text (ellipsis) + send-now + remove; the promoted next-up row reads as the queue head (elevated surface + accent edge) and locks its own actions until delivered.
+Server-persisted FIFO stays above the shell; each row: text (ellipsis) + send-now + remove; the promoted next-up row reads as the queue head (elevated surface + accent edge) and locks its own actions until delivered. When the server abandons successors (`needs_attention` rows), a single session-recovery row leads the stack and confirms the whole set in one pass; per-row retries stay on each stranded row.
 
 ### 6.4 State convergence (single ownership)
 

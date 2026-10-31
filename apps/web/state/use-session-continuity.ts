@@ -22,7 +22,10 @@ import {
 } from "../chat/activity-phase";
 import { captureActiveSessionView } from "../chat/session-view-snapshot";
 import { recordArrivalsForAction } from "../chat/tool-timing";
-import type { FollowupConfirmationResult } from "../chat/followup-recovery";
+import type {
+  FollowupBatchRecoveryResult,
+  FollowupConfirmationResult,
+} from "../chat/followup-recovery";
 import {
   MAX_PRODUCT_TRANSCRIPT_PAGE_RUNS,
   type ProductControl,
@@ -811,6 +814,121 @@ export function useSessionContinuity({
   );
 
   /**
+   * F.5 session-level recovery: confirm every stranded successor in one pass.
+   *
+   * Each abandoned successor needs its own confirm — the server never drains
+   * an abandoned row — but the confirm is refused while a turn holds the
+   * session's claim (`product_session_active`). The pass confirms the rows in
+   * queue order: mostly the confirms land before the drain's next claim, and
+   * the confirmed rows then start in order as each turn ends. When a claim
+   * does win the race, that row is retried over a short window — a claim for a
+   * start that fails immediately is released inside it — and if the window
+   * closes the pass stops and reports what it did commit, because a real turn
+   * can hold the claim for minutes and the button stays available for the
+   * rest. Any other refusal stops the pass at once.
+   */
+  const recoverStrandedFollowups = useCallback(
+    async (
+      controlIds: readonly string[],
+    ): Promise<FollowupBatchRecoveryResult> => {
+      const sessionId =
+        focusedSessionRef.current ?? catalogRef.current.active.sessionId;
+      if (!sessionId) {
+        return {
+          confirmed: 0,
+          remaining: controlIds.length,
+          reason: "no session is open",
+          blockedByActiveTurn: false,
+        };
+      }
+      const busyId = `recover:${controlIds[0] ?? "none"}`;
+      setControlBusy(busyId);
+      setControlError(null);
+      let confirmed = 0;
+      let reason: string | null = null;
+      let blockedByActiveTurn = false;
+      try {
+        for (const controlId of controlIds) {
+          let accepted = false;
+          for (const delayMs of SESSION_ACTIVE_RETRY_DELAYS_MS) {
+            if (delayMs > 0) {
+              await waitForReconciliationDelay(delayMs);
+            }
+            if (focusedSessionRef.current !== sessionId) {
+              // The reader moved to another session mid-pass: report what
+              // committed rather than claiming a stop the server never gave.
+              return {
+                confirmed,
+                remaining: controlIds.length - confirmed,
+                reason: null,
+                blockedByActiveTurn: false,
+              };
+            }
+            try {
+              const control = await productClient.confirmFollowup(
+                sessionId,
+                controlId,
+              );
+              upsertControl(control);
+              accepted = true;
+              break;
+            } catch (error) {
+              if (
+                error instanceof ProductApiError &&
+                error.code === "product_session_active"
+              ) {
+                // A turn claimed the session mid-pass: the claim for a start
+                // that fails is released quickly, so the row is retried over a
+                // short window rather than failed on the first refusal.
+                continue;
+              }
+              reason = describeError(error);
+              if (isLikelyNetworkError(reason)) {
+                setConnection("error");
+              }
+              break;
+            }
+          }
+          if (!accepted) {
+            // Either a refusal the route means, or every retry met an active
+            // session: stop here and let the notice say the rest need another
+            // pass once the turn ends.
+            if (reason === null) {
+              blockedByActiveTurn = true;
+            }
+            break;
+          }
+          confirmed += 1;
+        }
+        if (confirmed > 0) {
+          setConnection("ok");
+        }
+        void refreshControls(sessionId);
+        void refreshMessages(sessionId);
+        void refreshStatusesRef.current();
+        return {
+          confirmed,
+          remaining: controlIds.length - confirmed,
+          reason,
+          blockedByActiveTurn,
+        };
+      } finally {
+        if (focusedSessionRef.current === sessionId) {
+          setControlBusy((current) => (current === busyId ? null : current));
+        }
+      }
+    },
+    [
+      catalogRef,
+      productClient,
+      refreshControls,
+      refreshMessages,
+      setConnection,
+      upsertControl,
+    ],
+  );
+
+  /**
    * R4: promote one queued message with an explicit delivery intent.
    *
    * `successor` moves it to the head of the successor queue and waits for the
@@ -1345,6 +1463,7 @@ export function useSessionContinuity({
     submitFollowup: (content: string) => submitControl("followup", content),
     revokeControl,
     confirmFollowup,
+    recoverStrandedFollowups,
     promoteMessage,
     reorderMessages,
     revokeMessage,
@@ -1358,6 +1477,13 @@ const MAX_PENDING_CONTROL_REQUESTS = 32;
 const MAX_PENDING_MESSAGE_REQUESTS = 32;
 const MESSAGE_SUBMISSION_RETRY_DELAYS_MS = [0, 100, 200, 400] as const;
 const TERMINAL_RECONCILIATION_DELAYS_MS = [0, 100, 200, 400, 800, 1_000] as const;
+/**
+ * How long one stranded confirm waits out a `product_session_active` refusal.
+ * The claim for a start that fails is released inside this window; a real turn
+ * outlasts it by minutes, so the pass then stops rather than pinning the
+ * button on a turn it cannot outwait.
+ */
+const SESSION_ACTIVE_RETRY_DELAYS_MS = [0, 250, 500, 1_000] as const;
 
 function createControlIdempotencyKey(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {

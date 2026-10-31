@@ -2,6 +2,14 @@
 
 New decisions go on top. Do not delete overturned decisions; mark them "superseded" and note which entry replaced them.
 
+## 2026-10-31 Reasoning streams as `thinking_delta`, kept out of the answer
+
+- Status: active
+- Decision: providers that emit a separate reasoning channel (DeepSeek `reasoning_content`, OpenAI Responses reasoning) are surfaced as a dedicated `thinking_delta` event through `ModelEvent → AgentEvent → StreamEvent` (contract version 3). The shared `reasoning_effort` protocol option opts in: `openai-responses` maps it to `reasoning.effort`, `openai` (Chat Completions, including DeepSeek-compatible gateways) to a flat `reasoning_effort` request field, settable per-session via the product reasoning preference. Thinking is rendered in its own collapsible region and is never folded into the persisted answer text or replayed into canonical history.
+- Why: reasoning models otherwise either hide their reasoning or leak it into the reply; a first-class event keeps the durable answer clean while still letting the user watch the model think.
+- Supersedes: the 2026-07-14 "Plan-Execute-Replan" note that rejected exposing chain-of-thought in events — that rejection covered plan-step internals, not a provider-native reasoning stream the user explicitly enables.
+- Rejected: appending reasoning into `llm_chunk`/the answer (contaminates persisted history and the reply); a per-protocol reason field name (the wire difference lives inside `rove-models`, the execution layer sees only the normalized stream).
+
 ## 2026-10-07 Attaching to an evicted live job is terminal, not an error
 
 - Status: active

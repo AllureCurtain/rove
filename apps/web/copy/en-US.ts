@@ -158,6 +158,8 @@ const enUS: CopyDictionary = {
   chat: {
     responding: "Responding…",
     aborted: "(aborted)",
+    thinking: "Thinking",
+    thinkingStreaming: "Thinking…",
     assistant: "Assistant",
     you: "You",
     send: "Send",
@@ -287,6 +289,20 @@ const enUS: CopyDictionary = {
     retryStrandedAccepted: "Retry accepted — the server queued this message again.",
     retryStrandedStarting: "Retry accepted — the server is starting this message.",
     retryStrandedFailed: "Retry failed: {{reason}}",
+    recoverAll: "Recover session",
+    recoverAllHint:
+      "Confirms every stranded queued message in one pass: the server re-queues them and starts them in order.",
+    recoverAllDesc: "{{count}} queued messages could not start; the session is waiting on you.",
+    recoverAllBusy: "Recovering…",
+    recoverAllDone: "Session recovered — the server re-queued {{count}} messages.",
+    recoverAllDoneOne: "Session recovered — the server re-queued this message.",
+    recoverAllPartial:
+      "Recovered {{confirmed}}; {{remaining}} could not be confirmed yet: {{reason}}. Recover again once this turn ends.",
+    recoverAllStopped:
+      "Recovered {{confirmed}}; {{remaining}} are not confirmed yet — try again in a moment.",
+    recoverAllActive:
+      "Recovered {{confirmed}}; {{remaining}} must wait for the running turn to end before they can be confirmed — recover again then.",
+    recoverAllFailed: "Recovery failed: {{reason}}",
     compactAction: "Compact context now",
     compactBusy: "Compacting the context…",
     compactIdleOnly: "Manual compaction is available while the session is idle.",
@@ -387,9 +403,9 @@ const enUS: CopyDictionary = {
     maximize: "Maximize panel",
     unmaximize: "Restore panel",
     approvalsNoneBody: "Tool approvals the run requests will appear here.",
-    subagentsNone: "No subagent runs",
+    subagentsNone: "Subagents are coming soon",
     subagentsNoneBody:
-      "Subagent transcripts will appear here when a run delegates work.",
+      "Delegating a run to a sub-agent isn't available yet. Its transcripts will appear here when it ships.",
     filesBreadcrumbs: "File path",
     filesRoot: "workspace",
     filesEmpty: "No files here",
@@ -682,6 +698,15 @@ const enUS: CopyDictionary = {
       catalogProfiles: "Shared catalog profiles",
       removeCatalogConfirm: "Remove this profile from the shared catalog?",
       listModelsAction: "List models",
+      trustTitle: "Workspace authorization needed",
+      trustRequired:
+        "Workspace {{workspace}} has not been granted provider credentials; until it is, messages sent with this provider will fail to start.",
+      trustGrant: "Authorize",
+      trustGrantBusy: "Authorizing…",
+      trustGranted:
+        "{{workspace}} is now authorized to use provider credentials — messages can run.",
+      trustGrantFailed: "Authorization did not complete: {{reason}}",
+      trustDismiss: "Dismiss for now",
     },
     runtime: {
       connection: "Connection",

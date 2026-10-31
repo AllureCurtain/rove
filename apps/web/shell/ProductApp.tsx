@@ -2088,6 +2088,7 @@ function ServerProductApp({ draftStore }: {
                     }
                     onRevoke={(messageId) => void continuity.revokeMessage(messageId)}
                     onConfirmStranded={continuity.confirmFollowup}
+                    onRecoverAllStranded={continuity.recoverStrandedFollowups}
                     onEdit={handleEditQueuedMessage}
                     onMove={(messageId, direction) =>
                       void handleMoveQueuedMessage(messageId, direction)

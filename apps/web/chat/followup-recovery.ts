@@ -140,3 +140,162 @@ export function followupRecoveryNotice(
 export type FollowupConfirmationResult =
   | { ok: true; controlStatus: ProductControlStatus }
   | { ok: false; reason: string };
+
+/**
+ * Session-level recovery: one action for every stranded successor in the
+ * queue.
+ *
+ * A `needs_attention` session usually strands more than one row — every
+ * successor enqueued behind the abandoned one is written `abandoned` too, and
+ * an abandoned row is never drained on its own: each needs its own confirm
+ * while the session holds no active claim. Confirming the whole set in one
+ * pass is what lets the queue drain again: confirmed rows go back to
+ * `pending`, and the server starts them in order as each turn finishes.
+ *
+ * The confirm route refuses while a turn is active
+ * (`product_session_active`). Confirming the rows in a tight sequence mostly
+ * lands ahead of the next claim, but a claim can win the race — the runner
+ * retries that row briefly, then stops and reports what it did commit rather
+ * than erroring the whole pass.
+ */
+export type FollowupBatchRecoveryOutcome =
+  | { status: "idle" }
+  | { status: "running"; total: number }
+  | {
+      /**
+       * The pass ended: `remaining` rows still need a confirm. `reason` is the
+       * server's own words for a refusal; `blockedByActiveTurn` instead means
+       * the stop was a turn holding the session's claim past the retry window.
+       */
+      status: "settled";
+      confirmed: number;
+      remaining: number;
+      reason: string | null;
+      blockedByActiveTurn: boolean;
+    };
+
+export type FollowupBatchRecoveryEvent =
+  | { type: "start"; total: number }
+  | {
+      type: "settled";
+      confirmed: number;
+      remaining: number;
+      reason: string | null;
+      blockedByActiveTurn: boolean;
+    };
+
+export const IDLE_FOLLOWUP_BATCH_RECOVERY: FollowupBatchRecoveryOutcome = {
+  status: "idle",
+};
+
+/**
+ * The batch pass is absorbing while it runs: a second press must not start a
+ * second sweep of the same confirms.
+ */
+export function reduceFollowupBatchRecovery(
+  current: FollowupBatchRecoveryOutcome,
+  event: FollowupBatchRecoveryEvent,
+): FollowupBatchRecoveryOutcome {
+  switch (event.type) {
+    case "start":
+      return current.status === "running"
+        ? current
+        : { status: "running", total: event.total };
+    case "settled":
+      return {
+        status: "settled",
+        confirmed: event.confirmed,
+        remaining: event.remaining,
+        reason: event.reason,
+        blockedByActiveTurn: event.blockedByActiveTurn,
+      };
+  }
+}
+
+/** The settled answer the session-level recovery pass produced. */
+export interface FollowupBatchRecoveryResult {
+  confirmed: number;
+  remaining: number;
+  reason: string | null;
+  blockedByActiveTurn: boolean;
+}
+
+/**
+ * The ids of every stranded successor, in the order the rows are shown — the
+ * same order the server will start them in once confirmed.
+ */
+export function strandedFollowupIds(
+  messages: readonly ProductMessage[],
+): string[] {
+  return messages
+    .filter(isStrandedSuccessor)
+    .slice()
+    .sort(
+      (left, right) =>
+        (left.queue_order ?? left.seq) - (right.queue_order ?? right.seq) ||
+        left.seq - right.seq,
+    )
+    .map((message) => message.id);
+}
+
+/** The session-level action's label: the in-flight pass is stated on it. */
+export function followupBatchActionLabel(
+  outcome: FollowupBatchRecoveryOutcome,
+  t: CopyLookup,
+): string {
+  return outcome.status === "running"
+    ? t("chat.recoverAllBusy")
+    : t("chat.recoverAll");
+}
+
+/**
+ * What the session-level action reports once the pass settles.
+ *
+ * Every line is derived from what the server committed: a full pass says the
+ * queue is draining, a partial pass says how many remain (a turn claimed the
+ * session mid-pass — the rest confirm on the next press), and a refusal quotes
+ * the server's reason.
+ */
+export function followupBatchNotice(
+  outcome: FollowupBatchRecoveryOutcome,
+  t: CopyLookup,
+): { tone: "ok" | "error"; text: string } | null {
+  if (outcome.status !== "settled") {
+    return null;
+  }
+  if (outcome.remaining === 0 && outcome.reason === null) {
+    return {
+      tone: "ok",
+      text:
+        outcome.confirmed === 1
+          ? t("chat.recoverAllDoneOne")
+          : t("chat.recoverAllDone", { count: outcome.confirmed }),
+    };
+  }
+  // A pass that stopped early always carries the server's reason, or the fact
+  // that a turn holds the session's claim. The line says how many did commit
+  // so the reader knows the press was not lost.
+  const countParams = {
+    confirmed: outcome.confirmed,
+    remaining: outcome.remaining,
+  };
+  if (outcome.reason !== null) {
+    return {
+      tone: "error",
+      text:
+        outcome.confirmed > 0
+          ? t("chat.recoverAllPartial", { ...countParams, reason: outcome.reason })
+          : t("chat.recoverAllFailed", { reason: outcome.reason }),
+    };
+  }
+  if (outcome.blockedByActiveTurn) {
+    return {
+      tone: "error",
+      text: t("chat.recoverAllActive", countParams),
+    };
+  }
+  return {
+    tone: "error",
+    text: t("chat.recoverAllStopped", countParams),
+  };
+}

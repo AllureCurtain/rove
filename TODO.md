@@ -1,6 +1,6 @@
 # TODO
 
-Updated: 2026-10-07
+Updated: 2026-10-31
 
 ## In progress
 
@@ -31,6 +31,7 @@ Ordered by priority.
 
 Keep only the last 10 entries.
 
+- 2026-10-31 Web-console real-usability pass against a live DeepSeek provider: reasoning streams end-to-end (`reasoning_effort` on the Chat Completions wire → `reasoning_content` → `thinking_delta`, contract v3) into a collapsible thinking block; onboarding surfaces a per-workspace `provider_credentials` grant prompt; stranded queued successors get a one-click Recover session row with auto-drain; `StreamEvent`, OpenAPI snapshot, generated web types, and copy updated together (935 web tests + event-contract tests green)
 - 2026-10-06 Web console rebuild per `docs/web-console-design.md` v2 complete, one PR per phase: P0 skin and shell (PR #4), P1 conversation surface (PR #5), P2 session rail (PR #6), P3 work panel (PR #7), P4 polish (PR #8 — TodoDock composer fold on `runState.plan`, proportional minimap with viewport band, copy/inline-style cleanup, `--z-*` ladder and same-hue `--cp-elev-*` elevation channels)
 - 2026-10-05 Promoted `docs/web-console-design.md` to v2 (active implementation contract): added the graphite skin, shell/sidebar/composer/work-panel specs, and the P0–P4 phase plan; kept the verified defect list as acceptance criteria
 - 2026-10-05 CI: concurrency groups cancel superseded runs per ref; rust job installs libwayland-dev + wayland-protocols for rfd/ashpd
