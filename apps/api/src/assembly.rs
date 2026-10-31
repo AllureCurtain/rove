@@ -57,7 +57,11 @@ pub(crate) async fn assemble_job_engine(
         environment: None,
         run_model_snapshot: record.run_model_snapshot.clone(),
     })
-    .await?;
+    .await?
+    // The job's record and this Engine share one registry, so the
+    // per-subagent stop route cancels the exact tokens the run's `task`
+    // calls register.
+    .with_subagents(record.subagents.clone());
     let mcp_config_path = config.workspace_bounded_mcp_config_path()?;
     state.inner.mcp_health.write().await.insert(
         mcp_config_path,

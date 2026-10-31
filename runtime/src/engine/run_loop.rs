@@ -110,6 +110,9 @@ pub(crate) struct LoopContext<'a> {
     /// this run has made; drained into the `ExecutionBudgetTracker` at the
     /// same boundary the run's own usage is charged.
     pub subagent_usage_ledger: Arc<Mutex<crate::tools::delegate::SubUsageLedger>>,
+    /// Live child cancel handles for this run's `task` calls, shared with the
+    /// embedding so a per-subagent stop can reach exactly one subagent.
+    pub subagents: crate::tools::delegate::SubagentRegistry,
 }
 
 impl<'a> LoopContext<'a> {
@@ -131,6 +134,7 @@ impl<'a> LoopContext<'a> {
             model: self.model_shared.clone(),
             subagent_depth: 0,
             subagent_usage_ledger: Arc::clone(&self.subagent_usage_ledger),
+            subagents: self.subagents.clone(),
         }
     }
 

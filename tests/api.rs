@@ -2888,6 +2888,7 @@ async fn api_exposes_openapi_json_for_all_routes() {
         ("/jobs/{job_id}/events", "get"),
         ("/jobs/{job_id}/state", "get"),
         ("/jobs/{job_id}/cancel", "post"),
+        ("/jobs/{job_id}/subagents/{call_id}/stop", "post"),
         ("/jobs/{job_id}/approvals/{call_id}", "post"),
         ("/jobs/{job_id}/inputs/{input_id}", "post"),
         ("/runs", "get"),

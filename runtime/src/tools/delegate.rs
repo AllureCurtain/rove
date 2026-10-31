@@ -12,6 +12,7 @@
 //! attaches a spawner gets a clean
 //! `delegation is not available in this embedding` error rather than a panic.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_stream::stream;
@@ -85,6 +86,88 @@ pub struct SubRunOutcome {
     pub model_turns: u32,
     pub tool_calls: u32,
     pub repairs: u32,
+}
+
+/// Live child cancellation handles keyed by the parent `task` call that
+/// spawned them.
+///
+/// The map is the control surface for per-subagent stop: a `SubRunSpawner`
+/// registers its child token under its `parent_call_id` while the sub-run is
+/// driving its kernel, and removes the entry when the run ends, so a lookup
+/// that misses means the subagent is already gone. The `Engine` holds the
+/// registry for a run; embeddings that need child-scoped cancel (the API's
+/// `/jobs/{job_id}/subagents/{call_id}/stop`) inject a shared clone so the
+/// handle the route cancels is the same token the kernel is polling.
+///
+/// `std::sync::Mutex` is deliberate: critical sections are map inserts and
+/// removes only — no `.await` is ever held across one.
+#[derive(Debug, Default, Clone)]
+pub struct SubagentRegistry {
+    tokens: Arc<std::sync::Mutex<HashMap<rove_core::CallId, CancellationToken>>>,
+}
+
+impl SubagentRegistry {
+    /// Record the child token a sub-run is about to drive. A second
+    /// registration under the same `parent_call_id` replaces the first;
+    /// `parent_call_id` is the engine's per-call identity, so a collision
+    /// would already mean two tool calls share one id.
+    pub fn register(&self, parent_call_id: rove_core::CallId, token: CancellationToken) {
+        self.tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(parent_call_id, token);
+    }
+
+    /// Drop the entry when its sub-run ends. An absent id is fine — the entry
+    /// may never have been registered (e.g. a depth-refused run).
+    pub fn remove(&self, parent_call_id: &rove_core::CallId) {
+        self.tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(parent_call_id);
+    }
+
+    /// Cancel the live subagent under `parent_call_id`. `false` means the id
+    /// is unknown or its sub-run already ended — the caller maps that to a
+    /// not-found rather than treating it as a second stop of a dead child.
+    pub fn cancel(&self, parent_call_id: &rove_core::CallId) -> bool {
+        let token = self
+            .tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(parent_call_id)
+            .cloned();
+        match token {
+            Some(token) if !token.is_cancelled() => {
+                token.cancel();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Parent call ids with a live registration, for introspection and tests.
+    pub fn active_ids(&self) -> Vec<rove_core::CallId> {
+        self.tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .copied()
+            .collect()
+    }
+}
+
+/// Removes a sub-run's registry entry when dropped, so `SubRunSpawner::run`
+/// cannot leak a dead token through any of its early-return paths.
+struct SubagentRegistration {
+    registry: SubagentRegistry,
+    parent_call_id: rove_core::CallId,
+}
+
+impl Drop for SubagentRegistration {
+    fn drop(&mut self) {
+        self.registry.remove(&self.parent_call_id);
+    }
 }
 
 /// Usage a delegated sub-run has spent, pushed to a shared ledger the parent
@@ -168,6 +251,10 @@ pub struct SubRunSpawner {
     /// Shared sink the child run's kernel counters land in; the parent run
     /// loop drains it when it charges its own budget.
     usage_ledger: Arc<std::sync::Mutex<SubUsageLedger>>,
+    /// Registry this sub-run publishes its child token under `parent_call_id`
+    /// into while it runs, so an embedding's per-subagent stop can find and
+    /// cancel exactly this child without touching the parent run.
+    subagents: SubagentRegistry,
 }
 
 impl SubRunSpawner {
@@ -181,6 +268,7 @@ impl SubRunSpawner {
         parent_call_id: rove_core::CallId,
         depth: u8,
         usage_ledger: Arc<std::sync::Mutex<SubUsageLedger>>,
+        subagents: SubagentRegistry,
     ) -> Self {
         Self {
             model,
@@ -191,12 +279,14 @@ impl SubRunSpawner {
             parent_call_id,
             depth,
             usage_ledger,
+            subagents,
         }
     }
 
     /// The token a stage-3 per-subagent stop can cancel for just this child.
-    /// Exposed now so the handle exists; nothing calls it yet.
-    #[allow(dead_code)]
+    /// [`SubRunSpawner::run`] registers the token it actually drives under
+    /// `parent_call_id`; this helper stays for callers that need a child token
+    /// without running the kernel.
     pub fn child_token_for(&self, parent: &CancellationToken) -> CancellationToken {
         parent.child_token()
     }
@@ -217,6 +307,16 @@ impl SubRunSpawner {
             return Err(SubRunError::DepthLimit);
         }
         let child_cancel = parent_token.child_token();
+        // Publish the child token before the kernel starts so a per-subagent
+        // stop issued while the run is being set up still lands. The guard
+        // removes it on every exit from `run` — early error returns included —
+        // so the registry never advertises a token nobody is polling.
+        self.subagents
+            .register(self.parent_call_id, child_cancel.clone());
+        let _registration = SubagentRegistration {
+            registry: self.subagents.clone(),
+            parent_call_id: self.parent_call_id,
+        };
 
         let max_turns = request
             .max_turns
@@ -244,6 +344,7 @@ impl SubRunSpawner {
             services: self.services.clone(),
             approval: self.approval.clone(),
             depth: self.depth,
+            subagents: self.subagents.clone(),
         };
         let state = KernelState::new(vec![
             Message::system(subagent_system_prompt(&self.services)),
@@ -344,6 +445,10 @@ struct SubagentKernelHost {
     /// nested `task` spawner would be created at the right depth if one ever
     /// existed (it does not, because `model`/`events` are `None` there).
     depth: u8,
+    /// The run's shared subagent registry, forwarded onto the child's own
+    /// tool-turn context so the `ToolTurnContext` shape stays complete even
+    /// though a child can never reach the spawn path.
+    subagents: SubagentRegistry,
 }
 
 impl SubagentKernelHost {
@@ -369,6 +474,7 @@ impl SubagentKernelHost {
             model: None,
             subagent_depth: self.depth,
             subagent_usage_ledger: Arc::new(std::sync::Mutex::new(SubUsageLedger::default())),
+            subagents: self.subagents.clone(),
         }
     }
 }
@@ -624,7 +730,7 @@ mod tests {
 
     use super::{
         DelegateTool, MAX_DELEGATION_DEPTH, SubRunApprovalParts, SubRunRequest, SubRunSpawner,
-        SubUsageLedger,
+        SubUsageLedger, SubagentRegistry,
     };
     use crate::environment::local_environment;
     use crate::events::StreamEvent;
@@ -654,8 +760,9 @@ mod tests {
         events: tokio::sync::mpsc::Sender<StreamEvent>,
         parent_call_id: CallId,
         depth: u8,
-    ) -> (SubRunSpawner, Arc<Mutex<SubUsageLedger>>) {
+    ) -> (SubRunSpawner, Arc<Mutex<SubUsageLedger>>, SubagentRegistry) {
         let ledger = Arc::new(Mutex::new(SubUsageLedger::default()));
+        let subagents = SubagentRegistry::default();
         let spawner = SubRunSpawner::new(
             model,
             registry,
@@ -670,8 +777,9 @@ mod tests {
             parent_call_id,
             depth,
             Arc::clone(&ledger),
+            subagents.clone(),
         );
-        (spawner, ledger)
+        (spawner, ledger, subagents)
     }
 
     #[test]
@@ -720,7 +828,7 @@ mod tests {
         let model = Arc::new(FakeModelClient::new("unused".to_string()));
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(EchoTool));
-        let (spawner, _ledger) = fixture_spawner(
+        let (spawner, _ledger, _subagents) = fixture_spawner(
             model,
             registry,
             &workspace,
@@ -767,7 +875,7 @@ mod tests {
         ));
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(EchoTool));
-        let (spawner, ledger) =
+        let (spawner, ledger, _subagents) =
             fixture_spawner(model, registry, &workspace, events, parent_call_id, 0);
 
         let outcome = spawner
@@ -844,7 +952,7 @@ mod tests {
         let model = Arc::new(FakeModelClient::new("final from fake".to_string()));
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(EchoTool));
-        let (spawner, _ledger) =
+        let (spawner, _ledger, _subagents) =
             fixture_spawner(model, registry, &workspace, events, CallId::new(), 0);
 
         let ctx = ToolContext::new(CallId::new(), CancellationToken::new())
@@ -854,5 +962,115 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(output.content, "final from fake");
+    }
+
+    #[test]
+    fn subagent_registry_register_cancel_remove_round_trip() {
+        let registry = SubagentRegistry::default();
+        let call_id = CallId::new();
+        assert!(registry.active_ids().is_empty());
+        assert!(!registry.cancel(&call_id), "unknown id is a miss");
+
+        let token = CancellationToken::new();
+        registry.register(call_id, token.clone());
+        assert_eq!(registry.active_ids(), vec![call_id]);
+
+        assert!(registry.cancel(&call_id));
+        assert!(token.is_cancelled());
+        // A second cancel on the dead token still reports a miss: the entry
+        // stays until `run` removes it, but it names nothing live.
+        assert!(!registry.cancel(&call_id));
+
+        registry.remove(&call_id);
+        assert!(registry.active_ids().is_empty());
+    }
+
+    /// The stage-3 contract: a live sub-run is visible in the registry under
+    /// its parent call id, and cancelling through the registry terminates the
+    /// child kernel — which the tool surfaces as `SubRunError::Cancelled` —
+    /// while the parent token stays untouched.
+    #[tokio::test]
+    async fn sub_run_registers_then_cancels_through_the_registry() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(tmp.path()).unwrap();
+        let parent_call_id = CallId::new();
+        let (events, _rx) = tokio::sync::mpsc::channel(64);
+        // The child model turn holds forever; only a cancel ends it.
+        let model = Arc::new(FakeModelClient::with_turns(
+            "unused".to_string(),
+            vec![FakeTurn::hold("held-open child turn")],
+        ));
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        let (spawner, _ledger, subagents) =
+            fixture_spawner(model, registry, &workspace, events, parent_call_id, 0);
+
+        let parent_token = CancellationToken::new();
+        let run = tokio::spawn({
+            let parent_token = parent_token.clone();
+            async move {
+                spawner
+                    .run(
+                        SubRunRequest {
+                            prompt: "hold".to_string(),
+                            agent: None,
+                            max_turns: Some(4),
+                        },
+                        &parent_token,
+                    )
+                    .await
+            }
+        });
+
+        // Wait until the sub-run has published its child token.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !subagents.active_ids().contains(&parent_call_id) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the sub-run registers its child token while it runs");
+
+        assert!(subagents.cancel(&parent_call_id));
+        let result = run.await.expect("the sub-run task completes");
+        assert!(matches!(result, Err(super::SubRunError::Cancelled)));
+        assert!(
+            !parent_token.is_cancelled(),
+            "a child-scoped stop must not reach the parent token"
+        );
+        assert!(
+            subagents.active_ids().is_empty(),
+            "the ended sub-run removes its registry entry"
+        );
+    }
+
+    /// The completion path also removes the entry: a finished sub-run must not
+    /// leave a dead token behind for a later stop request to hit.
+    #[tokio::test]
+    async fn sub_run_removes_its_registration_on_completion() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(tmp.path()).unwrap();
+        let parent_call_id = CallId::new();
+        let (events, _rx) = tokio::sync::mpsc::channel(64);
+        let model = Arc::new(FakeModelClient::new("done".to_string()));
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        let (spawner, _ledger, subagents) =
+            fixture_spawner(model, registry, &workspace, events, parent_call_id, 0);
+
+        spawner
+            .run(
+                SubRunRequest {
+                    prompt: "finish".to_string(),
+                    agent: None,
+                    max_turns: Some(4),
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("the sub-run completes");
+
+        assert!(subagents.active_ids().is_empty());
+        assert!(!subagents.cancel(&parent_call_id));
     }
 }

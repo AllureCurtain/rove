@@ -307,6 +307,38 @@ pub(crate) async fn cancel_job(
 
 #[utoipa::path(
     post,
+    path = "/jobs/{job_id}/subagents/{call_id}/stop",
+    tag = docs::JOBS_TAG,
+    security(("BearerAuth" = [])),
+    params(
+        ("job_id" = String, Path, description = "Job ULID"),
+        ("call_id" = String, Path, description = "Parent task tool-call ULID")
+    ),
+    responses(
+        (status = 200, description = "Job state after the subagent stop request", body = JobStateResponse, content_type = "application/json"),
+        (status = 404, description = "Live job or live subagent not found", body = ApiErrorResponse, content_type = "application/json"),
+        (status = 500, description = "Internal runtime error", body = ApiErrorResponse, content_type = "application/json")
+    )
+)]
+pub(crate) async fn stop_subagent(
+    State(state): State<ApiState>,
+    Path((job_id, call_id)): Path<(JobId, CallId)>,
+) -> Result<Json<JobStateResponse>, ApiError> {
+    let record = find_job(&state, job_id).await?;
+    // Child-scoped cancel only: the parent run and its `task` tool call keep
+    // going — the sub-run surfaces `subagent run was cancelled` as that one
+    // call's tool error rather than taking the job down with it.
+    if !record.subagents.cancel(&call_id) {
+        return Err(ApiError::not_found_with_code(
+            "subagent_not_found",
+            "no live subagent for this call id",
+        ));
+    }
+    Ok(Json(job_state_response(&record).await))
+}
+
+#[utoipa::path(
+    post,
     path = "/jobs/{job_id}/approvals/{call_id}",
     tag = docs::APPROVALS_TAG,
     security(("BearerAuth" = [])),

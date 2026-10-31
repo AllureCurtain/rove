@@ -502,6 +502,7 @@ async fn terminal_event_updates_live_status_after_finalization_barrier() {
         pending_product_events: Mutex::new(Vec::new()),
         completion,
         cancel_token: CancellationToken::new(),
+        subagents: rove_runtime::tools::delegate::SubagentRegistry::default(),
     };
     let finalized = AtomicBool::new(false);
 
@@ -687,6 +688,7 @@ async fn test_job_record(temp_dir: &tempfile::TempDir) -> (ApiState, Arc<JobReco
         pending_product_events: Mutex::new(Vec::new()),
         completion,
         cancel_token: CancellationToken::new(),
+        subagents: rove_runtime::tools::delegate::SubagentRegistry::default(),
     });
     let state_store = state_store_for_record(&record);
     let run_dir = state_store.run_store.run_dir(&record.run_id);
@@ -778,6 +780,7 @@ async fn shutdown_drain_waits_for_a_superseded_same_job_supervisor() {
         pending_product_events: Mutex::new(Vec::new()),
         completion,
         cancel_token: state.inner.shutdown_token.child_token(),
+        subagents: rove_runtime::tools::delegate::SubagentRegistry::default(),
     });
 
     let (release_first, first_released) = oneshot::channel::<()>();
@@ -1340,4 +1343,58 @@ async fn an_error_message_the_runtime_knows_nothing_about_is_left_alone() {
     // Redaction must not become a mangler: text the runtime has no
     // authority over crosses the boundary unchanged.
     assert_eq!(decoded["error"], "plain bounded rejection");
+}
+
+#[tokio::test]
+async fn stopping_an_unknown_subagent_is_a_404() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let (state, record, _) = test_job_record(&temp_dir).await;
+
+    let error = stop_subagent(
+        axum::extract::State(state.clone()),
+        axum::extract::Path((record.job_id, CallId::new())),
+    )
+    .await
+    .expect_err("a call id with no live subagent must miss");
+
+    assert_eq!(error.status(), axum::http::StatusCode::NOT_FOUND);
+    assert_eq!(error.code(), "subagent_not_found");
+}
+
+#[tokio::test]
+async fn stopping_a_live_subagent_cancels_only_that_child() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let (state, record, _) = test_job_record(&temp_dir).await;
+    // Stand in for the token a `SubRunSpawner` registers while its child
+    // kernel is in flight: this is the same map `assemble_job_engine` injects
+    // into the job's Engine.
+    let parent_call_id = CallId::new();
+    let child_token = CancellationToken::new();
+    record
+        .subagents
+        .register(parent_call_id, child_token.clone());
+
+    let response = stop_subagent(
+        axum::extract::State(state.clone()),
+        axum::extract::Path((record.job_id, parent_call_id)),
+    )
+    .await
+    .expect("a live subagent must stop through the route");
+
+    assert!(child_token.is_cancelled());
+    assert!(
+        !record.cancel_token.is_cancelled(),
+        "a child-scoped stop must not cancel the whole job"
+    );
+    assert_eq!(response.0.job_id, record.job_id);
+
+    // The spent registration is still the same dead entry a second stop hits:
+    // a repeated request is a miss, not a second success.
+    let error = stop_subagent(
+        axum::extract::State(state),
+        axum::extract::Path((record.job_id, parent_call_id)),
+    )
+    .await
+    .expect_err("a repeated stop on the dead token is a miss");
+    assert_eq!(error.status(), axum::http::StatusCode::NOT_FOUND);
 }

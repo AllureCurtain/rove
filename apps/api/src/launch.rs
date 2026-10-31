@@ -459,6 +459,7 @@ pub(crate) fn new_job_record(input: NewJobRecord<'_>) -> Arc<JobRecord> {
         pending_product_events: Mutex::new(Vec::new()),
         completion,
         cancel_token: state.inner.shutdown_token.child_token(),
+        subagents: rove_runtime::tools::delegate::SubagentRegistry::default(),
     })
 }
 
