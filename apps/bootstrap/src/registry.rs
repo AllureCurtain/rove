@@ -7,6 +7,7 @@ use rove_runtime::tools::coding::{
     DeletePathTool, EditFileTool, GlobPathsTool, ListDirectoryTool, MovePathTool,
     WorkspaceCheckpointTool, WorkspaceDiffTool, WorkspaceRewindTool,
 };
+use rove_runtime::tools::delegate::DelegateTool;
 use rove_runtime::tools::fs::{FsReadTool, FsWriteTool};
 use rove_runtime::tools::history::ResolveToolArtifactTool;
 use rove_runtime::tools::mcp_proxy::{
@@ -63,6 +64,7 @@ pub fn tool_registry_with_shell_policy(
     registry.register(Box::new(SaveMemoryTool::new()));
     registry.register(Box::new(UpdateMemoryIndexTool::new()));
     registry.register(Box::new(RequestInputTool));
+    registry.register(Box::new(DelegateTool::new()));
     registry.register(Box::new(ShellTool::with_policy(
         workspace.root.clone(),
         shell_policy,

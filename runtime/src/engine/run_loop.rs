@@ -63,7 +63,13 @@ pub(crate) type SteerReceiver = Arc<AsyncMutex<tokio::sync::mpsc::Receiver<Steer
 
 #[derive(Clone)]
 pub(crate) struct LoopContext<'a> {
+    /// Borrowed for model turns; the `Arc` in `model_shared` is what a `task`
+    /// tool's `SubRunSpawner` is built from.
     pub model: &'a dyn ModelClient,
+    /// Shared ownership of the same client, `Some` whenever the engine holds
+    /// one — which is every run the facade drives. `None` only in tests that
+    /// construct a `LoopContext` by hand without delegation.
+    pub model_shared: Option<Arc<dyn ModelClient>>,
     pub registry: &'a ToolRegistry,
     pub capability_snapshot: &'a CapabilitySnapshot,
     pub context_manager: &'a ContextManager,
@@ -100,6 +106,10 @@ pub(crate) struct LoopContext<'a> {
     /// Run-local deduplication for content-free overlay application events.
     pub instruction_overlays_seen: Arc<Mutex<BTreeSet<String>>>,
     pub run_mode: RunMode,
+    /// Delegated sub-run kernel counters accumulated across all `task` calls
+    /// this run has made; drained into the `ExecutionBudgetTracker` at the
+    /// same boundary the run's own usage is charged.
+    pub subagent_usage_ledger: Arc<Mutex<crate::tools::delegate::SubUsageLedger>>,
 }
 
 impl<'a> LoopContext<'a> {
@@ -118,6 +128,9 @@ impl<'a> LoopContext<'a> {
             tool_artifacts: self.tool_artifacts.clone(),
             agent_profile: self.agent_profile.clone(),
             run_mode: self.run_mode,
+            model: self.model_shared.clone(),
+            subagent_depth: 0,
+            subagent_usage_ledger: Arc::clone(&self.subagent_usage_ledger),
         }
     }
 
@@ -438,6 +451,7 @@ pub(crate) fn run_unplanned_loop<'a>(
             .unwrap_or(remaining_turns);
         let initial_total_tokens = budget.usage().total_tokens;
         let kernel_state = KernelState::new(state.history);
+        let subagent_usage_ledger = Arc::clone(&ctx.subagent_usage_ledger);
         let active_instruction_target =
             ActiveInstructionTarget::from_text(&ctx, &state.user_message, "user_task");
         let host = UnplannedKernelHost {
@@ -522,6 +536,23 @@ pub(crate) fn run_unplanned_loop<'a>(
                         budget.mark_exhausted(exhaustion);
                         reason = TerminationReason::TokenLimit;
                         finish_reason = PlanFinishReason::BudgetExhausted;
+                    }
+                    // Charge every delegated sub-run this run spent. Entries
+                    // accumulate in the shared ledger as each `task` call
+                    // finishes; draining once at this boundary charges them
+                    // through the same limits path as the parent's own usage.
+                    for (model_turns, tool_calls, repairs, usage) in subagent_usage_ledger
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .drain()
+                    {
+                        if let Err(exhaustion) =
+                            budget.record_step_usage(model_turns, tool_calls, repairs, &usage)
+                        {
+                            budget.mark_exhausted(exhaustion);
+                            reason = TerminationReason::TokenLimit;
+                            finish_reason = PlanFinishReason::BudgetExhausted;
+                        }
                     }
                     yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
                         phase: ExecutionPhase::Run,
