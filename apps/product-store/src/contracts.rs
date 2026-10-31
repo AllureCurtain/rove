@@ -3577,8 +3577,8 @@ mod tests {
         let legacy = ProductTranscriptEventContract::parse("1").expect("version 1 is valid");
         let pre_thinking = ProductTranscriptEventContract::parse("2").expect("version 2 is valid");
         let pre_subagent = ProductTranscriptEventContract::parse("3").expect("version 3 is valid");
-        let current = ProductTranscriptEventContract::parse("4")
-            .expect("version 4 is the current contract");
+        let current =
+            ProductTranscriptEventContract::parse("4").expect("version 4 is the current contract");
 
         assert_eq!(legacy.version(), 1);
         assert!(legacy.accepts("run_started"));
