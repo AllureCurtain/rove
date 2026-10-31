@@ -46,6 +46,7 @@ CHECKS=(
     "web-test|G3-G7|Web unit and component tests|apps/web|1|web||pnpm test"
     "web-build|G3-G7|Web production build|apps/web|1|web||pnpm build"
     "web-e2e|G1-G7|Browser-boundary Playwright suites|apps/web|1|browser||pnpm test:e2e"
+    "web-serve-e2e|G1-G7|rove-api hosted bundle real-API suite|.|1|browser||bash scripts/serve-acceptance.sh"
     "mcp-filesystem-smoke|G7|Real MCP filesystem server smoke|.|0|gated|ROVE_MCP_FILESYSTEM_SMOKE|cargo test -p rove-integration-tests --test it mcp::mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture"
 )
 
