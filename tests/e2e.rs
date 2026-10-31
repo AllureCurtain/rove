@@ -6768,7 +6768,7 @@ async fn engine_handles_tool_call() {
 }
 
 #[tokio::test]
-async fn engine_emits_safe_model_status_without_raw_thinking_text() {
+async fn engine_streams_thinking_on_its_own_channel_and_keeps_the_answer_clean() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut registry = ToolRegistry::new();
@@ -6784,6 +6784,7 @@ async fn engine_emits_safe_model_status_without_raw_thinking_text() {
 
     let events = collect_events(&engine, "think safely").await;
 
+    // A safe progress marker still announces the thinking phase.
     assert!(
         events.iter().any(|event| matches!(
             event,
@@ -6794,10 +6795,28 @@ async fn engine_emits_safe_model_status_without_raw_thinking_text() {
         )),
         "expected a safe thinking status event"
     );
-    let serialized = serde_json::to_string(&events).unwrap();
+    // Reasoning streams on its own event channel — that is the feature — and it
+    // must carry the provider's reasoning text so consumers can render it.
     assert!(
-        !serialized.contains("PRIVATE_CHAIN_OF_THOUGHT"),
-        "raw thinking text must not be exposed"
+        events.iter().any(|event| matches!(
+            event,
+            StreamEvent::ThinkingDelta { delta } if delta == "PRIVATE_CHAIN_OF_THOUGHT"
+        )),
+        "thinking deltas must stream their reasoning text"
+    );
+    // The durable answer and the llm_chunk stream stay free of reasoning text:
+    // thinking is replayed beside the reply, never folded into it.
+    let answer_text: String = events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::LlmChunk { delta } => Some(delta.as_str()),
+            StreamEvent::LlmMessage { full, .. } => Some(full.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !answer_text.contains("PRIVATE_CHAIN_OF_THOUGHT"),
+        "reasoning text must stay out of the answer stream"
     );
 }
 
