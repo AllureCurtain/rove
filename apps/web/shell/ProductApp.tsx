@@ -2016,6 +2016,9 @@ function ServerProductApp({ draftStore }: {
                           sessionId={paneId}
                           timeline={data.timeline}
                           messages={data.messages}
+                          subagents={
+                            visible ? continuity.runState.subagents : []
+                          }
                           busy={visible && busy}
                           activityPhase={visible ? continuity.activityPhase : IDLE_PHASE}
                           approvalBusy={visible ? continuity.approvalBusy : null}
@@ -2053,6 +2056,7 @@ function ServerProductApp({ draftStore }: {
                           }
                           onApproval={continuity.approve}
                           onInputSubmit={continuity.answer}
+                          onStopSubagent={continuity.stopSubagent}
                           onRetryMessage={handleRetryMessage}
                           onEditMessage={handleEditTranscriptMessage}
                           onForkSession={() => void handleForkSession()}
@@ -2208,6 +2212,7 @@ function ServerProductApp({ draftStore }: {
               approvalBusy={continuity.approvalBusy}
               approvalError={continuity.approvalError}
               onApproval={continuity.approve}
+              onStopSubagent={continuity.stopSubagent}
               productSessionId={activeSession.id}
               workspaceId={activeWorkspace.id}
               workspaceRootPath={activeWorkspace.rootPath}

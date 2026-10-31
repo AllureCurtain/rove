@@ -1391,6 +1391,32 @@ export function useSessionContinuity({
     [runState.activeJobId],
   );
 
+  /**
+   * Stop one delegated child under its parent `task` call id. A 404
+   * `subagent_not_found` means the child already settled — the sync that
+   * follows settles the row anyway, so the miss is quiet rather than an error
+   * banner for a race the user already won.
+   */
+  const stopSubagent = useCallback(
+    async (callId: string) => {
+      if (!runState.activeJobId) {
+        return;
+      }
+      try {
+        await controllerRef.current?.stopSubagent(runState.activeJobId, callId);
+      } catch (error) {
+        if (isRunControllerInactive(error)) {
+          return;
+        }
+        if (error instanceof RoveApiError && error.status === 404) {
+          return;
+        }
+        dispatch({ type: "set_error", error: describeError(error) });
+      }
+    },
+    [runState.activeJobId],
+  );
+
   useEffect(() => {
     if (!activeSession || focusedSessionRef.current !== activeSession.id) {
       return;
@@ -1470,6 +1496,7 @@ export function useSessionContinuity({
     cancel,
     approve,
     answer,
+    stopSubagent,
   };
 }
 

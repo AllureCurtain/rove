@@ -5,6 +5,7 @@ import {
   fetchJobState,
   listProviderModels,
   openJobStream,
+  stopSubagent as postSubagentStop,
   submitApproval,
   submitInput,
   testProvider,
@@ -57,6 +58,8 @@ export interface RunController {
   cancel(jobId: string): Promise<void>;
   approve(jobId: string, callId: string, decision: "approve" | "reject", expectedRunId?: string): Promise<void>;
   answer(jobId: string, inputId: string, answer: string): Promise<void>;
+  /** Stop one delegated child under a parent `task` call id. */
+  stopSubagent(jobId: string, callId: string): Promise<void>;
   close(): void;
 }
 
@@ -305,6 +308,17 @@ export function createRunController(
       const jobState = await submitInput(jobId, inputId, answer);
       assertCurrent(expectedGeneration);
       dispatch({ type: "input_submitted", inputId });
+      dispatch({ type: "job_state_synced", state: jobState });
+      if (isTerminalStatus(jobState.status)) {
+        closeStream();
+        options.onTerminal?.();
+      }
+    },
+
+    async stopSubagent(jobId, callId) {
+      const expectedGeneration = generation;
+      const jobState = await postSubagentStop(jobId, callId);
+      assertCurrent(expectedGeneration);
       dispatch({ type: "job_state_synced", state: jobState });
       if (isTerminalStatus(jobState.status)) {
         closeStream();

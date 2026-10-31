@@ -2150,6 +2150,295 @@ html[data-reading-resizing="true"] * {
   padding: 9px;
 }
 
+/* §5.4 + issue #31: a `task` call that delegated lifts its children onto a
+   tile card inside its own tool card — the coordinator line first, then one
+   truthful row per delegated child. */
+.product-app-frame[data-ui-version="v2"] .subagent-topology {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 2px 0 4px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface);
+  padding: 8px 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-topology__root {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  color: var(--v2-purple);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-topology__root svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-topology__root strong {
+  color: var(--v2-ink-2);
+  font-weight: 650;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-topology__elapsed {
+  margin-left: auto;
+  color: var(--v2-ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-topology__agents {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  border-left: 2px solid var(--v2-purple-soft);
+  padding: 2px 0 2px 10px;
+  list-style: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-topology__agent {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 24px;
+  min-width: 0;
+  font-size: 11px;
+}
+
+/* The state dot speaks the tool-row vocabulary: quiet while waiting, green on
+   done, red on error, pulsing accent while the child is still running. */
+.product-app-frame[data-ui-version="v2"] .subagent-topology__dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-topology__dot[data-status="running"] {
+  background: var(--v2-purple);
+  animation: product-v2-pulse var(--motion-duration-pulse) var(--motion-ease-in-out) infinite;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-topology__dot[data-status="done"] {
+  background: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-topology__dot[data-status="error"] {
+  background: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-topology__name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--v2-ink-2);
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-topology__model {
+  flex: none;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-xs);
+  color: var(--v2-ink-3);
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-topology__steps {
+  flex: none;
+  color: var(--v2-ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-topology__state {
+  margin-left: auto;
+  flex: none;
+  color: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-topology__state[data-status="error"] {
+  color: var(--v2-danger);
+}
+
+/* The shared stop affordance — a quiet chip that stays inside the row. */
+.product-app-frame[data-ui-version="v2"] .subagent-stop {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  min-height: 20px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: transparent;
+  color: var(--v2-danger);
+  cursor: pointer;
+  padding: 1px 7px;
+  font-size: 10.5px;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-stop svg {
+  width: 10px;
+  height: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-stop:hover:not(:disabled) {
+  border-color: var(--v2-danger);
+  background: var(--v2-danger-soft);
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-stop:focus-visible {
+  outline: 2px solid var(--v2-focus);
+  outline-offset: 1px;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-stop:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* The work-panel delegation surface: a list of `task` calls, then the
+   selected child's transcript in the transcript's own language, and a
+   disabled composer — the delegate is driven by the main agent. The pane
+   scrolls as one column, like the other work-panel surfaces. */
+.product-app-frame[data-ui-version="v2"] .subagent-panel {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 26px;
+  min-width: 0;
+  border: 0;
+  border-radius: var(--v2-radius-sm);
+  background: transparent;
+  color: var(--v2-ink-2);
+  cursor: pointer;
+  padding: 3px 6px;
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__item:hover {
+  background: var(--v2-surface-hover);
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__item[data-active="true"] {
+  background: var(--v2-surface-hover);
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__item:focus-visible {
+  outline: 2px solid var(--v2-focus);
+  outline-offset: 1px;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--v2-ink-3);
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__dot[data-status="running"] {
+  background: var(--v2-purple);
+  animation: product-v2-pulse var(--motion-duration-pulse) var(--motion-ease-in-out) infinite;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__dot[data-status="done"] {
+  background: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__dot[data-status="error"] {
+  background: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__state {
+  margin-left: auto;
+  flex: none;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__state[data-status="error"] {
+  color: var(--v2-danger);
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__transcript {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__log {
+  min-width: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__turn {
+  min-width: 0;
+}
+
+/* The composer look is shared, but the control itself is inert: a delegate's
+   prompt comes from the main agent, so the field reads as a surface, not an
+   input. */
+.product-app-frame[data-ui-version="v2"] .subagent-panel__composer {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-raised);
+  padding: 8px 10px;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__composer textarea {
+  width: 100%;
+  min-height: 40px;
+  border: 0;
+  background: transparent;
+  color: var(--v2-ink-2);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .subagent-panel__composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 22px;
+}
+
 .product-app-frame[data-ui-version="v2"] .approval-card {
   gap: 12px;
   padding: 12px;

@@ -9,6 +9,7 @@ import {
   openJobStream,
   openProductEventStream,
   RoveApiError,
+  stopSubagent,
   submitApproval,
   testProvider,
 } from "./rove-client";
@@ -310,6 +311,45 @@ describe("rove client", () => {
 
     expect(openProductEventStream()).toBeInstanceOf(FakeEventSource);
     expect(constructed).toEqual(["/api/product/events"]);
+  });
+
+  it("posts a subagent stop to the job subagents endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        job_id: "job-1",
+        run_id: "run-1",
+        status: "running",
+        event_count: 6,
+        pending_approvals: [],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await stopSubagent("job/1", "call/1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/jobs/job%2F1/subagents/call%2F1/stop",
+      { method: "POST" },
+    );
+  });
+
+  it("surfaces a settled subagent's 404 as a typed error, not a crash", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      text: async () => JSON.stringify({
+        code: "subagent_not_found",
+        error: "subagent call-9 is not running",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(stopSubagent("job-1", "call-9")).rejects.toMatchObject({
+      name: "RoveApiError",
+      status: 404,
+      code: "subagent_not_found",
+    } satisfies Partial<RoveApiError>);
   });
 
   it("posts approval decisions to the job approval endpoint", async () => {

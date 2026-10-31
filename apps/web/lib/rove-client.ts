@@ -118,6 +118,25 @@ export async function cancelJob(jobId: string): Promise<JobStateResponse> {
   return parseJson<JobStateResponse>(response);
 }
 
+/**
+ * Ask the runtime to stop one delegated child run. `callId` is the parent
+ * `task` tool call id — the same identity `SubagentView.parentCallId` carries —
+ * never a child-side id. A 404 `subagent_not_found` means the child already
+ * settled on its own.
+ */
+export async function stopSubagent(
+  jobId: string,
+  callId: string,
+): Promise<JobStateResponse> {
+  const response = await apiFetch(
+    apiUrl(
+      `/jobs/${encodeURIComponent(jobId)}/subagents/${encodeURIComponent(callId)}/stop`,
+    ),
+    { method: "POST" },
+  );
+  return parseJson<JobStateResponse>(response);
+}
+
 export async function fetchJobState(jobId: string): Promise<JobStateResponse> {
   const response = await apiFetch(apiUrl(`/jobs/${encodeURIComponent(jobId)}/state`));
   return parseJson<JobStateResponse>(response);
