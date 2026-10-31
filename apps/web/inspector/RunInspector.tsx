@@ -48,6 +48,7 @@ import type {
 } from "../product/product-api-types";
 
 import { ApprovalCard } from "../chat/Transcript";
+import { SubagentsPanel } from "./SubagentsPanel";
 import { type WorkPanelLayout } from "./work-panel-layout";
 import { usePanelResize } from "./use-panel-resize";
 import {
@@ -102,6 +103,7 @@ export function RunInspector({
   approvalBusy = null,
   approvalError = null,
   onApproval,
+  onStopSubagent,
 }: {
   productSessionId: string;
   workspaceId?: string;
@@ -140,6 +142,11 @@ export function RunInspector({
   approvalBusy?: string | null;
   approvalError?: string | null;
   onApproval?: (tool: ToolCallView, decision: "approve" | "reject") => void;
+  /**
+   * Stop one delegated child under its parent `task` call id (issue #31). The
+   * subagents tab's running rows surface it; absent, they stay read-only.
+   */
+  onStopSubagent?: (parentCallId: string) => void | Promise<unknown>;
 }) {
   const { t } = useCopy();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -590,10 +597,12 @@ export function RunInspector({
         );
       case "subagents":
         return (
-          <InspectorEmpty
-            icon={<Component2Icon />}
-            title={t("inspector.subagentsNone")}
-            body={t("inspector.subagentsNoneBody")}
+          <SubagentsPanel
+            runState={runState}
+            onStopSubagent={onStopSubagent}
+            onOpenFile={(reference) =>
+              openFile(reference.path, reference.line ?? null)
+            }
           />
         );
       case "status":

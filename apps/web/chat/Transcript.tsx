@@ -17,12 +17,15 @@ import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, us
 
 import type {
   ChatMessage,
+  SubagentView,
   ToolCallView,
   TranscriptInputView,
   TranscriptRunGroup,
 } from "../lib/rove-state";
 import { useCopy } from "../copy/CopyProvider";
-import { DiffView } from "../product-v2/DiffView";
+import { SubagentTopology } from "./subagent-topology";
+import { ThinkingRegion } from "./thinking-region";
+import { ToolCard, formatValue } from "./tool-card";
 import { RichText } from "../product-v2/RichText";
 import type {
   ProductMessage,
@@ -40,8 +43,8 @@ import { TurnChangeCard } from "./TurnChangeCard";
 import { IDLE_PHASE, type ActivityPhase } from "./activity-phase";
 import { ReadingWidthHandles } from "./ReadingWidthHandles";
 import { buildConversationMinimapMarkers } from "./conversation-minimap";
-import { segmentFileReferences, type FileReference } from "./file-ref";
-import { buildToolPresentation, type ToolBlock } from "./tool-presentation";
+import type { FileReference } from "./file-ref";
+import { buildToolPresentation } from "./tool-presentation";
 import {
   formatReceiptDuration,
   formatReceiptTokens,
@@ -73,7 +76,6 @@ import { anchoredScrollDelta } from "./transcript-scroll";
 import { useFollowScroll } from "./use-follow-scroll";
 import {
   activityTiming,
-  durationBadgeLabel,
   elapsedSeconds,
   inputArrivalKey,
   toolArrivalKey,
@@ -119,6 +121,7 @@ export function Transcript({
   inputBusy,
   restoreState,
   olderHistory = NO_OLDER_HISTORY,
+  subagents = [],
   onLoadOlderHistory,
   onRetryRestore,
   onStartNewSession,
@@ -133,6 +136,7 @@ export function Transcript({
   locateRequest = null,
   loadAttachment,
   onOpenFile,
+  onStopSubagent,
 }: {
   timeline: TranscriptRunGroup[];
   messages?: ProductMessage[];
@@ -155,6 +159,12 @@ export function Transcript({
   restoreState: TranscriptRestoreState;
   /** Server cursor pages that have not been fetched yet. */
   olderHistory?: OlderHistoryState;
+  /**
+   * Delegated child runs of the visible session (issue #31): a `task` tool
+   * card draws its fan-out topology from these. Absent, `task` rows render as
+   * ordinary tool cards.
+   */
+  subagents?: SubagentView[];
   onLoadOlderHistory?: () => void | Promise<void>;
   onRetryRestore: () => void;
   onStartNewSession: () => void;
@@ -187,6 +197,12 @@ export function Transcript({
    * without a panel loses the affordance, never the text.
    */
   onOpenFile?: (reference: FileReference) => void;
+  /**
+   * Stop one delegated child under a parent `task` call id (issue #31). The
+   * topology card surfaces it on each running row; absent, the rows stay
+   * read-only.
+   */
+  onStopSubagent?: (parentCallId: string) => void | Promise<unknown>;
 }) {
   const { t } = useCopy();
   /**
@@ -887,6 +903,8 @@ export function Transcript({
                   onApprovalDetail={onApprovalDetail}
                   onInputSubmit={onInputSubmit}
                   onOpenFile={onOpenFile}
+                  subagents={subagents}
+                  onStopSubagent={onStopSubagent}
                 />
               ) : entry.kind === "compaction" ? (
                 <CompactionDivider key={entry.id} compaction={entry.compaction} />
@@ -1189,63 +1207,6 @@ function MessageBubble({
 }
 
 /**
- * The provider's chain-of-thought beside an answer, in one quiet fold.
- *
- * Reasoning is deliberately de-emphasized — a secondary stream the model
- * produced before its reply, not part of the reply — so it collapses once the
- * answer exists and expands only while the model is still thinking aloud.
- * The body is the raw thinking text; the bubble's own copy surface still
- * copies `content` only.
- */
-function ThinkingRegion({
-  thinking,
-  streaming,
-}: {
-  thinking: string;
-  streaming: boolean;
-}) {
-  const { t } = useCopy();
-  const [open, setOpen] = useState(streaming);
-  // The fold opens while the model reasons and settles shut once the answer
-  // lands — unless the reader already took it over.
-  const userToggledRef = useRef(false);
-  const bodyId = useMemo(() => `thinking-${crypto.randomUUID()}`, []);
-  useEffect(() => {
-    if (!streaming && !userToggledRef.current) {
-      setOpen(false);
-    }
-  }, [streaming]);
-  return (
-    <section
-      className="thinking-region"
-      data-open={open ? "true" : undefined}
-      data-streaming={streaming ? "true" : undefined}
-    >
-      <button
-        type="button"
-        className="thinking-region__head"
-        aria-expanded={open}
-        aria-controls={bodyId}
-        onClick={() => {
-          userToggledRef.current = true;
-          setOpen((value) => !value);
-        }}
-      >
-        <ChevronDownIcon data-open={open} />
-        <span>
-          {streaming ? t("chat.thinkingStreaming") : t("chat.thinking")}
-        </span>
-      </button>
-      {open ? (
-        <div className="thinking-region__body" id={bodyId}>
-          <RichText content={thinking} />
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-/**
  * One folded run of tool and input work between two messages.
  *
  * Blocking interactions — a pending approval, a waiting input — never live
@@ -1262,6 +1223,8 @@ function ActivityGroup({
   onApprovalDetail,
   onInputSubmit,
   onOpenFile,
+  subagents,
+  onStopSubagent,
 }: {
   entry: Extract<TranscriptEntry, { kind: "activity" }>;
   open: boolean;
@@ -1272,6 +1235,8 @@ function ActivityGroup({
   onApprovalDetail?: (tool: ToolCallView, trigger: HTMLElement) => void;
   onInputSubmit: (inputId: string, answer: string) => void;
   onOpenFile?: (reference: FileReference) => void;
+  subagents: SubagentView[];
+  onStopSubagent?: (parentCallId: string) => void | Promise<unknown>;
 }) {
   const { t } = useCopy();
   const inFlight = activityWantsOpen(entry);
@@ -1338,8 +1303,27 @@ function ActivityGroup({
         />
       ));
     }
+    // Issue #31: a `task` call that fanned out draws its delegation topology
+    // attached beneath its own row — the card lives on the tool row, so it is
+    // reachable while running and after the fold settles.
+    const children = tool.subagentCount
+      ? subagents.filter((subagent) => subagent.parentCallId === tool.id)
+      : [];
     return (
-      <ToolCard key={tool.timelineId ?? tool.id} tool={tool} onOpenFile={onOpenFile} />
+      <ToolCard
+        key={tool.timelineId ?? tool.id}
+        tool={tool}
+        onOpenFile={onOpenFile}
+        footer={
+          children.length > 0 ? (
+            <SubagentTopology
+              tool={tool}
+              subagents={children}
+              onStopSubagent={onStopSubagent}
+            />
+          ) : null
+        }
+      />
     );
   };
 
@@ -1510,360 +1494,6 @@ function RestoreNotice({
         </button>
       </div>
     </section>
-  );
-}
-
-function ToolCard({
-  tool,
-  onOpenFile,
-}: {
-  tool: ToolCallView;
-  onOpenFile?: (reference: FileReference) => void;
-}) {
-  const { t } = useCopy();
-  const [open, setOpen] = useState(
-    tool.status === "running" || tool.status === "error" || Boolean(tool.mutations?.length),
-  );
-  const [copied, setCopied] = useState(false);
-  const copyResetRef = useRef<number | null>(null);
-  useEffect(
-    () => () => {
-      if (copyResetRef.current !== null) {
-        window.clearTimeout(copyResetRef.current);
-      }
-    },
-    [],
-  );
-  const detailId = `tool-detail-${tool.timelineId ?? tool.id}`.replace(/[^A-Za-z0-9_-]/gu, "-");
-  // Body blocks are built only while open, so a collapsed card stays cheap.
-  const presentation = buildToolPresentation(tool, open);
-  // The runtime's own measurement of an MCP call. A live arrival span is not a
-  // substitute here: it also covers queueing on this client.
-  const durationBadge = durationBadgeLabel(tool.protocolMetadata?.duration_ms);
-  const copyPayload = tool.output ?? tool.details;
-
-  async function copyToolPayload() {
-    try {
-      await navigator.clipboard.writeText(copyPayload);
-      setCopied(true);
-      if (copyResetRef.current !== null) {
-        window.clearTimeout(copyResetRef.current);
-      }
-      copyResetRef.current = window.setTimeout(() => {
-        setCopied(false);
-        copyResetRef.current = null;
-      }, 1_500);
-    } catch {
-      setCopied(false);
-    }
-  }
-
-  return (
-    <article className="tool-card" data-status={tool.status}>
-      {/* One compact line: icon, the named object, a mono summary, the state
-          (dot + text, spinner while running), duration, caret. The payload
-          copy rides the row and only surfaces on hover/focus. */}
-      <div className="tool-card__row">
-        <button
-          type="button"
-          className="tool-card__head"
-          aria-controls={detailId}
-          aria-expanded={open}
-          onClick={() => setOpen((value) => !value)}
-        >
-          <CodeIcon />
-          <strong>{presentation.title}</strong>
-          {presentation.subtitle.text ? (
-            presentation.subtitle.fileRef && onOpenFile ? (
-              // A resolvable path summary is the row's file affordance: the
-              // whole head still toggles, but this span takes the click first
-              // (issue #27).
-              <code
-                className="tool-card__summary tool-card__summary--link"
-                role="button"
-                tabIndex={0}
-                title={t("chat.openFileRef")}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onOpenFile(presentation.subtitle.fileRef!);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.stopPropagation();
-                    event.preventDefault();
-                    onOpenFile(presentation.subtitle.fileRef!);
-                  }
-                }}
-              >
-                {presentation.subtitle.text}
-              </code>
-            ) : (
-              <code className="tool-card__summary">{presentation.subtitle.text}</code>
-            )
-          ) : null}
-          <span className="tool-card__state" data-status={tool.status}>
-            {tool.status === "running" ? (
-              <span className="tool-card__spinner" aria-hidden="true" />
-            ) : (
-              <i className="tool-card__state-dot" aria-hidden="true" />
-            )}
-            <span>{toolStatusLabel(tool.status, t)}</span>
-          </span>
-          {durationBadge ? (
-            <span className="tool-card__duration">{durationBadge}</span>
-          ) : null}
-          <ChevronDownIcon data-open={open} />
-        </button>
-        <button
-          type="button"
-          className="tool-card__copy icon-button"
-          aria-label={copied ? t("chat.messageCopied") : t("chat.toolCopy")}
-          title={copied ? t("chat.messageCopied") : t("chat.toolCopy")}
-          onClick={() => void copyToolPayload()}
-        >
-          {copied ? <CheckIcon /> : <CopyIcon />}
-        </button>
-      </div>
-      {open ? (
-        <div className="tool-card__details" id={detailId}>
-          {presentation.chips.length > 0 ? (
-            <div className="tool-card__chips">
-              {presentation.chips.map((chip) => (
-                <span className="tool-card__chip" data-tone={chip.tone} key={chip.label}>
-                  {toolChipLabel(chip.label, t)}
-                </span>
-              ))}
-            </div>
-          ) : null}
-          {presentation.blocks.map((block, index) => (
-            <ToolBlockView block={block} key={index} onOpenFile={onOpenFile} />
-          ))}
-        </div>
-      ) : null}
-    </article>
-  );
-}
-
-/** The one-word state next to the row's dot: data, but the words are ours. */
-function toolStatusLabel(
-  status: ToolCallView["status"],
-  t: (path: string) => string,
-): string {
-  switch (status) {
-    case "running":
-      return t("chat.toolStateRunning");
-    case "waiting":
-      return t("chat.toolStateWaiting");
-    case "error":
-      return t("chat.toolStateError");
-    default:
-      return t("chat.toolStateDone");
-  }
-}
-
-/**
- * The presentation model uses stable label vocabulary for chips; only the
- * fixed vocabulary is translated here. Dynamic values (tool status, error
- * codes) are data, not copy, and render as-is.
- */
-function toolChipLabel(label: string, t: (path: string) => string): string {
-  switch (label) {
-    case "read only":
-      return t("chat.chipReadOnly");
-    case "mutation capable":
-      return t("chat.chipMutation");
-    case "high risk":
-      return t("chat.chipHighRisk");
-    case "workspace changed":
-      return t("chat.chipWorkspaceChanged");
-    default:
-      return label;
-  }
-}
-
-/**
- * Fact labels are mostly data (diff summaries). Only the labels the shell
- * itself introduces are translated.
- */
-function toolFactLabel(label: string, t: (path: string) => string): string {
-  return label === "duration" ? t("chat.toolDuration") : label;
-}
-
-function ToolBlockView({
-  block,
-  onOpenFile,
-}: {
-  block: ToolBlock;
-  onOpenFile?: (reference: FileReference) => void;
-}) {
-  const { t } = useCopy();
-  switch (block.kind) {
-    case "args":
-      return (
-        <section>
-          <h4>{t("chat.toolInput")}</h4>
-          <pre className="tool-card__args" tabIndex={0}>
-            <RefLinkedText text={block.text} onOpenFile={onOpenFile} />
-          </pre>
-          {block.truncated ? (
-            <p className="tool-card__truncated">{t("chat.outputTruncated")}</p>
-          ) : null}
-        </section>
-      );
-    case "diff":
-      return (
-        <section>
-          <h4>
-            <RefLink
-              text={block.path}
-              onOpenFile={onOpenFile}
-            />
-          </h4>
-          <DiffView diff={block.text} label={`${block.path} diff`} sourcePath={block.path} />
-          {block.truncated ? <p className="tool-card__truncated">{t("chat.diffTruncated")}</p> : null}
-        </section>
-      );
-    case "code":
-      return (
-        <section>
-          <RichText content={"```" + block.language + "\n" + block.text + "\n```"} />
-          {block.truncated ? <p className="tool-card__truncated">{t("chat.outputTruncated")}</p> : null}
-        </section>
-      );
-    case "files":
-      return (
-        <section>
-          <h4>{t("chat.filesTitle")}</h4>
-          <ul className="tool-card__list">
-            {block.entries.map((entry) => (
-              <li key={entry.path}>
-                <RefLink text={entry.path} onOpenFile={onOpenFile} />
-                {entry.annotation ? ` ${entry.annotation}` : null}
-              </li>
-            ))}
-          </ul>
-        </section>
-      );
-    case "matches":
-      return (
-        <section>
-          <h4>{t("chat.matchesTitle")}</h4>
-          <ul className="tool-card__list">
-            {block.entries.map((entry, index) => (
-              <li key={index}>
-                <RefLink
-                  text={`${entry.path}${entry.line ? `:${entry.line}` : ""}`}
-                  onOpenFile={onOpenFile}
-                />{" "}
-                {entry.text}
-              </li>
-            ))}
-          </ul>
-          {block.truncated ? <p className="tool-card__truncated">{t("chat.matchesTruncated")}</p> : null}
-        </section>
-      );
-    case "fields":
-      return (
-        <section>
-          <dl className="tool-facts">
-            {block.rows.map((row, index) => (
-              <div key={index}><dt>{toolFactLabel(row.label, t)}</dt><dd>{row.value}</dd></div>
-            ))}
-          </dl>
-        </section>
-      );
-    case "note":
-      return (
-        <pre tabIndex={0}>
-          <RefLinkedText text={block.text} onOpenFile={onOpenFile} />
-        </pre>
-      );
-  }
-}
-
-/**
- * A span that reads as a file reference. With an open handler it is a button;
- * without one it is plain text — the affordance degrades, the data never does.
- */
-function RefLink({
-  text,
-  onOpenFile,
-}: {
-  text: string;
-  onOpenFile?: (reference: FileReference) => void;
-}) {
-  const { t } = useCopy();
-  const segments = segmentFileReferences(text);
-  if (segments.length === 1 && segments[0]!.kind === "file" && onOpenFile) {
-    const reference = segments[0].reference;
-    return (
-      <button
-        type="button"
-        className="tool-card__ref"
-        title={t("chat.openFileRef")}
-        onClick={(event) => {
-          event.stopPropagation();
-          onOpenFile(reference);
-        }}
-      >
-        {text}
-      </button>
-    );
-  }
-  return <code>{text}</code>;
-}
-
-/**
- * Mixed prose + references: file spans and URLs render as affordances, the
- * rest as raw text. Segmentation always preserves the source, so joining the
- * parts reproduces the original string.
- */
-function RefLinkedText({
-  text,
-  onOpenFile,
-}: {
-  text: string;
-  onOpenFile?: (reference: FileReference) => void;
-}) {
-  const { t } = useCopy();
-  const segments = segmentFileReferences(text);
-  return (
-    <>
-      {segments.map((segment, index) => {
-        if (segment.kind === "file" && onOpenFile) {
-          const reference = segment.reference;
-          return (
-            <button
-              type="button"
-              className="tool-card__ref"
-              key={index}
-              title={t("chat.openFileRef")}
-              onClick={(event) => {
-                event.stopPropagation();
-                onOpenFile(reference);
-              }}
-            >
-              {segment.text}
-            </button>
-          );
-        }
-        if (segment.kind === "url") {
-          return (
-            <a
-              key={index}
-              className="tool-card__url"
-              href={segment.url}
-              target="_blank"
-              rel="noreferrer noopener"
-              onClick={(event) => event.stopPropagation()}
-            >
-              {segment.text}
-            </a>
-          );
-        }
-        return <span key={index}>{segment.text}</span>;
-      })}
-    </>
   );
 }
 
@@ -2092,15 +1722,4 @@ function InputCard({
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
-}
-
-function formatValue(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
 }
