@@ -599,14 +599,29 @@ fn is_hidden_reasoning_field(key: &str) -> bool {
 }
 
 fn path_variants(value: &str) -> Vec<String> {
+    // Spellings one absolute path can take across surfaces. The separator swap
+    // covers Windows/POSIX interop; the `/private` toggle covers macOS, where
+    // `/var` (and `/tmp`, `/etc`) is a symlink the canonical form resolves with
+    // a `/private` prefix — text carries whichever spelling was emitted, so
+    // redaction must match both or one leaks.
     let mut variants = vec![value.to_string()];
     let forward = value.replace('\\', "/");
     let backward = value.replace('/', "\\");
-    if !variants.contains(&forward) {
-        variants.push(forward);
+    for spelling in [forward, backward] {
+        if !variants.contains(&spelling) {
+            variants.push(spelling);
+        }
     }
-    if !variants.contains(&backward) {
-        variants.push(backward);
+    if let Some(stripped) = value.strip_prefix("/private/") {
+        let unprefixed = format!("/{stripped}");
+        if !variants.contains(&unprefixed) {
+            variants.push(unprefixed);
+        }
+    } else if let Some(rest) = value.strip_prefix('/') {
+        let prefixed = format!("/private/{rest}");
+        if !variants.contains(&prefixed) {
+            variants.push(prefixed);
+        }
     }
     variants
 }
@@ -713,6 +728,31 @@ mod tests {
         assert!(summary.absolute_paths >= 2);
         assert_eq!(summary.hidden_reasoning_fields, 1);
         assert!(summary.secret_patterns >= 1);
+    }
+
+    #[test]
+    fn redaction_matches_the_symlinked_spelling_of_a_canonical_workspace_path() {
+        // On macOS the canonical workspace root is `/private/var/...`, but a
+        // model that read the path before canonicalization emits `/var/...`.
+        // Redaction has to scrub both spellings or the raw path leaks.
+        let redactor = Redactor::for_test(
+            Vec::new(),
+            vec![KnownPath {
+                value: "/private/var/folders/aa/workspace".to_string(),
+                marker: "[REDACTED:workspace_path]",
+            }],
+        );
+        let mut value = serde_json::json!({
+            "canonical": "report lives at /private/var/folders/aa/workspace/report.json",
+            "symlinked": "read /var/folders/aa/workspace/trace.jsonl"
+        });
+
+        let summary = redactor.redact(&mut value);
+        let serialized = serde_json::to_string(&value).unwrap();
+
+        assert!(!serialized.contains("/private/var/folders/aa/workspace"));
+        assert!(!serialized.contains("/var/folders/aa/workspace"));
+        assert!(summary.absolute_paths >= 2);
     }
 
     #[test]
