@@ -211,6 +211,14 @@ fn push_timeline_kind(
             &sanitize_legacy_text(&format!("{status}: {message}")),
             Style::default().fg(Color::DarkGray),
         ),
+        // Reasoning renders dimmed and under its own label so it never reads
+        // as part of the answer it precedes.
+        RunTimelineEntryKind::Thinking { text } => push_labeled_text(
+            lines,
+            "Thinking",
+            &sanitize_legacy_text(text),
+            Style::default().fg(Color::DarkGray),
+        ),
         RunTimelineEntryKind::Plan { goal, step_count } => push_labeled_text(
             lines,
             "Plan",

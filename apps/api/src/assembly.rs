@@ -322,7 +322,12 @@ pub(crate) fn apply_product_reasoning(
     if reasoning == ProductReasoningPreference::Default {
         return Ok(());
     }
-    if provider_type != "openai-responses" {
+    // Both OpenAI protocols accept the shared `reasoning_effort` option:
+    // `openai-responses` maps it to `reasoning.effort`, and `openai` (Chat
+    // Completions, including DeepSeek and other compatible gateways) maps it
+    // to a flat `reasoning_effort` request field that enables the model's
+    // `reasoning_content` stream.
+    if !matches!(provider_type, "openai-responses" | "openai") {
         return Err(ApiError::bad_request(
             "the selected provider does not support reasoning controls; choose default reasoning",
         ));

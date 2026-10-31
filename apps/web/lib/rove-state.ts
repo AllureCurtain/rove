@@ -25,6 +25,13 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  /**
+   * Provider chain-of-thought accumulated beside the answer (the
+   * `thinking_delta` stream). It renders as a collapsible region above the
+   * answer and is never merged into `content`, so copying the message copies
+   * only what the model wrote as its reply.
+   */
+  thinking?: string;
   status: "streaming" | "final";
   usage?: Usage;
   promptBuild?: PromptBuildMetadata;
@@ -983,6 +990,34 @@ function applyStreamEvent(
           : state.timeline,
       };
     }
+    case "thinking_delta": {
+      // Reasoning rides the same streaming assistant message the answer will
+      // finalize, but lands in `thinking` — never in `content` — so the reply
+      // text stays exactly what the model wrote.
+      const projection = appendAssistantThinking(
+        state.messages,
+        event.delta,
+        state.activeRunId,
+        seq ?? next.eventCount,
+      );
+      return {
+        ...next,
+        messages: projection.messages,
+        timeline: projection.created
+          ? appendTimelineEntry(
+              state.timeline,
+              canonicalTimelineEntry(
+                "message",
+                projection.messageId,
+                state.activeRunId,
+                state.activeRunOrdinal,
+                seq,
+                "assistant",
+              ),
+            )
+          : state.timeline,
+      };
+    }
     case "model_status":
       return {
         ...next,
@@ -1633,6 +1668,56 @@ function appendAssistantDelta(
         id: messageId,
         role: "assistant",
         content: delta,
+        status: "streaming",
+      },
+    ],
+    messageId,
+    created: true,
+  };
+}
+
+/**
+ * Append one reasoning delta to the in-flight assistant message's `thinking`
+ * stream, creating the streaming message when the provider reasons before it
+ * writes any answer text. Mirrors `appendAssistantDelta`, writing `thinking`
+ * instead of `content`.
+ */
+function appendAssistantThinking(
+  messages: ChatMessage[],
+  delta: string,
+  runId: string | null,
+  eventIdentity: number,
+): MessageProjection {
+  if (delta.length === 0) {
+    return {
+      messages,
+      messageId: messages.at(-1)?.id ?? "",
+      created: false,
+    };
+  }
+  const last = messages[messages.length - 1];
+  if (last?.role === "assistant" && last.status === "streaming") {
+    return {
+      messages: [
+        ...messages.slice(0, -1),
+        {
+          ...last,
+          thinking: (last.thinking ?? "") + delta,
+        },
+      ],
+      messageId: last.id,
+      created: false,
+    };
+  }
+  const messageId = assistantMessageId(runId, eventIdentity);
+  return {
+    messages: [
+      ...messages,
+      {
+        id: messageId,
+        role: "assistant",
+        content: "",
+        thinking: delta,
         status: "streaming",
       },
     ],

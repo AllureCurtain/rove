@@ -113,6 +113,15 @@ pub fn run_model_turn<'a>(
                     break;
                 }
                 Ok(ModelEvent::ThinkingDelta { text }) => {
+                    // Reasoning streams out beside the answer text rather than
+                    // into it: the assembler deliberately keeps it out of the
+                    // canonical turn's content, and the event carries it to the
+                    // host so SSE/Web can render a separate thinking stream.
+                    if !text.is_empty() {
+                        yield ModelTurnItem::Event(AgentEvent::ThinkingDelta {
+                            delta: text.clone(),
+                        });
+                    }
                     if let Err(error) = assembler.push(ModelEvent::ThinkingDelta { text }) {
                         yield ModelTurnItem::Failed(error);
                         return;
@@ -437,6 +446,35 @@ mod tests {
         }
     }
 
+    struct ThinkingModel;
+
+    #[async_trait]
+    impl ModelClient for ThinkingModel {
+        fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ModelToolSchema],
+        ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+            Box::pin(futures::stream::iter([
+                Ok(ModelEvent::ThinkingDelta {
+                    text: "let me think".to_string(),
+                }),
+                Ok(ModelEvent::TextDelta {
+                    text: "the answer".to_string(),
+                }),
+                Ok(ModelEvent::Done),
+            ]))
+        }
+
+        fn model_id(&self) -> &str {
+            "thinking"
+        }
+
+        fn requires_terminal_event(&self) -> bool {
+            true
+        }
+    }
+
     struct DispatchCountingModel {
         dispatches: Arc<AtomicUsize>,
     }
@@ -642,6 +680,42 @@ mod tests {
             }
             other => panic!("expected the accumulated outcome, got {other:?}"),
         }
+    }
+
+    /// Reasoning streams out beside the answer as its own event and never
+    /// reaches the assembled turn's content or the finished full response.
+    #[tokio::test]
+    async fn thinking_delta_is_its_own_event_and_never_answer_text() {
+        let mut stream = run_model_turn(
+            &ThinkingModel,
+            vec![Message::user("hello")],
+            Vec::new(),
+            CancellationToken::new(),
+        );
+
+        let mut saw_thinking = false;
+        let mut finished = None;
+        while let Some(item) = stream.next().await {
+            match item {
+                ModelTurnItem::Event(AgentEvent::ThinkingDelta { delta }) => {
+                    assert_eq!(delta, "let me think");
+                    saw_thinking = true;
+                }
+                ModelTurnItem::Finished(turn) => finished = Some(turn),
+                _ => {}
+            }
+        }
+
+        assert!(saw_thinking, "thinking must stream as its own event");
+        let turn = finished.expect("the turn completes");
+        assert_eq!(turn.full_response, "the answer");
+        let persisted: String = turn
+            .assistant_turn
+            .content
+            .iter()
+            .filter_map(|block| block.text_value())
+            .collect();
+        assert_eq!(persisted, "the answer");
     }
 
     #[tokio::test]

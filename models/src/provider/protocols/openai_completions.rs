@@ -86,6 +86,19 @@ impl WireProtocol for OpenAiCompletionsProtocol {
             input.options.presence_penalty,
         );
 
+        // Reasoning-capable compatible providers (DeepSeek, etc.) only emit
+        // `reasoning_content` when the request asks for it. The shared
+        // `reasoning_effort` protocol option is the same string the Responses
+        // protocol maps to `reasoning.effort`; on Chat Completions the wire
+        // field is a flat `reasoning_effort`.
+        if let Some(effort) = protocol_string_option(input.protocol_options, "reasoning_effort")? {
+            validate_reasoning_effort(effort)?;
+            body.insert(
+                "reasoning_effort".to_string(),
+                serde_json::Value::String(effort.to_string()),
+            );
+        }
+
         Ok(WireRequest {
             method: Method::POST,
             path: "chat/completions".to_string(),
@@ -230,6 +243,31 @@ fn insert_float_option(
     }
 }
 
+fn validate_reasoning_effort(value: &str) -> Result<(), ModelError> {
+    if matches!(value, "low" | "medium" | "high") {
+        Ok(())
+    } else {
+        Err(ModelError::InvalidConfiguration(
+            "OpenAI protocol option 'reasoning_effort' must be low, medium, or high".to_string(),
+        ))
+    }
+}
+
+fn protocol_string_option<'a>(
+    options: &'a serde_json::Value,
+    key: &'static str,
+) -> Result<Option<&'a str>, ModelError> {
+    let Some(value) = options.get(key) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    value.as_str().map(Some).ok_or_else(|| {
+        ModelError::InvalidConfiguration(format!("OpenAI protocol option '{key}' must be a string"))
+    })
+}
+
 #[derive(Debug, Default)]
 struct OpenAiChatDecoder {
     calls: BTreeMap<u64, OpenAiPartialToolCall>,
@@ -289,6 +327,19 @@ fn normalize_chat_chunk(
         .flatten()
     {
         if let Some(delta) = choice.get("delta") {
+            // Reasoning-capable compatible providers (DeepSeek, etc.) stream
+            // `reasoning_content` before `content` when the request opts in via
+            // `reasoning_effort`. Surface it as ThinkingDelta so it lands in
+            // the dedicated thinking stream rather than the reply text.
+            if let Some(reasoning) = delta
+                .get("reasoning_content")
+                .and_then(|content| content.as_str())
+                && !reasoning.is_empty()
+            {
+                events.push(ModelEvent::ThinkingDelta {
+                    text: reasoning.to_string(),
+                });
+            }
             if let Some(text) = delta.get("content").and_then(|content| content.as_str())
                 && !text.is_empty()
             {
@@ -733,6 +784,48 @@ mod tests {
     }
 
     #[test]
+    fn decoder_streams_reasoning_content_as_thinking_not_text() {
+        let mut decoder = OpenAiCompletionsProtocol::new().decoder();
+        let frames = [
+            serde_json::json!({"choices":[{"delta":{"reasoning_content":"let me think"}}]}).to_string(),
+            serde_json::json!({"choices":[{"delta":{"reasoning_content":" about it"}}]}).to_string(),
+            serde_json::json!({"choices":[{"delta":{"content":"the answer"},"finish_reason":"stop"}]}).to_string(),
+            "[DONE]".to_string(),
+        ];
+        let mut events = Vec::new();
+        for frame in frames {
+            events.extend(decoder.push(&frame).unwrap());
+        }
+
+        let thinking: String = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::ThinkingDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thinking, "let me think about it");
+        // Reasoning must not leak into the reply text stream.
+        let text: String = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::TextDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "the answer");
+    }
+
+    #[test]
+    fn decoder_ignores_empty_reasoning_content() {
+        let mut decoder = OpenAiCompletionsProtocol::new().decoder();
+        let events = decoder
+            .push(&serde_json::json!({"choices":[{"delta":{"reasoning_content":""}}]}).to_string())
+            .unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
     fn decoder_publishes_only_the_final_cumulative_usage_snapshot() {
         let mut decoder = OpenAiCompletionsProtocol::new().decoder();
         let frames = [
@@ -1043,5 +1136,35 @@ mod tests {
             )
         );
         assert!(events.iter().any(|event| matches!(event, ModelEvent::Done)));
+    }
+
+    #[test]
+    fn reasoning_effort_is_emitted_for_openai_completions() {
+        let protocol = OpenAiCompletionsProtocol::new();
+        let request = protocol
+            .build_request(&WireRequestInput {
+                messages: &[Message::user("think")],
+                tools: &[],
+                model: "deepseek-flash",
+                options: &ProviderOptions::default(),
+                protocol_options: &serde_json::json!({ "reasoning_effort": "high" }),
+            })
+            .unwrap();
+        assert_eq!(request.body["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn reasoning_effort_must_be_a_supported_level() {
+        let protocol = OpenAiCompletionsProtocol::new();
+        let error = protocol
+            .build_request(&WireRequestInput {
+                messages: &[Message::user("think")],
+                tools: &[],
+                model: "deepseek-flash",
+                options: &ProviderOptions::default(),
+                protocol_options: &serde_json::json!({ "reasoning_effort": "extreme" }),
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("reasoning_effort"));
     }
 }

@@ -51,6 +51,11 @@ pub enum RunTimelineEntryKind {
         status: String,
         message: String,
     },
+    /// A bounded reasoning fragment shown as a separate stream, not part of
+    /// the assistant answer it precedes.
+    Thinking {
+        text: String,
+    },
     Plan {
         goal: String,
         step_count: usize,
@@ -141,6 +146,14 @@ pub enum RunViewUpdate {
         user_message: String,
     },
     AssistantDelta {
+        delta: String,
+    },
+    /// Provider chain-of-thought kept beside — never inside — the answer.
+    ///
+    /// The accumulated text lives on [`RunViewState::thinking_text`] and is
+    /// rendered as its own dimmed stream; `assistant_text` and persisted
+    /// history stay free of it.
+    ThinkingDelta {
         delta: String,
     },
     ModelStatus {
@@ -260,6 +273,8 @@ pub struct RunViewState {
     pub job_id: Option<JobId>,
     pub user_message: Option<String>,
     pub assistant_text: String,
+    /// Provider reasoning accumulated for this run, separate from the answer.
+    pub thinking_text: String,
     pub model_status: Option<(String, String)>,
     pub last_usage: Option<Usage>,
     pub plan: Option<TaskPlan>,
@@ -493,6 +508,9 @@ impl RunViewState {
             RunViewUpdate::AssistantDelta { delta } => {
                 self.assistant_text.push_str(&delta);
             }
+            RunViewUpdate::ThinkingDelta { delta } => {
+                self.thinking_text.push_str(&delta);
+            }
             RunViewUpdate::ModelStatus { status, message } => {
                 self.model_status = Some((status, message));
             }
@@ -712,6 +730,11 @@ impl RunViewState {
                 (!visible.is_empty()).then(|| RunTimelineEntryKind::Assistant {
                     text: bounded_visible_text(&visible),
                     final_message: false,
+                })
+            }
+            RunViewUpdate::ThinkingDelta { delta } => {
+                (!delta.is_empty()).then(|| RunTimelineEntryKind::Thinking {
+                    text: bounded_visible_text(delta),
                 })
             }
             RunViewUpdate::ModelStatus { status, message } => {
@@ -1203,6 +1226,9 @@ impl From<&StreamEvent> for RunViewUpdate {
                 ),
             },
             StreamEvent::LlmChunk { delta } => Self::AssistantDelta {
+                delta: delta.clone(),
+            },
+            StreamEvent::ThinkingDelta { delta } => Self::ThinkingDelta {
                 delta: delta.clone(),
             },
             StreamEvent::ModelStatus { status, message } => Self::ModelStatus {

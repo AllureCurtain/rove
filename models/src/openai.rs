@@ -235,6 +235,20 @@ fn normalize_openai_chat_chunk(
         .flatten()
     {
         if let Some(delta) = choice.get("delta") {
+            // Reasoning-capable compatible providers (DeepSeek, etc.) stream the
+            // model's chain-of-thought in `reasoning_content` ahead of `content`.
+            // Surface it as thinking so the engine and UI can render it as a
+            // separate stream instead of dropping it on the floor.
+            if let Some(reasoning) = delta
+                .get("reasoning_content")
+                .and_then(|content| content.as_str())
+                && !reasoning.is_empty()
+            {
+                events.push(ModelEvent::ThinkingDelta {
+                    text: reasoning.to_string(),
+                });
+            }
+
             if let Some(text) = delta.get("content").and_then(|content| content.as_str())
                 && !text.is_empty()
             {
@@ -678,6 +692,61 @@ mod tests {
                     if id == "call_1" && name == "echo" && args["message"] == "hello"
             )
         }));
+    }
+
+    #[test]
+    fn openai_reasoning_content_streams_as_thinking_not_text() {
+        let mut state = OpenAiToolCallState::default();
+        let chunk = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "reasoning_content": "let me think",
+                    "content": "answer"
+                }
+            }]
+        })
+        .to_string();
+        let events = normalize_openai_chat_chunk(&mut state, &chunk).unwrap();
+
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ModelEvent::ThinkingDelta { text } if text == "let me think"
+            )
+        }));
+        assert!(
+            events.iter().any(|event| {
+                matches!(event, ModelEvent::TextDelta { text } if text == "answer")
+            })
+        );
+        // Reasoning must never be folded into the answer stream.
+        assert!(!events.iter().any(|event| {
+            matches!(
+                event,
+                ModelEvent::TextDelta { text } if text.contains("think")
+            )
+        }));
+    }
+
+    #[test]
+    fn openai_empty_reasoning_content_emits_nothing() {
+        let mut state = OpenAiToolCallState::default();
+        let chunk = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "reasoning_content": "",
+                    "content": "answer"
+                }
+            }]
+        })
+        .to_string();
+        let events = normalize_openai_chat_chunk(&mut state, &chunk).unwrap();
+
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, ModelEvent::ThinkingDelta { .. }))
+        );
     }
 
     #[test]

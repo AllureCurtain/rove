@@ -83,6 +83,10 @@ export function activityEventForStreamEvent(event: StreamEvent): ActivityEvent |
       return { type: "run_started" };
     case "llm_chunk":
       return { type: "llm_chunk" };
+    case "thinking_delta":
+      // Chain-of-thought is model output the same way an answer chunk is: the
+      // waiting phase ends when it arrives, and it renders beside the answer.
+      return { type: "llm_chunk" };
     case "run_completed":
       return { type: "run_completed" };
     case "model_status":

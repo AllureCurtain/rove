@@ -3891,6 +3891,10 @@ export interface components {
             /** @enum {string} */
             type: "llm_chunk";
         } | {
+            delta: string;
+            /** @enum {string} */
+            type: "thinking_delta";
+        } | {
             message: string;
             status: string;
             /** @enum {string} */
