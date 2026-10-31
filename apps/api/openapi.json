@@ -9137,6 +9137,30 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "description": "A single event from a delegated subagent run, wrapped so the parent's\nstream stays flat while attribution survives.\n\nThe subagent runs inline inside the parent run/trace (Fork A): its\nkernel re-yields every `KernelItem::Event` and the engine wraps each in\nthis envelope, so a consumer that knows nothing about delegation sees a\nsingle unknown top-level variant and wildcard-ignores it — the wrapped\nevent is never misattributed to the parent, and model-history\nprojection and recovery, which only match top-level kinds, drop it\nautomatically.\n\n`parent_call_id` is the tool `call_id` of the parent `delegate`/`task`\ncall that spawned the subagent; it is the only edge a consumer needs to\ngroup the child's events under that call. `event` is the subagent's own\nevent, unchanged — a nested `SubagentEvent` never occurs because a\ndelegated run may not itself delegate in this phase. Boxed so this\nrecursive variant does not make `StreamEvent` the large outlier of\nevery enum that wraps one.",
+            "properties": {
+              "event": {
+                "$ref": "#/components/schemas/StreamEvent"
+              },
+              "parent_call_id": {
+                "format": "ulid",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "subagent_event"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "parent_call_id",
+              "event",
+              "type"
+            ],
+            "type": "object"
           }
         ]
       },

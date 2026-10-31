@@ -527,6 +527,7 @@ export const STREAM_EVENT_NAMES = [
   "message_claimed_successor",
   "message_needs_attention",
   "message_revoked",
+  "subagent_event",
 ] as const;
 
 export type StreamEventName = (typeof STREAM_EVENT_NAMES)[number];
@@ -536,8 +537,8 @@ export type StreamEventName = (typeof STREAM_EVENT_NAMES)[number];
  *
  * The version is the newest `STREAM_EVENT_KINDS` entry version in
  * `runtime/src/foundation/events.rs` that this bundle understands: version 1 is
- * every kind before `provider_retry`, version 2 is `provider_retry`, and
- * version 3 is `thinking_delta`. The transcript request declares it as
+ * every kind before `provider_retry`, version 2 is `provider_retry`, version 3
+ * is `thinking_delta`, and version 4 is `subagent_event`. The transcript request declares it as
  * `event_contract`, so a newer server withholds the rows this bundle cannot
  * decode and reports their durable positions instead of failing the restore.
  * Adding a kind here means adding its version there and bumping this constant
@@ -545,7 +546,7 @@ export type StreamEventName = (typeof STREAM_EVENT_NAMES)[number];
  * agreement.
  */
 
-export const STREAM_EVENT_CONTRACT_VERSION = 3;
+export const STREAM_EVENT_CONTRACT_VERSION = 4;
 
 /**
  * Product directory event kinds served by `GET /product/events`.

@@ -374,6 +374,36 @@ pub enum StreamEvent {
     MessageNeedsAttention { id: String, reason: String },
     /// The still-eligible message was revoked through the durable authority.
     MessageRevoked { id: String },
+
+    /// A single event from a delegated subagent run, wrapped so the parent's
+    /// stream stays flat while attribution survives.
+    ///
+    /// The subagent runs inline inside the parent run/trace (Fork A): its
+    /// kernel re-yields every `KernelItem::Event` and the engine wraps each in
+    /// this envelope, so a consumer that knows nothing about delegation sees a
+    /// single unknown top-level variant and wildcard-ignores it — the wrapped
+    /// event is never misattributed to the parent, and model-history
+    /// projection and recovery, which only match top-level kinds, drop it
+    /// automatically.
+    ///
+    /// `parent_call_id` is the tool `call_id` of the parent `delegate`/`task`
+    /// call that spawned the subagent; it is the only edge a consumer needs to
+    /// group the child's events under that call. `event` is the subagent's own
+    /// event, unchanged — a nested `SubagentEvent` never occurs because a
+    /// delegated run may not itself delegate in this phase. Boxed so this
+    /// recursive variant does not make `StreamEvent` the large outlier of
+    /// every enum that wraps one.
+    SubagentEvent {
+        #[schema(value_type = String, format = "ulid")]
+        parent_call_id: CallId,
+        /// The schema is a `$ref` to `StreamEvent` rather than an inline
+        /// resolution: resolving `Box<StreamEvent>`'s `ToSchema` here would
+        /// re-enter `StreamEvent` while it is still being constructed, which
+        /// recurses without bound. `schema_with` substitutes a bare component
+        /// reference and breaks that recursion.
+        #[schema(schema_with = subagent_event_schema)]
+        event: Box<StreamEvent>,
+    },
 }
 
 /// One durable trace line's payload, split along the model-visibility
@@ -510,10 +540,11 @@ pub const STREAM_EVENT_KINDS: &[(&str, u32)] = &[
     ("message_claimed_successor", 1),
     ("message_needs_attention", 1),
     ("message_revoked", 1),
+    ("subagent_event", 4),
 ];
 
 /// Newest canonical-event client contract version this runtime defines.
-pub const STREAM_EVENT_CONTRACT_VERSION: u32 = 3;
+pub const STREAM_EVENT_CONTRACT_VERSION: u32 = 4;
 
 impl StreamEvent {
     /// Return the durable/public projection for a hard read-only Review run.
@@ -779,6 +810,17 @@ impl StreamEvent {
                 id: id.clone(),
                 reason: "[review control details omitted]".to_string(),
             },
+            // A delegated event keeps only its attribution edge; the wrapped
+            // payload is redacted by the same per-variant rules as a top-level
+            // event, so a subagent's tool output cannot leak into a Review
+            // projection through the envelope.
+            Self::SubagentEvent {
+                parent_call_id,
+                event,
+            } => Self::SubagentEvent {
+                parent_call_id: *parent_call_id,
+                event: Box::new(event.redacted_for_review_persistence()),
+            },
             _ => self.clone(),
         }
     }
@@ -852,8 +894,20 @@ impl StreamEvent {
             Self::MessageClaimedSuccessor { .. } => "message_claimed_successor",
             Self::MessageNeedsAttention { .. } => "message_needs_attention",
             Self::MessageRevoked { .. } => "message_revoked",
+            Self::SubagentEvent { .. } => "subagent_event",
         }
     }
+}
+
+/// Component reference used for `SubagentEvent::event`.
+///
+/// A self-referential field cannot be resolved inline: doing so re-enters
+/// `StreamEvent`'s schema while it is still under construction and recurses
+/// without bound. Returning a bare `$ref` points the property at the
+/// already-registered `StreamEvent` component instead, which is exactly what
+/// the wire JSON (a nested, untagged `StreamEvent`) describes.
+fn subagent_event_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    utoipa::openapi::RefOr::Ref(utoipa::openapi::Ref::from_schema_name("StreamEvent"))
 }
 
 fn redact_procedure_reference(mut reference: ProcedureReference) -> ProcedureReference {
@@ -1085,5 +1139,74 @@ mod tests {
             .join("\n");
         assert!(!persisted.contains(secret));
         assert!(persisted.contains("review finalization output omitted"));
+    }
+
+    /// A delegated event keeps its `type` discriminant, the attribution edge,
+    /// and the wrapped event verbatim on the wire, and round-trips back into
+    /// the same variant so trace replay can re-derive the nested stream.
+    #[test]
+    fn subagent_event_round_trips_with_attribution_edge() {
+        let parent_call_id = CallId::new();
+        let inner_call_id = CallId::new();
+        let event = StreamEvent::SubagentEvent {
+            parent_call_id,
+            event: Box::new(StreamEvent::ToolCallStarted {
+                call_id: inner_call_id,
+                tool_use_id: None,
+                name: "fs_read".to_string(),
+                args: serde_json::json!({"path": "a.rs"}),
+            }),
+        };
+
+        let wire = serde_json::to_value(&event).unwrap();
+        assert_eq!(wire["type"], "subagent_event");
+        assert_eq!(wire["parent_call_id"], parent_call_id.to_string());
+        // The wrapped event is untagged within the envelope's `event` field
+        // but still carries its own `type` discriminant.
+        assert_eq!(wire["event"]["type"], "tool_call_started");
+        assert_eq!(wire["event"]["name"], "fs_read");
+
+        let decoded: StreamEvent = serde_json::from_value(wire).unwrap();
+        match decoded {
+            StreamEvent::SubagentEvent {
+                parent_call_id: decoded_parent,
+                event,
+            } => {
+                assert_eq!(decoded_parent, parent_call_id);
+                assert!(matches!(
+                    *event,
+                    StreamEvent::ToolCallStarted { call_id, .. } if call_id == inner_call_id
+                ));
+            }
+            other => panic!("expected SubagentEvent, decoded {other:?}"),
+        }
+    }
+
+    /// A subagent's tool output inside the envelope must be redacted by the
+    /// same rule as a top-level one — the attribution edge is the only thing
+    /// a Review projection may keep.
+    #[test]
+    fn review_persistence_redacts_inside_the_subagent_envelope() {
+        let secret = "SUBAGENT_TOOL_OUTPUT_SECRET";
+        let call_id = CallId::new();
+        let event = StreamEvent::SubagentEvent {
+            parent_call_id: CallId::new(),
+            event: Box::new(StreamEvent::ToolCallCompleted {
+                call_id,
+                result: ToolResult {
+                    call_id,
+                    output: secret.to_string(),
+                    mutations: Vec::new(),
+                    metadata: Default::default(),
+                    envelope: None,
+                },
+            }),
+        }
+        .redacted_for_review_persistence();
+
+        let persisted = serde_json::to_string(&event).unwrap();
+        assert!(!persisted.contains(secret));
+        assert!(persisted.contains("review tool output omitted"));
+        assert!(persisted.contains("\"type\":\"subagent_event\""));
     }
 }

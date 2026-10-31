@@ -241,8 +241,9 @@ fn canonical_event_registry_covers_the_wire_names_with_bounded_versions() {
     );
 
     // The transcript `event_contract` negotiation is only meaningful while kinds
-    // newer than the oldest contract exist. `provider_retry` introduced version 2
-    // and `thinking_delta` version 3, so the registry must name exactly those.
+    // newer than the oldest contract exist. `provider_retry` introduced version
+    // 2, `thinking_delta` version 3, and `subagent_event` version 4, so the
+    // registry must name exactly those.
     let newer: Vec<&str> = kinds
         .iter()
         .filter(|(_, version)| *version > 1)
@@ -250,8 +251,8 @@ fn canonical_event_registry_covers_the_wire_names_with_bounded_versions() {
         .collect();
     assert_eq!(
         newer,
-        vec!["thinking_delta", "provider_retry"],
-        "thinking_delta introduced contract version 3 and provider_retry version 2"
+        vec!["thinking_delta", "provider_retry", "subagent_event"],
+        "thinking_delta introduced v3, provider_retry v2, and subagent_event v4"
     );
 }
 

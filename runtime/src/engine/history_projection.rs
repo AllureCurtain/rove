@@ -340,4 +340,47 @@ mod tests {
         assert_eq!(projector.project(&event).len(), 1);
         assert!(projector.project(&event).is_empty());
     }
+
+    /// Delegated events are excluded from the parent's model-visible history:
+    /// a wrapped tool call must never surface as a tool message in the parent
+    /// conversation, or the parent model would see a subagent's work as its own.
+    /// Only the top-level `delegate`/`task` tool result enters history.
+    #[test]
+    fn subagent_events_project_nothing_into_parent_history() {
+        let mut projector = HistoryProjector::new();
+        let parent_call = CallId::new();
+        let child_call = CallId::new();
+        let wrapped = |inner: StreamEvent| StreamEvent::SubagentEvent {
+            parent_call_id: parent_call,
+            event: Box::new(inner),
+        };
+
+        for event in [
+            wrapped(StreamEvent::LlmChunk {
+                delta: "child thinking".to_string(),
+            }),
+            wrapped(StreamEvent::LlmMessage {
+                full: "child answer".to_string(),
+                usage: Usage::default(),
+                tool_calls: Vec::new(),
+                assistant_turn: None,
+                aborted: false,
+            }),
+            wrapped(StreamEvent::ToolCallStarted {
+                call_id: child_call,
+                tool_use_id: None,
+                name: "fs_read".to_string(),
+                args: serde_json::json!({"path": "a.rs"}),
+            }),
+            wrapped(StreamEvent::ToolCallCompleted {
+                call_id: child_call,
+                result: ok_result(child_call),
+            }),
+        ] {
+            assert!(
+                projector.project(&event).is_empty(),
+                "wrapped event must not project model-visible history"
+            );
+        }
+    }
 }
