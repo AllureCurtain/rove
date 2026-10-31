@@ -1362,7 +1362,11 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 
 .product-app-frame[data-ui-version="v2"] .conversation-minimap__marker > span {
   display: block;
-  width: 11px;
+  /* Issue #32: the dash scales horizontally only — magnification reads as
+     width so a hover pass never shifts the stack's layout. `--minimap-magnify`
+     is written imperatively on mousemove; the resting width is the base 11px
+     scaled by the falloff. */
+  width: calc(11px * var(--minimap-magnify, 1));
   height: 2px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--v2-ink-3) 40%, transparent);
@@ -1377,8 +1381,41 @@ html[data-theme="dark"] .product-app-frame[data-ui-version="v2"] {
 
 .product-app-frame[data-ui-version="v2"] .conversation-minimap__marker:hover > span,
 .product-app-frame[data-ui-version="v2"] .conversation-minimap__marker:focus-visible > span {
-  width: 16px;
   background: var(--v2-ink);
+}
+
+/* The nearest dash's preview popover (issue #32): floats beside the rail,
+   clamped to the track's height so it never leaves the lane. */
+.product-app-frame[data-ui-version="v2"] .conversation-minimap__popover {
+  position: absolute;
+  /* Beside the rail, on the conversation side. */
+  right: calc(100% + 8px);
+  width: 220px;
+  max-height: 132px;
+  overflow: hidden;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-md, 0 8px 24px rgb(var(--v2-elev-ch, 22 35 43) / 0.16));
+  padding: 8px 10px;
+  pointer-events: none;
+  z-index: var(--z-popover);
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-minimap__popover-role {
+  margin-bottom: 4px;
+  color: var(--v2-ink-3);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.product-app-frame[data-ui-version="v2"] .conversation-minimap__popover-text {
+  color: var(--v2-ink-2);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
 }
 
 .product-app-frame[data-ui-version="v2"] .conversation-minimap__marker:focus-visible {
@@ -4532,6 +4569,75 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
   font-size: 12.5px;
 }
 
+/* Issue #32: the first-run checklist sits between the hero and the composer —
+   the same quiet card language as the recent-sessions list, done rows dimmed
+   to metadata weight. */
+.product-app-frame[data-ui-version="v2"] .home-onboarding {
+  width: min(560px, 100%);
+  margin: 0 0 14px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface);
+  padding: 12px 14px;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-onboarding__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-onboarding__head h2 {
+  margin: 0;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-onboarding__steps {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-onboarding__steps li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-onboarding__mark {
+  display: inline-grid;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  border: 1px solid var(--v2-border-strong);
+  border-radius: 999px;
+  color: var(--v2-success);
+}
+
+.product-app-frame[data-ui-version="v2"] .home-onboarding__steps li[data-done="true"] .home-onboarding__mark {
+  border-color: var(--v2-success);
+  background: var(--v2-success-soft);
+}
+
+.product-app-frame[data-ui-version="v2"] .home-onboarding__steps li[data-done="true"] .home-onboarding__label {
+  color: var(--v2-ink-3);
+  text-decoration: line-through;
+}
+
+.product-app-frame[data-ui-version="v2"] .home-onboarding__label {
+  flex: 1;
+  color: var(--v2-ink-2);
+}
+
 .product-app-frame[data-ui-version="v2"] .home-surface__recents {
   width: min(560px, 100%);
 }
@@ -6068,6 +6174,58 @@ body.is-resizing-column .product-app-frame[data-ui-version="v2"] .product-sideba
 .product-app-frame[data-ui-version="v2"] .context-usage[data-tone="danger"] .context-usage__value {
   stroke: var(--v2-danger);
   color: var(--v2-danger);
+}
+
+/* Issue #32: the click popover carries the per-turn breakdown the ring only
+   summarizes — input/output/cache rows and the window fill, plus the
+   used/remaining toggle the single click used to be. */
+.product-app-frame[data-ui-version="v2"] .context-usage-root {
+  position: relative;
+  display: inline-flex;
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage__popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  z-index: var(--z-popover);
+  min-width: 200px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface-raised);
+  box-shadow: var(--v2-shadow-md, 0 8px 24px rgb(var(--v2-elev-ch, 22 35 43) / 0.16));
+  padding: 10px 12px;
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage__facts {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage__facts > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage__facts dt {
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage__facts dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--v2-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.product-app-frame[data-ui-version="v2"] .context-usage__mode {
+  margin-top: 8px;
+  width: 100%;
 }
 
 /* ─── Composer trigger menu (W10) ─── */

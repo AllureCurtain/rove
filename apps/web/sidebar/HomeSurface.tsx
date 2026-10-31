@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { ChevronDownIcon } from "@radix-ui/react-icons";
+import { CheckIcon, ChevronDownIcon } from "@radix-ui/react-icons";
 
 import { useCopy } from "../copy/CopyProvider";
 import { formatUtcTimestamp } from "../lib/format-timestamp";
@@ -31,6 +31,7 @@ export function HomeSurface({
   workspaceName,
   composer,
   sendBlocked,
+  onboarding,
   onSelectWorkspace,
   onSelectSession,
   onOpenWorkspace,
@@ -52,6 +53,15 @@ export function HomeSurface({
     reason: string;
     action: "workspace" | "providers";
     alerted: boolean;
+  } | null;
+  /**
+   * Issue #32: first-run progress facts, so the empty home can lead with what
+   * is left to do. Absent hides the checklist entirely.
+   */
+  onboarding?: {
+    hasProvider: boolean;
+    hasWorkspace: boolean;
+    hasSession: boolean;
   } | null;
   onSelectWorkspace: (workspaceId: string) => void;
   onSelectSession: (workspaceId: string, sessionId: string) => void;
@@ -81,6 +91,13 @@ export function HomeSurface({
           />
         </p>
       </header>
+      {onboarding ? (
+        <OnboardingChecklist
+          facts={onboarding}
+          onOpenWorkspace={() => setDialogOpen(true)}
+          onOpenProviders={onOpenProviders}
+        />
+      ) : null}
       {composer}
       {sendBlocked ? (
         <div
@@ -304,5 +321,94 @@ function HomeWorkspaceSwitcher({
         </span>
       ) : null}
     </span>
+  );
+}
+
+/**
+ * First-run checklist on the empty home (issue #32): the three facts standing
+ * between a fresh install and its first turn — a provider, a workspace, a
+ * session — each with the one action that resolves it. Done rows dim; a row
+ * the product cannot drive (a session only exists once a send lands) points at
+ * the composer instead of a dead button. Hidden once everything is in place,
+ * and dismissed per session on its own control.
+ */
+function OnboardingChecklist({
+  facts,
+  onOpenWorkspace,
+  onOpenProviders,
+}: {
+  facts: { hasProvider: boolean; hasWorkspace: boolean; hasSession: boolean };
+  onOpenWorkspace: () => void;
+  onOpenProviders: () => void;
+}) {
+  const { t } = useCopy();
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed || (facts.hasProvider && facts.hasWorkspace && facts.hasSession)) {
+    return null;
+  }
+  const steps: {
+    id: string;
+    done: boolean;
+    label: string;
+    action?: { label: string; run: () => void };
+  }[] = [
+    {
+      id: "provider",
+      done: facts.hasProvider,
+      label: t("home.onboardProvider"),
+      action: facts.hasProvider
+        ? undefined
+        : { label: t("home.configureModel"), run: onOpenProviders },
+    },
+    {
+      id: "workspace",
+      done: facts.hasWorkspace,
+      label: t("home.onboardWorkspace"),
+      action: facts.hasWorkspace
+        ? undefined
+        : { label: t("home.openWorkspace"), run: onOpenWorkspace },
+    },
+    {
+      id: "prompt",
+      done: facts.hasSession,
+      label: t("home.onboardPrompt"),
+      // A session only exists after a send; the composer below is the action.
+      action: undefined,
+    },
+  ];
+  return (
+    <section className="home-onboarding" aria-label={t("home.onboardingTitle")}>
+      <div className="home-onboarding__head">
+        <h2>{t("home.onboardingTitle")}</h2>
+        <button
+          type="button"
+          className="ghost icon-button"
+          aria-label={t("common.dismiss")}
+          title={t("common.dismiss")}
+          onClick={() => setDismissed(true)}
+        >
+          ×
+        </button>
+      </div>
+      <ol className="home-onboarding__steps">
+        {steps.map((step) => (
+          <li key={step.id} data-done={step.done}>
+            <span className="home-onboarding__mark" aria-hidden="true">
+              {step.done ? <CheckIcon /> : null}
+            </span>
+            <span className="home-onboarding__label">{step.label}</span>
+            {step.action ? (
+              <button
+                type="button"
+                className="secondary"
+                onClick={step.action.run}
+              >
+                {step.action.label}
+              </button>
+            ) : null}
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }

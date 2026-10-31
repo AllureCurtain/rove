@@ -2181,6 +2181,11 @@ function ServerProductApp({ draftStore }: {
                   />
                 }
                 sendBlocked={homeSendBlock}
+                onboarding={{
+                  hasProvider: !homeModelBlocked,
+                  hasWorkspace: displayWorkspace != null,
+                  hasSession: homeRecentSessions.length > 0,
+                }}
                 onSelectWorkspace={routing.navigateWorkspace}
                 onSelectSession={routing.navigateSession}
                 onOpenWorkspace={(path, kind) =>
