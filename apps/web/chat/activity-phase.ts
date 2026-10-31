@@ -13,6 +13,17 @@ export type ActivityPhase =
   | { kind: "idle" }
   | { kind: "sending" }
   | { kind: "waiting-model" }
+  | {
+      kind: "waiting-for-subagents";
+      /** Distinct parent `task` calls whose children are being awaited. */
+      count: number;
+      /**
+       * Parent call ids already counted in this wait, kept on the phase so a
+       * steady `subagent_event` stream under one delegation does not inflate
+       * the number. Call ids are bounded by the run's delegation count.
+       */
+      callIds: string[];
+    }
   | { kind: "compacting"; degraded: boolean }
   | { kind: "tool"; name: string }
   | { kind: "planning" }
@@ -28,6 +39,7 @@ export type ActivityEvent =
   | { type: "model_status"; status: string }
   | { type: "prompt_compacted"; degraded: boolean }
   | { type: "tool_call_started"; name: string }
+  | { type: "subagent_event"; parentCallId: string }
   | { type: "plan_step_started" }
   | { type: "finalization_started" }
   | { type: "execution_degraded"; summary: string };
@@ -60,6 +72,27 @@ export function reduceActivityPhase(phase: ActivityPhase, event: ActivityEvent):
       return { kind: "compacting", degraded: event.degraded };
     case "tool_call_started":
       return { kind: "tool", name: event.name };
+    case "subagent_event": {
+      // A wrapped child event means a `task` call is mid-delegation. The count
+      // is how many distinct parent calls this phase has seen — each one a
+      // separate child the parent is waiting on. Events under a call id that
+      // is already counted keep the phase and its count unchanged.
+      if (phase.kind === "waiting-for-subagents") {
+        if (phase.callIds.includes(event.parentCallId)) {
+          return phase;
+        }
+        return {
+          kind: "waiting-for-subagents",
+          count: phase.count + 1,
+          callIds: [...phase.callIds, event.parentCallId],
+        };
+      }
+      return {
+        kind: "waiting-for-subagents",
+        count: 1,
+        callIds: [event.parentCallId],
+      };
+    }
     case "plan_step_started":
       return { kind: "planning" };
     case "finalization_started":
@@ -103,6 +136,11 @@ export function activityEventForStreamEvent(event: StreamEvent): ActivityEvent |
       };
     case "tool_call_started":
       return { type: "tool_call_started", name: event.name };
+    case "subagent_event":
+      // The child kernel emits model and tool events the phase never models
+      // directly; the frame's own arrival is the signal that the parent is
+      // blocked on a delegation, which is the one phase fact it carries.
+      return { type: "subagent_event", parentCallId: event.parent_call_id };
     case "plan_step_started":
       return { type: "plan_step_started" };
     case "finalization_started":
@@ -119,6 +157,8 @@ export function activityPhaseKey(phase: ActivityPhase): string {
   switch (phase.kind) {
     case "tool":
       return `tool:${phase.name}`;
+    case "waiting-for-subagents":
+      return `waiting-for-subagents:${phase.count}`;
     case "compacting":
       return `compacting:${phase.degraded}`;
     case "degraded":
