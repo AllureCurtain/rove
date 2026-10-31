@@ -11,6 +11,7 @@ import {
   ExitFullScreenIcon,
   FileIcon,
   FileTextIcon,
+  GlobeIcon,
   MagnifyingGlassIcon,
   PlusIcon,
 } from "@radix-ui/react-icons";
@@ -39,6 +40,7 @@ import { InspectorEmpty } from "./InspectorEmpty";
 import { MessageEvidence } from "./MessageEvidence";
 import { SessionAuthorizationPanel } from "./SessionAuthorizationPanel";
 import { FilesPanel } from "./FilesPanel";
+import { PreviewPane } from "./PreviewPane";
 import { ReviewPanel } from "./ReviewPanel";
 import type {
   ProductReview,
@@ -55,6 +57,7 @@ import {
   defaultWorkPanelTabs,
   moveWorkPanelTab,
   openWorkPanelFileTab,
+  openWorkPanelPreviewTab,
   openWorkPanelTab,
   replaceWorkPanelTab,
   workPanelTabStep,
@@ -171,6 +174,14 @@ export function RunInspector({
     } else {
       setFallbackTabs((state) => openWorkPanelFileTab(state, path));
       setFallbackTarget({ kind: "file", path, line: line ?? 1 });
+    }
+  };
+  const openPreview = (path: string) => {
+    if (panel) {
+      panel.openPreview(path);
+    } else {
+      setFallbackTabs((state) => openWorkPanelPreviewTab(state, path));
+      setFallbackTarget({ kind: "preview", path });
     }
   };
 
@@ -503,12 +514,23 @@ export function RunInspector({
             workspaceRootPath={workspaceRootPath}
             path={tab.path}
             focusLine={tab.path === focusFilePath ? focusFileLine : null}
+            onOpenPreview={(entry) => openPreview(entry)}
           />
         ) : (
           <InspectorEmpty
             icon={<FileTextIcon />}
             title={t("inspector.fileUnavailable")}
             body={t("inspector.fileUnavailableBody")}
+          />
+        );
+      case "preview":
+        return workspaceId && tab.path ? (
+          <PreviewPane workspaceId={workspaceId} path={tab.path} />
+        ) : (
+          <InspectorEmpty
+            icon={<GlobeIcon />}
+            title={t("inspector.previewUnavailable")}
+            body={t("inspector.previewNoWorkspace")}
           />
         );
       case "changes":
@@ -930,6 +952,7 @@ export function RunInspector({
           <div
             key={tab.id}
             className="inspector-pane"
+            data-kind={tab.kind}
             role="tabpanel"
             id={`inspector-surface-${tab.id}`}
             aria-labelledby={`inspector-tab-${tab.id}`}
@@ -971,6 +994,8 @@ export function workPanelTabLabel(
       return t("inspector.tabFiles");
     case "file":
       return tab.path?.split("/").filter(Boolean).pop() ?? t("inspector.tabFile");
+    case "preview":
+      return tab.path?.split("/").filter(Boolean).pop() ?? t("inspector.tabPreview");
     case "changes":
       return t("inspector.tabChanges");
     case "review":
@@ -997,6 +1022,8 @@ function workPanelTabIcon(kind: WorkPanelTabKind): ReactNode {
       return <FileIcon aria-hidden="true" />;
     case "file":
       return <FileTextIcon aria-hidden="true" />;
+    case "preview":
+      return <GlobeIcon aria-hidden="true" />;
     case "changes":
       return <CommitIcon aria-hidden="true" />;
     case "review":

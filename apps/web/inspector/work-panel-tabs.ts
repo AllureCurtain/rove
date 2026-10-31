@@ -18,6 +18,12 @@ export const WORK_PANEL_TAB_KINDS = [
   "files",
   /** One file's viewer. `path` carries the workspace-relative path. */
   "file",
+  /**
+   * Embedded workspace HTML preview (issue #28): an iframe hosting the
+   * isolated preview origin the API issues for one workspace entry. `path`
+   * carries the workspace-relative entry path it frames.
+   */
+  "preview",
   /** Aggregated diff — the evidence surface and the default tab. */
   "changes",
   /** Code-review findings for the session. */
@@ -32,7 +38,7 @@ export type WorkPanelTab = {
   /** Stable identity: the kind for singleton views, `file:<path>` for files. */
   id: string;
   kind: WorkPanelTabKind;
-  /** File tabs only: the workspace-relative path this tab views. */
+  /** File and preview tabs only: the workspace-relative path this tab views. */
   path?: string;
 };
 
@@ -53,10 +59,14 @@ export const WORK_PANEL_LAUNCHER_KINDS = [
 
 /**
  * A tab's id is its identity: singleton kinds are unique by kind, while a file
- * tab is unique by the path it views, so reopening the same file reuses its tab.
+ * or preview tab is unique by the path it views, so reopening the same file
+ * reuses its tab.
  */
 export function workPanelTabId(kind: WorkPanelTabKind, path?: string): string {
-  return kind === "file" && path ? `file:${path}` : kind;
+  if ((kind === "file" || kind === "preview") && path) {
+    return `${kind}:${path}`;
+  }
+  return kind;
 }
 
 /**
@@ -84,10 +94,11 @@ export function sanitizeWorkPanelTabs(state: WorkPanelTabsState): WorkPanelTabsS
     if (!tab || !isWorkPanelTabKind(tab.kind)) {
       continue;
     }
-    const path = tab.kind === "file" && typeof tab.path === "string" && tab.path !== ""
+    const path = (tab.kind === "file" || tab.kind === "preview") &&
+      typeof tab.path === "string" && tab.path !== ""
       ? tab.path
       : undefined;
-    if (tab.kind === "file" && !path) {
+    if ((tab.kind === "file" || tab.kind === "preview") && !path) {
       continue;
     }
     const id = workPanelTabId(tab.kind, path);
@@ -123,13 +134,33 @@ export function openWorkPanelFileTab(
   state: WorkPanelTabsState,
   path: string,
 ): WorkPanelTabsState {
-  const id = workPanelTabId("file", path);
+  return openWorkPanelPathTab(state, "file", path);
+}
+
+/**
+ * Opens a workspace HTML preview tab, reusing it when the entry is already
+ * open so the strip never stacks duplicates for one path (issue #28).
+ */
+export function openWorkPanelPreviewTab(
+  state: WorkPanelTabsState,
+  path: string,
+): WorkPanelTabsState {
+  return openWorkPanelPathTab(state, "preview", path);
+}
+
+/** Shared opener for the path-keyed kinds (`file`, `preview`). */
+function openWorkPanelPathTab(
+  state: WorkPanelTabsState,
+  kind: "file" | "preview",
+  path: string,
+): WorkPanelTabsState {
+  const id = workPanelTabId(kind, path);
   const existing = state.tabs.find((tab) => tab.id === id);
   if (existing) {
     return { ...state, activeId: id };
   }
   return {
-    tabs: [...state.tabs, { id, kind: "file", path }],
+    tabs: [...state.tabs, { id, kind, path }],
     activeId: id,
   };
 }
