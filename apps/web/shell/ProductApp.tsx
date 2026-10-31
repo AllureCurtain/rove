@@ -2059,6 +2059,12 @@ function ServerProductApp({ draftStore }: {
                           forkAvailable={visible && paneSettled && forkAvailable}
                           locateRequest={visible ? locateRequest : null}
                           loadAttachment={handleLoadAttachment}
+                          onOpenFile={(reference) =>
+                            // §8 + issue #27: a tool-card path opens as that
+                            // file's own tab in the work panel, at the line the
+                            // reference named.
+                            panel.openFile(reference.path, reference.line ?? null)
+                          }
                         />
                       </div>
                     );

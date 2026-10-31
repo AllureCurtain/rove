@@ -5609,6 +5609,49 @@ body.is-resizing-column .product-app-frame[data-ui-version="v2"] .product-sideba
   font-size: 12px;
 }
 
+/* §5.4 + issue #27: a path or URL the card recognized is a quiet affordance —
+   same mono ink as the code around it, underlined on hover, and the accent
+   only while the pointer asks for it. */
+.product-app-frame[data-ui-version="v2"] .tool-card__ref,
+.product-app-frame[data-ui-version="v2"] .tool-card__url {
+  display: inline;
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__ref:hover,
+.product-app-frame[data-ui-version="v2"] .tool-card__url:hover,
+.product-app-frame[data-ui-version="v2"] .tool-card__ref:focus-visible,
+.product-app-frame[data-ui-version="v2"] .tool-card__url:focus-visible {
+  color: var(--v2-accent);
+  text-decoration-style: solid;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__args {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__summary--link {
+  color: var(--v2-accent);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .tool-card__summary--link:hover {
+  text-decoration-style: solid;
+}
+
 .product-app-frame[data-ui-version="v2"] .tool-card__truncated {
   margin: 4px 0 0;
   color: var(--v2-ink-3);
