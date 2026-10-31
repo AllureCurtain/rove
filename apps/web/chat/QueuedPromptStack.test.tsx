@@ -85,6 +85,56 @@ describe("QueuedPromptStack", () => {
     expect(unwired).not.toContain("重试这条消息");
   });
 
+  it("offers one session-level recovery for the stranded successors", () => {
+    const stranded = (id: string, seq: number): ProductMessage => ({
+      id,
+      product_session_id: "session-1",
+      content: `stranded-${id}`,
+      requested_delivery: "successor",
+      status: "needs_attention",
+      seq,
+      created_at: "2026-09-26T00:00:00Z",
+    });
+
+    // Two stranded successors: one recovery row at the head of the queue, and
+    // the per-row retries stay available next to it.
+    const html = renderStack(
+      <QueuedPromptStack
+        messages={[stranded("a", 1), stranded("b", 2)]}
+        onConfirmStranded={vi.fn()}
+        onRecoverAllStranded={vi.fn()}
+      />,
+    );
+    expect(html.match(/恢复会话/gu)).toHaveLength(1);
+    expect(html.match(/重试这条消息/gu)).toHaveLength(2);
+    expect(html).toContain("queued-message--recovery");
+    expect(html.indexOf("恢复会话")).toBeLessThan(html.indexOf("stranded-a"));
+    // Nothing is reported before the pass has an answer.
+    expect(html).not.toContain('data-tone="ok"');
+
+    // A stack without stranded rows shows no recovery affordance.
+    const queued: ProductMessage = {
+      ...stranded("c", 3),
+      status: "queued",
+    };
+    const calm = renderStack(
+      <QueuedPromptStack
+        messages={[queued]}
+        onRecoverAllStranded={vi.fn()}
+      />,
+    );
+    expect(calm).not.toContain("恢复会话");
+
+    // And a shell without the batch route shows only the per-row retry.
+    const unwired = renderStack(
+      <QueuedPromptStack
+        messages={[stranded("a", 1), stranded("b", 2)]}
+        onConfirmStranded={vi.fn()}
+      />,
+    );
+    expect(unwired).not.toContain("恢复会话");
+  });
+
   it("orders the successor queue by queue_order and offers both delivery intents", () => {
     const actions = vi.fn();
     const messages: ProductMessage[] = [

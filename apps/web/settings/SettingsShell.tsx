@@ -40,6 +40,7 @@ import { KeyboardSettings } from "./KeyboardSettings";
 import { MemorySettings } from "./MemorySettings";
 import { MCPSettings } from "./MCPSettings";
 import { ProjectTrustSettings } from "./ProjectTrustSettings";
+import { ProviderTrustPrompt } from "./ProviderTrustPrompt";
 import { RuntimeSettings } from "./RuntimeSettings";
 import { useToast } from "../shell/toast/ToastProvider";
 import {
@@ -213,6 +214,12 @@ export function SettingsShell(props: SettingsShellProps) {
             onDeleteProfile={onDeleteProfile}
             onRefreshProviderProfiles={onRefreshProviderProfiles}
             onSelectionChange={onSelectionChange}
+            settingsClient={settingsClient}
+            activeWorkspaceId={activeWorkspaceId}
+            activeWorkspaceName={
+              workspaces.find((workspace) => workspace.id === activeWorkspaceId)
+                ?.displayName
+            }
           />
         ) : null}
         {section === "tools" ? (
@@ -537,6 +544,10 @@ interface ProviderSettingsProps {
   onDeleteProfile: (profileId: string) => Promise<void>;
   onRefreshProviderProfiles: () => Promise<ProviderProfileRecord[]>;
   onSelectionChange: (selection: ActiveProviderSelection) => Promise<boolean>;
+  /** Project Trust client and the workspace a turn would run in. */
+  settingsClient: SettingsPlatformClient;
+  activeWorkspaceId: string | null;
+  activeWorkspaceName?: string;
 }
 
 function ProvidersSettings(props: ProviderSettingsProps) {
@@ -545,6 +556,21 @@ function ProvidersSettings(props: ProviderSettingsProps) {
   ) : (
     <BrowserProvidersSettings {...props} />
   );
+}
+
+/**
+ * Whether the current selection would hit the provider-credentials trust
+ * gate: a saved profile is selected and it is not the local demo provider.
+ */
+function selectedProfileIsRemote(
+  profiles: readonly ProviderProfileRecord[],
+  selection: ActiveProviderSelection,
+): boolean {
+  if (selection.mode !== "profile") {
+    return false;
+  }
+  const selected = profiles.find((profile) => profile.id === selection.profileId);
+  return selected !== undefined && selected.providerType !== "fake";
 }
 
 function isLoopbackBrowserOrigin(): boolean {
@@ -568,6 +594,9 @@ function BrowserProvidersSettings({
   onDeleteProfile,
   onRefreshProviderProfiles,
   onSelectionChange,
+  settingsClient,
+  activeWorkspaceId,
+  activeWorkspaceName,
 }: ProviderSettingsProps) {
   const { t } = useCopy();
   const toast = useToast();
@@ -889,6 +918,16 @@ function BrowserProvidersSettings({
         </p>
       </div>
 
+      {/* The missing-grant prompt sits next to the selection it blocks: the
+          turn fails on `project_trust_required` otherwise, and this is the
+          only surface that says so before the queue does. */}
+      <ProviderTrustPrompt
+        client={settingsClient}
+        workspaceId={activeWorkspaceId}
+        providerIsRemote={selectedProfileIsRemote(profiles, selection)}
+        workspaceName={activeWorkspaceName}
+      />
+
       <form className="settings-card" onSubmit={handleSave}>
         <div className="settings-card__heading">
           <h2>{editingProfileId ? t("settings.providers.editProfile") : t("settings.providers.create")}</h2>
@@ -1071,6 +1110,9 @@ function DesktopProvidersSettings({
   onDeleteProfile,
   onRefreshProviderProfiles,
   onSelectionChange,
+  settingsClient,
+  activeWorkspaceId,
+  activeWorkspaceName,
 }: ProviderSettingsProps) {
   const { t } = useCopy();
   const client = useMemo(() => createProductApiClient(), []);
@@ -1352,6 +1394,13 @@ function DesktopProvidersSettings({
             : t("desktopProviders.defaultSelection")}
         </p>
       </div>
+
+      <ProviderTrustPrompt
+        client={settingsClient}
+        workspaceId={activeWorkspaceId}
+        providerIsRemote={selectedProfileIsRemote(profiles, selection)}
+        workspaceName={activeWorkspaceName}
+      />
 
       <form className="settings-card" onSubmit={(event) => void handleSecureSave(event)}>
         <div className="settings-card__heading">

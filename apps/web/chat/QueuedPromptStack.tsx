@@ -17,11 +17,17 @@ import type {
 import { AttachmentRow } from "./Transcript";
 import { actionableQueueOrder, successorQueue } from "./queue-order";
 import {
+  IDLE_FOLLOWUP_BATCH_RECOVERY,
   IDLE_FOLLOWUP_RECOVERY,
+  followupBatchActionLabel,
+  followupBatchNotice,
   followupRecoveryActionLabel,
   followupRecoveryNotice,
   isStrandedSuccessor,
+  reduceFollowupBatchRecovery,
   reduceFollowupRecovery,
+  strandedFollowupIds,
+  type FollowupBatchRecoveryResult,
   type FollowupConfirmationResult,
 } from "./followup-recovery";
 
@@ -40,6 +46,7 @@ export function QueuedPromptStack({
   onPromote,
   onRevoke,
   onConfirmStranded,
+  onRecoverAllStranded,
   onEdit,
   onMove,
   loadAttachment,
@@ -56,6 +63,13 @@ export function QueuedPromptStack({
   onConfirmStranded?: (
     messageId: string,
   ) => Promise<FollowupConfirmationResult>;
+  /**
+   * F.5 session-level recovery: confirm every stranded successor in one pass
+   * so the queue drains again.
+   */
+  onRecoverAllStranded?: (
+    controlIds: readonly string[],
+  ) => Promise<FollowupBatchRecoveryResult>;
   /** Load a queued message back into the composer for replacement. */
   onEdit?: (messageId: string, content: string) => void;
   /** Adjacent swap within the successor queue. */
@@ -77,12 +91,22 @@ export function QueuedPromptStack({
     () => successorQueue(messages).map((message) => message.id),
     [messages],
   );
+  // F.5: the stranded successors the one-click recovery would confirm, in the
+  // same order the server will start them once they are pending again.
+  const strandedIds = useMemo(() => strandedFollowupIds(messages), [messages]);
   if (actionableMessages.length === 0) {
     return null;
   }
   const nextUpId = movableQueueIds[0] ?? null;
   return (
     <div className="composer-queue" role="list" aria-label={t("chat.queueTitle")}>
+      {onRecoverAllStranded && strandedIds.length > 0 ? (
+        <RecoverStrandedRow
+          busy={busy !== null}
+          strandedIds={strandedIds}
+          onRecoverAllStranded={onRecoverAllStranded}
+        />
+      ) : null}
       {actionableMessages.map((message) => {
         const queueIndex = movableQueueIds.indexOf(message.id);
         return (
@@ -302,6 +326,82 @@ function QueuedPromptRow({
           role={recoveryNotice.tone === "error" ? "alert" : "status"}
         >
           {recoveryNotice.text}
+        </p>
+      ) : null}
+    </article>
+  );
+}
+
+/**
+ * The session-level recovery affordance (F.5).
+ *
+ * A stranded successor leaves the session `needs_attention`, and each
+ * abandoned row needs its own confirm — so a stack of stranded rows used to
+ * mean one click per row. This one row sits at the head of the queue and
+ * confirms the whole set in order; the notice it reports is the pass's own,
+ * not one row's (`chat/followup-recovery.ts`).
+ */
+function RecoverStrandedRow({
+  busy,
+  strandedIds,
+  onRecoverAllStranded,
+}: {
+  busy: boolean;
+  strandedIds: readonly string[];
+  onRecoverAllStranded: (
+    controlIds: readonly string[],
+  ) => Promise<FollowupBatchRecoveryResult>;
+}) {
+  const { t } = useCopy();
+  const [recovery, dispatchRecovery] = useReducer(
+    reduceFollowupBatchRecovery,
+    IDLE_FOLLOWUP_BATCH_RECOVERY,
+  );
+  const notice = followupBatchNotice(recovery, t);
+  const recoveryBusy = recovery.status === "running";
+
+  async function recoverAll() {
+    if (recovery.status === "running") {
+      return;
+    }
+    dispatchRecovery({ type: "start", total: strandedIds.length });
+    const result = await onRecoverAllStranded(strandedIds);
+    dispatchRecovery({
+      type: "settled",
+      confirmed: result.confirmed,
+      remaining: result.remaining,
+      reason: result.reason,
+      blockedByActiveTurn: result.blockedByActiveTurn,
+    });
+  }
+
+  return (
+    <article className="queued-message queued-message--recovery" role="listitem">
+      <div className="queued-message__row">
+        <p className="queued-message__text">
+          {t("chat.recoverAllDesc", { count: strandedIds.length })}
+        </p>
+        <div className="queued-message__actions">
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy || recoveryBusy}
+            aria-busy={recoveryBusy || undefined}
+            title={t("chat.recoverAllHint")}
+            onClick={() => void recoverAll()}
+          >
+            <RotateCounterClockwiseIcon />
+            {followupBatchActionLabel(recovery, t)}
+          </button>
+        </div>
+      </div>
+      {notice ? (
+        <p
+          className="queued-message__recovery"
+          data-tone={notice.tone}
+          role={notice.tone === "error" ? "alert" : "status"}
+        >
+          {notice.text}
         </p>
       ) : null}
     </article>

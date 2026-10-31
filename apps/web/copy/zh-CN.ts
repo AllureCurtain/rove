@@ -156,6 +156,8 @@ const zhCN = {
   chat: {
     responding: "正在回复…",
     aborted: "(已中止)",
+    thinking: "思考过程",
+    thinkingStreaming: "正在思考…",
     assistant: "助手",
     you: "你",
     send: "发送",
@@ -280,6 +282,20 @@ const zhCN = {
     retryStrandedAccepted: "重试已被接受——服务器已把这条消息重新排队。",
     retryStrandedStarting: "重试已被接受——服务器正在启动这条消息。",
     retryStrandedFailed: "重试失败：{{reason}}",
+    recoverAll: "恢复会话",
+    recoverAllHint:
+      "一次性确认所有滞留的排队消息：服务器会按顺序重新排队并逐条启动。",
+    recoverAllDesc: "{{count}} 条排队消息没能启动，会话在等你处理。",
+    recoverAllBusy: "正在恢复…",
+    recoverAllDone: "会话已恢复——服务器已重新排队 {{count}} 条消息。",
+    recoverAllDoneOne: "会话已恢复——服务器已重新排队这条消息。",
+    recoverAllPartial:
+      "已恢复 {{confirmed}} 条；剩余 {{remaining}} 条暂时没确认：{{reason}}。等本轮结束后再恢复一次。",
+    recoverAllStopped:
+      "已恢复 {{confirmed}} 条；剩余 {{remaining}} 条还没确认，请稍后再试一次。",
+    recoverAllActive:
+      "已恢复 {{confirmed}} 条；剩余 {{remaining}} 条要等正在运行的这一轮结束后才能确认，到时再恢复一次。",
+    recoverAllFailed: "恢复失败：{{reason}}",
     compactAction: "手动压缩上下文",
     compactBusy: "正在压缩上下文…",
     compactIdleOnly: "会话空闲时才能手动压缩，请等本轮结束。",
@@ -373,8 +389,8 @@ const zhCN = {
     maximize: "最大化面板",
     unmaximize: "还原面板",
     approvalsNoneBody: "运行请求的审批将显示在这里。",
-    subagentsNone: "暂无子代理运行",
-    subagentsNoneBody: "当运行分派子代理时，其记录将显示在这里。",
+    subagentsNone: "子代理即将上线",
+    subagentsNoneBody: "暂不支持把运行分派给子代理，功能上线后其记录会显示在这里。",
     filesBreadcrumbs: "文件路径",
     filesRoot: "工作区",
     filesEmpty: "这里没有文件",
@@ -655,6 +671,14 @@ const zhCN = {
       catalogProfiles: "共享目录配置",
       removeCatalogConfirm: "从共享目录中移除该配置？",
       listModelsAction: "列出模型",
+      trustTitle: "需要工作区授权",
+      trustRequired:
+        "工作区 {{workspace}} 尚未授予「提供商凭据」权限；授权之后会话才能使用这个提供商，否则发送的消息会启动失败。",
+      trustGrant: "授权",
+      trustGrantBusy: "正在授权…",
+      trustGranted: "已授权 {{workspace}} 使用提供商凭据，现在可以正常发送消息了。",
+      trustGrantFailed: "授权未完成：{{reason}}",
+      trustDismiss: "暂时忽略",
     },
     runtime: {
       connection: "连接",
