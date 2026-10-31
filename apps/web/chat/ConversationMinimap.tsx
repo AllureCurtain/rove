@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, type KeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 
 import { useCopy } from "../copy/CopyProvider";
 import {
@@ -12,6 +19,13 @@ import {
 /** Marker hit area height; paired with MINIMAP_MARKER_GAP for the pitch clamp. */
 const MINIMAP_MARKER_HEIGHT = 14;
 const MINIMAP_MARKER_GAP = 3;
+
+/* Dock magnification (issue #32): the cosine falloff's reach and peak boost,
+   and how close the cursor must sit to a dash before the preview picks it. */
+const MINIMAP_MAGNIFY_RADIUS = 46;
+const MINIMAP_MAGNIFY_BOOST = 1.3;
+const MINIMAP_POPOVER_SNAP = 24;
+const MINIMAP_POPOVER_HEIGHT = 132;
 
 /**
  * The rail that lets a reader move between turns of a long conversation.
@@ -37,6 +51,13 @@ export function ConversationMinimap({
 }) {
   const { t } = useCopy();
   const railRef = useRef<HTMLElement | null>(null);
+  const markerEls = useRef(new Map<string, HTMLButtonElement>());
+  const magnifyCentersRef = useRef<{ id: string; center: number }[]>([]);
+  const moveRaf = useRef(0);
+  const [hovered, setHovered] = useState<{
+    marker: ConversationMinimapMarker;
+    top: number;
+  } | null>(null);
   const rendered = shouldRenderConversationMinimap({
     markerCount: markers.length,
     overflows,
@@ -88,9 +109,16 @@ export function ConversationMinimap({
         MINIMAP_MARKER_GAP,
       );
       const nodes = rail.querySelectorAll<HTMLElement>("[data-marker-index]");
+      const centers: { id: string; center: number }[] = [];
       nodes.forEach((node, index) => {
-        node.style.top = `${tops[index] ?? 0}px`;
+        const top = tops[index] ?? 0;
+        node.style.top = `${top}px`;
+        const id = markers[index]?.id;
+        if (id) {
+          centers.push({ id, center: top + MINIMAP_MARKER_HEIGHT / 2 });
+        }
       });
+      magnifyCentersRef.current = centers;
     };
 
     const positionViewport = () => {
@@ -122,6 +150,74 @@ export function ConversationMinimap({
       scroller.removeEventListener("scroll", positionViewport);
     };
   }, [markers, rendered]);
+
+  /*
+   * Dock magnification (issue #32): dashes scale horizontally only, so the
+   * hover pass never shifts the stack's layout. Centers come from the position
+   * pass above — reading offsetTop inside this loop while writing `--magnify`
+   * would force one layout per dash on every mousemove frame. The nearest dash
+   * inside the snap distance also owns the preview popover.
+   */
+  const applyMagnify = useCallback((cursorY: number | null) => {
+    const rail = railRef.current;
+    let nearest: { id: string; dist: number; center: number } | null = null;
+    for (const { id, center } of magnifyCentersRef.current) {
+      const button = markerEls.current.get(id);
+      if (!button) {
+        continue;
+      }
+      let scale = 1;
+      if (cursorY !== null) {
+        const dist = Math.abs(center - cursorY);
+        if (dist < MINIMAP_MAGNIFY_RADIUS) {
+          scale =
+            1 +
+            MINIMAP_MAGNIFY_BOOST *
+              Math.cos((dist / MINIMAP_MAGNIFY_RADIUS) * (Math.PI / 2));
+        }
+        if (dist <= MINIMAP_POPOVER_SNAP && (!nearest || dist < nearest.dist)) {
+          nearest = { id, dist, center };
+        }
+      }
+      button.style.setProperty("--minimap-magnify", scale.toFixed(3));
+    }
+    if (nearest && rail) {
+      const marker = markers.find((entry) => entry.id === nearest!.id);
+      if (marker) {
+        const top = Math.min(
+          Math.max(nearest.center - 36, 0),
+          Math.max(rail.clientHeight - MINIMAP_POPOVER_HEIGHT, 0),
+        );
+        setHovered((previous) =>
+          previous?.marker.id === marker.id && previous.top === top
+            ? previous
+            : { marker, top },
+        );
+        return;
+      }
+    }
+    setHovered(null);
+  }, [markers]);
+
+  const handleMouseMove = useCallback(
+    (event: ReactMouseEvent) => {
+      const rail = railRef.current;
+      if (!rail) {
+        return;
+      }
+      const y = event.clientY - rail.getBoundingClientRect().top;
+      cancelAnimationFrame(moveRaf.current);
+      moveRaf.current = requestAnimationFrame(() => applyMagnify(y));
+    },
+    [applyMagnify],
+  );
+
+  const handleMouseLeave = useCallback(() => {
+    cancelAnimationFrame(moveRaf.current);
+    applyMagnify(null);
+  }, [applyMagnify]);
+
+  useEffect(() => () => cancelAnimationFrame(moveRaf.current), []);
 
   const focusMarker = useCallback((index: number) => {
     const buttons = railRef.current?.querySelectorAll<HTMLButtonElement>(
@@ -167,6 +263,8 @@ export function ConversationMinimap({
       aria-label={t("chat.minimapLabel")}
       data-count={markers.length}
       onKeyDown={handleKeyDown}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
     >
       {/* The visible window of the transcript, decorative — the scroller itself
           already reports position to assistive tech. */}
@@ -174,6 +272,13 @@ export function ConversationMinimap({
       {markers.map((marker, index) => (
         <button
           key={marker.id}
+          ref={(node) => {
+            if (node) {
+              markerEls.current.set(marker.id, node);
+            } else {
+              markerEls.current.delete(marker.id);
+            }
+          }}
           type="button"
           className="conversation-minimap__marker"
           data-role={marker.role}
@@ -183,12 +288,33 @@ export function ConversationMinimap({
             total: markers.length,
             role: marker.role === "user" ? t("chat.you") : t("chat.assistant"),
           })}
-          title={marker.preview}
+          onFocus={(event) =>
+            // Focus gets the popover too — keyboard readers see what hover does.
+            setHovered({
+              marker,
+              top: Math.max(0, event.currentTarget.offsetTop - 36),
+            })
+          }
+          onBlur={() => setHovered(null)}
           onClick={() => onJumpTo(marker.id)}
         >
           <span aria-hidden="true" />
         </button>
       ))}
+      {hovered && hovered.marker.preview ? (
+        <div
+          className="conversation-minimap__popover"
+          role="tooltip"
+          style={{ top: `${hovered.top}px` }}
+        >
+          <div className="conversation-minimap__popover-role">
+            {hovered.marker.role === "user" ? t("chat.you") : t("chat.assistant")}
+          </div>
+          <div className="conversation-minimap__popover-text">
+            {hovered.marker.preview}
+          </div>
+        </div>
+      ) : null}
     </nav>
   );
 }

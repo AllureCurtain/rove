@@ -1036,6 +1036,32 @@ function ContextUsageRing({ usage }: { usage: ContextUsage }) {
       ? "remaining"
       : "used",
   );
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLSpanElement>(null);
+
+  // The popover closes on an outside pointer or Escape, like the other
+  // disclosure surfaces (issue #32); the trigger stays reachable underneath.
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    function outside(event: PointerEvent) {
+      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) {
+        setOpen(false);
+      }
+    }
+    function escape(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
 
   function toggleMode() {
     setMode((current) => {
@@ -1045,52 +1071,110 @@ function ContextUsageRing({ usage }: { usage: ContextUsage }) {
     });
   }
 
-  const used = new Intl.NumberFormat("en-US").format(usage.used);
+  const number = new Intl.NumberFormat("en-US");
+  const used = number.format(usage.used);
   const ariaLabel =
     usage.window === null
       ? t("chat.usageAriaNoWindow", { used })
       : t("chat.usageAriaUsed", {
           used,
-          total: new Intl.NumberFormat("en-US").format(usage.window),
+          total: number.format(usage.window),
         });
   const display =
     mode === "remaining" && usage.window !== null
       ? t("chat.usageModeRemaining", {
-          n: new Intl.NumberFormat("en-US").format(Math.max(0, usage.window - usage.used)),
+          n: number.format(Math.max(0, usage.window - usage.used)),
         })
       : t("chat.usageModeUsed", { n: used });
   const cacheTitle =
     usage.cacheRatio !== null
       ? ` ${t("chat.usageCache", { percent: Math.round(usage.cacheRatio * 100) })}`
       : "";
+  const percent =
+    usage.ratio === null ? null : Math.round(usage.ratio * 100);
 
   return (
-    <button
-      type="button"
-      className="context-usage"
-      data-tone={usage.tone}
-      data-window={usage.window !== null ? "known" : "unknown"}
-      onClick={toggleMode}
-      aria-label={ariaLabel}
-      title={`${ariaLabel}.${cacheTitle}`}
-    >
-      {usage.window !== null ? (
-        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-          <circle className="context-usage__track" cx="8" cy="8" r="6.5" fill="none" strokeWidth="2.5" />
-          <circle
-            className="context-usage__fill"
-            cx="8"
-            cy="8"
-            r="6.5"
-            fill="none"
-            strokeWidth="2.5"
-            strokeDasharray={`${Math.min(1, usage.ratio ?? 0) * 40.84} 40.84`}
-            transform="rotate(-90 8 8)"
-          />
-        </svg>
+    <span className="context-usage-root" ref={rootRef}>
+      <button
+        type="button"
+        className="context-usage"
+        data-tone={usage.tone}
+        data-window={usage.window !== null ? "known" : "unknown"}
+        onClick={() => setOpen((value) => !value)}
+        aria-label={ariaLabel}
+        aria-expanded={open}
+        aria-haspopup="true"
+        title={`${ariaLabel}.${cacheTitle}`}
+      >
+        {usage.window !== null ? (
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+            <circle className="context-usage__track" cx="8" cy="8" r="6.5" fill="none" strokeWidth="2.5" />
+            <circle
+              className="context-usage__fill"
+              cx="8"
+              cy="8"
+              r="6.5"
+              fill="none"
+              strokeWidth="2.5"
+              strokeDasharray={`${Math.min(1, usage.ratio ?? 0) * 40.84} 40.84`}
+              transform="rotate(-90 8 8)"
+            />
+          </svg>
+        ) : null}
+        <span className="context-usage__value">{display}</span>
+      </button>
+      {open ? (
+        <div className="context-usage__popover" role="dialog" aria-label={ariaLabel}>
+          <dl className="context-usage__facts">
+            <div>
+              <dt>{t("chat.usageInput")}</dt>
+              <dd>{number.format(usage.prompt)}</dd>
+            </div>
+            <div>
+              <dt>{t("chat.usageOutput")}</dt>
+              <dd>{number.format(usage.completion)}</dd>
+            </div>
+            <div>
+              <dt>{t("chat.usageCachedRow")}</dt>
+              <dd>
+                {usage.cached > 0
+                  ? `${number.format(usage.cached)}${
+                      usage.cacheRatio !== null
+                        ? ` (${Math.round(usage.cacheRatio * 100)}%)`
+                        : ""
+                    }`
+                  : "0"}
+              </dd>
+            </div>
+            {usage.window !== null ? (
+              <div>
+                <dt>{t("chat.usageWindow")}</dt>
+                <dd>
+                  {percent !== null
+                    ? t("chat.usageWindowFill", {
+                        used,
+                        total: number.format(usage.window),
+                        percent,
+                      })
+                    : number.format(usage.window)}
+                </dd>
+              </div>
+            ) : null}
+          </dl>
+          {usage.window !== null ? (
+            <button
+              type="button"
+              className="context-usage__mode secondary"
+              onClick={toggleMode}
+            >
+              {mode === "used"
+                ? t("chat.usageShowRemaining")
+                : t("chat.usageShowUsed")}
+            </button>
+          ) : null}
+        </div>
       ) : null}
-      <span className="context-usage__value">{display}</span>
-    </button>
+    </span>
   );
 }
 

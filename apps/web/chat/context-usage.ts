@@ -19,6 +19,10 @@ export interface ContextUsageInput {
 
 export interface ContextUsage {
   used: number;
+  /** Prompt (input) tokens this turn, for the popover's input row. */
+  prompt: number;
+  /** Completion (output) tokens this turn, for the popover's output row. */
+  completion: number;
   window: number | null;
   cached: number;
   /** Share of the window used, or null when the window is unknown. */
@@ -29,13 +33,17 @@ export interface ContextUsage {
 }
 
 export function contextUsage(input: ContextUsageInput): ContextUsage {
-  const used = Math.max(0, input.promptTokens) + Math.max(0, input.completionTokens);
+  const prompt = Math.max(0, input.promptTokens);
+  const completion = Math.max(0, input.completionTokens);
+  const used = prompt + completion;
   const cached = Math.max(0, input.cachedTokens ?? 0);
   const window = input.window && input.window > 0 ? input.window : null;
   const ratio = window === null ? null : Math.min(1, used / window);
-  const cacheDenominator = Math.max(0, input.promptTokens) + cached;
+  const cacheDenominator = prompt + cached;
   return {
     used,
+    prompt,
+    completion,
     window,
     cached,
     ratio,
