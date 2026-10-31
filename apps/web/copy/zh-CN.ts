@@ -245,6 +245,8 @@ const zhCN = {
     phaseCompacting: "正在压缩上下文…",
     phaseCompactingDegraded: "上下文压缩已降级，仍在继续…",
     phaseTool: "正在执行 {{name}}…",
+    phaseWaitingSubagent: "正在等待 {{count}} 个子代理…",
+    phaseWaitingSubagents: "正在等待 {{count}} 个子代理…",
     phasePlanning: "正在规划下一步…",
     phaseFinalizing: "正在整理结果…",
     phaseDegraded: "执行降级：{{summary}}",

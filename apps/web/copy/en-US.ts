@@ -250,6 +250,8 @@ const enUS: CopyDictionary = {
     phaseCompacting: "Compacting context…",
     phaseCompactingDegraded: "Context compaction degraded, continuing…",
     phaseTool: "Running {{name}}…",
+    phaseWaitingSubagent: "Waiting for {{count}} subagent…",
+    phaseWaitingSubagents: "Waiting for {{count}} subagents…",
     phasePlanning: "Planning the next step…",
     phaseFinalizing: "Finalizing…",
     phaseDegraded: "Execution degraded: {{summary}}",

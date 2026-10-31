@@ -74,12 +74,55 @@ export interface ToolCallView {
   rejectedArtifacts?: RejectedArtifactView[];
   /** Rich outcome when the tool produced an envelope. */
   outcome?: ToolResultOutcome;
+  /**
+   * Live children delegated under this call — set only on `task` rows. The
+   * reducer stamps the count of running/done subagents it has projected for
+   * `id`, so the topology card reads the marker off the row it already renders
+   * instead of re-deriving it from `state.subagents`. Absent means the call
+   * orchestrates nothing.
+   */
+  subagentCount?: number;
 }
 
 export interface RejectedArtifactView {
   blockOrdinal: number;
   reason: string;
   observedBytes: number;
+}
+
+/**
+ * One delegated child run, keyed by the parent `task` call that spawned it.
+ *
+ * The runtime wraps every child `StreamEvent` in `subagent_event` carrying the
+ * parent's `call_id`, so attribution is one id — there is no separate child
+ * session to join. The view mirrors the parent's own projection at child
+ * scope: `messages` holds the child's assistant text and reasoning exactly the
+ * way `state.messages` holds the parent's, and `tools` holds the child's own
+ * calls so the work-panel mini-transcript reads the same shapes the top-level
+ * transcript does.
+ *
+ * `status` is what the topology card draws. A child reports no lifecycle event
+ * of its own — `run_started`/`run_completed` belong to the parent run — so the
+ * reducer opens a child `running` on the first wrapped event and settles it
+ * from the parent `task` call's own terminal outcome: `tool_call_completed`
+ * means the child returned its answer, `tool_call_failed` means it errored or
+ * was stopped through the per-subagent cancel endpoint.
+ */
+export interface SubagentView {
+  /** The parent `task` tool call id; the attribution edge to the transcript row. */
+  parentCallId: string;
+  status: "running" | "done" | "error" | "cancelled";
+  /** Stream seq of the first wrapped event, for ordering the topology card. */
+  startedSeq?: number;
+  /** The child's projected assistant messages (chunks, thinking, finals). */
+  messages: ChatMessage[];
+  /** The child's own tool calls. */
+  tools: ToolCallView[];
+  /** Wrapped child events observed — the topology row's step count. */
+  eventCount: number;
+  /** Child model identity, if an inner event ever surfaces one. */
+  model?: string;
+  lastSignal?: string;
 }
 
 export interface TraceEntry {
@@ -166,6 +209,8 @@ export interface WorkbenchState {
   /** Terminal tool cards retained from earlier product-session runs. */
   historicalTools: ToolCallView[];
   tools: ToolCallView[];
+  /** Delegated child runs, keyed implicitly by `SubagentView.parentCallId`. */
+  subagents: SubagentView[];
   trace: TraceEntry[];
   pendingInputs: PendingInput[];
   transcriptInputs: TranscriptInputView[];
@@ -225,10 +270,34 @@ export function createWorkbenchState(): WorkbenchState {
     stepRecords: [],
     historicalTools: [],
     tools: [],
+    subagents: [],
     trace: [],
     pendingInputs: [],
     transcriptInputs: [],
   };
+}
+
+/**
+ * The delegated children of the current run, in the order their first wrapped
+ * event arrived. The topology card reads this directly; ordering by
+ * `startedSeq` is the stream's own arrival order.
+ */
+export function selectSubagents(state: WorkbenchState): SubagentView[] {
+  return state.subagents;
+}
+
+/**
+ * The child delegated under one parent `task` call id, or `undefined` when the
+ * call never produced a wrapped event. The work-panel mini-transcript tab and
+ * the topology row both key off this edge.
+ */
+export function selectSubagentForCall(
+  state: WorkbenchState,
+  parentCallId: string,
+): SubagentView | undefined {
+  return state.subagents.find(
+    (subagent) => subagent.parentCallId === parentCallId,
+  );
 }
 
 export function selectTranscriptTimeline(
@@ -516,13 +585,20 @@ function prepareRunScopedState(
     stepRecords: [],
     historicalTools: preserveTools
       ? [
-          ...state.tools.filter(
-            (tool) => tool.status === "done" || tool.status === "error",
-          ),
+          ...state.tools
+            .filter((tool) => tool.status === "done" || tool.status === "error")
+            // A historical `task` row stays a record of the call, but the
+            // live-orchestration marker is run-scoped state: the children it
+            // counted are gone from `subagents`, so the marker goes with them.
+            .map(stripSubagentMarker),
           ...state.historicalTools,
         ]
       : [],
     tools: [],
+    // Children belong to the run that delegated them; a new turn starts with
+    // none, and the previous run's tools carry no marker once they are
+    // historical because `subagentCount` describes live orchestration.
+    subagents: [],
     // Keep a short run trace for the inspector; product chat is the transcript.
     trace: [],
     pendingInputs: [],
@@ -1142,6 +1218,7 @@ function applyStreamEvent(
       const timelineId = toolTimelineEntityId(state, event.call_id);
       return {
         ...next,
+        subagents: settleSubagent(state.subagents, event.call_id, "done"),
         tools: upsertTool(state.tools, {
           id: event.call_id,
           timelineId,
@@ -1250,6 +1327,11 @@ function applyStreamEvent(
       const timelineId = toolTimelineEntityId(state, event.call_id);
       return {
         ...next,
+        subagents: settleSubagent(
+          state.subagents,
+          event.call_id,
+          subagentFailureStatus(event.error),
+        ),
         tools: upsertTool(state.tools, {
           id: event.call_id,
           timelineId,
@@ -1274,6 +1356,37 @@ function applyStreamEvent(
           state.trace,
           event.type,
           formatToolError(event.error),
+        ),
+      };
+    }
+    case "subagent_event": {
+      const subagents = upsertSubagent(state.subagents, event.parent_call_id, seq);
+      const index = subagents.findIndex(
+        (subagent) => subagent.parentCallId === event.parent_call_id,
+      );
+      const projected = reduceSubagentEvent(subagents[index]!, event.event);
+      const nextSubagents = [
+        ...subagents.slice(0, index),
+        projected,
+        ...subagents.slice(index + 1),
+      ];
+      // Mark the parent `task` row so the transcript's topology card can draw
+      // the orchestration without a second lookup. The parent tool's own
+      // started/completed/failed events still resolve the row normally — this
+      // only records that the call is delegating.
+      const tools = markToolSubagentCount(
+        state.tools,
+        event.parent_call_id,
+        nextSubagents,
+      );
+      return {
+        ...next,
+        subagents: nextSubagents,
+        tools,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.parent_call_id}: ${humanizeEventName(event.event.type)}`,
         ),
       };
     }
@@ -1864,6 +1977,300 @@ function prependTrace(trace: TraceEntry[], label: string, detail: string): Trace
     },
     ...trace,
   ];
+}
+
+/**
+ * Open (or return) the `SubagentView` for one parent call id. The first
+ * wrapped event is the child's whole lifecycle signal — a delegation that was
+ * cancelled before its kernel produced anything is still a delegation the
+ * transcript should name, so the view exists from the first frame onward.
+ */
+function upsertSubagent(
+  subagents: SubagentView[],
+  parentCallId: string,
+  seq?: number,
+): SubagentView[] {
+  const existing = subagents.find(
+    (subagent) => subagent.parentCallId === parentCallId,
+  );
+  if (existing) {
+    return subagents;
+  }
+  return [
+    ...subagents,
+    {
+      parentCallId,
+      status: "running",
+      startedSeq: seq,
+      messages: [],
+      tools: [],
+      eventCount: 0,
+    },
+  ];
+}
+
+/**
+ * Settle the child under `parentCallId` when the parent `task` call reaches a
+ * terminal outcome. The child emits no run-lifecycle event of its own, so the
+ * parent's completed/failed frame is the only place its end state is reported;
+ * a call nobody delegated through is a no-op.
+ */
+function settleSubagent(
+  subagents: SubagentView[],
+  parentCallId: string,
+  status: SubagentView["status"],
+): SubagentView[] {
+  const index = subagents.findIndex(
+    (subagent) => subagent.parentCallId === parentCallId,
+  );
+  if (index === -1) {
+    return subagents;
+  }
+  const current = subagents[index]!;
+  if (current.status !== "running") {
+    return subagents;
+  }
+  return [
+    ...subagents.slice(0, index),
+    {
+      ...current,
+      status,
+      // A child that still had streaming text when the parent call ended is
+      // finalized with it: the stream delivered everything it will ever carry.
+      messages: current.messages.map((message) =>
+        message.status === "streaming"
+          ? { ...message, status: "final" as const }
+          : message,
+      ),
+    },
+    ...subagents.slice(index + 1),
+  ];
+}
+
+/**
+ * The per-subagent stop endpoint (stage 3) surfaces as `tool_call_failed` on
+ * the parent `task` call with an execution_failed reason naming the cancel —
+ * the same shape `DelegateTool` returns for `SubRunError::Cancelled`. Every
+ * other failure keeps the generic `error` status.
+ */
+function subagentFailureStatus(error: ToolError): SubagentView["status"] {
+  if (error.code === "execution_failed" && /cancelled/i.test(error.reason)) {
+    return "cancelled";
+  }
+  return "error";
+}
+
+/**
+ * Stamp the number of children projected under `parentCallId` onto the tool
+ * row the topology card already renders. A call that never delegates keeps no
+ * marker; a `task` row whose children all settled still shows the count so the
+ * card can say how many agents ran.
+ */
+function markToolSubagentCount(
+  tools: ToolCallView[],
+  parentCallId: string,
+  subagents: SubagentView[],
+): ToolCallView[] {
+  const count = subagents.filter(
+    (subagent) => subagent.parentCallId === parentCallId,
+  ).length;
+  const existing = tools.find((tool) => tool.id === parentCallId);
+  if (!existing || existing.subagentCount === count) {
+    return tools;
+  }
+  return upsertTool(tools, { ...existing, subagentCount: count });
+}
+
+function stripSubagentMarker(tool: ToolCallView): ToolCallView {
+  if (tool.subagentCount === undefined) {
+    return tool;
+  }
+  const { subagentCount: _count, ...rest } = tool;
+  return rest;
+}
+
+/**
+ * Project one wrapped child event into its `SubagentView`.
+ *
+ * The child runs a plain agent kernel, so its event vocabulary is the model
+ * and tool surface (`llm_chunk`, `thinking_delta`, `llm_message`,
+ * `model_status`, `provider_retry`, `tool_call_*`, `tool_artifact_*`,
+ * `input_needed`) — the same kinds the top-level arms handle, written into the
+ * child view instead of the run's own messages/tools. Run-lifecycle and
+ * steer/followup kinds cannot appear here (the child has no run loop of its
+ * own and cannot steer or delegate), and a nested `subagent_event` is refused
+ * explicitly rather than recursed — the runtime filters `task` out of the
+ * child's tool surface, so a wrapped delegation frame means the stream, not
+ * the child, is wrong.
+ */
+function reduceSubagentEvent(
+  subagent: SubagentView,
+  inner: StreamEvent,
+): SubagentView {
+  const counted = {
+    ...subagent,
+    eventCount: subagent.eventCount + 1,
+    lastSignal: humanizeEventName(inner.type),
+  };
+  // The child's messages/tools are keyed to its own delegation edge rather
+  // than a run id: `parentCallId` scopes every generated message id, so two
+  // children of the same run can never collide on `message:run-1:assistant:*`.
+  const childScope = `sub:${subagent.parentCallId}`;
+  switch (inner.type) {
+    case "llm_chunk": {
+      const projection = appendAssistantDelta(
+        counted.messages,
+        inner.delta,
+        childScope,
+        counted.eventCount,
+      );
+      return { ...counted, messages: projection.messages };
+    }
+    case "thinking_delta": {
+      const projection = appendAssistantThinking(
+        counted.messages,
+        inner.delta,
+        childScope,
+        counted.eventCount,
+      );
+      return { ...counted, messages: projection.messages };
+    }
+    case "llm_message": {
+      const projection = finalizeAssistantMessage(
+        counted.messages,
+        inner.full,
+        childScope,
+        counted.eventCount,
+        {
+          usage: inner.usage,
+          promptBuild: null,
+          promptCompaction: null,
+          aborted: inner.aborted === true,
+        },
+      );
+      // The child's model identity arrives on the turn provenance, when the
+      // provider adapter reported one — the only place the stream carries it.
+      const model = inner.assistant_turn?.provenance?.model ?? counted.model;
+      return { ...counted, model, messages: projection.messages };
+    }
+    case "tool_call_started":
+      return {
+        ...counted,
+        tools: upsertTool(counted.tools, {
+          id: inner.call_id,
+          name: inner.name,
+          status: "running",
+          details: formatValue(inner.args),
+          args: inner.args,
+        }),
+      };
+    case "tool_call_approval_needed":
+      return {
+        ...counted,
+        tools: upsertTool(counted.tools, {
+          id: inner.call_id,
+          name: inner.name,
+          status: "waiting",
+          details: inner.reason,
+          args: inner.args,
+          reason: inner.reason,
+          pendingApproval: {
+            call_id: inner.call_id,
+            name: inner.name,
+            args: inner.args as PendingApproval["args"],
+            reason: inner.reason,
+          },
+        }),
+      };
+    case "tool_call_completed":
+      return {
+        ...counted,
+        tools: upsertTool(counted.tools, {
+          id: inner.call_id,
+          name: findToolName(counted.tools, inner.result.call_id),
+          status: "done",
+          details: inner.result.output,
+          output: inner.result.output,
+          mutations: inner.result.mutations,
+          metadata: normalizeToolExecutionMetadata(inner.result.metadata),
+          protocolMetadata: inner.result.envelope?.protocol_metadata,
+          artifacts: inner.result.envelope?.artifacts,
+          outcome: inner.result.envelope?.outcome,
+        }),
+      };
+    case "tool_call_failed":
+      return {
+        ...counted,
+        tools: upsertTool(counted.tools, {
+          id: inner.call_id,
+          name: findToolName(counted.tools, inner.call_id),
+          status: "error",
+          details: formatToolError(inner.error),
+          error: inner.error,
+          metadata: normalizeToolExecutionMetadata(inner.metadata),
+        }),
+      };
+    case "tool_artifact_stored": {
+      const existing = counted.tools.find((tool) => tool.id === inner.call_id);
+      if (!existing) {
+        return counted;
+      }
+      const alreadyRecorded = (existing.artifacts ?? []).some(
+        (artifact) => artifact.artifact_id === inner.artifact.artifact_id,
+      );
+      if (alreadyRecorded) {
+        return counted;
+      }
+      return {
+        ...counted,
+        tools: upsertTool(counted.tools, {
+          ...existing,
+          artifacts: [...(existing.artifacts ?? []), inner.artifact],
+        }),
+      };
+    }
+    case "tool_artifact_rejected": {
+      const existing = counted.tools.find((tool) => tool.id === inner.call_id);
+      if (!existing) {
+        return counted;
+      }
+      const rejection: RejectedArtifactView = {
+        blockOrdinal: inner.block_ordinal,
+        reason: inner.reason,
+        observedBytes: inner.observed_bytes,
+      };
+      const alreadyRecorded = (existing.rejectedArtifacts ?? []).some(
+        (entry) =>
+          entry.blockOrdinal === rejection.blockOrdinal &&
+          entry.reason === rejection.reason,
+      );
+      if (alreadyRecorded) {
+        return counted;
+      }
+      return {
+        ...counted,
+        tools: upsertTool(counted.tools, {
+          ...existing,
+          rejectedArtifacts: [...(existing.rejectedArtifacts ?? []), rejection],
+        }),
+      };
+    }
+    case "model_status":
+      // The child's own status line: surfaced as `lastSignal` so the topology
+      // row can narrate what the delegation is doing without inventing a
+      // phase vocabulary the child does not have.
+      return { ...counted, lastSignal: inner.message };
+    case "provider_retry":
+      return counted;
+    case "input_needed":
+      return counted;
+    case "subagent_event":
+      // A child cannot delegate; a wrapped delegation frame is a wire bug the
+      // projection refuses to nest rather than a shape it supports.
+      return counted;
+    default:
+      return counted;
+  }
 }
 
 function upsertTool(

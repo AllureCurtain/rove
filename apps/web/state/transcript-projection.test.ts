@@ -408,6 +408,100 @@ describe("product transcript projection", () => {
     ]);
   });
 
+  it("projects a restored subagent_event stream into state.subagents", () => {
+    // The product transcript wire type is the generated `StreamEvent` union,
+    // so the recursive `event` field survives the boundary guard and the
+    // `toWorkbenchStreamEvent` passthrough unchanged.
+    const segment: ProductTranscriptRunSegment = {
+      binding: binding(1, "job-delegate", "run-delegate"),
+      inherited: false,
+      run_status: "done",
+      observed_through_seq: 6,
+      last_event_seq: 6,
+      events: [
+        {
+          seq: 1,
+          event: {
+            type: "run_started",
+            job_id: "job-delegate",
+            run_id: "run-delegate",
+            user_message: "Delegate a survey",
+          },
+        },
+        {
+          seq: 2,
+          event: {
+            type: "tool_call_started",
+            call_id: "call-task-1",
+            name: "task",
+            args: { prompt: "Survey the repo" },
+          },
+        },
+        {
+          seq: 3,
+          event: {
+            type: "subagent_event",
+            parent_call_id: "call-task-1",
+            event: { type: "llm_chunk", delta: "scanning " },
+          },
+        },
+        {
+          seq: 4,
+          event: {
+            type: "subagent_event",
+            parent_call_id: "call-task-1",
+            event: { type: "llm_chunk", delta: "files" },
+          },
+        },
+        {
+          seq: 5,
+          event: {
+            type: "tool_call_completed",
+            call_id: "call-task-1",
+            result: {
+              call_id: "call-task-1",
+              output: "survey done",
+              metadata: {
+                status: "ok",
+                risk_level: "low",
+                read_only: true,
+                affected_paths: [],
+                workspace_changed: false,
+                diff_summary: [],
+              },
+            },
+          },
+        },
+        {
+          seq: 6,
+          event: { type: "run_completed", reason: "final", output: "done" },
+        },
+      ],
+    };
+
+    const state = projectProductTranscript({
+      product_session_id: "product-session",
+      workspace_id: "workspace",
+      status: "complete",
+      partial_reasons: [],
+      segments: [segment],
+    });
+
+    expect(state.subagents).toHaveLength(1);
+    const subagent = state.subagents[0]!;
+    expect(subagent.parentCallId).toBe("call-task-1");
+    expect(subagent.eventCount).toBe(2);
+    expect(subagent.messages[0]).toMatchObject({
+      role: "assistant",
+      content: "scanning files",
+    });
+    // The parent `task` call's terminal event settled the delegation.
+    expect(subagent.status).toBe("done");
+    expect(
+      state.tools.find((tool) => tool.id === "call-task-1"),
+    ).toMatchObject({ name: "task", subagentCount: 1 });
+  });
+
   it("accepts sequence one when the catalog follows a newer job", () => {
     let state = projectProductTranscript({
       product_session_id: "product-session",

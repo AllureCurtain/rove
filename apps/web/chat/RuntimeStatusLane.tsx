@@ -77,6 +77,10 @@ function phaseTone(phase: ActivityPhase): string {
       return "warning";
     case "planning":
       return "accent";
+    case "waiting-for-subagents":
+      // The design's subagent accent (§5.3): the purple tint marks a wait on
+      // delegated children rather than on the model.
+      return "accent";
     case "tool":
       return "working";
     case "idle":
@@ -103,6 +107,10 @@ function activityPhaseLabel(
         : t("chat.phaseCompacting");
     case "tool":
       return t("chat.phaseTool", { name: phase.name });
+    case "waiting-for-subagents":
+      return phase.count === 1
+        ? t("chat.phaseWaitingSubagent", { count: phase.count })
+        : t("chat.phaseWaitingSubagents", { count: phase.count });
     case "planning":
       return t("chat.phasePlanning");
     case "finalizing":

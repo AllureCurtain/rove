@@ -248,9 +248,21 @@ function settleRestoredSegment(
         status: tool.status === "waiting" ? ("error" as const) : tool.status,
         pendingApproval: undefined,
       }));
+  // A restored terminal run cannot hold a child still mid-flight: the runtime
+  // drains the wrapped stream before the parent `task` call resolves, so any
+  // subagent the replay left `running` belongs to a call that failed or was
+  // stopped before it reported — the same shape the live reducer settles.
+  const subagents = busy
+    ? state.subagents
+    : state.subagents.map((subagent) =>
+        subagent.status === "running"
+          ? { ...subagent, status: "error" as const }
+          : subagent,
+      );
 
   return {
     ...state,
+    subagents,
     activeJobId: segment.binding.runtime_job_id,
     activeRunId: segment.binding.runtime_run_id,
     resumedFromRunId: segment.binding.resumed_from_run_id ?? null,

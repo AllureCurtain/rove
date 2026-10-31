@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createWorkbenchState,
+  selectSubagentForCall,
   selectTranscriptTimeline,
   workbenchReducer,
 } from "./rove-state";
@@ -2034,5 +2035,320 @@ describe("workbenchReducer", () => {
     expect(assistant?.status).toBe("final");
     // Reasoning never merged into the reply the transcript copies or renders.
     expect(assistant?.content).not.toContain("thought");
+  });
+});
+
+describe("subagent projection", () => {
+  function runStarted(): ReturnType<typeof createWorkbenchState> {
+    return workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      seq: 1,
+      event: {
+        type: "run_started",
+        run_id: "run-1",
+        job_id: "job-1",
+        user_message: "Delegate this",
+      },
+    });
+  }
+
+  function parentTaskStarted(state: ReturnType<typeof createWorkbenchState>) {
+    return workbenchReducer(state, {
+      type: "stream_event",
+      seq: 2,
+      event: {
+        type: "tool_call_started",
+        call_id: "call-task-1",
+        name: "task",
+        args: { prompt: "Survey the repo" },
+      },
+    });
+  }
+
+  function subagentFrame(
+    inner: StreamEvent,
+    parentCallId = "call-task-1",
+    seq = 3,
+  ): StreamEvent {
+    return {
+      type: "subagent_event",
+      parent_call_id: parentCallId,
+      event: inner,
+    } as StreamEvent;
+  }
+
+  it("opens a running SubagentView on the first wrapped event", () => {
+    let state = parentTaskStarted(runStarted());
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 3,
+      event: subagentFrame({ type: "llm_chunk", delta: "scanning" }),
+    });
+
+    expect(state.subagents).toHaveLength(1);
+    const subagent = state.subagents[0]!;
+    expect(subagent.parentCallId).toBe("call-task-1");
+    expect(subagent.status).toBe("running");
+    expect(subagent.startedSeq).toBe(3);
+    expect(subagent.eventCount).toBe(1);
+  });
+
+  it("accumulates the child's chunks, thinking, and final message on the child view", () => {
+    let state = parentTaskStarted(runStarted());
+    const frames: StreamEvent[] = [
+      subagentFrame({ type: "thinking_delta", delta: "plan: " }, "call-task-1", 3),
+      subagentFrame({ type: "thinking_delta", delta: "read files" }, "call-task-1", 4),
+      subagentFrame({ type: "llm_chunk", delta: "draft " }, "call-task-1", 5),
+      subagentFrame({ type: "llm_chunk", delta: "answer" }, "call-task-1", 6),
+      subagentFrame(
+        {
+          type: "llm_message",
+          full: "draft answer",
+          usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 },
+        },
+        "call-task-1",
+        7,
+      ),
+    ];
+    for (const [index, event] of frames.entries()) {
+      state = workbenchReducer(state, {
+        type: "stream_event",
+        seq: index + 3,
+        event,
+      });
+    }
+
+    const subagent = state.subagents[0]!;
+    expect(subagent.eventCount).toBe(5);
+    expect(subagent.messages).toHaveLength(1);
+    expect(subagent.messages[0]).toMatchObject({
+      role: "assistant",
+      status: "final",
+      content: "draft answer",
+      thinking: "plan: read files",
+    });
+    // The child's text never leaks into the parent's own transcript.
+    expect(
+      state.messages.every(
+        (message) => message.role !== "assistant" || message.content !== "draft answer",
+      ),
+    ).toBe(true);
+  });
+
+  it("projects the child's own tool calls inside the subagent view", () => {
+    let state = parentTaskStarted(runStarted());
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 3,
+      event: subagentFrame({
+        type: "tool_call_started",
+        call_id: "child-call-1",
+        name: "read_file",
+        args: { path: "src/main.rs" },
+      }),
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 4,
+      event: subagentFrame({
+        type: "tool_call_completed",
+        call_id: "child-call-1",
+        result: {
+          call_id: "child-call-1",
+          output: "fn main() {}",
+          metadata: {
+            status: "ok",
+            risk_level: "low",
+            read_only: true,
+            affected_paths: [],
+            workspace_changed: false,
+            diff_summary: [],
+          },
+        },
+      }),
+    });
+
+    const subagent = state.subagents[0]!;
+    expect(subagent.tools).toHaveLength(1);
+    expect(subagent.tools[0]).toMatchObject({
+      id: "child-call-1",
+      name: "read_file",
+      status: "done",
+      output: "fn main() {}",
+    });
+    // The parent's own tool list holds only the `task` call; the child's calls
+    // stay inside the delegation view.
+    expect(state.tools.map((tool) => tool.id)).toEqual(["call-task-1"]);
+  });
+
+  it("marks the parent task row as orchestrating once a child event arrives", () => {
+    let state = parentTaskStarted(runStarted());
+    expect(state.tools[0]!.subagentCount).toBeUndefined();
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 3,
+      event: subagentFrame({ type: "llm_chunk", delta: "hi" }),
+    });
+
+    expect(state.tools[0]!.subagentCount).toBe(1);
+    // The row is still a normal running tool call in every other respect.
+    expect(state.tools[0]).toMatchObject({ id: "call-task-1", name: "task", status: "running" });
+  });
+
+  it("settles the child done when the parent task call completes", () => {
+    let state = parentTaskStarted(runStarted());
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 3,
+      event: subagentFrame({ type: "llm_chunk", delta: "work" }),
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 4,
+      event: {
+        type: "tool_call_completed",
+        call_id: "call-task-1",
+        result: {
+          call_id: "call-task-1",
+          output: "survey done",
+          metadata: {
+            status: "ok",
+            risk_level: "low",
+            read_only: true,
+            affected_paths: [],
+            workspace_changed: false,
+            diff_summary: [],
+          },
+        },
+      },
+    });
+
+    expect(state.subagents[0]!.status).toBe("done");
+    expect(state.tools[0]!.status).toBe("done");
+    // A streaming child message is finalized with the delegation's end.
+    expect(state.subagents[0]!.messages[0]!.status).toBe("final");
+  });
+
+  it("settles the child as cancelled when the parent task call reports the stop", () => {
+    let state = parentTaskStarted(runStarted());
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 3,
+      event: subagentFrame({ type: "llm_chunk", delta: "partial" }),
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 4,
+      event: {
+        type: "tool_call_failed",
+        call_id: "call-task-1",
+        error: { code: "execution_failed", reason: "subagent run was cancelled" },
+      },
+    });
+
+    expect(state.subagents[0]!.status).toBe("cancelled");
+  });
+
+  it("settles the child as error on a non-cancel parent task failure", () => {
+    let state = parentTaskStarted(runStarted());
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 3,
+      event: subagentFrame({ type: "llm_chunk", delta: "partial" }),
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 4,
+      event: {
+        type: "tool_call_failed",
+        call_id: "call-task-1",
+        error: { code: "execution_failed", reason: "subagent model call failed: timeout" },
+      },
+    });
+
+    expect(state.subagents[0]!.status).toBe("error");
+  });
+
+  it("keeps two delegations under one run apart", () => {
+    let state = runStarted();
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 2,
+      event: {
+        type: "tool_call_started",
+        call_id: "call-task-a",
+        name: "task",
+        args: { prompt: "one" },
+      },
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 3,
+      event: {
+        type: "tool_call_started",
+        call_id: "call-task-b",
+        name: "task",
+        args: { prompt: "two" },
+      },
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 4,
+      event: subagentFrame({ type: "llm_chunk", delta: "alpha" }, "call-task-a", 4),
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 5,
+      event: subagentFrame({ type: "llm_chunk", delta: "beta" }, "call-task-b", 5),
+    });
+
+    expect(state.subagents).toHaveLength(2);
+    expect(selectSubagentForCall(state, "call-task-a")!.messages[0]!.content).toBe("alpha");
+    expect(selectSubagentForCall(state, "call-task-b")!.messages[0]!.content).toBe("beta");
+    expect(
+      state.tools.find((tool) => tool.id === "call-task-a")!.subagentCount,
+    ).toBe(1);
+    expect(
+      state.tools.find((tool) => tool.id === "call-task-b")!.subagentCount,
+    ).toBe(1);
+  });
+
+  it("clears subagents and the orchestration marker on the next turn", () => {
+    let state = parentTaskStarted(runStarted());
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 3,
+      event: subagentFrame({ type: "llm_chunk", delta: "done" }),
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 4,
+      event: {
+        type: "tool_call_completed",
+        call_id: "call-task-1",
+        result: {
+          call_id: "call-task-1",
+          output: "ok",
+          metadata: {
+            status: "ok",
+            risk_level: "low",
+            read_only: true,
+            affected_paths: [],
+            workspace_changed: false,
+            diff_summary: [],
+          },
+        },
+      },
+    });
+
+    const next = workbenchReducer(state, {
+      type: "prepare_turn",
+      preserveTools: true,
+    });
+    expect(next.subagents).toEqual([]);
+    expect(next.tools).toEqual([]);
+    expect(
+      next.historicalTools.every((tool) => tool.subagentCount === undefined),
+    ).toBe(true);
   });
 });

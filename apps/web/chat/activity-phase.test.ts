@@ -52,6 +52,54 @@ describe("reduceActivityPhase", () => {
     expect(activityPhaseKey(first)).toBe(activityPhaseKey(second));
   });
 
+  it("enters waiting-for-subagents on a wrapped child event and counts distinct parents", () => {
+    const activity = activityEventForStreamEvent({
+      type: "subagent_event",
+      parent_call_id: "call-task-1",
+      event: { type: "llm_chunk", delta: "hi" },
+    });
+    expect(activity).toEqual({
+      type: "subagent_event",
+      parentCallId: "call-task-1",
+    });
+
+    const waiting = reduceActivityPhase(IDLE_PHASE, activity!);
+    expect(waiting).toEqual({
+      kind: "waiting-for-subagents",
+      count: 1,
+      callIds: ["call-task-1"],
+    });
+
+    // A second delegation under a different parent call raises the count.
+    const second = reduceActivityPhase(waiting, {
+      type: "subagent_event",
+      parentCallId: "call-task-2",
+    });
+    expect(second).toEqual({
+      kind: "waiting-for-subagents",
+      count: 2,
+      callIds: ["call-task-1", "call-task-2"],
+    });
+
+    // More child traffic under an already-counted call keeps the same phase
+    // and the same announcement key.
+    const steady = reduceActivityPhase(second, {
+      type: "subagent_event",
+      parentCallId: "call-task-1",
+    });
+    expect(steady).toBe(second);
+    expect(activityPhaseKey(steady)).toBe("waiting-for-subagents:2");
+  });
+
+  it("leaves the subagent wait when the parent turn produces its own output", () => {
+    const waiting = reduceActivityPhase(IDLE_PHASE, {
+      type: "subagent_event",
+      parentCallId: "call-task-1",
+    });
+    expect(reduceActivityPhase(waiting, { type: "llm_chunk" })).toBe(IDLE_PHASE);
+    expect(reduceActivityPhase(waiting, { type: "run_completed" })).toBe(IDLE_PHASE);
+  });
+
   it("returns to waiting when the runtime schedules a retry", () => {
     const activity = activityEventForStreamEvent({
       type: "provider_retry",
