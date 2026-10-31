@@ -232,6 +232,15 @@ const enUS: CopyDictionary = {
     matchesTitle: "Matches",
     toolInput: "Input",
     openFileRef: "Open in work panel",
+    changeCreate: "added",
+    changeUpdate: "modified",
+    changeDelete: "deleted",
+    changeUnknown: "changed",
+    changeCardLabel:
+      "{{status}} {{path}} (+{{additions}} −{{deletions}})",
+    changeCopy: "Copy diff",
+    rollbackUnavailable:
+      "Rollback needs a product revert endpoint that does not exist yet (see issue #29).",
     chipReadOnly: "read only",
     chipMutation: "mutation capable",
     chipHighRisk: "high risk",

@@ -36,6 +36,7 @@ import {
 } from "./composer-files";
 import { ConversationMinimap } from "./ConversationMinimap";
 import { RuntimeStatusLane } from "./RuntimeStatusLane";
+import { TurnChangeCard } from "./TurnChangeCard";
 import { IDLE_PHASE, type ActivityPhase } from "./activity-phase";
 import { ReadingWidthHandles } from "./ReadingWidthHandles";
 import { buildConversationMinimapMarkers } from "./conversation-minimap";
@@ -1311,18 +1312,36 @@ function ActivityGroup({
         ? t("chat.activityElapsedFrozen", { n: elapsedSeconds(timing.frozenMs) })
         : null;
 
-  const renderTool = (tool: ToolCallView) =>
-    isBlockingTool(tool) ? (
-      <ApprovalCard
-        key={tool.timelineId ?? tool.id}
-        tool={tool}
-        busy={approvalBusy === tool.id}
-        onApproval={onApproval}
-        onDetail={onApprovalDetail}
-      />
-    ) : (
+  const renderTool = (tool: ToolCallView) => {
+    if (isBlockingTool(tool)) {
+      return (
+        <ApprovalCard
+          key={tool.timelineId ?? tool.id}
+          tool={tool}
+          busy={approvalBusy === tool.id}
+          onApproval={onApproval}
+          onDetail={onApprovalDetail}
+        />
+      );
+    }
+    // Issue #29: a call that mutated files renders one change card per
+    // mutation — path + A/M/D + +/− + expandable diff — instead of the generic
+    // tool card's diff block. A call that only read keeps the generic card.
+    const mutations = tool.mutations ?? [];
+    if (mutations.length > 0) {
+      return mutations.map((mutation) => (
+        <TurnChangeCard
+          key={`${tool.timelineId ?? tool.id}-${mutation.path}`}
+          tool={tool}
+          mutation={mutation}
+          onOpenFile={onOpenFile}
+        />
+      ));
+    }
+    return (
       <ToolCard key={tool.timelineId ?? tool.id} tool={tool} onOpenFile={onOpenFile} />
     );
+  };
 
   const renderInput = (input: TranscriptInputView) =>
     input.status === "waiting" ? (
