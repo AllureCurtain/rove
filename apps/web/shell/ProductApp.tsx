@@ -2059,12 +2059,16 @@ function ServerProductApp({ draftStore }: {
                           forkAvailable={visible && paneSettled && forkAvailable}
                           locateRequest={visible ? locateRequest : null}
                           loadAttachment={handleLoadAttachment}
-                          onOpenFile={(reference) =>
-                            // §8 + issue #27: a tool-card path opens as that
-                            // file's own tab in the work panel, at the line the
-                            // reference named.
-                            panel.openFile(reference.path, reference.line ?? null)
-                          }
+                          onOpenFile={(reference) => {
+                            // §8 + #27/#28: a tool-card path opens its own tab —
+                            // an .html file goes to the isolated preview tab, any
+                            // other path to the file viewer at the named line.
+                            if (/\.(html|htm)$/i.test(reference.path)) {
+                              panel.openPreview(reference.path);
+                            } else {
+                              panel.openFile(reference.path, reference.line ?? null);
+                            }
+                          }}
                         />
                       </div>
                     );
