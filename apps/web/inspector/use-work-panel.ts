@@ -16,6 +16,7 @@ import {
   defaultWorkPanelTabs,
   moveWorkPanelTab,
   openWorkPanelFileTab,
+  openWorkPanelPreviewTab,
   openWorkPanelTab,
   parseStoredWorkPanelTabs,
   replaceWorkPanelTab,
@@ -28,6 +29,7 @@ import {
 export type WorkPanelTarget =
   | { kind: "approval"; jobId: string; runId: string; callId: string }
   | { kind: "file"; path: string; line: number }
+  | { kind: "preview"; path: string }
   | null;
 interface PanelSelection {
   tabs: WorkPanelTabsState;
@@ -266,6 +268,19 @@ export function useWorkPanel(
     });
     writeStoredPanelOpen(true);
   }
+  /**
+   * An HTML entry opens as its own preview tab (issue #28), and the panel
+   * opens with it so a preview affordance never lands behind a closed panel.
+   */
+  function openPreview(path: string, trigger?: HTMLElement | null) {
+    update({
+      collapsed: false,
+      tabs: openWorkPanelPreviewTab(selection.tabs, path),
+      target: { kind: "preview", path },
+      returnFocus: trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null),
+    });
+    writeStoredPanelOpen(true);
+  }
   function close() {
     update({ collapsed: true });
     writeStoredPanelOpen(false);
@@ -297,6 +312,7 @@ export function useWorkPanel(
     maximized: selection.maximized,
     open,
     openFile,
+    openPreview,
     close,
     openTab: (kind: WorkPanelTabKind) =>
       setTabs(openWorkPanelTab(selection.tabs, kind)),

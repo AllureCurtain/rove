@@ -3250,6 +3250,8 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
 }
 
 .product-app-frame[data-ui-version="v2"] .inspector-body {
+  display: flex;
+  flex-direction: column;
   gap: 0;
   padding: 0 14px 24px;
   overscroll-behavior: contain;
@@ -3258,7 +3260,16 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
 /* Every open tab mounts a pane (design §8: hidden panes keep state); `hidden`
    is the whole contract, so re-declare it against any inherited display. */
 .product-app-frame[data-ui-version="v2"] .inspector-pane {
+  display: flex;
   min-width: 0;
+  flex-direction: column;
+}
+
+/* §8 + issue #28: a preview pane is the one tab that fills the scrollport —
+   the iframe inside it owns the leftover height instead of sizing to content. */
+.product-app-frame[data-ui-version="v2"] .inspector-pane[data-kind="preview"] {
+  flex: 1;
+  min-height: 0;
 }
 
 .product-app-frame[data-ui-version="v2"] .inspector-pane[hidden] {
@@ -3575,6 +3586,28 @@ html[data-work-panel-resizing] .product-app-frame[data-ui-version="v2"] .product
   line-height: 1.35;
   text-transform: none;
   text-wrap: balance;
+}
+
+/* §8 + issue #28: the preview pane fills its tab — the section stretches to
+   the pane's height and the frame owns whatever is left under the heading. */
+.product-app-frame[data-ui-version="v2"] .preview-pane {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.product-app-frame[data-ui-version="v2"] .preview-pane__heading {
+  flex: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .preview-pane__frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-surface);
 }
 
 .product-app-frame[data-ui-version="v2"] .inspector-section__heading {

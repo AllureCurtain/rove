@@ -103,11 +103,18 @@ export function FileViewerPane({
   workspaceRootPath,
   path,
   focusLine,
+  onOpenPreview,
 }: {
   workspaceId: string;
   workspaceRootPath?: string | null;
   path: string;
   focusLine?: number | null;
+  /**
+   * Issue #28: an HTML file's preview opens as a `preview` tab in this same
+   * panel rather than a new browser tab. Absent (a host without the panel),
+   * the preview falls back to a new external tab.
+   */
+  onOpenPreview?: (path: string) => void;
 }) {
   const { t } = useCopy();
   const client = useMemo(() => createProductApiClient(), []);
@@ -194,6 +201,12 @@ export function FileViewerPane({
   }, [content, focusLine]);
 
   async function openHtmlPreview() {
+    // The panel preview tab owns the session when the panel offers it (issue
+    // #28); a host without the panel keeps the external-tab fallback.
+    if (onOpenPreview) {
+      onOpenPreview(path);
+      return;
+    }
     setHtmlPreviewBusy(true);
     setHtmlPreviewError(null);
     try {
