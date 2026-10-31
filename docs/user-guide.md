@@ -81,5 +81,5 @@ Steps: run `rove review` in the terminal (optionally with `--base <rev>` or `--c
 - Local single user only: no accounts, cloud sync, or billing.
 - Shell tools are policy-constrained and approval-gated, but not container-sandboxed.
 - No vector search; the agent learns the project by reading files and searching code.
-- Sub-agent delegation exists in the runtime only: a `task` tool can spawn a nested agent inside the parent run (its events stream wrapped under the parent's call), but the work panel's subagent UI does not render it yet.
+- Sub-agent delegation exists in the runtime and API only: a `task` tool can spawn a nested agent inside the parent run (its events stream wrapped under the parent's call), and `POST /jobs/{job_id}/subagents/{call_id}/stop` cancels one delegated subagent without cancelling the job, but the work panel's subagent UI does not render it yet.
 - macOS and Linux packages are not yet verified.

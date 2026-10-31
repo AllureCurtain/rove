@@ -255,6 +255,11 @@ pub(crate) struct JobRecord {
     pending_product_events: Mutex<Vec<StreamEvent>>,
     completion: watch::Sender<bool>,
     cancel_token: CancellationToken,
+    /// Live cancel handles for this job's delegated subagents, keyed by the
+    /// parent `task` call id. The same map is injected into the job's Engine
+    /// (`assemble_job_engine`), so `/jobs/{id}/subagents/{call_id}/stop`
+    /// cancels exactly the token the sub-run is polling.
+    pub(crate) subagents: rove_runtime::tools::delegate::SubagentRegistry,
 }
 
 struct JobLaunch {
@@ -455,6 +460,7 @@ fn router_composed(state: ApiState) -> Router {
         .routes(routes!(job_events))
         .routes(routes!(job_state))
         .routes(routes!(cancel_job))
+        .routes(routes!(stop_subagent))
         .routes(routes!(submit_approval))
         .routes(routes!(submit_input))
         .routes(routes!(list_runs))

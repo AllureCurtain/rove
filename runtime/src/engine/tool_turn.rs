@@ -176,6 +176,9 @@ pub(crate) struct ToolTurnContext<'a> {
     /// Shared sink a delegated sub-run's kernel counters land in. The owning
     /// run loop drains it when it charges its `ExecutionBudgetTracker`.
     pub subagent_usage_ledger: Arc<std::sync::Mutex<crate::tools::delegate::SubUsageLedger>>,
+    /// Live child cancel handles for this run's `task` calls, shared with the
+    /// embedding so a per-subagent stop can reach exactly one subagent.
+    pub subagents: crate::tools::delegate::SubagentRegistry,
 }
 
 #[derive(Debug)]
@@ -365,6 +368,7 @@ impl<'a> ToolTurnContext<'a> {
             parent_call_id,
             self.subagent_depth.saturating_add(1),
             Arc::clone(&self.subagent_usage_ledger),
+            self.subagents.clone(),
         ))
     }
 
@@ -933,6 +937,7 @@ mod tests {
             subagent_usage_ledger: Arc::new(std::sync::Mutex::new(
                 crate::tools::delegate::SubUsageLedger::default(),
             )),
+            subagents: crate::tools::delegate::SubagentRegistry::default(),
         };
 
         assert!(base.can_run_parallel_batch(&calls));
@@ -970,6 +975,7 @@ mod tests {
             subagent_usage_ledger: Arc::new(std::sync::Mutex::new(
                 crate::tools::delegate::SubUsageLedger::default(),
             )),
+            subagents: crate::tools::delegate::SubagentRegistry::default(),
         };
         let action = ToolAction::Call(ToolCallAction {
             call_id: CallId::new(),
@@ -1024,6 +1030,7 @@ mod tests {
             subagent_usage_ledger: Arc::new(std::sync::Mutex::new(
                 crate::tools::delegate::SubUsageLedger::default(),
             )),
+            subagents: crate::tools::delegate::SubagentRegistry::default(),
         };
         let items = run_tool_turn(
             ctx,

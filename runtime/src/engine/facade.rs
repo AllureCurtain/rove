@@ -232,6 +232,11 @@ pub struct Engine {
     agent_runtime: AgentRuntime,
     run_model: Option<RunModelSnapshot>,
     run_mode: RunMode,
+    /// Live child cancel handles this Engine's runs publish under each `task`
+    /// call id. The default is a fresh registry per Engine; an embedding that
+    /// exposes per-subagent stop injects a shared clone so its control surface
+    /// cancels the same tokens the `SubRunSpawner`s register.
+    subagents: crate::tools::delegate::SubagentRegistry,
 }
 
 impl Engine {
@@ -342,6 +347,7 @@ impl Engine {
             agent_runtime,
             run_model: None,
             run_mode: RunMode::Normal,
+            subagents: crate::tools::delegate::SubagentRegistry::default(),
         }
     }
 
@@ -414,6 +420,13 @@ impl Engine {
     /// this Engine. Review mode is immutable once a run starts.
     pub fn with_run_mode(mut self, run_mode: RunMode) -> Self {
         self.run_mode = run_mode;
+        self
+    }
+
+    /// Inject a shared subagent registry so an embedding's per-subagent stop
+    /// route cancels the tokens this Engine's `task` calls register.
+    pub fn with_subagents(mut self, subagents: crate::tools::delegate::SubagentRegistry) -> Self {
+        self.subagents = subagents;
         self
     }
 
@@ -1200,6 +1213,7 @@ impl Engine {
                     subagent_usage_ledger: Arc::new(Mutex::new(
                         crate::tools::delegate::SubUsageLedger::default(),
                     )),
+                    subagents: self.subagents.clone(),
                 };
 
                 let mut runtime: BoxStream<'_, LoopItem> = match execution_policy.strategy {
