@@ -39,6 +39,7 @@ import { RuntimeStatusLane } from "./RuntimeStatusLane";
 import { IDLE_PHASE, type ActivityPhase } from "./activity-phase";
 import { ReadingWidthHandles } from "./ReadingWidthHandles";
 import { buildConversationMinimapMarkers } from "./conversation-minimap";
+import { segmentFileReferences, type FileReference } from "./file-ref";
 import { buildToolPresentation, type ToolBlock } from "./tool-presentation";
 import {
   formatReceiptDuration,
@@ -130,6 +131,7 @@ export function Transcript({
   forkAvailable = false,
   locateRequest = null,
   loadAttachment,
+  onOpenFile,
 }: {
   timeline: TranscriptRunGroup[];
   messages?: ProductMessage[];
@@ -178,6 +180,12 @@ export function Transcript({
    * row, which is what a shell without attachment support wants.
    */
   loadAttachment?: (attachmentId: string) => Promise<Blob>;
+  /**
+   * A workspace file reference in a tool card opens in the work panel's file
+   * viewer (issue #27). Absent, the same text renders as plain code — a shell
+   * without a panel loses the affordance, never the text.
+   */
+  onOpenFile?: (reference: FileReference) => void;
 }) {
   const { t } = useCopy();
   /**
@@ -877,6 +885,7 @@ export function Transcript({
                   onApproval={onApproval}
                   onApprovalDetail={onApprovalDetail}
                   onInputSubmit={onInputSubmit}
+                  onOpenFile={onOpenFile}
                 />
               ) : entry.kind === "compaction" ? (
                 <CompactionDivider key={entry.id} compaction={entry.compaction} />
@@ -1251,6 +1260,7 @@ function ActivityGroup({
   onApproval,
   onApprovalDetail,
   onInputSubmit,
+  onOpenFile,
 }: {
   entry: Extract<TranscriptEntry, { kind: "activity" }>;
   open: boolean;
@@ -1260,6 +1270,7 @@ function ActivityGroup({
   onApproval: (tool: ToolCallView, decision: "approve" | "reject") => void;
   onApprovalDetail?: (tool: ToolCallView, trigger: HTMLElement) => void;
   onInputSubmit: (inputId: string, answer: string) => void;
+  onOpenFile?: (reference: FileReference) => void;
 }) {
   const { t } = useCopy();
   const inFlight = activityWantsOpen(entry);
@@ -1310,7 +1321,7 @@ function ActivityGroup({
         onDetail={onApprovalDetail}
       />
     ) : (
-      <ToolCard key={tool.timelineId ?? tool.id} tool={tool} />
+      <ToolCard key={tool.timelineId ?? tool.id} tool={tool} onOpenFile={onOpenFile} />
     );
 
   const renderInput = (input: TranscriptInputView) =>
@@ -1483,7 +1494,13 @@ function RestoreNotice({
   );
 }
 
-function ToolCard({ tool }: { tool: ToolCallView }) {
+function ToolCard({
+  tool,
+  onOpenFile,
+}: {
+  tool: ToolCallView;
+  onOpenFile?: (reference: FileReference) => void;
+}) {
   const { t } = useCopy();
   const [open, setOpen] = useState(
     tool.status === "running" || tool.status === "error" || Boolean(tool.mutations?.length),
@@ -1537,8 +1554,33 @@ function ToolCard({ tool }: { tool: ToolCallView }) {
         >
           <CodeIcon />
           <strong>{presentation.title}</strong>
-          {presentation.subtitle ? (
-            <code className="tool-card__summary">{presentation.subtitle}</code>
+          {presentation.subtitle.text ? (
+            presentation.subtitle.fileRef && onOpenFile ? (
+              // A resolvable path summary is the row's file affordance: the
+              // whole head still toggles, but this span takes the click first
+              // (issue #27).
+              <code
+                className="tool-card__summary tool-card__summary--link"
+                role="button"
+                tabIndex={0}
+                title={t("chat.openFileRef")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onOpenFile(presentation.subtitle.fileRef!);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.stopPropagation();
+                    event.preventDefault();
+                    onOpenFile(presentation.subtitle.fileRef!);
+                  }
+                }}
+              >
+                {presentation.subtitle.text}
+              </code>
+            ) : (
+              <code className="tool-card__summary">{presentation.subtitle.text}</code>
+            )
           ) : null}
           <span className="tool-card__state" data-status={tool.status}>
             {tool.status === "running" ? (
@@ -1575,7 +1617,7 @@ function ToolCard({ tool }: { tool: ToolCallView }) {
             </div>
           ) : null}
           {presentation.blocks.map((block, index) => (
-            <ToolBlockView block={block} key={index} />
+            <ToolBlockView block={block} key={index} onOpenFile={onOpenFile} />
           ))}
         </div>
       ) : null}
@@ -1628,13 +1670,36 @@ function toolFactLabel(label: string, t: (path: string) => string): string {
   return label === "duration" ? t("chat.toolDuration") : label;
 }
 
-function ToolBlockView({ block }: { block: ToolBlock }) {
+function ToolBlockView({
+  block,
+  onOpenFile,
+}: {
+  block: ToolBlock;
+  onOpenFile?: (reference: FileReference) => void;
+}) {
   const { t } = useCopy();
   switch (block.kind) {
+    case "args":
+      return (
+        <section>
+          <h4>{t("chat.toolInput")}</h4>
+          <pre className="tool-card__args" tabIndex={0}>
+            <RefLinkedText text={block.text} onOpenFile={onOpenFile} />
+          </pre>
+          {block.truncated ? (
+            <p className="tool-card__truncated">{t("chat.outputTruncated")}</p>
+          ) : null}
+        </section>
+      );
     case "diff":
       return (
         <section>
-          <h4>{block.path}</h4>
+          <h4>
+            <RefLink
+              text={block.path}
+              onOpenFile={onOpenFile}
+            />
+          </h4>
           <DiffView diff={block.text} label={`${block.path} diff`} sourcePath={block.path} />
           {block.truncated ? <p className="tool-card__truncated">{t("chat.diffTruncated")}</p> : null}
         </section>
@@ -1652,7 +1717,10 @@ function ToolBlockView({ block }: { block: ToolBlock }) {
           <h4>{t("chat.filesTitle")}</h4>
           <ul className="tool-card__list">
             {block.entries.map((entry) => (
-              <li key={entry.path}>{entry.path}</li>
+              <li key={entry.path}>
+                <RefLink text={entry.path} onOpenFile={onOpenFile} />
+                {entry.annotation ? ` ${entry.annotation}` : null}
+              </li>
             ))}
           </ul>
         </section>
@@ -1664,7 +1732,11 @@ function ToolBlockView({ block }: { block: ToolBlock }) {
           <ul className="tool-card__list">
             {block.entries.map((entry, index) => (
               <li key={index}>
-                <code>{entry.path}{entry.line ? ":" + entry.line : ""}</code> {entry.text}
+                <RefLink
+                  text={`${entry.path}${entry.line ? `:${entry.line}` : ""}`}
+                  onOpenFile={onOpenFile}
+                />{" "}
+                {entry.text}
               </li>
             ))}
           </ul>
@@ -1682,8 +1754,98 @@ function ToolBlockView({ block }: { block: ToolBlock }) {
         </section>
       );
     case "note":
-      return <pre tabIndex={0}>{block.text}</pre>;
+      return (
+        <pre tabIndex={0}>
+          <RefLinkedText text={block.text} onOpenFile={onOpenFile} />
+        </pre>
+      );
   }
+}
+
+/**
+ * A span that reads as a file reference. With an open handler it is a button;
+ * without one it is plain text — the affordance degrades, the data never does.
+ */
+function RefLink({
+  text,
+  onOpenFile,
+}: {
+  text: string;
+  onOpenFile?: (reference: FileReference) => void;
+}) {
+  const { t } = useCopy();
+  const segments = segmentFileReferences(text);
+  if (segments.length === 1 && segments[0]!.kind === "file" && onOpenFile) {
+    const reference = segments[0].reference;
+    return (
+      <button
+        type="button"
+        className="tool-card__ref"
+        title={t("chat.openFileRef")}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpenFile(reference);
+        }}
+      >
+        {text}
+      </button>
+    );
+  }
+  return <code>{text}</code>;
+}
+
+/**
+ * Mixed prose + references: file spans and URLs render as affordances, the
+ * rest as raw text. Segmentation always preserves the source, so joining the
+ * parts reproduces the original string.
+ */
+function RefLinkedText({
+  text,
+  onOpenFile,
+}: {
+  text: string;
+  onOpenFile?: (reference: FileReference) => void;
+}) {
+  const { t } = useCopy();
+  const segments = segmentFileReferences(text);
+  return (
+    <>
+      {segments.map((segment, index) => {
+        if (segment.kind === "file" && onOpenFile) {
+          const reference = segment.reference;
+          return (
+            <button
+              type="button"
+              className="tool-card__ref"
+              key={index}
+              title={t("chat.openFileRef")}
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenFile(reference);
+              }}
+            >
+              {segment.text}
+            </button>
+          );
+        }
+        if (segment.kind === "url") {
+          return (
+            <a
+              key={index}
+              className="tool-card__url"
+              href={segment.url}
+              target="_blank"
+              rel="noreferrer noopener"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {segment.text}
+            </a>
+          );
+        }
+        return <span key={index}>{segment.text}</span>;
+      })}
+    </>
+  );
 }
 
 function MessageActions({

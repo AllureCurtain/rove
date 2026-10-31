@@ -227,6 +227,8 @@ const zhCN = {
     matchesTruncated: "匹配结果已截断。",
     filesTitle: "影响文件",
     matchesTitle: "搜索结果",
+    toolInput: "输入",
+    openFileRef: "在工作面板中打开",
     chipReadOnly: "只读",
     chipMutation: "可写",
     chipHighRisk: "高风险",

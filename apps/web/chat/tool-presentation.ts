@@ -1,6 +1,7 @@
 import type { ToolMutationOperation } from "../lib/rove-types";
 import type { ToolCallView } from "../lib/rove-state";
 import { exactDurationLabel } from "./tool-timing";
+import { segmentFileReferences, type FileReference } from "./file-ref";
 
 /**
  * Typed presentation of one tool call.
@@ -20,6 +21,12 @@ export const NOTE_MAX_CHARACTERS = 4_000;
 const SENSITIVE_KEY = /token|secret|authorization|password|credential/iu;
 
 export type ToolBlock =
+  | {
+      kind: "args";
+      /** Pretty-printed argument payload; rendering linkifies it on click. */
+      text: string;
+      truncated: boolean;
+    }
   | { kind: "fields"; rows: { label: string; value: string }[] }
   | { kind: "code"; language: string; text: string; truncated: boolean }
   | {
@@ -33,6 +40,18 @@ export type ToolBlock =
   | { kind: "matches"; entries: { path: string; line?: number; text: string }[]; truncated: boolean }
   | { kind: "note"; text: string };
 
+/**
+ * A header summary that resolves to a workspace file reference carries it, so
+ * the row can open that file instead of just naming it.
+ */
+export interface ToolSubtitle {
+  text: string;
+  fileRef?: FileReference;
+}
+
+/** Cap for the rendered argument payload; the transcript is not a dump. */
+export const ARGS_MAX_CHARACTERS = 12_000;
+
 export interface ToolChip {
   label: string;
   tone: "neutral" | "ok" | "warn" | "danger";
@@ -40,7 +59,7 @@ export interface ToolChip {
 
 export interface ToolPresentation {
   title: string;
-  subtitle: string;
+  subtitle: ToolSubtitle;
   chips: ToolChip[];
   blocks: ToolBlock[];
 }
@@ -60,20 +79,36 @@ export function buildToolPresentation(
   return { ...head, blocks: blocksFor(tool) };
 }
 
-function subtitleFor(tool: ToolCallView): string {
+function subtitleFor(tool: ToolCallView): ToolSubtitle {
   const mutations = tool.mutations ?? [];
   if (mutations.length > 0) {
     const first = mutations[0]!;
-    return mutations.length === 1 ? first.path : `${first.path} (+${mutations.length - 1})`;
+    return mutations.length === 1
+      ? { text: first.path, fileRef: refFromPath(first.path) }
+      : { text: `${first.path} (+${mutations.length - 1})` };
   }
   const paths = tool.metadata?.affected_paths ?? [];
   if (paths.length > 0) {
-    return paths.length === 1 ? paths[0]! : `${paths[0]} (+${paths.length - 1})`;
+    return paths.length === 1
+      ? { text: paths[0]!, fileRef: refFromPath(paths[0]!) }
+      : { text: `${paths[0]} (+${paths.length - 1})` };
   }
   if (tool.error?.code) {
-    return tool.error.code;
+    return { text: tool.error.code };
   }
-  return "";
+  return { text: "" };
+}
+
+/**
+ * A subtitle path is a reference only when it parses as one. Mutation and
+ * affected paths may carry a `:line[:column]` suffix, which the reference
+ * parser already knows how to peel.
+ */
+function refFromPath(path: string): FileReference | undefined {
+  const segments = segmentFileReferences(path);
+  return segments.length === 1 && segments[0]!.kind === "file"
+    ? segments[0].reference
+    : undefined;
 }
 
 function chipsFor(tool: ToolCallView): ToolChip[] {
@@ -162,6 +197,18 @@ function blocksFor(tool: ToolCallView): ToolBlock[] {
     blocks.push({ kind: "fields", rows });
   }
 
+  // Design §5.4: inputs render verbatim after the outputs. A call whose args
+  // never resolved (a rejected approval carries them on pendingApproval) still
+  // shows what the runtime actually received.
+  const args = argsText(tool);
+  if (args !== null) {
+    blocks.push({
+      kind: "args",
+      text: args.slice(0, ARGS_MAX_CHARACTERS),
+      truncated: args.length > ARGS_MAX_CHARACTERS,
+    });
+  }
+
   if (blocks.length === 0) {
     blocks.push({
       kind: "note",
@@ -169,6 +216,27 @@ function blocksFor(tool: ToolCallView): ToolBlock[] {
     });
   }
   return blocks;
+}
+
+/**
+ * The argument payload a card expands to. `tool.args` is the completed call's
+ * record; a call parked on approval only has the request, so it falls back to
+ * the approval's own args. `undefined` args (some tools take none) yield no
+ * block rather than an empty pre.
+ */
+function argsText(tool: ToolCallView): string | null {
+  const raw = tool.args ?? tool.pendingApproval?.args;
+  if (raw === undefined || raw === null) {
+    return null;
+  }
+  if (typeof raw === "string") {
+    return raw;
+  }
+  try {
+    return JSON.stringify(raw, null, 2);
+  } catch {
+    return String(raw);
+  }
 }
 
 function fieldRows(tool: ToolCallView): { label: string; value: string }[] {

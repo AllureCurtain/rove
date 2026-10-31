@@ -230,6 +230,8 @@ const enUS: CopyDictionary = {
     matchesTruncated: "Matches truncated.",
     filesTitle: "Files",
     matchesTitle: "Matches",
+    toolInput: "Input",
+    openFileRef: "Open in work panel",
     chipReadOnly: "read only",
     chipMutation: "mutation capable",
     chipHighRisk: "high risk",
