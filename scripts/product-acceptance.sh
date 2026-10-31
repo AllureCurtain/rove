@@ -6,17 +6,20 @@ set -uo pipefail
 
 REPORT_PATH="${ROVE_ACCEPTANCE_REPORT:-PRODUCT_ACCEPTANCE_REPORT.json}"
 SKIP_WEB=0
-SKIP_BROWSER=0
+SKIP_BROWSER=1
 INCLUDE_GATED=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --report-path) REPORT_PATH="$2"; shift 2 ;;
         --skip-web) SKIP_WEB=1; shift ;;
-        --skip-browser) SKIP_BROWSER=1; shift ;;
+        --include-browser) SKIP_BROWSER=0; shift ;;
         --include-gated) INCLUDE_GATED=1; shift ;;
         -h|--help)
-            echo "usage: $0 [--report-path PATH] [--skip-web] [--skip-browser] [--include-gated]"
+            echo "usage: $0 [--report-path PATH] [--skip-web] [--include-browser] [--include-gated]"
+            echo "  --skip-web        skip web typecheck/test/build and browser checks"
+            echo "  --include-browser run browser-boundary Playwright checks (default: skip)"
+            echo "  --include-gated   run checks gated behind environment variables"
             exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -45,8 +48,8 @@ CHECKS=(
     "web-typecheck|G3-G7|Web TypeScript|apps/web|1|web||pnpm typecheck"
     "web-test|G3-G7|Web unit and component tests|apps/web|1|web||pnpm test"
     "web-build|G3-G7|Web production build|apps/web|1|web||pnpm build"
-    "web-e2e|G1-G7|Browser-boundary Playwright suites|apps/web|1|browser||pnpm test:e2e"
-    "web-serve-e2e|G1-G7|rove-api hosted bundle real-API suite|.|1|browser||bash scripts/serve-acceptance.sh"
+    "web-e2e|G1-G7|Browser-boundary Playwright suites|apps/web|0|browser||pnpm test:e2e"
+    "web-serve-e2e|G1-G7|rove-api hosted bundle real-API suite|.|0|browser||bash scripts/serve-acceptance.sh"
     "mcp-filesystem-smoke|G7|Real MCP filesystem server smoke|.|0|gated|ROVE_MCP_FILESYSTEM_SMOKE|cargo test -p rove-integration-tests --test it mcp::mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture"
 )
 
@@ -98,7 +101,7 @@ for entry in "${CHECKS[@]}"; do
     if [ "$kind" = "web" ] && [ "$SKIP_WEB" -eq 1 ]; then
         skip_reason="--skip-web was requested"
     elif [ "$kind" = "browser" ] && { [ "$SKIP_BROWSER" -eq 1 ] || [ "$SKIP_WEB" -eq 1 ]; }; then
-        skip_reason="--skip-browser or --skip-web was requested"
+        skip_reason="browser checks are skipped by default; pass --include-browser to run them"
     elif [ "$kind" = "gated" ] && [ "$INCLUDE_GATED" -eq 0 ]; then
         skip_reason="gated check; pass --include-gated to run it"
     elif [ "$kind" = "gated" ] && [ -n "$gate_env" ] && [ -z "${!gate_env:-}" ]; then
