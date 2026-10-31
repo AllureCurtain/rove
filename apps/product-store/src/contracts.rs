@@ -3575,8 +3575,9 @@ mod tests {
     #[test]
     fn transcript_event_contract_declares_exactly_what_the_client_can_decode() {
         let legacy = ProductTranscriptEventContract::parse("1").expect("version 1 is valid");
+        let pre_thinking = ProductTranscriptEventContract::parse("2").expect("version 2 is valid");
         let current =
-            ProductTranscriptEventContract::parse("2").expect("version 2 is the current contract");
+            ProductTranscriptEventContract::parse("3").expect("version 3 is the current contract");
 
         assert_eq!(legacy.version(), 1);
         assert!(legacy.accepts("run_started"));
@@ -3584,7 +3585,13 @@ mod tests {
             !legacy.accepts("provider_retry"),
             "a client on the pre-retry contract must not be offered the retry row"
         );
+        assert!(pre_thinking.accepts("provider_retry"));
+        assert!(
+            !pre_thinking.accepts("thinking_delta"),
+            "a client on the pre-thinking contract must not be offered the thinking row"
+        );
         assert!(current.accepts("provider_retry"));
+        assert!(current.accepts("thinking_delta"));
         assert!(current.accepts("run_started"));
         assert!(
             !current.accepts("a_kind_this_build_never_defined"),
