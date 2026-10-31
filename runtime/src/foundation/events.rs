@@ -119,6 +119,14 @@ pub enum StreamEvent {
     /// A chunk of streaming text from the LLM.
     LlmChunk { delta: String },
 
+    /// A chunk of provider chain-of-thought streamed beside the answer.
+    ///
+    /// Reasoning deltas are a distinct durable stream: they are replayed to
+    /// consumers like `llm_chunk` but are never folded into `LlmMessage.full`
+    /// or the persisted assistant content, so the answer text stays exactly
+    /// what the model wrote as its reply.
+    ThinkingDelta { delta: String },
+
     /// A safe runtime progress note. This must not contain hidden reasoning text.
     ModelStatus { status: String, message: String },
 
@@ -446,9 +454,9 @@ pub enum TraceLink {
 ///
 /// Version 1 is the set of kinds a client bundle predating `provider_retry`
 /// already knew — every kind in `runtime/src/foundation/events.rs` except that
-/// one, which is also the newest addition (`02caa7c` introduced it; every other
-/// kind's introducing commit is one of its ancestors). A kind added later gets
-/// its own version here and must bump [`STREAM_EVENT_CONTRACT_VERSION`].
+/// one. A kind added later gets its own version here and must bump
+/// [`STREAM_EVENT_CONTRACT_VERSION`]: version 2 is `provider_retry`, and
+/// version 3 is `thinking_delta`.
 ///
 /// `tests/event_contract.rs` asserts this table against the `event_name` match
 /// arms and the Web `STREAM_EVENT_NAMES` array, so a new variant cannot enter
@@ -466,6 +474,7 @@ pub const STREAM_EVENT_KINDS: &[(&str, u32)] = &[
     ("execution_budget_updated", 1),
     ("execution_degraded", 1),
     ("llm_chunk", 1),
+    ("thinking_delta", 3),
     ("model_status", 1),
     ("provider_retry", 2),
     ("llm_message", 1),
@@ -504,7 +513,7 @@ pub const STREAM_EVENT_KINDS: &[(&str, u32)] = &[
 ];
 
 /// Newest canonical-event client contract version this runtime defines.
-pub const STREAM_EVENT_CONTRACT_VERSION: u32 = 2;
+pub const STREAM_EVENT_CONTRACT_VERSION: u32 = 3;
 
 impl StreamEvent {
     /// Return the durable/public projection for a hard read-only Review run.
@@ -599,6 +608,9 @@ impl StreamEvent {
                 Self::ExecutionDegraded { record }
             }
             Self::LlmChunk { .. } => Self::LlmChunk {
+                delta: "[review model output omitted]".to_string(),
+            },
+            Self::ThinkingDelta { .. } => Self::ThinkingDelta {
                 delta: "[review model output omitted]".to_string(),
             },
             Self::LlmMessage {
@@ -804,6 +816,7 @@ impl StreamEvent {
             Self::ExecutionBudgetUpdated { .. } => "execution_budget_updated",
             Self::ExecutionDegraded { .. } => "execution_degraded",
             Self::LlmChunk { .. } => "llm_chunk",
+            Self::ThinkingDelta { .. } => "thinking_delta",
             Self::ModelStatus { .. } => "model_status",
             Self::ProviderRetry { .. } => "provider_retry",
             Self::LlmMessage { .. } => "llm_message",

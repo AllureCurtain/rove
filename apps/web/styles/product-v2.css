@@ -5647,6 +5647,58 @@ body.is-resizing-column .product-app-frame[data-ui-version="v2"] .product-sideba
 }
 
 
+/* The provider's chain-of-thought rides above its answer in one quiet fold —
+   secondary text, hairline-framed, never styled like the reply itself. */
+.product-app-frame[data-ui-version="v2"] .thinking-region {
+  display: flex;
+  flex-direction: column;
+  margin: 0 0 8px;
+  border-left: 2px solid var(--v2-border);
+}
+
+.product-app-frame[data-ui-version="v2"] .thinking-region__head {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  padding: 1px 6px 1px 4px;
+  border: 0;
+  border-radius: var(--v2-radius-sm);
+  background: transparent;
+  color: var(--v2-ink-3);
+  cursor: pointer;
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.product-app-frame[data-ui-version="v2"] .thinking-region__head:hover,
+.product-app-frame[data-ui-version="v2"] .thinking-region__head:focus-visible {
+  background: var(--v2-surface-hover);
+  color: var(--v2-ink-2);
+}
+
+.product-app-frame[data-ui-version="v2"] .thinking-region__head svg {
+  width: 12px;
+  height: 12px;
+  opacity: 0.65;
+  transform: rotate(-90deg);
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+.product-app-frame[data-ui-version="v2"] .thinking-region__head svg[data-open="true"] {
+  transform: rotate(0deg);
+}
+
+.product-app-frame[data-ui-version="v2"] .thinking-region[data-streaming="true"] .thinking-region__head span {
+  font-style: italic;
+}
+
+.product-app-frame[data-ui-version="v2"] .thinking-region__body {
+  padding: 2px 0 0 10px;
+  color: var(--v2-ink-3);
+  font-size: 13px;
+}
+
 /* A folded run of tool calls is one quiet disclosure row, not a card —
    blocking cards (approvals, pending inputs) live outside it. */
 .product-app-frame[data-ui-version="v2"] .activity-group {

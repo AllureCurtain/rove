@@ -240,9 +240,9 @@ fn canonical_event_registry_covers_the_wire_names_with_bounded_versions() {
         "STREAM_EVENT_CONTRACT_VERSION must be the newest version in the registry"
     );
 
-    // The transcript `event_contract` negotiation is only meaningful while a kind
-    // newer than the oldest contract exists; `provider_retry` is that kind, so R2c
-    // stays a real canonical event instead of a private side channel.
+    // The transcript `event_contract` negotiation is only meaningful while kinds
+    // newer than the oldest contract exist. `provider_retry` introduced version 2
+    // and `thinking_delta` version 3, so the registry must name exactly those.
     let newer: Vec<&str> = kinds
         .iter()
         .filter(|(_, version)| *version > 1)
@@ -250,8 +250,8 @@ fn canonical_event_registry_covers_the_wire_names_with_bounded_versions() {
         .collect();
     assert_eq!(
         newer,
-        vec!["provider_retry"],
-        "provider_retry is the kind that introduced contract version 2"
+        vec!["thinking_delta", "provider_retry"],
+        "thinking_delta introduced contract version 3 and provider_retry version 2"
     );
 }
 

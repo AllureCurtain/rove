@@ -12,6 +12,16 @@ pub enum AgentEvent {
     TextDelta {
         delta: String,
     },
+    /// A chunk of provider chain-of-thought (DeepSeek `reasoning_content`,
+    /// Anthropic thinking blocks, external-adapter `thinking_delta` frames).
+    ///
+    /// This is a distinct stream from [`AgentEvent::TextDelta`]: reasoning is
+    /// never concatenated into the assistant message or its persisted content,
+    /// and consumers that do not render it can ignore it without losing answer
+    /// text.
+    ThinkingDelta {
+        delta: String,
+    },
     ModelMessage {
         full: String,
         usage: Usage,

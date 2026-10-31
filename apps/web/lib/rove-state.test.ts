@@ -1987,4 +1987,52 @@ describe("workbenchReducer", () => {
     expect(assistant?.content).toBe("The read is complete.");
     expect(assistant?.aborted).toBeUndefined();
   });
+
+  it("keeps reasoning on the thinking stream and out of the answer text", () => {
+    let state = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      seq: 1,
+      event: {
+        type: "run_started",
+        run_id: "run-1",
+        job_id: "job-1",
+        user_message: "Reason about this",
+      },
+    });
+    // The provider reasons before it writes: the thinking delta opens the
+    // streaming assistant message on its own, ahead of any answer text.
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 2,
+      event: { type: "thinking_delta", delta: "chain of " },
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 3,
+      event: { type: "thinking_delta", delta: "thought" },
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 4,
+      event: { type: "llm_chunk", delta: "the " },
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 5,
+      event: {
+        type: "llm_message",
+        full: "the answer",
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      },
+    });
+
+    const assistant = state.messages.find(
+      (message) => message.role === "assistant",
+    );
+    expect(assistant?.thinking).toBe("chain of thought");
+    expect(assistant?.content).toBe("the answer");
+    expect(assistant?.status).toBe("final");
+    // Reasoning never merged into the reply the transcript copies or renders.
+    expect(assistant?.content).not.toContain("thought");
+  });
 });

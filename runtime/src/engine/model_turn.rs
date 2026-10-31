@@ -257,6 +257,12 @@ fn durable_model_event(event: AgentEvent, run_mode: RunMode) -> Option<StreamEve
             Some(StreamEvent::LlmChunk { delta })
         }
         AgentEvent::TextDelta { .. } => None,
+        // Chain-of-thought rides its own durable stream, redacted under Review
+        // for the same reason answer text is: it is still model output.
+        AgentEvent::ThinkingDelta { delta } if run_mode == RunMode::Normal => {
+            Some(StreamEvent::ThinkingDelta { delta })
+        }
+        AgentEvent::ThinkingDelta { .. } => None,
         AgentEvent::ModelMessage {
             full,
             usage,
@@ -308,5 +314,137 @@ fn llm_message_event(
         tool_calls,
         assistant_turn,
         aborted,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+    use futures::StreamExt;
+    use futures::stream::BoxStream;
+    use tokio_util::sync::CancellationToken;
+
+    use rove_models::{
+        Message, ModelClient, ModelError, ModelEvent, ModelToolSchema, StopReason, Usage,
+    };
+
+    use super::{ModelTurnItem, run_model_turn};
+    use crate::events::StreamEvent;
+    use crate::types::RunMode;
+
+    /// Emits one reasoning delta ahead of the answer, the DeepSeek
+    /// `reasoning_content` shape after normalization.
+    struct ThinkingModel;
+
+    #[async_trait]
+    impl ModelClient for ThinkingModel {
+        fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ModelToolSchema],
+        ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+            Box::pin(futures::stream::iter([
+                Ok(ModelEvent::ThinkingDelta {
+                    text: "chain of thought".to_string(),
+                }),
+                Ok(ModelEvent::TextDelta {
+                    text: "the answer".to_string(),
+                }),
+                Ok(ModelEvent::Usage {
+                    usage: Usage::default(),
+                }),
+                Ok(ModelEvent::StopReason {
+                    reason: StopReason::EndTurn,
+                }),
+                Ok(ModelEvent::Done),
+            ]))
+        }
+
+        fn model_id(&self) -> &str {
+            "thinking"
+        }
+
+        fn requires_terminal_event(&self) -> bool {
+            true
+        }
+    }
+
+    /// Reasoning reaches consumers on its own stream and never contaminates
+    /// the answer the turn persists.
+    #[tokio::test]
+    async fn thinking_reaches_the_stream_but_stays_out_of_the_answer() {
+        let mut stream = run_model_turn(
+            &ThinkingModel,
+            vec![Message::user("hello")],
+            Vec::new(),
+            CancellationToken::new(),
+            RunMode::Normal,
+        );
+
+        let mut thinking = String::new();
+        let mut chunk = String::new();
+        let mut finished = None;
+        while let Some(item) = stream.next().await {
+            match item {
+                ModelTurnItem::Event(StreamEvent::ThinkingDelta { delta }) => {
+                    thinking.push_str(&delta);
+                }
+                ModelTurnItem::Event(StreamEvent::LlmChunk { delta }) => {
+                    chunk.push_str(&delta);
+                }
+                ModelTurnItem::Event(StreamEvent::LlmMessage {
+                    full,
+                    assistant_turn,
+                    ..
+                }) => {
+                    assert_eq!(full, "the answer");
+                    assert!(
+                        !full.contains("chain of thought"),
+                        "persisted answer text must exclude reasoning: {full}"
+                    );
+                    let turn = assistant_turn.expect("the message carries its canonical turn");
+                    let persisted: String = turn
+                        .content
+                        .iter()
+                        .filter_map(|block| block.text_value())
+                        .collect();
+                    assert_eq!(persisted, "the answer");
+                }
+                ModelTurnItem::Finished(turn) => finished = Some(turn),
+                _ => {}
+            }
+        }
+
+        assert_eq!(thinking, "chain of thought");
+        assert_eq!(chunk, "the answer");
+        let turn = finished.expect("the turn completes");
+        assert_eq!(turn.full_response, "the answer");
+    }
+
+    /// Review redacts model output — reasoning is model output, so it is
+    /// suppressed at the same boundary `llm_chunk` is.
+    #[tokio::test]
+    async fn review_turns_publish_no_thinking_deltas() {
+        let mut stream = run_model_turn(
+            &ThinkingModel,
+            vec![Message::user("hello")],
+            Vec::new(),
+            CancellationToken::new(),
+            RunMode::Review,
+        );
+
+        while let Some(item) = stream.next().await {
+            assert!(
+                !matches!(
+                    item,
+                    ModelTurnItem::Event(StreamEvent::ThinkingDelta { .. })
+                ),
+                "review must not publish reasoning: {item:?}"
+            );
+            assert!(
+                !matches!(item, ModelTurnItem::Event(StreamEvent::LlmChunk { .. })),
+                "review must not publish answer chunks either: {item:?}"
+            );
+        }
     }
 }

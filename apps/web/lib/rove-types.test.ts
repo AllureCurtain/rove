@@ -151,6 +151,10 @@ const streamEventFixtures: StreamEvent[] = [
     delta: "he",
   },
   {
+    type: "thinking_delta",
+    delta: "let me think",
+  },
+  {
     type: "model_status",
     status: "thinking",
     message: "Model is thinking",

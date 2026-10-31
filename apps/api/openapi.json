@@ -8207,6 +8207,25 @@
             "type": "object"
           },
           {
+            "description": "A chunk of provider chain-of-thought streamed beside the answer.\n\nReasoning deltas are a distinct durable stream: they are replayed to\nconsumers like `llm_chunk` but are never folded into `LlmMessage.full`\nor the persisted assistant content, so the answer text stays exactly\nwhat the model wrote as its reply.",
+            "properties": {
+              "delta": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "thinking_delta"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "delta",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
             "description": "A safe runtime progress note. This must not contain hidden reasoning text.",
             "properties": {
               "message": {
