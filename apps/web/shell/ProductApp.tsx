@@ -694,7 +694,16 @@ function ServerProductApp({ draftStore }: {
   // transcript reads the dock's measured height so the last row is never
   // parked underneath it.
   const composerDockRef = useRef<HTMLDivElement | null>(null);
+  // The dock only mounts once a session route resolves. Re-running on that flag
+  // (rather than `[]`) is what lets this effect actually observe the dock —
+  // with an empty dep list it fires before the dock exists and never retries,
+  // leaving --composer-dock-height unset and the last transcript row parked
+  // under the composer.
+  const composerDockMounted = Boolean(displaySession && displayWorkspace);
   useEffect(() => {
+    if (!composerDockMounted) {
+      return;
+    }
     const dock = composerDockRef.current;
     const pane = dock?.closest(".chat-pane");
     if (!dock || !(pane instanceof HTMLElement)) {
@@ -713,7 +722,7 @@ function ServerProductApp({ draftStore }: {
       observer.disconnect();
       pane.style.removeProperty("--composer-dock-height");
     };
-  }, []);
+  }, [composerDockMounted]);
   const composerPrerequisiteUnavailable =
     awaitingInitialRestore ||
     continuity.restoreState.status === "loading" ||
