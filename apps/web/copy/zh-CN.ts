@@ -1,3 +1,5 @@
+import { defaultWorkspacePathPlaceholder } from "./path-placeholder";
+
 const zhCN = {
   desktopProviders: {
     description: "桌面版将密钥安全保存在 Windows 凭据管理器中，服务配置不包含密钥明文。",
@@ -850,7 +852,7 @@ const zhCN = {
     browse: "浏览…",
     pickerUnavailable: "本机文件夹选择不可用，请手动输入绝对路径。",
     pathRequired: "请输入要打开的绝对路径。",
-    pathPlaceholder: "D:\\path\\to\\project",
+    pathPlaceholder: defaultWorkspacePathPlaceholder(),
   },
   home: {
     prompt: "让 rove 做点什么？",

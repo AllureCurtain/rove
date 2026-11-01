@@ -1,3 +1,5 @@
+import { defaultWorkspacePathPlaceholder } from "./path-placeholder";
+
 import type { CopyDictionary } from "./zh-CN";
 
 const enUS: CopyDictionary = {
@@ -892,7 +894,7 @@ const enUS: CopyDictionary = {
     pickerUnavailable:
       "Native folder picker is unavailable. Enter an absolute path instead.",
     pathRequired: "Enter an absolute path to open.",
-    pathPlaceholder: "D:\\path\\to\\project",
+    pathPlaceholder: defaultWorkspacePathPlaceholder(),
   },
   home: {
     prompt: "What should Rove work on?",
