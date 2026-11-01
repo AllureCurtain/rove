@@ -4744,6 +4744,59 @@
         ],
         "type": "object"
       },
+      "ProductMutationRevertAction": {
+        "enum": [
+          "deleted_file",
+          "reverse_patched"
+        ],
+        "type": "string"
+      },
+      "ProductMutationRevertRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "Workspace-relative path whose latest recorded mutation is reverted.",
+            "type": "string"
+          },
+          "run_id": {
+            "description": "Restrict the search to mutations recorded by this run. When omitted the\nmost recent mutation for `path` across the session's runs is reverted.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "ProductMutationRevertResponse": {
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ProductMutationRevertAction",
+            "description": "What the revert did to the file on disk."
+          },
+          "path": {
+            "type": "string"
+          },
+          "reverted_operation": {
+            "description": "The operation that was undone (`create` or `update`).",
+            "type": "string"
+          },
+          "run_id": {
+            "description": "The run that recorded the reverted mutation.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "reverted_operation",
+          "run_id",
+          "action"
+        ],
+        "type": "object"
+      },
       "ProductPreferences": {
         "properties": {
           "active_session_id": {
@@ -15692,6 +15745,102 @@
               }
             },
             "description": "Product store operation failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "ProductStore is unavailable"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "tags": [
+          "Product"
+        ]
+      }
+    },
+    "/product/sessions/{session_id}/mutations/revert": {
+      "post": {
+        "operationId": "revert_product_mutation",
+        "parameters": [
+          {
+            "description": "Product session id",
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ProductSessionId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductMutationRevertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductMutationRevertResponse"
+                }
+              }
+            },
+            "description": "The recorded mutation was reverted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request or path escapes the workspace"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Product session not found, or no recorded mutation for the path"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "The file no longer matches the state the mutation left it in, or the operation cannot be reverted"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Product store or filesystem operation failed"
           },
           "503": {
             "content": {

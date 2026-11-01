@@ -2844,6 +2844,7 @@ async fn api_exposes_openapi_json_for_all_routes() {
             "get",
         ),
         ("/product/sessions/{session_id}/diff", "get"),
+        ("/product/sessions/{session_id}/mutations/revert", "post"),
         ("/product/sessions/{session_id}/authorizations", "get"),
         ("/product/sessions/{session_id}/attachments", "post"),
         (
@@ -3059,6 +3060,7 @@ async fn api_exposes_openapi_json_for_all_routes() {
             "get",
         ),
         ("/product/sessions/{session_id}/diff", "get"),
+        ("/product/sessions/{session_id}/mutations/revert", "post"),
         ("/product/sessions/{session_id}/authorizations", "get"),
         ("/product/sessions/{session_id}/attachments", "post"),
         (
@@ -14897,6 +14899,218 @@ async fn product_diff_returns_canonical_tool_and_git_patches() {
         .unwrap();
     assert_eq!(binary["binary"], true);
     assert_eq!(binary["reconstructable"], false);
+}
+
+#[tokio::test]
+async fn product_mutation_revert_deletes_a_created_file() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Revert create").await;
+    let session_id = session["id"].as_str().unwrap();
+    let created = create_product_job(&app, session_id, "create a file").await;
+    wait_for_done(app.clone(), created.job_id.to_string()).await;
+
+    // The workspace file the recorded `create` mutation produced.
+    let target = folder.path().join("greet.py");
+    std::fs::write(&target, "def hello(name):\n    return \"Hello!\"\n").unwrap();
+
+    let state_store = StateStore::with_index_path(
+        &folder.path().join("api-state"),
+        folder.path().join(".rove/state.sqlite"),
+        5_000,
+    );
+    let mut report = state_store.load_report(created.run_id).await.unwrap();
+    report.tool_mutations.push(ToolMutation {
+        path: "greet.py".to_string(),
+        operation: ToolMutationOperation::Create,
+        diff: Some(
+            "--- a/greet.py\n+++ b/greet.py\n@@ -1,0 +1,2 @@\n+def hello(name):\n+    return \"Hello!\"\n"
+                .to_string(),
+        ),
+    });
+    rove_runtime::state::report::write_report(
+        &state_store.run_store.run_dir(&created.run_id),
+        &report,
+    )
+    .unwrap();
+
+    let revert = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/product/sessions/{session_id}/mutations/revert"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "path": "greet.py" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revert.status(), StatusCode::OK);
+    let body: serde_json::Value = decode_json(revert).await;
+    assert_eq!(body["action"], "deleted_file");
+    assert_eq!(body["reverted_operation"], "create");
+    assert_eq!(body["run_id"], created.run_id.to_string());
+    assert!(!target.exists(), "the created file must be deleted");
+}
+
+#[tokio::test]
+async fn product_mutation_revert_refuses_a_tampered_created_file() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Revert tampered").await;
+    let session_id = session["id"].as_str().unwrap();
+    let created = create_product_job(&app, session_id, "create then edit").await;
+    wait_for_done(app.clone(), created.job_id.to_string()).await;
+
+    // The file was changed after the recorded create — a revert must not
+    // delete newer work.
+    let target = folder.path().join("greet.py");
+    std::fs::write(
+        &target,
+        "def hello(name):\n    return \"Changed by a human\"\n",
+    )
+    .unwrap();
+
+    let state_store = StateStore::with_index_path(
+        &folder.path().join("api-state"),
+        folder.path().join(".rove/state.sqlite"),
+        5_000,
+    );
+    let mut report = state_store.load_report(created.run_id).await.unwrap();
+    report.tool_mutations.push(ToolMutation {
+        path: "greet.py".to_string(),
+        operation: ToolMutationOperation::Create,
+        diff: Some(
+            "--- a/greet.py\n+++ b/greet.py\n@@ -1,0 +1,2 @@\n+def hello(name):\n+    return \"Hello!\"\n"
+                .to_string(),
+        ),
+    });
+    rove_runtime::state::report::write_report(
+        &state_store.run_store.run_dir(&created.run_id),
+        &report,
+    )
+    .unwrap();
+
+    let revert = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/product/sessions/{session_id}/mutations/revert"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "path": "greet.py" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revert.status(), StatusCode::CONFLICT);
+    let body: serde_json::Value = decode_json(revert).await;
+    assert_eq!(body["code"], "revert_conflict");
+    assert!(target.exists(), "a changed file must survive the revert");
+}
+
+#[tokio::test]
+async fn product_mutation_revert_reverse_applies_an_update_in_a_repo() {
+    let server = tempfile::TempDir::new().unwrap();
+    let repo = tempfile::TempDir::new().unwrap();
+    run_git(repo.path(), &["init"]);
+    run_git(
+        repo.path(),
+        &["config", "user.email", "rove@example.invalid"],
+    );
+    run_git(repo.path(), &["config", "user.name", "Rove Test"]);
+    std::fs::write(repo.path().join("note.txt"), "before\n").unwrap();
+    run_git(repo.path(), &["add", "note.txt"]);
+    run_git(repo.path(), &["commit", "-m", "base"]);
+
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = post_json(
+        &app,
+        "/product/workspaces",
+        serde_json::json!({
+            "root": repo.path(),
+            "kind": "repo",
+            "display_name": "Revert repo",
+            "pinned": false
+        }),
+    )
+    .await;
+    assert_eq!(workspace.status(), StatusCode::CREATED);
+    let workspace: serde_json::Value = decode_json(workspace).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Revert update").await;
+    let session_id = session["id"].as_str().unwrap();
+    let created = create_product_job(&app, session_id, "edit a tracked file").await;
+    wait_for_done(app.clone(), created.job_id.to_string()).await;
+
+    // The recorded update changed "before" to "after"; the file on disk still
+    // holds the post-edit content.
+    std::fs::write(repo.path().join("note.txt"), "after\n").unwrap();
+    let state_store = StateStore::with_index_path(
+        &repo.path().join("api-state"),
+        repo.path().join(".rove/state.sqlite"),
+        5_000,
+    );
+    let mut report = state_store.load_report(created.run_id).await.unwrap();
+    report.tool_mutations.push(ToolMutation {
+        path: "note.txt".to_string(),
+        operation: ToolMutationOperation::Update,
+        diff: Some("--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-before\n+after\n".to_string()),
+    });
+    rove_runtime::state::report::write_report(
+        &state_store.run_store.run_dir(&created.run_id),
+        &report,
+    )
+    .unwrap();
+
+    let revert = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/product/sessions/{session_id}/mutations/revert"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "path": "note.txt" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revert.status(), StatusCode::OK);
+    let body: serde_json::Value = decode_json(revert).await;
+    assert_eq!(body["action"], "reverse_patched");
+    assert_eq!(body["reverted_operation"], "update");
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("note.txt")).unwrap(),
+        "before\n"
+    );
 }
 
 fn run_git(root: &Path, args: &[&str]) {

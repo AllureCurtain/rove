@@ -913,6 +913,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/product/sessions/{session_id}/mutations/revert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["revert_product_mutation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/product/sessions/{session_id}/reviews": {
         parameters: {
             query?: never;
@@ -2824,6 +2840,26 @@ export interface components {
             reasoning_unavailable_reason?: string | null;
             supported_reasoning?: components["schemas"]["ProductReasoningPreference"][];
             supports_reasoning?: boolean;
+        };
+        /** @enum {string} */
+        ProductMutationRevertAction: "deleted_file" | "reverse_patched";
+        ProductMutationRevertRequest: {
+            /** @description Workspace-relative path whose latest recorded mutation is reverted. */
+            path: string;
+            /**
+             * @description Restrict the search to mutations recorded by this run. When omitted the
+             *     most recent mutation for `path` across the session's runs is reverted.
+             */
+            run_id?: string | null;
+        };
+        ProductMutationRevertResponse: {
+            /** @description What the revert did to the file on disk. */
+            action: components["schemas"]["ProductMutationRevertAction"];
+            path: string;
+            /** @description The operation that was undone (`create` or `update`). */
+            reverted_operation: string;
+            /** @description The run that recorded the reverted mutation. */
+            run_id: string;
         };
         ProductPreferences: {
             active_session_id?: null | components["schemas"]["ProductSessionId"];
@@ -8461,6 +8497,78 @@ export interface operations {
                 };
             };
             /** @description Product store operation failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description ProductStore is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    revert_product_mutation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Product session id */
+                session_id: components["schemas"]["ProductSessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProductMutationRevertRequest"];
+            };
+        };
+        responses: {
+            /** @description The recorded mutation was reverted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductMutationRevertResponse"];
+                };
+            };
+            /** @description Invalid request or path escapes the workspace */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Product session not found, or no recorded mutation for the path */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description The file no longer matches the state the mutation left it in, or the operation cannot be reverted */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Product store or filesystem operation failed */
             500: {
                 headers: {
                     [name: string]: unknown;
