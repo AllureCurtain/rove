@@ -13,6 +13,8 @@ import {
 import {
   activateWorkPanelTab,
   closeWorkPanelTab,
+  closeOtherWorkPanelTabs,
+  closeAllWorkPanelTabs,
   defaultWorkPanelTabs,
   moveWorkPanelTab,
   openWorkPanelFileTab,
@@ -320,6 +322,10 @@ export function useWorkPanel(
       setTabs(activateWorkPanelTab(selection.tabs, id)),
     closeTab: (id: string) =>
       setTabs(closeWorkPanelTab(selection.tabs, id)),
+    closeOtherTabs: (id: string) =>
+      setTabs(closeOtherWorkPanelTabs(selection.tabs, id)),
+    closeAllTabs: () =>
+      setTabs(closeAllWorkPanelTabs(selection.tabs)),
     replaceTab: (from: string, kind: WorkPanelTabKind) =>
       setTabs(replaceWorkPanelTab(selection.tabs, from, kind)),
     moveTab: (id: string, toIndex: number) =>

@@ -193,6 +193,35 @@ export function closeWorkPanelTab(
   return { tabs, activeId: tabs[Math.min(index, tabs.length - 1)]?.id ?? null };
 }
 
+/**
+ * Closes every tab except `id` and activates it (design §8, issue #32's
+ * close-others affordance). Closing a tab that is not the active one must not
+ * move the selection — the survivor is always `id`.
+ */
+export function closeOtherWorkPanelTabs(
+  state: WorkPanelTabsState,
+  id: string,
+): WorkPanelTabsState {
+  const kept = state.tabs.filter((tab) => tab.id === id);
+  if (kept.length === 0) {
+    return state;
+  }
+  return { tabs: kept, activeId: id };
+}
+
+/**
+ * Closes every tab. The strip can legitimately go empty — `activeId` is null,
+ * which the panel already handles as its "no tab selected" state.
+ */
+export function closeAllWorkPanelTabs(
+  state: WorkPanelTabsState,
+): WorkPanelTabsState {
+  if (state.tabs.length === 0) {
+    return state;
+  }
+  return { tabs: [], activeId: null };
+}
+
 /** Replaces a launcher tab with the chosen kind, reusing an open tab. */
 export function replaceWorkPanelTab(
   state: WorkPanelTabsState,
