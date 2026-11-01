@@ -412,6 +412,7 @@ fn router_composed(state: ApiState) -> Router {
         .routes(routes!(product::artifacts::download_artifact))
         .routes(routes!(product::artifacts::preview_artifact))
         .routes(routes!(product::diff::get_session_diff))
+        .routes(routes!(product::revert::revert_product_mutation))
         .routes(routes!(
             product::authorizations::list_product_session_authorizations
         ))

@@ -17,6 +17,7 @@ pub(crate) mod platform;
 pub(crate) mod preview;
 pub(crate) mod provider_catalog;
 pub(crate) mod provider_onboarding;
+pub(crate) mod revert;
 pub(crate) mod review;
 pub(crate) mod routes;
 pub(crate) mod trace_search;
@@ -48,5 +49,8 @@ pub use provider_onboarding::{
     ProductProviderOnboardingFailure, ProductProviderOnboardingFailureCode,
     ProductProviderOnboardingProbe, ProductProviderOnboardingReceipt,
     ProductProviderOnboardingRequest,
+};
+pub use revert::{
+    ProductMutationRevertAction, ProductMutationRevertRequest, ProductMutationRevertResponse,
 };
 pub use rove_product_store::*;
