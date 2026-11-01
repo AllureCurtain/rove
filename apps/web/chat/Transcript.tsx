@@ -137,6 +137,7 @@ export function Transcript({
   loadAttachment,
   onOpenFile,
   onStopSubagent,
+  onRevertMutation,
 }: {
   timeline: TranscriptRunGroup[];
   messages?: ProductMessage[];
@@ -203,6 +204,11 @@ export function Transcript({
    * read-only.
    */
   onStopSubagent?: (parentCallId: string) => void | Promise<unknown>;
+  /**
+   * Revert a file mutation shown on a change card (issue #29). When present the
+   * card offers the action; absent, it shows rollback as unavailable.
+   */
+  onRevertMutation?: (path: string) => Promise<unknown>;
 }) {
   const { t } = useCopy();
   /**
@@ -905,6 +911,7 @@ export function Transcript({
                   onOpenFile={onOpenFile}
                   subagents={subagents}
                   onStopSubagent={onStopSubagent}
+                  onRevertMutation={onRevertMutation}
                 />
               ) : entry.kind === "compaction" ? (
                 <CompactionDivider key={entry.id} compaction={entry.compaction} />
@@ -1225,6 +1232,7 @@ function ActivityGroup({
   onOpenFile,
   subagents,
   onStopSubagent,
+  onRevertMutation,
 }: {
   entry: Extract<TranscriptEntry, { kind: "activity" }>;
   open: boolean;
@@ -1237,6 +1245,7 @@ function ActivityGroup({
   onOpenFile?: (reference: FileReference) => void;
   subagents: SubagentView[];
   onStopSubagent?: (parentCallId: string) => void | Promise<unknown>;
+  onRevertMutation?: (path: string) => Promise<unknown>;
 }) {
   const { t } = useCopy();
   const inFlight = activityWantsOpen(entry);
@@ -1300,6 +1309,7 @@ function ActivityGroup({
           tool={tool}
           mutation={mutation}
           onOpenFile={onOpenFile}
+          onRevert={onRevertMutation}
         />
       ));
     }

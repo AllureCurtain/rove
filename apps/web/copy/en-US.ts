@@ -239,8 +239,9 @@ const enUS: CopyDictionary = {
     changeCardLabel:
       "{{status}} {{path}} (+{{additions}} −{{deletions}})",
     changeCopy: "Copy diff",
-    rollbackUnavailable:
-      "Rollback needs a product revert endpoint that does not exist yet (see issue #29).",
+    rollback: "Revert this change",
+    rollbackBusy: "Reverting…",
+    rollbackUnavailable: "This change cannot be reverted right now.",
     chipReadOnly: "read only",
     chipMutation: "mutation capable",
     chipHighRisk: "high risk",

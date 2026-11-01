@@ -2066,6 +2066,7 @@ function ServerProductApp({ draftStore }: {
                           onApproval={continuity.approve}
                           onInputSubmit={continuity.answer}
                           onStopSubagent={continuity.stopSubagent}
+                          onRevertMutation={continuity.revertMutation}
                           onRetryMessage={handleRetryMessage}
                           onEditMessage={handleEditTranscriptMessage}
                           onForkSession={() => void handleForkSession()}

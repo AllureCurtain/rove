@@ -1417,6 +1417,25 @@ export function useSessionContinuity({
     [runState.activeJobId],
   );
 
+  /**
+   * Revert the latest recorded mutation for one path (issue #29). A 409
+   * `revert_conflict` is surfaced to the caller so the change card can say the
+   * file moved on rather than pretending the revert landed; every other error
+   * goes through the shared banner.
+   */
+  const revertMutation = useCallback(
+    async (path: string, runId?: string) => {
+      if (!activeSession) {
+        throw new Error("no active session");
+      }
+      return productClient.revertMutation(activeSession.id, {
+        path,
+        ...(runId ? { run_id: runId } : {}),
+      });
+    },
+    [activeSession, productClient],
+  );
+
   useEffect(() => {
     if (!activeSession || focusedSessionRef.current !== activeSession.id) {
       return;
@@ -1497,6 +1516,7 @@ export function useSessionContinuity({
     approve,
     answer,
     stopSubagent,
+    revertMutation,
   };
 }
 
