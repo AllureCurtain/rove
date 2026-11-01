@@ -77,7 +77,8 @@ import { ProductSearchView } from "../search/ProductSearchView";
 import { SessionMessageSearchPanel } from "../search/SessionMessageSearchPanel";
 import { routePrefetchTargets } from "./route-prefetch";
 import { useIdleRoutePrefetch } from "./use-idle-route-prefetch";
-import { SettingsShell } from "../settings/SettingsShell";
+import { SettingsShell, selectedProfileIsRemote } from "../settings/SettingsShell";
+import { ProviderTrustPrompt } from "../settings/ProviderTrustPrompt";
 import { NotificationInbox } from "./toast/NotificationInbox";
 import { ToastProvider, useToast } from "./toast/ToastProvider";
 import { useBackgroundFailureToasts } from "./toast/use-background-failure-toasts";
@@ -1987,6 +1988,17 @@ function ServerProductApp({ draftStore }: {
                  veil own the transition, not a full-screen loader. */
               <div className="chat-pane">
                 {stopNotice ? <p className="shell-alert" role="status">{stopNotice}</p> : null}
+                {/* The missing provider-credentials grant blocks turns with a
+                    bare `project_trust_required` queue failure. Settings is the
+                    only other surface that names it, so the chat pane offers
+                    the same one-click grant where the failure actually
+                    lands. */}
+                <ProviderTrustPrompt
+                  client={settingsClient}
+                  workspaceId={displayWorkspace.id}
+                  providerIsRemote={selectedProfileIsRemote(server.profiles, server.selection)}
+                  workspaceName={displayWorkspace.displayName}
+                />
                 {/* R9: manual compaction lives beside the send area, where the
                     waiting row's degraded "compacting" phase is also shown, so
                     the manual action and the automatic one are read together. */}

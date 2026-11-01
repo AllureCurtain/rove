@@ -562,7 +562,7 @@ function ProvidersSettings(props: ProviderSettingsProps) {
  * Whether the current selection would hit the provider-credentials trust
  * gate: a saved profile is selected and it is not the local demo provider.
  */
-function selectedProfileIsRemote(
+export function selectedProfileIsRemote(
   profiles: readonly ProviderProfileRecord[],
   selection: ActiveProviderSelection,
 ): boolean {
