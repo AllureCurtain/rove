@@ -1300,7 +1300,9 @@ export function useSessionContinuity({
         const attached = await reconcileAcceptedSuccessor(session);
         if (!attached && focusedSessionRef.current === session.id) {
           await refreshMessages(session.id);
-          setConnection("error");
+          // The API answered every reconciliation request — it is reachable.
+          // The failure is a missing binding, so the connection indicator
+          // must not flip to "API unreachable" and misdescribe the problem.
           dispatch({
             type: "set_error",
             error:
