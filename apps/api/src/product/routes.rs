@@ -741,7 +741,7 @@ pub(crate) async fn list_product_provider_models(
     let inventory =
         crate::provider::provider_inventory_with_headers(&normalized, headers, key_present, None)
             .await?;
-    let supports_reasoning = provider_type == ProductProviderType::OpenaiResponses;
+    let supports_reasoning = provider_supports_reasoning(provider_type);
     let supported_reasoning = if supports_reasoning {
         vec![
             ProductReasoningPreference::Low,
@@ -751,9 +751,8 @@ pub(crate) async fn list_product_provider_models(
     } else {
         Vec::new()
     };
-    let reasoning_unavailable_reason = (!supports_reasoning).then(|| {
-        "Reasoning controls are only available for OpenAI Responses profiles.".to_string()
-    });
+    let reasoning_unavailable_reason = (!supports_reasoning)
+        .then(|| "Reasoning controls are only available for OpenAI provider profiles.".to_string());
     Ok(Json(ProductProviderModelsResponse {
         profile_id,
         default_model,
@@ -770,6 +769,19 @@ pub(crate) async fn list_product_provider_models(
             })
             .collect(),
     }))
+}
+
+/// Whether a provider profile can drive the reasoning control. Reasoning is a
+/// wire-protocol capability, not a product-type one: both the Chat Completions
+/// protocol (`openai`, e.g. DeepSeek) and the Responses protocol
+/// (`openai-responses`) emit `reasoning_effort` and surface `reasoning_content`
+/// deltas. Gating on `OpenaiResponses` alone disabled the control for every
+/// OpenAI-compatible chat profile.
+fn provider_supports_reasoning(provider_type: ProductProviderType) -> bool {
+    matches!(
+        provider_type,
+        ProductProviderType::Openai | ProductProviderType::OpenaiResponses
+    )
 }
 
 #[utoipa::path(
@@ -2261,5 +2273,32 @@ mod tests {
         assert!(data.contains("keep-frame-summary"), "{data}");
         // The frame itself still builds from the redacted body.
         assert!(product_event_frame(&event).is_ok());
+    }
+
+    /// Reasoning is a wire-protocol capability. Both OpenAI protocols — Chat
+    /// Completions (`openai`, used by DeepSeek and other compatible providers)
+    /// and Responses (`openai-responses`) — emit `reasoning_effort`, so both
+    /// must enable the reasoning control. Providers without the field stay off.
+    #[test]
+    fn reasoning_is_enabled_for_every_openai_wire_protocol() {
+        for provider_type in [
+            ProductProviderType::Openai,
+            ProductProviderType::OpenaiResponses,
+        ] {
+            assert!(
+                provider_supports_reasoning(provider_type),
+                "{provider_type:?} must expose reasoning controls",
+            );
+        }
+        for provider_type in [
+            ProductProviderType::Anthropic,
+            ProductProviderType::Ollama,
+            ProductProviderType::Fake,
+        ] {
+            assert!(
+                !provider_supports_reasoning(provider_type),
+                "{provider_type:?} has no reasoning_effort wire field",
+            );
+        }
     }
 }
