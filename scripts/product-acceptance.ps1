@@ -1,7 +1,7 @@
 param(
     [string]$ReportPath = $(if ($env:ROVE_ACCEPTANCE_REPORT) { $env:ROVE_ACCEPTANCE_REPORT } else { "PRODUCT_ACCEPTANCE_REPORT.json" }),
     [switch]$SkipWeb,
-    [switch]$SkipBrowser,
+    [switch]$IncludeBrowser,
     [switch]$IncludeGated
 )
 
@@ -130,8 +130,8 @@ foreach ($check in $Checks) {
     $skipReason = $null
     if ($isWeb -and $SkipWeb) {
         $skipReason = "-SkipWeb was requested"
-    } elseif ($isBrowser -and $SkipBrowser) {
-        $skipReason = "-SkipBrowser was requested"
+    } elseif ($isBrowser -and -not $IncludeBrowser) {
+        $skipReason = "browser checks are skipped by default; pass -IncludeBrowser to run them"
     } elseif ($isGated -and -not $IncludeGated) {
         $skipReason = "gated check; pass -IncludeGated to run it"
     } elseif ($isGated -and $IncludeGated -and $check.gateEnv -and -not [Environment]::GetEnvironmentVariable($check.gateEnv)) {
