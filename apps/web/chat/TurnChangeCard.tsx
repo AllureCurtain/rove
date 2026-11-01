@@ -64,17 +64,26 @@ export function TurnChangeCard({
   tool,
   mutation,
   onOpenFile,
+  onRevert,
 }: {
   tool: ToolCallView;
   mutation: ToolMutation;
   /** Clicking the path opens the file tab; the diff stays in this card. */
   onOpenFile?: (reference: { path: string; line?: number }) => void;
+  /**
+   * Revert this mutation's latest recorded change (issue #29). Wired only when
+   * the session can reach `POST .../mutations/revert`; the card renders the
+   * action only while the call is settled and a revert is possible.
+   */
+  onRevert?: (path: string) => Promise<unknown>;
 }) {
   const { t } = useCopy();
   const [open, setOpen] = useState(
     tool.status === "running" || tool.status === "error",
   );
   const [copied, setCopied] = useState(false);
+  const [revertBusy, setRevertBusy] = useState(false);
+  const [revertError, setRevertError] = useState<string | null>(null);
   const copyResetRef = useRef<number | null>(null);
   useEffect(
     () => () => {
@@ -215,12 +224,38 @@ export function TurnChangeCard({
           {diffTruncated ? (
             <p className="tool-card__truncated">{t("chat.diffTruncated")}</p>
           ) : null}
-          {/* Rollback is gated on a product revert endpoint that does not
-              exist yet (issue #29); surface the state honestly rather than
-              offering an action that cannot land. */}
-          <p className="change-card__rollback-note" role="note">
-            {t("chat.rollbackUnavailable")}
-          </p>
+          {onRevert ? (
+            <div className="change-card__actions">
+              <button
+                type="button"
+                className="change-card__rollback"
+                disabled={revertBusy || tool.status === "running"}
+                onClick={() => {
+                  setRevertBusy(true);
+                  setRevertError(null);
+                  void Promise.resolve(onRevert(mutation.path))
+                    .then(() => setRevertBusy(false))
+                    .catch((error) => {
+                      setRevertBusy(false);
+                      setRevertError(
+                        error instanceof Error ? error.message : String(error),
+                      );
+                    });
+                }}
+              >
+                {revertBusy ? t("chat.rollbackBusy") : t("chat.rollback")}
+              </button>
+              {revertError ? (
+                <p className="change-card__rollback-error" role="alert">
+                  {revertError}
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <p className="change-card__rollback-note" role="note">
+              {t("chat.rollbackUnavailable")}
+            </p>
+          )}
         </div>
       ) : null}
     </article>

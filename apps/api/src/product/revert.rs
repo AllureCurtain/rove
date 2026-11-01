@@ -177,10 +177,10 @@ async fn locate_mutation(
     run_id: Option<&str>,
 ) -> Option<LocatedMutation> {
     for binding in bindings.iter().rev() {
-        if let Some(wanted) = run_id {
-            if binding.runtime_run_id.to_string() != wanted {
-                continue;
-            }
+        if let Some(wanted) = run_id
+            && binding.runtime_run_id.to_string() != wanted
+        {
+            continue;
         }
         let Ok(report) = state_store.load_report(binding.runtime_run_id).await else {
             continue;
