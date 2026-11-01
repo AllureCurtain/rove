@@ -48,6 +48,9 @@ const UNMOCKED_PRODUCT_PATHS = [
   "/product/sessions/{session_id}/artifacts/{artifact_id}/preview",
   "/product/sessions/{session_id}/authorizations",
   "/product/sessions/{session_id}/diff",
+  // Mutation revert: exercised through the real route's integration tests, not
+  // by any e2e spec yet — no change-card rollback drive exists in the mock.
+  "/product/sessions/{session_id}/mutations/revert",
   "/product/workspaces/{workspace_id}/files",
   "/product/workspaces/{workspace_id}/files/content",
   "/product/workspaces/{workspace_id}/files/download",

@@ -48,6 +48,7 @@ import {
   type ProductSessionRunModelsResponse,
   type ProductSessionUsageResponse,
   type ProductSessionDiffResponse,
+  type ProductMutationRevertResponse,
   type ProductAuthorizationsResponse,
   type CreateProductPreviewRequest,
   type ProductPreviewSession,
@@ -222,6 +223,10 @@ export interface ProductApiClient {
     options?: ProductApiRequestOptions,
   ): Promise<void>;
   getSessionDiff(sessionId: string, scope?: "run" | "git" | "all"): Promise<ProductSessionDiffResponse>;
+  revertMutation(
+    sessionId: string,
+    request: { path: string; run_id?: string },
+  ): Promise<ProductMutationRevertResponse>;
   getSessionAuthorizations(
     sessionId: string,
     query?: { limit?: number },
@@ -982,6 +987,17 @@ export function createProductApiClient(
           `/product/sessions/${encodeURIComponent(sessionId)}/diff${suffix}`,
         ),
         undefined
+      );
+    },
+
+    revertMutation(sessionId, request) {
+      return requestJson<ProductMutationRevertResponse>(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/mutations/revert`,
+        ),
+        jsonRequest("POST", JSON.stringify(request))
       );
     },
 
