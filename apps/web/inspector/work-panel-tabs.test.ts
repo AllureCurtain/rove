@@ -3,6 +3,8 @@ import { describe, expect, test } from "vitest";
 import {
   activateWorkPanelTab,
   closeWorkPanelTab,
+  closeOtherWorkPanelTabs,
+  closeAllWorkPanelTabs,
   defaultWorkPanelTabs,
   moveWorkPanelTab,
   openWorkPanelFileTab,
@@ -108,6 +110,62 @@ describe("closeWorkPanelTab", () => {
       tabs: [{ id: "pending", kind: "pending" }],
       activeId: "pending",
     });
+  });
+});
+
+describe("closeOtherWorkPanelTabs", () => {
+  test("keeps only the named tab and activates it", () => {
+    const state: WorkPanelTabsState = {
+      tabs: [
+        { id: "pending", kind: "pending" },
+        { id: "status", kind: "status" },
+        { id: "files", kind: "files" },
+      ],
+      activeId: "pending",
+    };
+    expect(closeOtherWorkPanelTabs(state, "status")).toEqual({
+      tabs: [{ id: "status", kind: "status" }],
+      activeId: "status",
+    });
+  });
+
+  test("a right-clicked background tab takes focus rather than the active one", () => {
+    // The affordance acts on the tab it was opened on: closing "others" from a
+    // non-active tab must not leave the previously-active tab selected.
+    const state: WorkPanelTabsState = {
+      tabs: [
+        { id: "changes", kind: "changes" },
+        { id: "files", kind: "files" },
+      ],
+      activeId: "files",
+    };
+    expect(closeOtherWorkPanelTabs(state, "changes")).toEqual({
+      tabs: [{ id: "changes", kind: "changes" }],
+      activeId: "changes",
+    });
+  });
+
+  test("an unknown id is a no-op", () => {
+    const state = defaultWorkPanelTabs();
+    expect(closeOtherWorkPanelTabs(state, "bogus")).toBe(state);
+  });
+});
+
+describe("closeAllWorkPanelTabs", () => {
+  test("empties the strip and clears the selection", () => {
+    const state: WorkPanelTabsState = {
+      tabs: [
+        { id: "changes", kind: "changes" },
+        { id: "files", kind: "files" },
+      ],
+      activeId: "files",
+    };
+    expect(closeAllWorkPanelTabs(state)).toEqual({ tabs: [], activeId: null });
+  });
+
+  test("an already-empty strip is a no-op", () => {
+    const state: WorkPanelTabsState = { tabs: [], activeId: null };
+    expect(closeAllWorkPanelTabs(state)).toBe(state);
   });
 });
 

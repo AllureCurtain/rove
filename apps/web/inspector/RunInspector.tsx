@@ -20,10 +20,12 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 
 import { useCopy } from "../copy/CopyProvider";
 import {
@@ -55,6 +57,8 @@ import {
   WORK_PANEL_LAUNCHER_KINDS,
   activateWorkPanelTab,
   closeWorkPanelTab,
+  closeOtherWorkPanelTabs,
+  closeAllWorkPanelTabs,
   defaultWorkPanelTabs,
   moveWorkPanelTab,
   openWorkPanelFileTab,
@@ -167,6 +171,10 @@ export function RunInspector({
     panel ? panel.activateTab(id) : setFallbackTabs((state) => activateWorkPanelTab(state, id));
   const closeTab = (id: string) =>
     panel ? panel.closeTab(id) : setFallbackTabs((state) => closeWorkPanelTab(state, id));
+  const closeOtherTabs = (id: string) =>
+    panel ? panel.closeOtherTabs(id) : setFallbackTabs((state) => closeOtherWorkPanelTabs(state, id));
+  const closeAllTabs = () =>
+    panel ? panel.closeAllTabs() : setFallbackTabs((state) => closeAllWorkPanelTabs(state));
   const replaceTab = (from: string, kind: WorkPanelTabKind) =>
     panel
       ? panel.replaceTab(from, kind)
@@ -211,6 +219,14 @@ export function RunInspector({
   // A finished drag is followed by a click on the same press; it must not also
   // activate the tab.
   const suppressClickRef = useRef(false);
+  // The tab context menu (issue #32's close-others affordance) opens at the
+  // pointer position for the tab it was opened on.
+  const [tabMenu, setTabMenu] = useState<{
+    id: string;
+    label: string;
+    x: number;
+    y: number;
+  } | null>(null);
 
   // Keep the active tab in view inside a scrollable strip.
   useEffect(() => {
@@ -873,6 +889,17 @@ export function RunInspector({
                 onPointerMove={onTabPointerMove}
                 onPointerUp={(event) => finishTabDrag(event, false)}
                 onPointerCancel={(event) => finishTabDrag(event, true)}
+                onContextMenu={(event) => {
+                  // A drag would swallow the click that dismisses the menu, so
+                  // cancel any in-flight press before opening it.
+                  event.preventDefault();
+                  setTabMenu({
+                    id: item.id,
+                    label,
+                    x: event.clientX,
+                    y: event.clientY,
+                  });
+                }}
               >
                 <button
                   ref={(node) => {
@@ -926,6 +953,26 @@ export function RunInspector({
             );
           })}
         </div>
+        {tabMenu !== null ? (
+          <InspectorTabMenu
+            origin={{ x: tabMenu.x, y: tabMenu.y }}
+            label={tabMenu.label}
+            canCloseOthers={tabs.length > 1}
+            onClose={() => setTabMenu(null)}
+            onCloseSelf={() => {
+              setTabMenu(null);
+              closeTabAndFocus(tabMenu.id);
+            }}
+            onCloseOthers={() => {
+              setTabMenu(null);
+              closeOtherTabs(tabMenu.id);
+            }}
+            onCloseAll={() => {
+              setTabMenu(null);
+              closeAllTabs();
+            }}
+          />
+        ) : null}
         <div className="inspector-actions">
           {/* The launcher sits at the end of the strip and
               outside the tablist, because only tabs belong in a tablist. */}
@@ -1232,4 +1279,116 @@ function formatSessionCost(
   }
   const digits = cost.total_usd > 0 && cost.total_usd < 0.01 ? 6 : 2;
   return `${cost.currency} ${cost.total_usd.toFixed(digits)}`;
+}
+
+/** Margin kept between a context menu and the viewport edge. */
+const TAB_MENU_MARGIN_PX = 8;
+
+/**
+ * The tab strip's right-click menu (issue #32): close this tab, close the
+ * others, close all. It ports to `document.body` so the strip's own overflow
+ * and transforms cannot clip it, clamps into the viewport once its real size
+ * is measurable, and closes on outside pointer-down or Escape — the same
+ * contract the session row menu keeps.
+ */
+function InspectorTabMenu({
+  origin,
+  label,
+  canCloseOthers,
+  onClose,
+  onCloseSelf,
+  onCloseOthers,
+  onCloseAll,
+}: {
+  origin: { x: number; y: number };
+  label: string;
+  canCloseOthers: boolean;
+  onClose: () => void;
+  onCloseSelf: () => void;
+  onCloseOthers: () => void;
+  onCloseAll: () => void;
+}) {
+  const { t } = useCopy();
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState(origin);
+
+  // Clamp into the viewport once the real menu height is measurable.
+  useLayoutEffect(() => {
+    const node = menuRef.current;
+    if (!node) {
+      return;
+    }
+    const rect = node.getBoundingClientRect();
+    const x = Math.max(
+      TAB_MENU_MARGIN_PX,
+      Math.min(origin.x, window.innerWidth - rect.width - TAB_MENU_MARGIN_PX),
+    );
+    const y = Math.max(
+      TAB_MENU_MARGIN_PX,
+      Math.min(origin.y, window.innerHeight - rect.height - TAB_MENU_MARGIN_PX),
+    );
+    if (x !== origin.x || y !== origin.y) {
+      setPosition({ x, y });
+    }
+  }, [origin]);
+
+  useEffect(() => {
+    menuRef.current
+      ?.querySelector<HTMLButtonElement>("button:not(:disabled)")
+      ?.focus();
+    function outside(event: PointerEvent) {
+      if (
+        event.target instanceof Node &&
+        !menuRef.current?.contains(event.target)
+      ) {
+        onClose();
+      }
+    }
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [onClose]);
+
+  if (typeof document === "undefined") {
+    return null;
+  }
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      className="workspace-actions__menu session-row-menu inspector-tab-menu"
+      role="menu"
+      aria-label={t("inspector.tabActions", { name: label })}
+      style={{ left: position.x, top: position.y }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          onClose();
+        }
+      }}
+    >
+      <button type="button" role="menuitem" className="ghost" onClick={onCloseSelf}>
+        {t("inspector.closeThisTab")}
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="ghost"
+        disabled={!canCloseOthers}
+        onClick={onCloseOthers}
+      >
+        {t("inspector.closeOtherTabs")}
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="ghost"
+        data-destructive="true"
+        onClick={onCloseAll}
+      >
+        {t("inspector.closeAllTabs")}
+      </button>
+    </div>,
+    document.body,
+  );
 }
