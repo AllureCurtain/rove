@@ -8,6 +8,7 @@ const client = vi.hoisted(() => ({
   openJobStream: vi.fn(),
   submitApproval: vi.fn(),
   submitInput: vi.fn(),
+  stopSubagent: vi.fn(),
   testProvider: vi.fn(),
 }));
 
@@ -191,7 +192,8 @@ describe("run controller focus generation", () => {
       pending_inputs: [],
     });
     const onTerminal = vi.fn();
-    const controller = createRunController(vi.fn(), { onTerminal });
+    const dispatch = vi.fn();
+    const controller = createRunController(dispatch, { onTerminal });
 
     await controller.start({
       message: "hello",
@@ -200,7 +202,13 @@ describe("run controller focus generation", () => {
     await controller.cancel("job-1");
 
     expect(source.close).toHaveBeenCalledTimes(1);
+    expect(onTerminal).toHaveBeenCalledExactlyOnceWith("cancelled");
+    dispatch.mockClear();
+    source.onerror?.(new Event("error"));
+    source.emit("run_started", { type: "run_started", run_id: "run-1" }, "2");
+    source.emit("run_completed", { type: "run_completed", reason: "cancelled" }, "3");
     expect(onTerminal).toHaveBeenCalledTimes(1);
+    expect(dispatch).not.toHaveBeenCalled();
   });
 });
 
@@ -240,6 +248,33 @@ describe("approval authority", () => {
     pending.resolve(snapshot("running", 2));
     await request;
     expect(dispatch.mock.calls.map(([action]) => action.type)).toEqual(["stream_event"]);
+  });
+  it("ignores a pending reconnect failure after cancellation", async () => {
+    const { controller, dispatch, source } = await observed();
+    let reject!: (error: Error) => void;
+    client.fetchJobState.mockReturnValue(new Promise((_resolve, fail) => { reject = fail; }));
+    source.onerror?.(new Event("error"));
+    client.cancelJob.mockResolvedValue(snapshot("cancelled", 3));
+    await controller.cancel("job-1");
+    dispatch.mockClear();
+    reject(new Error("job evicted"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+  it.each(["answer", "stopSubagent"] as const)("ignores a late %s response after cancellation", async (action) => {
+    const { controller, dispatch } = await observed();
+    const pending = deferred<ReturnType<typeof snapshot>>();
+    client.submitInput.mockReturnValue(pending.promise);
+    client.stopSubagent.mockReturnValue(pending.promise);
+    const request = action === "answer"
+      ? controller.answer("job-1", "input-1", "reply")
+      : controller.stopSubagent("job-1", "child-1");
+    client.cancelJob.mockResolvedValue(snapshot("cancelled", 3));
+    await controller.cancel("job-1");
+    dispatch.mockClear();
+    pending.resolve(snapshot("running", 3));
+    await request;
+    expect(dispatch).not.toHaveBeenCalled();
   });
   it.each(["404", "409", "Failed to fetch"])("re-reads %s without resending or claiming approval", async (failure) => {
     const { controller, dispatch } = await observed();

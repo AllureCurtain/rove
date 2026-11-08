@@ -96,9 +96,11 @@ test("the minimap marks every rendered turn of a long conversation", async ({ pa
   await expect(markers.nth(1)).toHaveAttribute("data-role", "assistant");
   await expect(markers.first()).toHaveAttribute("aria-label", /1\D+6/);
   await expect(markers.nth(1)).toHaveAttribute("aria-label", /2\D+6/);
-  // The tooltip preview is the turn's own text, capped for the rail.
-  await expect(markers.first()).toHaveAttribute("title", "First question");
-  await expect(markers.nth(1)).toHaveAttribute("title", /^answer line 1/);
+  // The preview popover is shared by pointer hover and keyboard focus.
+  await markers.first().focus();
+  await expect(page.getByRole("tooltip")).toContainText("First question");
+  await markers.nth(1).focus();
+  await expect(page.getByRole("tooltip")).toContainText("answer line 1");
   await expect(markers.first()).toBeVisible();
 });
 

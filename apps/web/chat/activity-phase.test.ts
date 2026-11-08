@@ -1,8 +1,10 @@
+import type { TranscriptRunGroup } from "../lib/rove-state";
 import { describe, expect, it } from "vitest";
 
 import {
   activityEventForStreamEvent,
   activityPhaseKey,
+  activityPhaseForTranscript,
   IDLE_PHASE,
   reduceActivityPhase,
 } from "./activity-phase";
@@ -113,5 +115,36 @@ describe("reduceActivityPhase", () => {
     expect(
       reduceActivityPhase({ kind: "tool", name: "read" }, activity!).kind,
     ).toBe("waiting-model");
+  });
+});
+
+describe("durable activity precedence", () => {
+  const waiting: TranscriptRunGroup = {
+    id: "run:active", runId: "active", runOrdinal: 2, inherited: false, sourceSessionId: null,
+    items: [{
+      kind: "tool",
+      entry: { id: "call", kind: "tool", entityId: "call", runId: "active", runOrdinal: 2, eventSeq: 1, inherited: false, sourceSessionId: null },
+      tool: { id: "call", name: "write_file", status: "waiting", details: "",
+        pendingApproval: { call_id: "call", name: "write_file", args: {}, reason: "approval" } },
+    }],
+  };
+
+  it("keeps restored approvals ahead of execution or child activity", () => {
+    expect(activityPhaseForTranscript({ kind: "tool", name: "write_file" }, [waiting], true))
+      .toEqual({ kind: "waiting-approval", name: "write_file" });
+    expect(activityPhaseForTranscript(IDLE_PHASE, [waiting], true).kind).toBe("waiting-approval");
+  });
+
+  it("clears terminal waits and does not resurrect inherited or earlier requests", () => {
+    expect(activityPhaseForTranscript({ kind: "tool", name: "write_file" }, [waiting], false)).toBe(IDLE_PHASE);
+    expect(activityPhaseForTranscript(IDLE_PHASE, [{ ...waiting, inherited: true }], true)).toBe(IDLE_PHASE);
+    expect(activityPhaseForTranscript(IDLE_PHASE, [waiting, { ...waiting, items: [] }], true)).toBe(IDLE_PHASE);
+  });
+
+  it("announces a pending input and leaves a submitted input alone", () => {
+    const input: TranscriptRunGroup = { ...waiting, items: [{ kind: "input", entry: { id: "input", kind: "input", entityId: "input", runId: "active", runOrdinal: 2, eventSeq: 1, inherited: false, sourceSessionId: null }, input: { id: "input", timelineId: "input", prompt: "Branch?", status: "waiting" } }] };
+    expect(activityPhaseForTranscript({ kind: "tool", name: "request_input" }, [input], true).kind).toBe("waiting-input");
+    if (input.items[0].kind === "input") input.items[0].input.status = "submitted";
+    expect(activityPhaseForTranscript(IDLE_PHASE, [input], true)).toBe(IDLE_PHASE);
   });
 });

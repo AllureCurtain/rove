@@ -108,6 +108,7 @@ import {
   useServerProductState,
 } from "../state/use-server-product-state";
 import { useSessionContinuity } from "../state/use-session-continuity";
+import { isDemoModel } from "../state/provider-store";
 import { providerSelectionProblem } from "../state/turn-request";
 import { useProductReviews } from "../state/use-product-reviews";
 import type {
@@ -940,6 +941,7 @@ function ServerProductApp({ draftStore }: {
   // and the direct action that resolves it.
   const homeModelBlocked =
     providerSelectionProblem(server.selection, server.profiles) !== null;
+  const homeDemoMode = isDemoModel(server.selection, server.profiles);
   const homeSendBlocked = !displayWorkspace || homeModelBlocked;
   const homeSendBlock = !displayWorkspace
     ? {
@@ -1999,6 +2001,9 @@ function ServerProductApp({ draftStore }: {
                   providerIsRemote={selectedProfileIsRemote(server.profiles, server.selection)}
                   workspaceName={displayWorkspace.displayName}
                 />
+                {isDemoModel(server.sessionModelConfig, server.profiles) ? (
+                  <p className="session-demo-notice" role="note">{t("home.demoNotice")}</p>
+                ) : null}
                 {/* R9: manual compaction lives beside the send area, where the
                     waiting row's degraded "compacting" phase is also shown, so
                     the manual action and the automatic one are read together. */}
@@ -2208,9 +2213,10 @@ function ServerProductApp({ draftStore }: {
                 }
                 sendBlocked={homeSendBlock}
                 onboarding={{
-                  hasProvider: !homeModelBlocked,
+                  hasProvider: !homeModelBlocked && !homeDemoMode,
+                  demoMode: homeDemoMode,
                   hasWorkspace: displayWorkspace != null,
-                  hasSession: homeRecentSessions.length > 0,
+                  hasSession: homeRecentSessions.some((session) => session.hasDurableTurn),
                 }}
                 onSelectWorkspace={routing.navigateWorkspace}
                 onSelectSession={routing.navigateSession}

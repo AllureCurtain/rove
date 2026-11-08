@@ -1,45 +1,56 @@
-interface CodedError {
-  code: string;
-  message?: string;
+import { createTranslator } from "../copy";
+import type { ProviderProfileInput } from "../state/product-types";
+
+const FAILURE_KEYS: Record<string, string> = {
+  provider_timeout: "timeout",
+  provider_authentication: "authentication",
+  provider_rate_limited: "rateLimited",
+  provider_protocol_mismatch: "protocol",
+  provider_no_models: "model",
+  provider_model_unavailable: "model",
+  product_revision_conflict: "conflict",
+  provider_catalog_conflict: "conflict",
+  provider_credential_store: "credentialStore",
+  provider_reconciliation_required: "reconciliation",
+  provider_product_projection: "reconciliation",
+  provider_transport: "transport",
+  provider_upstream: "upstream",
+  provider_onboarding_invalid: "invalid",
+  product_provider_invalid: "invalid",
+  product_invalid_input: "invalid",
+  bad_request: "inputOrCredential",
+  provider_onboarding_loopback_required: "localOnly",
+  project_trust_required: "trust",
+};
+
+export function describeProviderProbeFailure(
+  error: unknown,
+  t: (key: string) => string = createTranslator("en-US"),
+): string {
+  const code = typeof error === "object" && error !== null && "code" in error
+    && typeof error.code === "string" ? error.code : "";
+  return t(`settings.providers.errors.${FAILURE_KEYS[code] ?? "unknown"}`);
 }
 
-function codedError(error: unknown): CodedError | null {
-  if (typeof error !== "object" || error === null || !("code" in error)) {
-    return null;
+export function providerDraftIssue(
+  input: ProviderProfileInput,
+  requireModel = true,
+): { field: "base" | "default-model" | "key-env"; copyKey: string } | null {
+  if (input.providerType !== "fake") {
+    try {
+      const url = new URL(input.apiBase);
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+        throw new Error("invalid endpoint");
+      }
+    } catch {
+      return { field: "base", copyKey: "settings.providers.errors.address" };
+    }
   }
-  const code = error.code;
-  if (typeof code !== "string") {
-    return null;
+  if (requireModel && !input.defaultModel?.trim()) {
+    return { field: "default-model", copyKey: "settings.providers.errors.modelRequired" };
   }
-  const message = "message" in error && typeof error.message === "string"
-    ? error.message
-    : undefined;
-  return { code, message };
-}
-
-export function describeProviderProbeFailure(error: unknown): string {
-  switch (codedError(error)?.code) {
-    case "provider_timeout":
-      return "Provider timed out. Check the endpoint and try again.";
-    case "provider_authentication":
-      return "Provider authentication failed. Re-enter or check the configured credential.";
-    case "provider_rate_limited":
-      return "Provider rate limit reached. Retry after the provider window resets.";
-    case "provider_protocol_mismatch":
-      return "Endpoint did not return a compatible model catalog.";
-    case "provider_no_models":
-    case "provider_model_unavailable":
-      return "Provider returned no usable models.";
-    case "product_revision_conflict":
-      return "Provider settings changed. Reload the Catalog and retry.";
-    case "provider_credential_store":
-      return "Windows credential storage is unavailable.";
-    case "provider_reconciliation_required":
-    case "provider_product_projection":
-      return "Provider setup needs reconciliation. Reload Settings before retrying.";
-    case "provider_transport":
-      return "Provider could not be reached. Check the endpoint and local network.";
-    default:
-      return error instanceof Error ? error.message : String(error);
+  if (input.apiKeyEnv && (input.apiKeyEnv.length > 256 || !/^[A-Z_][A-Z0-9_]*$/u.test(input.apiKeyEnv))) {
+    return { field: "key-env", copyKey: "settings.providers.errors.envName" };
   }
+  return null;
 }

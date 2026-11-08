@@ -65,6 +65,8 @@ Config options are authoritative in the environment layer of `apps/bootstrap/src
 | TUI PTY smoke (Unix) | `python scripts/tui-pty-smoke.py --run` |
 | Fix MSVC linker env | In PowerShell, `. scripts/msvc-env.ps1` first, then run cargo (use when cargo reports missing `link.exe` or link failures) |
 
+On macOS, SQLite's no-follow guard rejects the system `/var` temporary-directory alias. For the full test suite, use a canonical temporary directory, for example `TMPDIR=/private/tmp cargo test --workspace`; keep the no-follow protection enabled. The external-commit guard tests exercise this boundary.
+
 When compiles are slow: use `cargo check -p <crate>` and targeted tests day to day instead of `--workspace`; desktop (Tauri) makes `--workspace` noticeably slower. Use `cargo clean` to reclaim space when `target/` grows large.
 
 ## Test strategy

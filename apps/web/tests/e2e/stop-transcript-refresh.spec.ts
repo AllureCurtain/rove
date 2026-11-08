@@ -58,6 +58,9 @@ test("a stop re-reads the transcript once, not in a loop", async ({ page }) => {
   // a loop cannot pass a bound this small.
   await page.waitForTimeout(2_000);
   expect(api.transcriptRequests.length - before).toBeLessThanOrEqual(2);
+  await composer.fill("");
+  await expect(stop).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeVisible();
 });
 
 test("a send pressed while the stop re-reads the transcript goes out when it lands", async ({

@@ -19,6 +19,30 @@ import {
 } from "../lib/rove-state";
 
 describe("product transcript projection", () => {
+  it("keeps an observed terminal outcome when an older transcript still calls that run live", () => {
+    const segment = completedSegment(1, "job-1", "run-1", "Question", "Partial answer");
+    segment.run_status = "running";
+    const transcript: ProductTranscriptResponse = {
+      product_session_id: "session-1", workspace_id: "workspace", status: "complete",
+      partial_reasons: [], segments: [segment],
+    };
+    const terminal = { sessionId: "session-1", jobId: "job-1", runId: "run-1", status: "cancelled" };
+    const state = projectProductTranscript(transcript, terminal);
+    expect(state.busy).toBe(false);
+    expect(state.statusText).toBe("Run cancelled");
+    expect(state.messages.at(-1)?.content).toBe("Partial answer");
+    for (const mismatch of [
+      { ...terminal, sessionId: "another-session" },
+      { ...terminal, jobId: "another-job" },
+      { ...terminal, runId: "successor-run" },
+      { ...terminal, status: undefined },
+    ]) {
+      expect(projectProductTranscript(transcript, mismatch).busy).toBe(true);
+    }
+    segment.inherited = true;
+    expect(projectProductTranscript(transcript, terminal).busy).toBe(true);
+  });
+
   it("replays each run ordinal through the canonical reducer despite repeated seqs", () => {
     const transcript: ProductTranscriptResponse = {
       product_session_id: "product-session",

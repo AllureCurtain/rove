@@ -8,7 +8,6 @@ import { useCopy } from "../copy/CopyProvider";
 import { LatestWinsGate } from "../lib/latest-wins";
 import { useUiSkin } from "../shell/ui-skin";
 import type {
-  ProviderModelsResponse,
   ProviderTestResponse,
   ProviderType,
 } from "../lib/rove-types";
@@ -47,7 +46,7 @@ import {
   providerTestToastKind,
   type ProviderTestOutcome,
 } from "../shell/toast/notifications";
-import { describeProviderProbeFailure } from "./provider-settings-model";
+import { describeProviderProbeFailure, providerDraftIssue } from "./provider-settings-model";
 import { FONT_SCALE_DEFAULT, FONT_SCALE_MAX, FONT_SCALE_MIN } from "./font-scale";
 import { useFontScalePreference } from "./use-font-scale";
 import type { SettingsSectionId } from "./sections";
@@ -612,9 +611,12 @@ function BrowserProvidersSettings({
   const [modelsBusy, setModelsBusy] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
   const [deletingProfileId, setDeletingProfileId] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<ProviderTestResponse | null>(null);
-  const [modelsResult, setModelsResult] = useState<ProviderModelsResponse | null>(null);
+  const [testResult, setTestResult] = useState<Pick<ProviderTestResponse, "status" | "key_present" | "model_present" | "models_count"> | null>(null);
+  const [modelsResult, setModelsResult] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [hasDraftKey, setHasDraftKey] = useState(false);
+  const [invalidField, setInvalidField] = useState<string | null>(null);
+  const actionBusyRef = useRef(false);
   const [status, setStatus] = useState<string | null>(null);
   // The credential is read from an uncontrolled input at submit time so it
   // never enters React state, props, or the render tree.
@@ -623,17 +625,19 @@ function BrowserProvidersSettings({
   // field is unavailable; mount reveals whether the page is served loopback.
   const [loopbackOrigin, setLoopbackOrigin] = useState(false);
   const profileDeleteBusy = deletingProfileId !== null;
+  const formBusy = saveBusy || testBusy || modelsBusy || profileDeleteBusy;
+  const editingProfile = profiles.find((profile) => profile.id === editingProfileId);
+  const usesStoredCredential = editingProfile?.credentialSource?.source === "keyring"
+    || editingProfile?.credentialSource?.source === "file";
   const credentialCapable = loopbackOrigin && providerRequiresKey(providerType);
   // The provider test's inline result lives here, so this panel is what decides
   // whether the result still has somewhere to appear.
   const mountedRef = useRef(true);
 
-  useEffect(
-    () => () => {
-      mountedRef.current = false;
-    },
-    [],
-  );
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     setLoopbackOrigin(isLoopbackBrowserOrigin());
@@ -650,7 +654,7 @@ function BrowserProvidersSettings({
       providerType,
       apiBase: apiBase.trim(),
       apiKeyEnv: providerRequiresKey(providerType)
-        ? apiKeyEnv.trim() || providerDefaultKeyEnv(providerType)
+        ? apiKeyEnv.trim() || (usesStoredCredential ? undefined : providerDefaultKeyEnv(providerType))
         : undefined,
       defaultModel: defaultModel.trim() || undefined,
     };
@@ -667,6 +671,7 @@ function BrowserProvidersSettings({
 
   function resetDraft() {
     setEditingProfileId(null);
+    setStatus(null);
     setLabel(t("settings.providers.draftLabel"));
     setProviderType("openai");
     setApiBase(providerDefaultApiBase("openai"));
@@ -675,6 +680,8 @@ function BrowserProvidersSettings({
     setTestResult(null);
     setModelsResult(null);
     setError(null);
+    setInvalidField(null);
+    setHasDraftKey(false);
     if (apiKeyInputRef.current) {
       apiKeyInputRef.current.value = "";
     }
@@ -685,21 +692,88 @@ function BrowserProvidersSettings({
     setLabel(profile.label);
     setProviderType(profile.providerType);
     setApiBase(profile.apiBase);
-    setApiKeyEnv(profile.apiKeyEnv ?? providerDefaultKeyEnv(profile.providerType));
+    setApiKeyEnv(profile.apiKeyEnv ?? (profile.credentialSource?.source === "keyring"
+      || profile.credentialSource?.source === "file" ? "" : providerDefaultKeyEnv(profile.providerType)));
+    setHasDraftKey(false);
+    setInvalidField(null);
+    setStatus(null);
+    if (apiKeyInputRef.current) apiKeyInputRef.current.value = "";
     setDefaultModel(profile.defaultModel ?? "");
     setTestResult(null);
     setModelsResult(null);
     setError(null);
   }
 
+  function clearDraftFeedback() {
+    setTestResult(null);
+    setModelsResult(null);
+    setError(null);
+    setInvalidField(null);
+    setStatus(null);
+  }
+
   function handleTypeChange(next: ProviderType) {
+    setStatus(null);
     setProviderType(next);
     setApiBase(providerDefaultApiBase(next));
-    setApiKeyEnv(providerDefaultKeyEnv(next));
+    setApiKeyEnv(usesStoredCredential && providerRequiresKey(next) ? "" : providerDefaultKeyEnv(next));
+    setDefaultModel(next === "fake" ? "fake" : "");
+    setTestResult(null);
+    setModelsResult(null);
+    setError(null);
+    setInvalidField(null);
+    setHasDraftKey(false);
+    if (apiKeyInputRef.current) apiKeyInputRef.current.value = "";
+  }
+
+  function validateDraft(requireModel = true): boolean {
+    const issue = providerDraftIssue(profileInput(), requireModel);
+    setInvalidField(issue?.field ?? null);
+    if (!issue) {
+      const authStyleChanged = editingProfile
+        && (editingProfile.providerType === "anthropic") !== (providerType === "anthropic");
+      if (usesStoredCredential && providerRequiresKey(providerType) && authStyleChanged
+        && !hasDraftKey && !apiKeyEnv.trim()) {
+        setError(t("settings.providers.errors.credentialType"));
+        setInvalidField(credentialCapable ? "api-key" : "key-env");
+        document.getElementById(credentialCapable ? "profile-api-key" : "profile-key-env")?.focus();
+        return false;
+      }
+      return true;
+    }
+    setError(t(issue.copyKey));
+    const field = document.getElementById(`profile-${issue.field}`);
+    const disclosure = field?.closest("details");
+    if (disclosure) disclosure.open = true;
+    field?.focus();
+    return false;
+  }
+
+  function canProbeDraft(requireModel = true): boolean {
+    if (!validateDraft(requireModel)) return false;
+    if (hasDraftKey) {
+      setError(t("settings.providers.draftKeyHint"));
+      return false;
+    }
+    if (usesStoredCredential && editingProfile && (
+      providerType !== editingProfile.providerType
+      || apiBase.trim().replace(/\/+$/u, "") !== editingProfile.apiBase.replace(/\/+$/u, "")
+      || apiKeyEnv.trim()
+    )) {
+      setError(t("settings.providers.saveBeforeProbe"));
+      return false;
+    }
+    return true;
+  }
+
+  async function selectSavedProfile(profileId: string, model: string): Promise<boolean> {
+    return onSelectionChange({ ...selection, mode: "profile", profileId, model });
   }
 
   async function handleSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (actionBusyRef.current || !validateDraft()) return;
+    actionBusyRef.current = true;
     setSaveBusy(true);
     setError(null);
     setStatus(null);
@@ -720,42 +794,37 @@ function BrowserProvidersSettings({
           expected_revision: editing?.catalogRevision,
           credential,
         });
-        await onRefreshProviderProfiles();
-        onSelectionChange({
-          ...selection,
-          mode: "profile",
-          profileId: receipt.profile_id,
-          model: receipt.model,
-        });
-        resetDraft();
-        setStatus(t("settings.providers.keySaved"));
+        const refreshed = await onRefreshProviderProfiles();
+        const saved = refreshed.find((profile) => profile.id === receipt.profile_id);
+        const selected = await selectSavedProfile(receipt.profile_id, receipt.model);
+        if (saved) startEdit(saved);
+        else resetDraft();
+        setStatus(t(selected ? "settings.providers.keySaved" : "settings.providers.selectionFailed"));
         return;
       }
       const saved = editingProfileId
         ? await onUpdateProfile(editingProfileId, profileInput())
         : await onCreateProfile(profileInput());
-      if (!editingProfileId) {
-        onSelectionChange({
-          ...selection,
-          mode: "profile",
-          profileId: saved.id,
-          model: saved.defaultModel || selection.model,
-        });
-      } else if (selection.profileId === saved.id && saved.defaultModel) {
-        onSelectionChange({ ...selection, model: saved.defaultModel });
-      }
-      resetDraft();
+      const selected = editingProfileId && selection.profileId !== saved.id
+        ? true
+        : await selectSavedProfile(saved.id, saved.defaultModel || selection.model);
+      startEdit(saved);
+      setStatus(t(selected ? "settings.providers.profileSaved" : "settings.providers.selectionFailed"));
     } catch (saveError) {
-      setError(describeProviderProbeFailure(saveError));
+      setError(describeProviderProbeFailure(saveError, t));
     } finally {
       if (apiKeyInputRef.current) {
         apiKeyInputRef.current.value = "";
       }
+      setHasDraftKey(false);
+      actionBusyRef.current = false;
       setSaveBusy(false);
     }
   }
 
   async function handleDelete(profileId: string) {
+    if (actionBusyRef.current) return;
+    actionBusyRef.current = true;
     setDeletingProfileId(profileId);
     setError(null);
     try {
@@ -765,15 +834,16 @@ function BrowserProvidersSettings({
       }
       setConfirmingDeleteId(null);
     } catch (deleteError) {
-      setError(
-        deleteError instanceof Error ? deleteError.message : String(deleteError),
-      );
+      setError(describeProviderProbeFailure(deleteError, t));
     } finally {
+      actionBusyRef.current = false;
       setDeletingProfileId(null);
     }
   }
 
   async function handleTest() {
+    if (actionBusyRef.current || !canProbeDraft()) return;
+    actionBusyRef.current = true;
     setTestBusy(true);
     setError(null);
     setTestResult(null);
@@ -781,22 +851,33 @@ function BrowserProvidersSettings({
     let outcome: ProviderTestOutcome = "fail";
     let detail = "";
     try {
-      const response = await testProvider({
+      const inventory = usesStoredCredential && editingProfile
+        ? await client.listProviderModels(editingProfile.id)
+        : null;
+      const response = inventory ? {
+        status: inventory.models.some((model) => model.id === defaultModel.trim()) ? "pass" : "fail",
+        key_present: true,
+        model_present: inventory.models.some((model) => model.id === defaultModel.trim()),
+        models_count: inventory.models.length,
+      } : await testProvider({
         provider: toApiProviderProfile(draftProfile()),
         model: defaultModel.trim() || undefined,
       });
-      setTestResult(response);
-      if (response.status === "pass" && (response.key_present || !providerRequiresKey(providerType))) {
+      const modelAvailable = response.model_present !== false;
+      setTestResult({ ...response, status: modelAvailable ? response.status : "fail" });
+      if (response.status === "pass" && modelAvailable && (response.key_present || !providerRequiresKey(providerType))) {
         outcome = "pass";
-      } else if (response.status === "pass") {
+      } else if (response.status === "pass" && modelAvailable) {
         outcome = "incomplete";
       } else {
-        detail = t("settings.providers.unreachable");
+        detail = t(response.model_present === false
+          ? "settings.providers.errors.model" : "settings.providers.unreachable");
       }
     } catch (testError) {
-      detail = describeProviderProbeFailure(testError);
+      detail = describeProviderProbeFailure(testError, t);
       setError(detail);
     } finally {
+      actionBusyRef.current = false;
       setTestBusy(false);
       // A test can outlive this panel: the reader may switch sections or leave
       // settings while it runs, and the inline result would never be shown.
@@ -825,20 +906,26 @@ function BrowserProvidersSettings({
   }
 
   async function handleListModels() {
+    if (actionBusyRef.current || !canProbeDraft(false)) return;
+    actionBusyRef.current = true;
     setModelsBusy(true);
     setError(null);
     setModelsResult(null);
     try {
-      const result = await listProviderModels({
-        provider: toApiProviderProfile(draftProfile()),
-      });
-      setModelsResult(result);
-      if (result.models[0] && !defaultModel.trim()) {
-        setDefaultModel(result.models[0]);
+      const inventory = usesStoredCredential && editingProfile
+        ? await client.listProviderModels(editingProfile.id)
+        : null;
+      const models = inventory
+        ? inventory.models.map((model) => model.id)
+        : (await listProviderModels({ provider: toApiProviderProfile(draftProfile()) })).models;
+      setModelsResult(models);
+      if (models[0] && !defaultModel.trim()) {
+        setDefaultModel(models[0]);
       }
     } catch (modelsError) {
-      setError(describeProviderProbeFailure(modelsError));
+      setError(describeProviderProbeFailure(modelsError, t));
     } finally {
+      actionBusyRef.current = false;
       setModelsBusy(false);
     }
   }
@@ -852,13 +939,14 @@ function BrowserProvidersSettings({
 
       <div className="settings-card">
         <h2>{t("settings.providers.activeSelection")}</h2>
+        <p className="settings-inline-note">{t("settings.providers.selectionHint")}</p>
         <div className="field-grid">
           <div className="field">
             <label htmlFor="provider-mode">{t("settings.providers.mode")}</label>
             <select
               id="provider-mode"
               value={selection.mode}
-              disabled={profileDeleteBusy}
+              disabled={formBusy}
               onChange={(event) =>
                 onSelectionChange({
                   ...selection,
@@ -879,7 +967,7 @@ function BrowserProvidersSettings({
             <select
               id="provider-profile"
               value={selection.profileId ?? ""}
-              disabled={profileDeleteBusy || selection.mode !== "profile"}
+              disabled={formBusy || selection.mode !== "profile"}
               onChange={(event) => {
                 const profile = profiles.find((item) => item.id === event.target.value);
                 onSelectionChange({
@@ -903,7 +991,7 @@ function BrowserProvidersSettings({
             <input
               id="provider-model"
               value={selection.model}
-              disabled={profileDeleteBusy}
+              disabled={formBusy}
               onChange={(event) =>
                 onSelectionChange({ ...selection, model: event.target.value })
               }
@@ -928,96 +1016,106 @@ function BrowserProvidersSettings({
         workspaceName={activeWorkspaceName}
       />
 
-      <form className="settings-card" onSubmit={handleSave}>
-        <div className="settings-card__heading">
-          <h2>{editingProfileId ? t("settings.providers.editProfile") : t("settings.providers.create")}</h2>
-          {editingProfileId ? (
-            <button type="button" className="secondary" onClick={resetDraft} disabled={saveBusy}>
-              <Cross2Icon /> {t("chrome.cancelEdit")}
-            </button>
+      <form className="settings-card" onSubmit={handleSave} aria-busy={formBusy}>
+        <fieldset className="provider-draft-fields" disabled={formBusy}>
+          <div className="settings-card__heading">
+            <h2>{editingProfileId ? t("settings.providers.editProfile") : t("settings.providers.create")}</h2>
+            {editingProfileId ? (
+              <button type="button" className="secondary" onClick={resetDraft} disabled={saveBusy}>
+                <Cross2Icon /> {t("chrome.cancelEdit")}
+              </button>
+            ) : null}
+          </div>
+          <div className="field-grid">
+            <div className="field">
+              <label htmlFor="profile-label">{t("settings.providers.labelField")}</label>
+              <input id="profile-label" value={label} onChange={(event) => { setLabel(event.target.value); clearDraftFeedback(); }} />
+            </div>
+            <div className="field">
+              <label htmlFor="profile-type">{t("settings.providers.typeField")}</label>
+              <select
+                id="profile-type"
+                value={providerType}
+                onChange={(event) => handleTypeChange(event.target.value as ProviderType)}
+              >
+                <option value="openai">OpenAI</option>
+                <option value="openai-responses">OpenAI Responses</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="ollama">Ollama</option>
+                <option value="fake">{t("settings.providers.localDemo")}</option>
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="profile-base">{t("settings.providers.apiBase")}</label>
+              <input id="profile-base" aria-invalid={invalidField === "base" || undefined} aria-describedby={invalidField === "base" ? "provider-draft-error" : undefined} value={apiBase} onChange={(event) => { setApiBase(event.target.value); clearDraftFeedback(); }} />
+            </div>
+            <div className="field">
+              <label htmlFor="profile-default-model">{t("settings.providers.defaultModel")}</label>
+              <input
+                id="profile-default-model"
+                aria-invalid={invalidField === "default-model" || undefined}
+                aria-describedby={invalidField === "default-model" ? "provider-draft-error" : undefined}
+                value={defaultModel}
+                onChange={(event) => { setDefaultModel(event.target.value); clearDraftFeedback(); }}
+              />
+            </div>
+          </div>
+          {providerRequiresKey(providerType) ? (
+            <div className="field">
+              <label htmlFor="profile-api-key">{t("settings.providers.apiKey")}</label>
+              <input
+                id="profile-api-key"
+                aria-invalid={invalidField === "api-key" || undefined}
+                aria-describedby={invalidField === "api-key" ? "provider-draft-error" : undefined}
+                ref={apiKeyInputRef}
+                type="password"
+                autoComplete="off"
+                onChange={(event) => { setHasDraftKey(event.currentTarget.value.trim().length > 0); clearDraftFeedback(); }}
+                disabled={saveBusy || !credentialCapable}
+                placeholder={
+                  editingProfileId
+                    ? t("settings.providers.apiKeyPlaceholderEdit")
+                    : "sk-…"
+                }
+              />
+              <p className="settings-inline-note">
+                {credentialCapable
+                  ? t("settings.providers.apiKeyHint")
+                  : t("settings.providers.apiKeyRemoteHint")}
+              </p>
+            </div>
           ) : null}
-        </div>
-        <div className="field-grid">
-          <div className="field">
-            <label htmlFor="profile-label">{t("settings.providers.labelField")}</label>
-            <input id="profile-label" value={label} onChange={(event) => setLabel(event.target.value)} />
+          <details>
+            <summary>{t("chrome.advanced")}</summary>
+            <div className="field">
+              <label htmlFor="profile-key-env">{t("settings.providers.apiKeyEnv")}</label>
+              <input
+                id="profile-key-env"
+                aria-invalid={invalidField === "key-env" || undefined}
+                aria-describedby={invalidField === "key-env" ? "provider-draft-error" : undefined}
+                value={apiKeyEnv}
+                onChange={(event) => { setApiKeyEnv(event.target.value); clearDraftFeedback(); }}
+                disabled={!providerRequiresKey(providerType)}
+                placeholder={providerRequiresKey(providerType) ? "OPENAI_API_KEY" : t("common.none")}
+              />
+              <p className="settings-inline-note">{t(usesStoredCredential ? "settings.providers.savedCredentialHint" : "settings.providers.apiKeyEnvHint")}</p>
+            </div>
+          </details>
+          {providerType === "fake" ? <p className="settings-inline-note">{t("settings.providers.localDemoDesc")}</p> : null}
+          <p className="settings-inline-note">{t(hasDraftKey ? "settings.providers.draftKeyHint" : "settings.providers.probeSavedHint")}</p>
+          <div className="field-actions">
+            <button type="submit" disabled={formBusy}>
+              <CheckIcon /> {saveBusy ? t("common.saving") : t(hasDraftKey ? "settings.providers.verifySave" : "settings.providers.save")}
+            </button>
+            <button type="button" className="secondary" disabled={formBusy || hasDraftKey} onClick={() => void handleTest()}>
+              {testBusy ? t("common.loading") : t("settings.providers.test")}
+            </button>
+            <button type="button" className="secondary" disabled={formBusy || hasDraftKey} onClick={() => void handleListModels()}>
+              {modelsBusy ? t("common.loading") : t("settings.providers.listModels")}
+            </button>
           </div>
-          <div className="field">
-            <label htmlFor="profile-type">{t("settings.providers.typeField")}</label>
-            <select
-              id="profile-type"
-              value={providerType}
-              onChange={(event) => handleTypeChange(event.target.value as ProviderType)}
-            >
-              <option value="openai">OpenAI</option>
-              <option value="openai-responses">OpenAI Responses</option>
-              <option value="anthropic">Anthropic</option>
-              <option value="ollama">Ollama</option>
-              <option value="fake">{t("settings.providers.localDemo")}</option>
-            </select>
-          </div>
-          <div className="field">
-            <label htmlFor="profile-base">{t("settings.providers.apiBase")}</label>
-            <input id="profile-base" value={apiBase} onChange={(event) => setApiBase(event.target.value)} />
-          </div>
-          <div className="field">
-            <label htmlFor="profile-default-model">{t("settings.providers.defaultModel")}</label>
-            <input
-              id="profile-default-model"
-              value={defaultModel}
-              onChange={(event) => setDefaultModel(event.target.value)}
-            />
-          </div>
-        </div>
-        {providerRequiresKey(providerType) ? (
-          <div className="field">
-            <label htmlFor="profile-api-key">{t("settings.providers.apiKey")}</label>
-            <input
-              id="profile-api-key"
-              ref={apiKeyInputRef}
-              type="password"
-              autoComplete="off"
-              disabled={saveBusy || !credentialCapable}
-              placeholder={
-                editingProfileId
-                  ? t("settings.providers.apiKeyPlaceholderEdit")
-                  : "sk-…"
-              }
-            />
-            <p className="settings-inline-note">
-              {credentialCapable
-                ? t("settings.providers.apiKeyHint")
-                : t("settings.providers.apiKeyRemoteHint")}
-            </p>
-          </div>
-        ) : null}
-        <details>
-          <summary>{t("chrome.advanced")}</summary>
-          <div className="field">
-            <label htmlFor="profile-key-env">{t("settings.providers.apiKeyEnv")}</label>
-            <input
-              id="profile-key-env"
-              value={apiKeyEnv}
-              onChange={(event) => setApiKeyEnv(event.target.value)}
-              disabled={!providerRequiresKey(providerType)}
-              placeholder={providerRequiresKey(providerType) ? "OPENAI_API_KEY" : t("common.none")}
-            />
-            <p className="settings-inline-note">{t("settings.providers.apiKeyEnvHint")}</p>
-          </div>
-        </details>
-        {providerType === "fake" ? <p className="settings-inline-note">{t("settings.providers.localDemoDesc")}</p> : null}
-        <div className="field-actions">
-          <button type="submit" disabled={saveBusy || profileDeleteBusy}>
-            <CheckIcon /> {saveBusy ? t("common.saving") : t("settings.providers.save")}
-          </button>
-          <button type="button" className="secondary" disabled={testBusy} onClick={() => void handleTest()}>
-            {testBusy ? t("common.loading") : t("settings.providers.test")}
-          </button>
-          <button type="button" className="secondary" disabled={modelsBusy} onClick={() => void handleListModels()}>
-            {modelsBusy ? t("common.loading") : t("settings.providers.listModels")}
-          </button>
-        </div>
-        {error ? <div className="chat-error" role="alert">{t("chrome.settingsError")}</div> : null}
+        </fieldset>
+        {error ? <div id="provider-draft-error" className="chat-error" role="alert">{error}</div> : null}
         {status ? <div className="placeholder-note" role="status">{status}</div> : null}
         {testResult ? (
           <div className="placeholder-note testline" data-status={testResult.status}>
@@ -1025,13 +1123,13 @@ function BrowserProvidersSettings({
               ? t("settings.providers.connected", { count: testResult.models_count })
               : testResult.status === "pass" && !testResult.key_present
                 ? t("settings.providers.keyMissing")
-                : t("settings.providers.unreachable")}
+                : t(testResult.model_present === false ? "settings.providers.errors.model" : "settings.providers.unreachable")}
           </div>
         ) : null}
         {modelsResult ? (
           <div className="placeholder-note">
-            {t("chrome.models", { count: modelsResult.models_count })}: {modelsResult.models.slice(0, 12).join(", ") || t("common.none")}
-            {modelsResult.models.length > 12 ? "…" : ""}
+            {t("chrome.models", { count: modelsResult.length })}: {modelsResult.slice(0, 12).join(", ") || t("common.none")}
+            {modelsResult.length > 12 ? "…" : ""}
           </div>
         ) : null}
       </form>
@@ -1051,10 +1149,10 @@ function BrowserProvidersSettings({
                     <div className="settings-inline-confirm" role="alert">
                       <span>{t("chrome.removeProvider")}</span>
                       <div className="field-actions">
-                        <button type="button" className="secondary" disabled={profileDeleteBusy} onClick={() => setConfirmingDeleteId(null)}>
+                        <button type="button" className="secondary" disabled={formBusy} onClick={() => setConfirmingDeleteId(null)}>
                           <Cross2Icon /> {t("common.cancel")}
                         </button>
-                        <button type="button" className="danger" disabled={profileDeleteBusy} onClick={() => void handleDelete(profile.id)}>
+                        <button type="button" className="danger" disabled={formBusy} onClick={() => void handleDelete(profile.id)}>
                           <TrashIcon /> {deletingProfileId === profile.id ? t("common.loading") : t("settings.providers.delete")}
                         </button>
                       </div>
@@ -1065,7 +1163,7 @@ function BrowserProvidersSettings({
                   <button
                     type="button"
                     className="secondary"
-                    disabled={profileDeleteBusy}
+                    disabled={formBusy}
                     onClick={() => onSelectionChange({
                       ...selection,
                       mode: "profile",
@@ -1075,7 +1173,7 @@ function BrowserProvidersSettings({
                   >
                     {t("settings.providers.use")}
                   </button>
-                  <button type="button" className="secondary" disabled={profileDeleteBusy} onClick={() => startEdit(profile)}>
+                  <button type="button" className="secondary" disabled={formBusy} onClick={() => startEdit(profile)}>
                     <Pencil2Icon /> {t("settings.providers.edit")}
                   </button>
                   <button type="button" className="danger" disabled={profileDeleteBusy || confirmingDeleteId === profile.id} onClick={() => setConfirmingDeleteId(profile.id)}>
@@ -1225,7 +1323,7 @@ function DesktopProvidersSettings({
         t("desktopProviders.verified", { label: receipt.label, model: receipt.model }),
       );
     } catch (saveError) {
-      setError(describeProviderProbeFailure(saveError));
+      setError(describeProviderProbeFailure(saveError, t));
     } finally {
       setBusyAction(null);
     }
@@ -1249,7 +1347,7 @@ function DesktopProvidersSettings({
       if (!probeGate.isCurrent(token)) {
         return;
       }
-      setError(describeProviderProbeFailure(probeError));
+      setError(describeProviderProbeFailure(probeError, t));
     } finally {
       // A newer probe owns the busy key now; clearing it here would hide that one.
       if (probeGate.isCurrent(token)) {
@@ -1276,7 +1374,7 @@ function DesktopProvidersSettings({
       if (!modelsGate.isCurrent(token)) {
         return;
       }
-      setError(describeProviderProbeFailure(modelsError));
+      setError(describeProviderProbeFailure(modelsError, t));
     } finally {
       if (modelsGate.isCurrent(token)) {
         setBusyAction(null);
@@ -1297,7 +1395,7 @@ function DesktopProvidersSettings({
       await persistProductSelection(receipt.profileId, receipt.model);
       setStatus(t("desktopProviders.selected", { label: profile.label, model: receipt.model }));
     } catch (useError) {
-      setError(describeProviderProbeFailure(useError));
+      setError(describeProviderProbeFailure(useError, t));
     } finally {
       setBusyAction(null);
     }

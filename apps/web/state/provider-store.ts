@@ -11,6 +11,15 @@ import {
 const PROFILES_KEY = "rove.product.providerProfiles";
 const SELECTION_KEY = "rove.product.providerSelection";
 
+export function isDemoModel(
+  selection: { model: string; profileId?: string } | null | undefined,
+  profiles: readonly ProviderProfileRecord[],
+): boolean {
+  if (!selection) return false;
+  return selection.model === "fake" || selection.model === "fake-raw"
+    || profiles.some((profile) => profile.id === selection.profileId && profile.providerType === "fake");
+}
+
 export function loadProviderProfiles(
   platform: PlatformAdapter = webPlatform,
 ): ProviderProfileRecord[] {

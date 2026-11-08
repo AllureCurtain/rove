@@ -139,7 +139,7 @@ test("the row menu renames a session inline and the title persists", async ({
   ).toBe("Renamed session");
 });
 
-test("ctrl-click multi-select drives the batch archive and armed batch delete", async ({
+test("platform modifier-click multi-select drives the batch archive and armed batch delete", async ({
   page,
 }) => {
   const first = createMockSession("session-1", WORKSPACE.id, "Session one");
@@ -157,8 +157,8 @@ test("ctrl-click multi-select drives the batch archive and armed batch delete", 
   const project = page.locator(".workspace-group");
   const one = project.locator(".session-item").filter({ hasText: "Session one" });
   const two = project.locator(".session-item").filter({ hasText: "Session two" });
-  await one.click({ modifiers: ["Control"] });
-  await two.click({ modifiers: ["Control"] });
+  await one.click({ modifiers: ["ControlOrMeta"] });
+  await two.click({ modifiers: ["ControlOrMeta"] });
   await expect(one).toHaveAttribute("data-multi-selected", "true");
   await expect(two).toHaveAttribute("data-multi-selected", "true");
   // A selection click is not a navigation.
@@ -181,11 +181,11 @@ test("ctrl-click multi-select drives the batch archive and armed batch delete", 
   await archived
     .locator(".session-item")
     .filter({ hasText: "Session one" })
-    .click({ modifiers: ["Control"] });
+    .click({ modifiers: ["ControlOrMeta"] });
   await archived
     .locator(".session-item")
     .filter({ hasText: "Session two" })
-    .click({ modifiers: ["Control"] });
+    .click({ modifiers: ["ControlOrMeta"] });
   const batchMenu = await openRowMenu(page, "Session one");
   await batchMenu
     .getByRole("menuitem", { name: "删除 2 个会话" })
