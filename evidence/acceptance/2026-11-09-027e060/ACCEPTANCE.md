@@ -1,0 +1,9 @@
+# First-use acceptance — 2026-11-09
+
+Commit: `027e060` (`fix/product-first-use`). Verdict: **FAIL** — 10 checks passed, two browser checks failed, one external MCP gate was not run. [Machine report](PRODUCT_ACCEPTANCE_REPORT.json) is preserved byte-for-byte. It contains unescaped ANSI control characters from failure output and is therefore invalid strict JSON; the follow-up fixes the report writer without rewriting this record.
+
+The environment matches the [previous run](../2026-11-09-092ef2d/ACCEPTANCE.md): macOS arm64, pinned Playwright Chromium/headless-shell 1223, two regular browser workers, canonical `TMPDIR=/private/tmp`, Node 24 and pnpm 12 (the documented development baseline is Node 22/pnpm 10). The report marks the checkout dirty because clippy regenerated the untracked `apps/desktop/gen/schemas/macOS-schema.json`; implementation sources remained at the stated commit.
+
+Regular browser acceptance passed 227 cases, skipped seven specialized cases, and failed the long-history reading-position assertion (1282.25 px drift). The hosted static-bundle suite passed migration, exact A/B continuity, approvals/input/cancellation and queue controls, then failed when Playwright attempted to read the fork response body after navigation invalidated its network resource. The optional advanced-workbench case was skipped. These results supersede neither the prior FAIL nor any later run.
+
+Follow-up work adds deterministic coverage for row-height changes above and below the reading position, checks the fork through its navigated route and persisted lineage, and makes the POSIX acceptance writer escape control characters and require browser gates consistently with PowerShell. No real-provider, installed Desktop, external MCP, signing or actual engineering-deployment claim is made.
