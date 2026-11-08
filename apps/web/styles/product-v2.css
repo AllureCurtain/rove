@@ -6288,6 +6288,56 @@ body.is-resizing-column .product-app-frame[data-ui-version="v2"] .product-sideba
 }
 
 
+.product-app-frame[data-ui-version="v2"] .runtime-result {
+  color: var(--v2-ink-2);
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-result__outcome {
+  color: var(--v2-ink);
+  font-weight: 600;
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-result__note {
+  font-size: 13px;
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-result__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-result__toggle:hover {
+  color: var(--v2-ink);
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-result__toggle:focus-visible {
+  outline: var(--focus-ring);
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-result__toggle svg {
+  transform: rotate(-90deg);
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-result__toggle svg[data-open="true"] {
+  transform: rotate(0deg);
+}
+
+.product-app-frame[data-ui-version="v2"] .runtime-result__details {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 360px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 /* The provider's chain-of-thought rides above its answer in one quiet fold —
    secondary text, hairline-framed, never styled like the reply itself. */
 .product-app-frame[data-ui-version="v2"] .thinking-region {

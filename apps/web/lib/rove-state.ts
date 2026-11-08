@@ -8,6 +8,7 @@ import type {
   PromptCompactionState,
   PendingApproval,
   StepRecord,
+  FinalizationRecord,
   StreamEvent,
   TaskPlan,
   ToolArtifactRef,
@@ -42,6 +43,8 @@ export interface ChatMessage {
    * says the message is a partial. Absent means a complete response.
    */
   aborted?: boolean;
+  /** Only attached to a distinct runtime-authored final output, never model prose. */
+  runtimeFinalization?: FinalizationRecord;
 }
 
 export type ToolExecutionViewMetadata = Omit<
@@ -206,6 +209,7 @@ export interface WorkbenchState {
   planDecisions: PlanDecisionRecord[];
   planRevisions: PlanRevision[];
   stepRecords: StepRecord[];
+  finalization?: FinalizationRecord | null;
   /** Terminal tool cards retained from earlier product-session runs. */
   historicalTools: ToolCallView[];
   tools: ToolCallView[];
@@ -268,6 +272,7 @@ export function createWorkbenchState(): WorkbenchState {
     planDecisions: [],
     planRevisions: [],
     stepRecords: [],
+    finalization: null,
     historicalTools: [],
     tools: [],
     subagents: [],
@@ -630,6 +635,7 @@ function prepareRunScopedState(
     planDecisions: [],
     planRevisions: [],
     stepRecords: [],
+    finalization: null,
     historicalTools: preserveTools
       ? [
           ...state.tools
@@ -1026,6 +1032,7 @@ function applyStreamEvent(
         ...next,
         activeJobId: event.job_id,
         activeRunId: event.run_id,
+        finalization: runStartedAlreadySeen ? state.finalization : null,
         busy: true,
         error: null,
         statusText: "Run started",
@@ -1616,12 +1623,16 @@ function applyStreamEvent(
         ),
       };
     }
+    case "finalization_started":
+    case "finalization_completed":
+      return { ...next, finalization: event.record };
     case "run_completed": {
       const projection = finalizeRunMessage(
         state.messages,
         event.output,
         state.activeRunId,
         seq ?? next.eventCount,
+        state.finalization,
       );
       return {
         ...next,
@@ -1638,7 +1649,7 @@ function applyStreamEvent(
                 state.activeRunId,
                 state.activeRunOrdinal,
                 seq,
-                "assistant",
+                projection.messageId,
               ),
             )
           : state.timeline,
@@ -1965,6 +1976,7 @@ function finalizeRunMessage(
   output: string | null | undefined,
   runId: string | null,
   eventIdentity: number,
+  finalization?: FinalizationRecord | null,
 ): MessageProjection {
   if (!output) {
     return {
@@ -1974,7 +1986,11 @@ function finalizeRunMessage(
     };
   }
   const last = messages[messages.length - 1];
-  if (last?.role === "assistant" && last.status === "streaming") {
+  const runtimeFinalization =
+    finalization?.phase === "completed" && finalization.output === output &&
+    (finalization.mode === "deterministic" || finalization.mode === "deterministic_fallback")
+      ? finalization : undefined;
+  if (!runtimeFinalization && last?.role === "assistant" && last.status === "streaming") {
     return {
       messages: [
         ...messages.slice(0, -1),
@@ -1988,7 +2004,9 @@ function finalizeRunMessage(
       created: false,
     };
   }
-  if (last?.role === "assistant" && last.content === output) {
+  if (last?.role === "assistant" && last.content === output &&
+    ((!runtimeFinalization && !last.runtimeFinalization) ||
+      (runtimeFinalization && last.runtimeFinalization?.finalization_id === runtimeFinalization.finalization_id))) {
     return {
       messages,
       messageId: last.id,
@@ -1998,12 +2016,14 @@ function finalizeRunMessage(
   const messageId = assistantMessageId(runId, eventIdentity);
   return {
     messages: [
-      ...messages,
+      ...messages.map((message) => message.status === "streaming"
+        ? { ...message, status: "final" as const } : message),
       {
         id: messageId,
         role: "assistant",
         content: output,
         status: "final",
+        runtimeFinalization,
       },
     ],
     messageId,

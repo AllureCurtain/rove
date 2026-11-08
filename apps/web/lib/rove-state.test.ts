@@ -6,7 +6,7 @@ import {
   selectTranscriptTimeline,
   workbenchReducer,
 } from "./rove-state";
-import type { PlanRevision, StreamEvent } from "./rove-types";
+import type { FinalizationRecord, PlanRevision, StreamEvent } from "./rove-types";
 
 const emptyBudgetSnapshot = {
   plan_steps: 0,
@@ -38,6 +38,64 @@ function planRevision(overrides: Partial<PlanRevision> = {}): PlanRevision {
 }
 
 describe("workbenchReducer", () => {
+  describe("runtime final output", () => {
+    const output = "Goal: inspect\noutcome: success\nEvidence: tool_call:1";
+    const record: FinalizationRecord = {
+      finalization_id: "final-1", phase: "completed", mode: "deterministic",
+      finish_reason: "completed", started_at: "2026-11-09T00:00:00Z", output, outcome: "success",
+    };
+    function replay(events: StreamEvent[]) {
+      return events.reduce((state, event) => workbenchReducer(state, {
+        type: "stream_event", event,
+      }), createWorkbenchState());
+    }
+    const start: StreamEvent = { type: "run_started", job_id: "job-1", run_id: "run-1", user_message: "Inspect" };
+    const complete: StreamEvent = { type: "run_completed", reason: "final", output };
+
+    it.each(["deterministic", "deterministic_fallback"] as const)("keeps streamed prose and a distinct %s result", (mode) => {
+      const final = { ...record, mode };
+      const state = replay([start, { type: "llm_chunk", delta: "Model answer" },
+        { type: "finalization_completed", record: final }, complete]);
+      expect(state.messages.slice(1).map(({ content, status, runtimeFinalization }) =>
+        [content, status, runtimeFinalization])).toEqual([
+        ["Model answer", "final", undefined], [output, "final", final],
+      ]);
+      expect(selectTranscriptTimeline(state)[0]?.items).toHaveLength(3);
+      const duplicate = workbenchReducer(state, { type: "stream_event", event: complete });
+      expect(duplicate.messages).toEqual(state.messages);
+      expect(duplicate.timeline).toEqual(state.timeline);
+    });
+
+    it.each([
+      undefined, { ...record, mode: "direct" as const }, { ...record, mode: "model" as const },
+      { ...record, phase: "started" as const }, { ...record, output: "different" },
+    ])("leaves ordinary, legacy and unmatched output as prose (%j)", (final) => {
+      const state = replay([start, ...(final ? [{ type: "finalization_completed" as const, record: final }] : []), complete]);
+      expect(state.messages.at(-1)?.content).toBe(output);
+      expect(state.messages.at(-1)?.runtimeFinalization).toBeUndefined();
+    });
+
+    it("does not relabel model prose even when it matches the runtime summary", () => {
+      const state = replay([start, { type: "llm_message", full: output, usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } },
+        { type: "finalization_completed", record }, complete]);
+      expect(state.messages).toHaveLength(3);
+      expect(state.messages[1]?.runtimeFinalization).toBeUndefined();
+      expect(state.messages[2]?.runtimeFinalization).toEqual(record);
+    });
+
+    it("resets pending finalization at the next run and prepared turn", () => {
+      const first = replay([start, { type: "finalization_completed", record }, complete]);
+      const prepared = workbenchReducer(first, { type: "prepare_turn" });
+      expect(prepared.finalization).toBeNull();
+      const next = workbenchReducer(first, { type: "stream_event", event: {
+        ...start, run_id: "run-2", job_id: "job-2",
+      } });
+      const completed = workbenchReducer(next, { type: "stream_event", event: complete });
+      expect(completed.messages.at(-1)?.runtimeFinalization).toBeUndefined();
+      expect(completed.messages[1]?.runtimeFinalization).toEqual(record);
+    });
+  });
+
   it("keeps the observed terminal tail across a stale same-run hydration", () => {
     const observed = {
       ...createWorkbenchState(), activeJobId: "job-1", activeRunId: "run-1", eventCount: 6,
