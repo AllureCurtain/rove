@@ -19,6 +19,28 @@ import {
 } from "../lib/rove-state";
 
 describe("product transcript projection", () => {
+  it("restores typed runtime results without leaking them into later or legacy turns", () => {
+    const output = "Goal: inspect\noutcome: success";
+    const first = completedSegment(1, "job-1", "run-1", "First", "Model answer");
+    const record = {
+      finalization_id: "final-1", phase: "completed" as const, mode: "deterministic" as const,
+      finish_reason: "completed" as const, started_at: "2026-11-09T00:00:00Z", output, outcome: "success" as const,
+    };
+    first.events.splice(-1, 1,
+      { seq: 4, event: { type: "finalization_completed", record } },
+      { seq: 5, event: { type: "run_completed", reason: "final", output } });
+    first.last_event_seq = first.observed_through_seq = 5;
+    const state = projectProductTranscript({
+      product_session_id: "session", workspace_id: "workspace", status: "complete", partial_reasons: [],
+      segments: [first, completedSegment(2, "job-2", "run-2", "Next", output)],
+    });
+    expect(state.messages.map((message) => message.content)).toEqual([
+      "First", "Model answer", output, "Next", output,
+    ]);
+    expect(state.messages[2]?.runtimeFinalization).toEqual(record);
+    expect(state.messages[4]?.runtimeFinalization).toBeUndefined();
+  });
+
   it("keeps an observed terminal outcome when an older transcript still calls that run live", () => {
     const segment = completedSegment(1, "job-1", "run-1", "Question", "Partial answer");
     segment.run_status = "running";

@@ -14,7 +14,7 @@ Updated: 2026-11-09
 Ordered by priority.
 
 1. Validate the first-use fixes on a credentialed real provider and installed delivery platform; distinguish catalog connectivity from successful task execution.
-2. Task state and delivery: pending approval must read as waiting for the user, not tool execution; present the completed change, verification, and remaining work clearly; keep deterministic fallback diagnostics available without overwhelming the conversation; status badge layout is fixed in PR #52; manual compaction is available in secondary context tools.
+2. Task state and delivery: pending approval must read as waiting for the user, not tool execution; present the completed change, verification, and remaining work clearly; runtime summaries now expose a concise outcome with expandable original details; status badge layout is fixed in PR #52; manual compaction is available in secondary context tools.
 3. Real-use acceptance: select one supported delivery platform and validate clean installation plus real-provider tasks on disposable repositories (read, edit, test, approve/deny, cancel, refresh/restart, inspect, revert). Use ordinary pointer/keyboard interactions for browser acceptance and record failures and skipped gates explicitly. The 2026-11-08 offline audit does not replace the full acceptance gate or credentialed validation.
 4. F.4, TUI part: long sessions in the terminal can load earlier history on demand (CLI)
 5. F.5, TUI part: queued successor messages resume delivery after a TUI restart (CLI)
@@ -34,6 +34,8 @@ Ordered by priority.
 ## Recently completed
 
 Keep only the last 10 entries.
+
+- 2026-11-09 Readable execution results: typed deterministic/fallback summaries have a localized outcome and expandable original details; non-success and uncertain outcomes open immediately. Model prose, full copy, live projection and history restoration are preserved. Fresh blind review, 2244 Rust tests, 1037 Web tests, 237 browser cases (7 specialized skipped), 4 hosted cases (1 optional skipped), typecheck, production builds, style tokens, fmt and workspace clippy passed. Saved real-API fake-provider history was inspected in the browser. No real-provider task or installed Desktop claim.
 
 - 2026-11-09 Verified rollback: exact optional before/after byte identities, faithful line-ending diffs, bounded single-file reversal, lexical symlink refusal and cancellation-safe session maintenance. Fresh blind review and CI passed. Combined acceptance at `38c0525`: 12 required gates passed, including 200 API tests, 1016 Web tests, 236 regular browser cases and 4 hosted cases; external MCP not run. Prior FAIL retained. Old evidence remains viewable but missing identities cannot authorize rollback.
 

@@ -25,6 +25,7 @@ import type {
 import { useCopy } from "../copy/CopyProvider";
 import { SubagentTopology } from "./subagent-topology";
 import { ThinkingRegion } from "./thinking-region";
+import { RuntimeResult } from "./RuntimeResult";
 import { ToolCard, formatValue } from "./tool-card";
 import { RichText } from "../product-v2/RichText";
 import type {
@@ -1165,7 +1166,9 @@ function MessageBubble({
               streaming={message.status === "streaming" && !message.content}
             />
           ) : null}
-          <RichText content={message.content} />
+          {message.runtimeFinalization ? (
+            <RuntimeResult record={message.runtimeFinalization} content={message.content} />
+          ) : <RichText content={message.content} />}
           <AttachmentRow attachments={attachments} loadAttachment={loadAttachment} />
           {message.aborted === true ? (
             // R2b smart stop: the text above is what the user had already read
