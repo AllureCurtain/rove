@@ -48,8 +48,8 @@ CHECKS=(
     "web-typecheck|G3-G7|Web TypeScript|apps/web|1|web||pnpm typecheck"
     "web-test|G3-G7|Web unit and component tests|apps/web|1|web||pnpm test"
     "web-build|G3-G7|Web production build|apps/web|1|web||pnpm build"
-    "web-e2e|G1-G7|Browser-boundary Playwright suites|apps/web|0|browser||pnpm test:e2e"
-    "web-serve-e2e|G1-G7|rove-api hosted bundle real-API suite|.|0|browser||bash scripts/serve-acceptance.sh"
+    "web-e2e|G1-G7|Browser-boundary Playwright suites|apps/web|1|browser||pnpm test:e2e"
+    "web-serve-e2e|G1-G7|rove-api hosted bundle real-API suite|.|1|browser||bash scripts/serve-acceptance.sh"
     "mcp-filesystem-smoke|G7|Real MCP filesystem server smoke|.|0|gated|ROVE_MCP_FILESYSTEM_SMOKE|cargo test -p rove-integration-tests --test it mcp::mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture"
 )
 
@@ -60,6 +60,13 @@ json_escape() {
     s="${s//$'\r'/}"
     s="${s//$'\t'/\\t}"
     s="${s//$'\n'/\\n}"
+    local code control escaped
+    for code in {1..31}; do
+        case "$code" in 9|10|13) continue ;; esac
+        printf -v control '%b' "\\$(printf '%03o' "$code")"
+        printf -v escaped '\\u%04x' "$code"
+        s="${s//"$control"/$escaped}"
+    done
     printf '%s' "$s"
 }
 

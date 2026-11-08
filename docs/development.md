@@ -59,7 +59,7 @@ Config options are authoritative in the environment layer of `apps/bootstrap/src
 | Benchmarks | `cargo run -p rove-bench -- <suite>` |
 | Local full-stack smoke | `scripts/integration-smoke.ps1` |
 | Hosted-bundle acceptance | `scripts/serve-acceptance.ps1` (Windows) or `scripts/serve-acceptance.sh` (POSIX) — builds `apps/web/web-dist`, runs `rove-api --web-dist` against an isolated scratch state root, and drives the `real-api.spec.ts` Playwright suite against it (`--skip-web-build`/`--skip-cargo-build`, or `-SkipWebBuild`/`-SkipCargoBuild` on Windows, to reuse artifacts; `ROVE_SERVE_ACCEPTANCE_ADDR` to move the bind address) |
-| Aggregated acceptance | `scripts/product-acceptance.ps1` or `.sh`; writes `PRODUCT_ACCEPTANCE_REPORT.json`, never edit by hand. A completed run's report plus a hand-written record land under `evidence/acceptance/<date>-<sha>/` (see `evidence/README.md`) |
+| Aggregated acceptance | `scripts/product-acceptance.ps1 -IncludeBrowser` or `bash scripts/product-acceptance.sh --include-browser`; browser checks are required for PASS, and skipping them records FAIL. Writes `PRODUCT_ACCEPTANCE_REPORT.json`, never edit by hand. A completed run's report plus a hand-written record land under `evidence/acceptance/<date>-<sha>/` (see `evidence/README.md`) |
 | Real-provider integration | `scripts/provider-integration.ps1 -Provider <type> -Model <id> -ApiBase <url> -ApiKeyEnv <VAR>` |
 | State migration smoke | `scripts/state-migration-smoke.ps1` |
 | TUI PTY smoke (Unix) | `python scripts/tui-pty-smoke.py --run` |
