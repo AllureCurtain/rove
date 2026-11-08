@@ -1015,22 +1015,17 @@ async function expectRunCompleted(page: Page) {
 }
 
 async function cancelCurrentRun(page: Page) {
-  // The composer swaps Send for Stop only while a run is active; when the
-  // previous turn already reached a terminal state there is nothing to cancel.
-  const stop = page.getByRole("button", { name: "Stop" });
-  if ((await stop.count()) > 0) {
-    await Promise.all([
-      page.waitForResponse(
-        (response) =>
-          response.request().method() === "POST" &&
-          new URL(response.url()).pathname.endsWith("/cancel") &&
-          response.ok(),
-      ),
-      stop.click(),
-    ]);
-  } else {
-    throw new Error("expected an active run with a Stop control");
-  }
+  const stop = page.getByRole("button", { name: "Stop", exact: true });
+  await expect(stop).toBeVisible();
+  await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname.endsWith("/cancel") &&
+        response.ok(),
+    ),
+    stop.click(),
+  ]);
   const inspector = await openRunDetails(page);
   await expect(
     inspector.getByText(
