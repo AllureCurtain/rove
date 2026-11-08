@@ -218,7 +218,7 @@ export interface WorkbenchState {
 
 export type WorkbenchAction =
   | { type: "reset" }
-  | { type: "hydrate"; state: WorkbenchState }
+  | { type: "hydrate"; state: WorkbenchState; preserveObservedTerminal?: boolean }
   /** Clear run-scoped view state while optionally retaining terminal product tool history. */
   | { type: "prepare_turn"; preserveTools?: boolean }
   /** Reset stale run identity before following a different durable job. */
@@ -407,7 +407,9 @@ export function workbenchReducer(
     case "reset":
       return createWorkbenchState();
     case "hydrate":
-      return action.state;
+      return action.preserveObservedTerminal
+        ? hydrateWithObservedTerminal(state, action.state)
+        : action.state;
     case "prepare_turn":
       return prepareRunScopedState(
         state,
@@ -551,6 +553,51 @@ export function workbenchReducer(
     case "stream_event":
       return applyStreamEvent(state, action.event, action.seq);
   }
+}
+
+function hydrateWithObservedTerminal(observed: WorkbenchState, restored: WorkbenchState): WorkbenchState {
+  if (observed.busy || !observed.activeRunId) return restored;
+  const sameRun = observed.activeRunId === restored.activeRunId
+    && observed.activeJobId === restored.activeJobId;
+  const olderOrMissing = !restored.activeRunId
+    || (restored.activeRunId !== observed.activeRunId
+      && restored.resumedFromRunId !== observed.activeRunId
+      && (observed.timeline.some((entry) => entry.runId === restored.activeRunId)
+        || (observed.activeRunOrdinal !== null && restored.activeRunOrdinal !== null
+          && restored.activeRunOrdinal < observed.activeRunOrdinal)));
+  if (!(sameRun && observed.eventCount > restored.eventCount) && !olderOrMissing) return restored;
+
+  // Keep the observed tail, but also accept newly loaded historical runs.
+  const currentEntries = observed.timeline.filter((entry) => entry.runId === observed.activeRunId);
+  const messageIds = new Set(currentEntries.filter((entry) => entry.kind === "message").map((entry) => entry.entityId));
+  const toolIds = new Set(observed.tools.map((tool) => tool.timelineId ?? tool.id));
+  const merge = <T,>(items: T[], key: (item: T) => string): T[] => [...new Map(items.map((item) => [key(item), item])).values()];
+  return {
+    ...observed,
+    activeRunOrdinal: observed.activeRunOrdinal ?? (sameRun ? restored.activeRunOrdinal : null),
+    timeline: merge([
+      ...restored.timeline.filter((entry) => entry.runId !== observed.activeRunId),
+      ...observed.timeline,
+    ], (entry) => entry.id),
+    messages: merge([
+      ...observed.messages,
+      ...restored.messages.filter((message) => !messageIds.has(message.id)),
+    ], (message) => message.id).map((message) => ({ ...message, status: "final" })),
+    historicalTools: merge([
+      ...observed.historicalTools, ...restored.historicalTools,
+      ...restored.tools.filter((tool) => !toolIds.has(tool.timelineId ?? tool.id)),
+    ], (tool) => tool.timelineId ?? tool.id),
+    tools: observed.tools.map((tool) => ({
+      ...tool,
+      status: tool.status === "running" || tool.status === "waiting" ? "error" : tool.status,
+      pendingApproval: undefined,
+    })),
+    subagents: observed.subagents.map((child) => child.status === "running" ? { ...child, status: "error" } : child),
+    pendingInputs: [],
+    transcriptInputs: merge([...restored.transcriptInputs, ...observed.transcriptInputs], (input) => input.timelineId)
+      .map((input) => input.status === "waiting" ? { ...input, status: "closed" } : input),
+    seenUserMessageRunIds: [...new Set([...restored.seenUserMessageRunIds, ...observed.seenUserMessageRunIds])],
+  };
 }
 
 function prepareRunScopedState(

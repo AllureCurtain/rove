@@ -66,7 +66,7 @@ export interface RunController {
 export function createRunController(
   dispatch: (action: WorkbenchAction) => void,
   options: {
-    onTerminal?: () => void;
+    onTerminal?: (status: string) => void;
     onStreamEvent?: (event: StreamEvent) => void;
   } = {},
 ): RunController {
@@ -94,7 +94,7 @@ export function createRunController(
     if (isTerminalStatus(state.status) && !terminal) {
       terminal = true;
       closeStream();
-      options.onTerminal?.();
+      options.onTerminal?.(state.status);
     }
     return true;
   }
@@ -140,7 +140,7 @@ export function createRunController(
 
     source.onerror = () => {
       if (
-        !isCurrent(expectedGeneration) ||
+        !isCurrent(expectedGeneration) || terminal ||
         resyncGeneration === expectedGeneration
       ) {
         return;
@@ -155,7 +155,7 @@ export function createRunController(
           syncSnapshot(jobState);
         })
         .catch((error) => {
-          if (isCurrent(expectedGeneration)) {
+          if (isCurrent(expectedGeneration) && !terminal) {
             dispatch({ type: "set_error", error: describeError(error) });
           }
         })
@@ -168,7 +168,7 @@ export function createRunController(
   }
 
   function handleEvent(event: Event, expectedGeneration: number) {
-    if (!isCurrent(expectedGeneration)) {
+    if (!isCurrent(expectedGeneration) || terminal) {
       return;
     }
     const message = event as MessageEvent<string>;
@@ -189,7 +189,7 @@ export function createRunController(
     if (payload.type === "run_completed") {
       terminal = true;
       closeStream();
-      options.onTerminal?.();
+      options.onTerminal?.(payload.reason === "cancelled" ? "cancelled" : payload.reason === "error" ? "error" : "done");
     }
   }
 
@@ -255,11 +255,7 @@ export function createRunController(
       dispatch({ type: "set_status", statusText: "Cancelling run" });
       const jobState = await cancelJob(jobId);
       assertCurrent(expectedGeneration);
-      dispatch({ type: "job_state_synced", state: jobState });
-      if (isTerminalStatus(jobState.status)) {
-        closeStream();
-        options.onTerminal?.();
-      }
+      syncSnapshot(jobState);
     },
 
     async approve(jobId, callId, decision, expectedRunId) {
@@ -307,11 +303,8 @@ export function createRunController(
       const expectedGeneration = generation;
       const jobState = await submitInput(jobId, inputId, answer);
       assertCurrent(expectedGeneration);
-      dispatch({ type: "input_submitted", inputId });
-      dispatch({ type: "job_state_synced", state: jobState });
-      if (isTerminalStatus(jobState.status)) {
-        closeStream();
-        options.onTerminal?.();
+      if (syncSnapshot(jobState)) {
+        dispatch({ type: "input_submitted", inputId });
       }
     },
 
@@ -319,11 +312,7 @@ export function createRunController(
       const expectedGeneration = generation;
       const jobState = await postSubagentStop(jobId, callId);
       assertCurrent(expectedGeneration);
-      dispatch({ type: "job_state_synced", state: jobState });
-      if (isTerminalStatus(jobState.status)) {
-        closeStream();
-        options.onTerminal?.();
-      }
+      syncSnapshot(jobState);
     },
 
     close() {

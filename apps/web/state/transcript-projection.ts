@@ -107,8 +107,16 @@ function mergeTranscriptPartialReasons(
   return [...merged.values()];
 }
 
+export interface ObservedTerminalRun {
+  sessionId: string;
+  jobId: string;
+  runId: string | null;
+  status?: string;
+}
+
 export function projectProductTranscript(
   transcript: ProductTranscriptResponse,
+  terminal?: ObservedTerminalRun | null,
 ): WorkbenchState {
   let state = createWorkbenchState();
 
@@ -141,7 +149,14 @@ export function projectProductTranscript(
         content: segment.fallback.summary,
       });
     }
-    state = settleRestoredSegment(state, segment);
+    const confirmedStatus = terminal?.sessionId === transcript.product_session_id
+      && terminal.jobId === segment.binding.runtime_job_id
+      && terminal.runId === segment.binding.runtime_run_id
+      && !segment.inherited
+      && (segment.run_status === "init" || segment.run_status === "running")
+      && ["done", "error", "cancelled", "interrupted"].includes(terminal.status ?? "")
+      ? terminal.status : undefined;
+    state = settleRestoredSegment(state, segment, confirmedStatus);
     state = applySegmentLineage(state, segment);
   }
 
@@ -239,13 +254,15 @@ const PARTIAL_REASON_LABELS: Record<ProductTranscriptPartialReason["code"], stri
 function settleRestoredSegment(
   state: WorkbenchState,
   segment: ProductTranscriptRunSegment,
+  confirmedStatus?: string,
 ): WorkbenchState {
-  const busy = segment.run_status === "init" || segment.run_status === "running";
+  const status = confirmedStatus ?? segment.run_status;
+  const busy = status === "init" || status === "running";
   const tools = busy
     ? state.tools
     : state.tools.map((tool) => ({
         ...tool,
-        status: tool.status === "waiting" ? ("error" as const) : tool.status,
+        status: tool.status === "waiting" || tool.status === "running" ? ("error" as const) : tool.status,
         pendingApproval: undefined,
       }));
   // A restored terminal run cannot hold a child still mid-flight: the runtime
@@ -268,7 +285,7 @@ function settleRestoredSegment(
     resumedFromRunId: segment.binding.resumed_from_run_id ?? null,
     eventCount: segment.observed_through_seq,
     busy,
-    statusText: restoredStatusText(segment.run_status),
+    statusText: restoredStatusText(status),
     tools,
     pendingInputs: busy ? state.pendingInputs : [],
     transcriptInputs: busy

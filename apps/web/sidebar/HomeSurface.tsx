@@ -60,6 +60,7 @@ export function HomeSurface({
    */
   onboarding?: {
     hasProvider: boolean;
+    demoMode?: boolean;
     hasWorkspace: boolean;
     hasSession: boolean;
   } | null;
@@ -97,6 +98,9 @@ export function HomeSurface({
           onOpenWorkspace={() => setDialogOpen(true)}
           onOpenProviders={onOpenProviders}
         />
+      ) : null}
+      {onboarding?.demoMode ? (
+        <p className="home-surface__demo" role="note">{t("home.demoNotice")}</p>
       ) : null}
       {composer}
       {sendBlocked ? (

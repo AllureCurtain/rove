@@ -40,7 +40,7 @@ import {
 import { ConversationMinimap } from "./ConversationMinimap";
 import { RuntimeStatusLane } from "./RuntimeStatusLane";
 import { TurnChangeCard } from "./TurnChangeCard";
-import { IDLE_PHASE, type ActivityPhase } from "./activity-phase";
+import { activityPhaseForTranscript, IDLE_PHASE, type ActivityPhase } from "./activity-phase";
 import { ReadingWidthHandles } from "./ReadingWidthHandles";
 import { buildConversationMinimapMarkers } from "./conversation-minimap";
 import type { FileReference } from "./file-ref";
@@ -970,7 +970,7 @@ export function Transcript({
           ))}
           {/* §5.3: one lane owns "what is it doing right now" for the whole
               running turn; idle renders nothing at all. */}
-          <RuntimeStatusLane busy={busy} phase={activityPhase} />
+          <RuntimeStatusLane busy={busy} phase={activityPhaseForTranscript(activityPhase, timeline, busy)} />
         </div>
       </div>
       {showJump && itemCount > 0 ? (

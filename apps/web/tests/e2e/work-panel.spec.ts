@@ -166,10 +166,9 @@ test("maximize gives the panel the client area and disables the separator", asyn
   await expect(page.locator(".product-main")).toBeHidden();
   await expect(separator).toHaveAttribute("aria-disabled", "true");
   await expect(separator).toHaveAttribute("tabindex", "-1");
-  const box = await inspector.boundingBox();
   const rail = await page.locator(".product-sidebar").boundingBox();
-  expect(
-    box!.width,
+  await expect.poll(
+    async () => (await inspector.boundingBox())!.width,
     "the panel takes the whole client area beside the rail",
   ).toBeGreaterThan(1440 - rail!.width - 10);
 

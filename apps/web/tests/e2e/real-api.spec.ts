@@ -351,13 +351,7 @@ test.describe("real API product shell integration", () => {
             new URL(response.url()).pathname.includes("/approvals/") &&
             response.ok(),
         ),
-        // The composer dock overlays the transcript's bottom reserve; while a
-        // run streams, follow-to-bottom keeps the card's button point under
-        // the dock so a pointer click retries forever. dispatchEvent still
-        // runs the real React handler and issues the live approvals POST.
-        approval
-          .getByRole("button", { name: "Approve" })
-          .dispatchEvent("click"),
+        approval.getByRole("button", { name: "Approve" }).click(),
       ]);
       await expect(
         page.getByTestId("conversation-log").getByText(/"mode":"create"/u),
@@ -365,7 +359,7 @@ test.describe("real API product shell integration", () => {
       expect(await readFile(join(workspaceRoot, outputName), "utf8")).toBe(
         outputContent,
       );
-      await cancelCurrentRun(page, true);
+      await expectRunCompleted(page);
 
       const inputPrompt = "Which branch should the real product shell use?";
       const inputTurn = await sendMessage(
@@ -395,7 +389,7 @@ test.describe("real API product shell integration", () => {
       await expect(
         page.getByTestId("conversation-log").getByText("main", { exact: true }),
       ).toBeVisible({ timeout: 30_000 });
-      await cancelCurrentRun(page, true);
+      await expectRunCompleted(page);
 
       const cancelPrompt = "Cancel this real product input";
       const cancelTurn = await sendMessage(
@@ -1020,7 +1014,7 @@ async function expectRunCompleted(page: Page) {
   await expect(page.getByRole("textbox", { name: "Type a message" })).toBeEnabled();
 }
 
-async function cancelCurrentRun(page: Page, allowCompleted = false) {
+async function cancelCurrentRun(page: Page) {
   // The composer swaps Send for Stop only while a run is active; when the
   // previous turn already reached a terminal state there is nothing to cancel.
   const stop = page.getByRole("button", { name: "Stop" });
@@ -1034,13 +1028,13 @@ async function cancelCurrentRun(page: Page, allowCompleted = false) {
       ),
       stop.click(),
     ]);
-  } else if (!allowCompleted) {
+  } else {
     throw new Error("expected an active run with a Stop control");
   }
   const inspector = await openRunDetails(page);
   await expect(
     inspector.getByText(
-      allowCompleted ? /Run (?:canceled|completed)/u : "Run canceled",
+      "Run canceled",
       { exact: true },
     ),
   ).toBeVisible({ timeout: 30_000 });

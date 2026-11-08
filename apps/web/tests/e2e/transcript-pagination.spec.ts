@@ -121,7 +121,8 @@ async function revealOlderControl(
   }
   await scroller.hover();
   await page.mouse.wheel(0, -200_000);
-  await expect(control).toBeVisible();
+  await expect.poll(() => scroller.evaluate((node) => node.scrollTop)).toBeLessThanOrEqual(1);
+  await expect(control).toBeInViewport();
   return true;
 }
 

@@ -38,6 +38,41 @@ function planRevision(overrides: Partial<PlanRevision> = {}): PlanRevision {
 }
 
 describe("workbenchReducer", () => {
+  it("keeps the observed terminal tail across a stale same-run hydration", () => {
+    const observed = {
+      ...createWorkbenchState(), activeJobId: "job-1", activeRunId: "run-1", eventCount: 6,
+      statusText: "Run cancelled", activeRunOrdinal: 2,
+      timeline: [{ id: "tail", kind: "message" as const, entityId: "answer", runId: "run-1", runOrdinal: 2, eventSeq: 6, inherited: false, sourceSessionId: null }],
+      tools: [{ id: "call", name: "shell", status: "running" as const, details: "running" }],
+      subagents: [{ parentCallId: "child", status: "running" as const, messages: [], tools: [], eventCount: 1 }],
+      messages: [{ id: "answer", role: "assistant" as const, content: "Already received", status: "final" as const, aborted: true }],
+    };
+    const stale = { ...createWorkbenchState(), activeJobId: "job-1", activeRunId: "run-1", eventCount: 3 };
+    const kept = workbenchReducer(observed, { type: "hydrate", state: stale, preserveObservedTerminal: true });
+    expect(kept.messages).toEqual(observed.messages);
+    expect(kept.busy).toBe(false);
+    expect(kept.tools[0]?.status).toBe("error");
+    expect(kept.subagents[0]?.status).toBe("error");
+    const older = {
+      ...stale, activeRunId: "older-run", activeRunOrdinal: 1,
+      messages: [{ id: "older", role: "user" as const, content: "Older question", status: "final" as const }],
+      timeline: [{ id: "older", kind: "message" as const, entityId: "older", runId: "older-run", runOrdinal: 1, eventSeq: 1, inherited: false, sourceSessionId: null }],
+    };
+    for (const incoming of [older, { ...older, activeRunId: "run-1", activeRunOrdinal: 2 }, createWorkbenchState()]) {
+      const merged = workbenchReducer(observed, { type: "hydrate", state: incoming, preserveObservedTerminal: true });
+      expect(merged.messages).toContainEqual(observed.messages[0]);
+      if (incoming.timeline.length) {
+        expect(selectTranscriptTimeline(merged).map((group) => group.runId)).toEqual(["older-run", "run-1"]);
+        expect(merged.messages).toContainEqual(older.messages[0]);
+      }
+    }
+    expect(workbenchReducer(observed, { type: "hydrate", state: stale })).toBe(stale);
+    const successor = { ...stale, activeRunId: "run-2", activeRunOrdinal: 3, resumedFromRunId: "run-1", busy: true };
+    expect(workbenchReducer(observed, { type: "hydrate", state: successor, preserveObservedTerminal: true })).toBe(successor);
+    const caughtUp = { ...stale, eventCount: 7 };
+    expect(workbenchReducer(observed, { type: "hydrate", state: caughtUp, preserveObservedTerminal: true })).toBe(caughtUp);
+  });
+
   /**
    * One `prompt_built` frame as the job stream really delivers it.
    *

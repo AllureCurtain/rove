@@ -58,6 +58,7 @@ import {
   projectProductTranscript,
   transcriptProjectionInput,
   type LoadedTranscriptHistory,
+  type ObservedTerminalRun,
   type TranscriptRestoreState,
 } from "./transcript-projection";
 import {
@@ -167,7 +168,7 @@ export function useSessionContinuity({
   // run at or above it, including runs it could not read, so following it makes
   // progress even when a whole page resolves to partial reasons.
   const olderCursorRef = useRef<number | null>(null);
-  const olderHistoryRequestRef = useRef(false);
+  const olderHistoryRequestRef = useRef<number | null>(null);
   const controlsGenerationRef = useRef(0);
   const messagesGenerationRef = useRef(0);
   const messageRequestsRef = useRef(new Map<string, string>());
@@ -204,11 +205,7 @@ export function useSessionContinuity({
    * followed. A different session's binding never compares equal, so switching
    * sessions needs no clearing.
    */
-  const terminatedBindingRef = useRef<{
-    sessionId: string;
-    jobId: string;
-    runId: string | null;
-  } | null>(null);
+  const terminatedBindingRef = useRef<ObservedTerminalRun | null>(null);
   const terminalReconciliationRef = useRef<
     (
       sessionId: string,
@@ -233,7 +230,7 @@ export function useSessionContinuity({
     setMessages([]);
     loadedTranscriptRef.current = null;
     olderCursorRef.current = null;
-    olderHistoryRequestRef.current = false;
+    olderHistoryRequestRef.current = null;
     setOlderHistory(NO_OLDER_HISTORY);
   }, []);
 
@@ -330,7 +327,7 @@ export function useSessionContinuity({
       closeFocusedObservation();
       let controller: ReturnType<typeof createRunController>;
       controller = createRunController(dispatch, {
-        onTerminal: () => {
+        onTerminal: (status) => {
           if (
             controllerRef.current !== controller ||
             focusedSessionRef.current !== sessionId
@@ -347,6 +344,7 @@ export function useSessionContinuity({
               sessionId,
               jobId: completedBinding.jobId,
               runId: completedBinding.runId,
+              status,
             };
           }
           terminalReconciliationRef.current(sessionId, controller, completedBinding);
@@ -396,6 +394,11 @@ export function useSessionContinuity({
       ) {
         return;
       }
+      ++transcriptGenerationRef.current;
+      olderHistoryRequestRef.current = null;
+      setOlderHistory((current) => current.loading ? { ...current, loading: false } : current);
+      setRestoreState((current) => current.status === "loading" && current.sessionId === sessionId
+        ? { status: "complete", sessionId } : current);
       const controller = installFocusedController(sessionId);
       observedBindingRef.current = { jobId, runId };
       dispatch({ type: "prepare_job_attachment", jobId, runId });
@@ -430,11 +433,13 @@ export function useSessionContinuity({
   const restoreSession = useCallback(
     async (workspaceId: string, sessionId: string) => {
       const generation = ++transcriptGenerationRef.current;
+      const preserveObservedTerminal = focusedSessionRef.current === sessionId
+        && terminatedBindingRef.current?.sessionId === sessionId;
       closeFocusedObservation();
       focusedSessionRef.current = sessionId;
       restoredSessionRef.current = sessionId;
       clearControls();
-      dispatch({ type: "reset" });
+      if (!preserveObservedTerminal) dispatch({ type: "reset" });
       setRestoreState({ status: "loading", sessionId });
 
       try {
@@ -455,10 +460,14 @@ export function useSessionContinuity({
         const older = olderHistoryFromResponse(transcript);
         olderCursorRef.current = older.cursor;
         setOlderHistory(older);
-        const projected = projectProductTranscript(
+        const projection = projectProductTranscript(
           transcriptProjectionInput(history),
+          terminatedBindingRef.current,
         );
-        dispatch({ type: "hydrate", state: projected });
+        const projected = workbenchReducer(approvalContextRef.current.runState, {
+          type: "hydrate", state: projection, preserveObservedTerminal,
+        });
+        dispatch({ type: "hydrate", state: projected, preserveObservedTerminal });
         setConnection("ok");
         setRestoreState(
           transcript.status === "partial"
@@ -497,7 +506,7 @@ export function useSessionContinuity({
         ) {
           return;
         }
-        dispatch({ type: "reset" });
+        if (!preserveObservedTerminal) dispatch({ type: "reset" });
         setConnection("error");
         setRestoreState({
           status: "error",
@@ -528,7 +537,7 @@ export function useSessionContinuity({
     if (!sessionId || !loaded || loaded.segments.length === 0) {
       return;
     }
-    if (olderHistoryRequestRef.current) {
+    if (olderHistoryRequestRef.current !== null) {
       return;
     }
     // Prefer the cursor the server published: it stays strictly older than
@@ -550,7 +559,7 @@ export function useSessionContinuity({
       return;
     }
     const generation = transcriptGenerationRef.current;
-    olderHistoryRequestRef.current = true;
+    olderHistoryRequestRef.current = generation;
     setOlderHistory((current) => ({ ...current, loading: true, error: null }));
     try {
       const page = await productClient.getTranscript(sessionId, {
@@ -570,7 +579,8 @@ export function useSessionContinuity({
       loadedTranscriptRef.current = merged;
       dispatch({
         type: "hydrate",
-        state: projectProductTranscript(transcriptProjectionInput(merged)),
+        state: projectProductTranscript(transcriptProjectionInput(merged), terminatedBindingRef.current),
+        preserveObservedTerminal: terminatedBindingRef.current?.sessionId === sessionId,
       });
       const older = olderHistoryFromResponse(page);
       olderCursorRef.current = older.cursor;
@@ -598,7 +608,7 @@ export function useSessionContinuity({
         ),
       }));
     } finally {
-      olderHistoryRequestRef.current = false;
+      if (olderHistoryRequestRef.current === generation) olderHistoryRequestRef.current = null;
     }
   }, [dispatch, productClient]);
 
@@ -1293,9 +1303,12 @@ export function useSessionContinuity({
       dispatch({ type: "set_status", statusText: messageStatusLabel(accepted.status) });
       setConnection("ok");
       void refreshMessages(session.id);
+      const ended = terminatedBindingRef.current;
+      const observedPreviousTerminal = ended?.sessionId === session.id
+        && ended.jobId === session.activeJobId && ended.runId === session.activeRunId;
       const successorExpected =
         accepted.status === "claimed_successor" ||
-        (accepted.status === "queued" && session.status === "idle");
+        (accepted.status === "queued" && (session.status === "idle" || observedPreviousTerminal));
       if (successorExpected) {
         const attached = await reconcileAcceptedSuccessor(session);
         if (!attached && focusedSessionRef.current === session.id) {

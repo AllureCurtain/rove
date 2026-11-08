@@ -71,6 +71,7 @@ afterEach(async () => {
 });
 
 function renderSurface(options?: {
+  onboarding?: { hasProvider: boolean; hasWorkspace: boolean; hasSession: boolean; demoMode?: boolean };
   workspace?: WorkspaceRecord | null;
   workspaces?: WorkspaceRecord[];
   recentSessions?: SessionRecord[];
@@ -87,6 +88,7 @@ function renderSurface(options?: {
   return (
     <CopyProvider>
       <HomeSurface
+        onboarding={options?.onboarding}
         workspace={options?.workspace ?? null}
         workspaces={options?.workspaces ?? []}
         recentSessions={options?.recentSessions ?? []}
@@ -114,6 +116,22 @@ function click(element: Element | null) {
 }
 
 describe("HomeSurface", () => {
+  it("keeps the demo explanation after the checklist is dismissed and offers provider setup", async () => {
+    const onOpenProviders = vi.fn();
+    act(() => root.render(renderSurface({
+      onboarding: { hasProvider: false, hasWorkspace: true, hasSession: false, demoMode: true },
+      onOpenProviders,
+    })));
+    await flush();
+    expect(container.querySelector('[role="note"]')?.textContent).toContain("离线演示");
+    expect(container.querySelector('.home-onboarding li')?.getAttribute('data-done')).toBe("false");
+    click(Array.from(container.querySelectorAll('button')).find((button) => button.textContent === "模型服务设置") ?? null);
+    expect(onOpenProviders).toHaveBeenCalledOnce();
+    click(container.querySelector('.home-onboarding__head button'));
+    expect(container.querySelector('.home-onboarding')).toBeNull();
+    expect(container.querySelector('[role="note"]')?.textContent).toContain("离线演示");
+  });
+
   it("renders the hero, the composer slot, and the demoted manual entry", async () => {
     act(() => {
       root.render(renderSurface());

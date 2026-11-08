@@ -38,7 +38,7 @@ Every product surface is a shell: it resolves the workspace, loads the config sn
 ## Frontend/backend boundary
 
 - Web talks to `rove-api` over REST + SSE. The contract is the utoipa-generated `/api/openapi.json` at runtime; general conventions in docs/api.md.
-- Web's API types are currently hand-written (`apps/web/product/product-api-types.ts`, `apps/web/lib/rove-types.ts`), not generated from OpenAPI. Frontend and backend types must change together when the API changes.
+- Web API types are generated from the OpenAPI snapshot into `apps/web/generated/api-types.ts`; `product-api-types.ts` and `rove-types.ts` expose aliases and boundary guards. API changes update Rust types and annotations first, then the snapshot and generated frontend types.
 - The browser never retains raw provider keys: keys live in server-side or Desktop env vars and the OS credential store. The single exception is `POST /product/provider-onboarding`, a loopback-bind-only route whose body carries a pasted key transiently into the keyring — the Web form offers it only on a loopback-served page and never stores the value.
 - Desktop depends on `rove-api` only within the local package; it does not own a second Engine or ProductStore.
 

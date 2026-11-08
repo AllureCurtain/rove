@@ -73,6 +73,8 @@ export function RuntimeStatusLane({
 /** The tint lane phase groups collapse onto: info / warning / working. */
 function phaseTone(phase: ActivityPhase): string {
   switch (phase.kind) {
+    case "waiting-approval":
+    case "waiting-input":
     case "degraded":
       return "warning";
     case "planning":
@@ -97,6 +99,10 @@ function activityPhaseLabel(
   switch (phase.kind) {
     case "idle":
       return null;
+    case "waiting-approval":
+      return t("chat.phaseApproval", { name: phase.name });
+    case "waiting-input":
+      return t("chat.phaseInput");
     case "sending":
       return t("chat.phaseSending");
     case "waiting-model":

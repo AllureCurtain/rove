@@ -7,10 +7,13 @@
  * back to waiting rather than being shown verbatim.
  */
 
+import type { TranscriptRunGroup } from "../lib/rove-state";
 import type { StreamEvent } from "../lib/rove-types";
 
 export type ActivityPhase =
   | { kind: "idle" }
+  | { kind: "waiting-approval"; name: string }
+  | { kind: "waiting-input" }
   | { kind: "sending" }
   | { kind: "waiting-model" }
   | {
@@ -155,6 +158,8 @@ export function activityEventForStreamEvent(event: StreamEvent): ActivityEvent |
 /** Stable text for a phase, so repeat events do not change what is announced. */
 export function activityPhaseKey(phase: ActivityPhase): string {
   switch (phase.kind) {
+    case "waiting-approval":
+      return `waiting-approval:${phase.name}`;
     case "tool":
       return `tool:${phase.name}`;
     case "waiting-for-subagents":
@@ -166,4 +171,23 @@ export function activityPhaseKey(phase: ActivityPhase): string {
     default:
       return phase.kind;
   }
+}
+
+export function activityPhaseForTranscript(
+  phase: ActivityPhase,
+  timeline: readonly TranscriptRunGroup[],
+  busy: boolean,
+): ActivityPhase {
+  if (!busy) return IDLE_PHASE;
+  const latest = timeline.at(-1);
+  if (!latest || latest.inherited) return phase;
+  for (const item of latest.items) {
+    if (item.kind === "tool" && item.tool.status === "waiting" && item.tool.pendingApproval) {
+      return { kind: "waiting-approval", name: item.tool.name };
+    }
+  }
+  if (latest.items.some((item) => item.kind === "input" && item.input.status === "waiting")) {
+    return { kind: "waiting-input" };
+  }
+  return phase;
 }
