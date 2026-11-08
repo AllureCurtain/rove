@@ -43,3 +43,60 @@ for (const width of [760, 1280]) {
     await expect(approval).toHaveCount(0);
   });
 }
+
+for (const sessionRemote of [false, true]) {
+  test(`provider authorization follows the ${sessionRemote ? "remote" : "demo"} session instead of the opposite default`, async ({ page }) => {
+    const workspace = createMockWorkspace();
+    const session = createMockSession();
+    const api = await installMockProductApi(page, {
+      workspaces: [workspace], sessions: [session],
+      activeWorkspaceId: workspace.id, activeSessionId: session.id,
+      providerProfiles: [{ id: "remote", label: "Remote", provider_type: "openai",
+        api_base: "https://provider.example/v1", default_model: "test-model",
+        created_at: "2026-11-09T00:00:00Z", updated_at: "2026-11-09T00:00:00Z" }],
+      providerSelection: sessionRemote ? { model: "fake" } : { profile_id: "remote", model: "test-model" },
+      trustStatuses: { [workspace.id]: { workspace_id: workspace.id, state: "restricted",
+        granted_capabilities: [], invalidated_capabilities: [], identity_digest: "sha256:" + "0".repeat(64) } },
+    });
+    api.sessionModelConfigs[session.id] = {
+      ...api.sessionModelConfigs[session.id],
+      profile_id: sessionRemote ? "remote" : undefined,
+      model: sessionRemote ? "test-model" : "fake",
+    };
+    await page.goto(`/w/${workspace.id}/s/${session.id}`);
+    await expect(page.getByRole("textbox", { name: "输入消息", exact: true })).toBeEnabled();
+    const prompt = page.getByRole("button", { name: "授权", exact: true });
+    if (sessionRemote) await expect(prompt).toBeVisible();
+    else await expect(prompt).toHaveCount(0);
+  });
+}
+
+test("switching to a demo session never borrows the previous model's trust prompt", async ({ page }) => {
+  const remoteWorkspace = createMockWorkspace("remote-workspace", "Remote project");
+  const demoWorkspace = createMockWorkspace("demo-workspace", "Demo project");
+  const remote = createMockSession("remote-session", remoteWorkspace.id, "Remote session");
+  const demo = createMockSession("demo-session", demoWorkspace.id, "Demo session");
+  const api = await installMockProductApi(page, {
+    workspaces: [remoteWorkspace, demoWorkspace], sessions: [remote, demo],
+    activeWorkspaceId: remoteWorkspace.id, activeSessionId: remote.id,
+    providerProfiles: [{ id: "remote", label: "Remote", provider_type: "openai",
+      api_base: "https://provider.example/v1", default_model: "test-model",
+      created_at: "2026-11-09T00:00:00Z", updated_at: "2026-11-09T00:00:00Z" }],
+  });
+  api.sessionModelConfigs[remote.id].profile_id = "remote";
+  api.sessionModelConfigs[remote.id].model = "test-model";
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/product/**", async (route) => {
+    if (new URL(route.request().url()).pathname.endsWith(`/sessions/${demo.id}/model-config`)) await wait;
+    await route.fallback();
+  });
+  await page.goto(`/w/${remoteWorkspace.id}/s/${remote.id}`);
+  await expect(page.getByRole("button", { name: "授权", exact: true })).toBeVisible();
+  await page.getByRole("region", { name: "会话", exact: true }).getByRole("button", { name: "Demo session, Demo project", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/s/${demo.id}$`));
+  await expect(page.getByRole("button", { name: "授权", exact: true })).toHaveCount(0);
+  release();
+  await expect(page.getByRole("note")).toContainText("离线演示");
+  expect(api.trustRequests.filter((item) => item.workspaceId === demoWorkspace.id)).toEqual([]);
+});

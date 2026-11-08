@@ -360,6 +360,8 @@ test("a cold session switch veils the transcript while the composer stays usable
   await switchTo(page, "Session B");
   // The veil covers the transcript — never the composer — for the in-flight
   // restore, and the 2px switch progress rides the top of the region.
+  await expect(page).toHaveURL(`/w/${workspace.id}/s/${sessionB.id}`);
+  await expect(page.locator(".conversation-topbar h1")).toHaveText("Session B");
   await expect(page.locator(".session-settle-veil")).toBeVisible();
   await expect(page.locator(".session-switch-progress")).toBeAttached();
   const composer = page.getByRole("textbox", { name: /message|消息/i });
@@ -370,6 +372,7 @@ test("a cold session switch veils the transcript while the composer stays usable
   await expect(visibleTranscript(page).getByText("Session B question")).toBeVisible();
   await expect(page.locator(".session-settle-veil")).toHaveCount(0);
   await expect(page.locator(".session-switch-progress")).toHaveCount(0);
+  await expect(composer).toHaveValue("still typing through the switch");
 });
 
 test("the retained pane set is bounded and hidden panes are inert", async ({

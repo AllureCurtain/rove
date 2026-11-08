@@ -273,6 +273,8 @@ End of run: `9 steps · 42.6s · 18.2k tokens` — quiet mono, `tabular-nums`, p
 
 Default **Enter sends, Shift+Enter newlines**; a preference restores Ctrl/Cmd+Enter. The hint must not live only in the placeholder — keep a persistent hint or `?` entry in the composer.
 
+Manual compaction is secondary maintenance: Context tools in the usage popover (or its icon before usage exists) opens the work panel's run tab. Keep its idle-only action and bounded outcome there, outside the primary conversation.
+
 ### 6.3 Queued prompts
 
 Server-persisted FIFO stays above the shell; each row: text (ellipsis) + send-now + remove; the promoted next-up row reads as the queue head (elevated surface + accent edge) and locks its own actions until delivered. When the server abandons successors (`needs_attention` rows), a single session-recovery row leads the stack and confirms the whole set in one pass; per-row retries stay on each stranded row.

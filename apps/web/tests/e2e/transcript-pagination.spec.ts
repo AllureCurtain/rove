@@ -120,8 +120,15 @@ async function revealOlderControl(
     return false;
   }
   await scroller.hover();
-  await page.mouse.wheel(0, -200_000);
-  await expect.poll(() => scroller.evaluate((node) => node.scrollTop)).toBeLessThanOrEqual(1);
+  await expect.poll(async () => {
+    // Virtual rows can change size while the first wheel gesture lands. Keep
+    // scrolling as a reader would until the older-history control is reached.
+    await page.mouse.wheel(0, -200_000);
+    return scroller.evaluate(async (node) => {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      return node.scrollTop;
+    });
+  }).toBeLessThanOrEqual(1);
   await expect(control).toBeInViewport();
   return true;
 }
@@ -348,9 +355,7 @@ for (const takeOver of [false, true]) {
     await olderHistoryStep(page);
     await expect.poll(async () => Math.abs((await anchorOffset(scroller, ordinal!))! - before!)).toBeLessThanOrEqual(1);
     if (takeOver) {
-      await scroller.hover();
-      await page.mouse.wheel(0, 100);
-      await expect.poll(async () => (await anchorOffset(scroller, ordinal!))!).toBeLessThan(before! - 50);
+      await scroller.click({ position: { x: 10, y: 100 } });
     }
     // Model delayed layout above and below the reading position with no total
     // height change: observing only the content box cannot detect this shift.

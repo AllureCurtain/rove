@@ -41,6 +41,9 @@ async function openShell(
   });
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
   await expect(page.getByText("Compact answer", { exact: true })).toBeVisible();
+  await expect(page.locator(".chat-pane .compaction-panel")).toHaveCount(0);
+  await page.locator("button.context-usage").click();
+  await page.getByRole("button", { name: "上下文工具", exact: true }).click();
   const panel = page.locator(".compaction-panel");
   await expect(panel).toBeVisible();
   return { api, workspace, session, panel };
@@ -122,10 +125,31 @@ test("a live session is refused with no automatic retry", async ({ page }) => {
   await composer.press("Control+Enter");
   await expect(page.getByRole("button", { name: "停止", exact: true })).toBeVisible();
 
+  await expect(page.locator(".chat-pane .compaction-panel")).toHaveCount(0);
+  await page.getByRole("button", { name: "上下文工具", exact: true }).click();
   const panel = page.locator(".compaction-panel");
   const button = panel.getByRole("button", { name: "手动压缩上下文" });
   // Offered but disabled while the turn holds the claim: the endpoint would only
   // refuse, so the panel does not spend the refusal.
   await expect(button).toBeDisabled();
   expect(api.compactionRequests).toEqual([]);
+});
+
+test("closing and reopening context tools preserves a pending compaction", async ({ page }) => {
+  const { api, panel } = await openShell(page);
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/product/**", async (route) => {
+    if (new URL(route.request().url()).pathname.endsWith("/compact")) await wait;
+    await route.fallback();
+  });
+  await panel.getByRole("button", { name: "手动压缩上下文" }).click();
+  await expect(panel.getByRole("button", { name: "正在压缩上下文…" })).toBeDisabled();
+  await page.getByRole("complementary", { name: "详情", exact: true }).getByRole("button", { name: "收起详情面板", exact: true }).click();
+  await page.locator("button.context-usage").click();
+  await page.getByRole("button", { name: "上下文工具", exact: true }).click();
+  await expect(panel.getByRole("button", { name: "正在压缩上下文…" })).toBeDisabled();
+  release();
+  await expect(panel).toContainText("上下文已压缩");
+  expect(api.compactionRequests).toHaveLength(1);
 });

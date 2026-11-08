@@ -36,7 +36,6 @@ import {
   stopBoundary,
 } from "../chat/smart-stop";
 import { COMPOSER_FILE_SOURCE_LIMIT } from "../chat/Composer";
-import { CompactionPanel } from "../chat/CompactionPanel";
 import { reorderedQueueIds } from "../chat/queue-order";
 import { transcriptLocateTarget } from "../chat/transcript-locate";
 import { CopyProvider, useCopy } from "../copy/CopyProvider";
@@ -77,6 +76,7 @@ import { ProductSearchView } from "../search/ProductSearchView";
 import { SessionMessageSearchPanel } from "../search/SessionMessageSearchPanel";
 import { routePrefetchTargets } from "./route-prefetch";
 import { useIdleRoutePrefetch } from "./use-idle-route-prefetch";
+import { useSessionCompaction } from "../chat/CompactionPanel";
 import { SettingsShell, selectedProfileIsRemote } from "../settings/SettingsShell";
 import { ProviderTrustPrompt } from "../settings/ProviderTrustPrompt";
 import { NotificationInbox } from "./toast/NotificationInbox";
@@ -505,6 +505,12 @@ function ServerProductApp({ draftStore }: {
         ? "error"
         : "idle";
   const busy = continuity.runState.busy;
+  const sessionCompaction = useSessionCompaction({
+    sessionId: activeSession?.id ?? null,
+    sessionStatus: activeSession?.status ?? null,
+    busy,
+    client: server.productClient,
+  });
   const sessionUsage = useSessionUsage(activeSession?.id ?? null, busy);
   // Context window for the composer usage ring: the latest run's model view
   // publishes it; an unknown window means the ring degrades to a bare count.
@@ -1998,21 +2004,12 @@ function ServerProductApp({ draftStore }: {
                 <ProviderTrustPrompt
                   client={settingsClient}
                   workspaceId={displayWorkspace.id}
-                  providerIsRemote={selectedProfileIsRemote(server.profiles, server.selection)}
+                  providerIsRemote={server.sessionModelConfig?.sessionId === displaySession.id && selectedProfileIsRemote(server.profiles, server.sessionModelConfig)}
                   workspaceName={displayWorkspace.displayName}
                 />
-                {isDemoModel(server.sessionModelConfig, server.profiles) ? (
+                {server.sessionModelConfig?.sessionId === displaySession.id && isDemoModel(server.sessionModelConfig, server.profiles) ? (
                   <p className="session-demo-notice" role="note">{t("home.demoNotice")}</p>
                 ) : null}
-                {/* R9: manual compaction lives beside the send area, where the
-                    waiting row's degraded "compacting" phase is also shown, so
-                    the manual action and the automatic one are read together. */}
-                <CompactionPanel
-                  sessionId={displaySession.id}
-                  sessionStatus={displaySession.status}
-                  busy={busy}
-                  client={server.productClient}
-                />
                 {/* §5.1: one mounted transcript pane per retained session. A
                     hidden pane keeps its DOM and viewport under
                     `visibility:hidden` — never `display:none` — and is inert so
@@ -2164,6 +2161,7 @@ function ServerProductApp({ draftStore }: {
                   onModelConfigChange={server.changeSessionModelConfig}
                   controlError={continuity.controlError}
                   contextUsage={composerContextUsage}
+                  onOpenContextTools={() => panel.open("status")}
                   commands={composerCommands}
                   findFiles={findComposerFiles}
                   queuedEditNotice={editingQueuedMessageId ? t("chat.queuedEditing") : null}
@@ -2249,6 +2247,7 @@ function ServerProductApp({ draftStore }: {
               runState={continuity.runState}
               restoreState={transcriptRestoreState}
               sessionUsage={sessionUsage}
+              compaction={sessionCompaction}
               dialogOpen={mobileLayout && !inspectorCollapsed}
               reviews={reviews.reviews}
               selectedReviewId={reviews.selectedReviewId}

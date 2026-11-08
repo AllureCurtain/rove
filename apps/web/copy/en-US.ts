@@ -288,6 +288,7 @@ const enUS: CopyDictionary = {
     usageCachedRow: "Cached",
     usageWindow: "Context window",
     usageWindowFill: "{{used}} of {{total}} ({{percent}}%)",
+    contextTools: "Context tools",
     usageShowRemaining: "Show remaining",
     usageShowUsed: "Show used",
     usageModeRemaining: "{{n}} left",
@@ -783,7 +784,7 @@ const enUS: CopyDictionary = {
       trustGrantBusy: "Authorizing…",
       trustGranted:
         "{{workspace}} is now authorized to use provider credentials — messages can run.",
-      trustGrantFailed: "Authorization did not complete: {{reason}}",
+      trustGrantFailed: "Authorization did not complete. Check the local service and try again in Project Trust settings.",
       trustDismiss: "Dismiss for now",
     },
     runtime: {

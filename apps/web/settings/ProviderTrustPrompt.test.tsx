@@ -117,6 +117,30 @@ describe("ProviderTrustPrompt", () => {
     expect(container.querySelector(".settings-card")).toBeNull();
   });
 
+  it("does not apply an old workspace grant result to a new workspace", async () => {
+    let resolveGrant!: (value: ProductTrustStatus) => void;
+    const decide = vi.fn(() => new Promise<ProductTrustStatus>((resolve) => { resolveGrant = resolve; }));
+    const { client } = clientWith(trustStatus([]), decide);
+    await render({ client, workspaceId: "workspace-1", providerIsRemote: true });
+    await act(async () => { container.querySelector<HTMLButtonElement>(".field-actions button")!.click(); });
+    await render({ client, workspaceId: "workspace-2", providerIsRemote: true });
+    await act(async () => { resolveGrant(trustStatus(["provider_credentials"])); });
+    expect(container.textContent).not.toContain("已授权");
+    expect(container.querySelector<HTMLButtonElement>(".field-actions button")?.disabled).toBe(false);
+    expect(decide).toHaveBeenCalledTimes(1);
+    expect(decide).toHaveBeenCalledWith("workspace-1", { decision: "grant", capabilities: ["provider_credentials"] });
+  });
+
+  it("does not render an untrusted error body", async () => {
+    const { client } = clientWith(trustStatus([]), vi.fn(async () => {
+      throw new Error("credential-canary-do-not-render");
+    }));
+    await render({ client, workspaceId: "workspace-1", providerIsRemote: true });
+    await act(async () => { container.querySelector<HTMLButtonElement>(".field-actions button")!.click(); });
+    expect(container.textContent).toContain("授权未完成");
+    expect(container.textContent).not.toContain("credential-canary");
+  });
+
   it("renders nothing for a local provider or no workspace", async () => {
     const getProjectTrust = vi.fn(async () => trustStatus([]));
     const client = {
