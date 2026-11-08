@@ -1,7 +1,7 @@
 "use client";
 
 import { CheckIcon, Cross2Icon } from "@radix-ui/react-icons";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useCopy } from "../copy/CopyProvider";
 import type { SettingsPlatformClient } from "./settings-platform-client";
@@ -22,32 +22,32 @@ import type { SettingsPlatformClient } from "./settings-platform-client";
  * already holds the capability, a session on the local demo provider, and a
  * shell with no active workspace all get nothing.
  */
-export function ProviderTrustPrompt({
+type ProviderTrustPromptProps = {
+  client: SettingsPlatformClient;
+  workspaceId: string | null;
+  providerIsRemote: boolean;
+  workspaceName?: string;
+};
+
+export function ProviderTrustPrompt(props: ProviderTrustPromptProps) {
+  return <WorkspaceProviderTrustPrompt key={`${props.workspaceId}:${props.providerIsRemote}`} {...props} />;
+}
+
+function WorkspaceProviderTrustPrompt({
   client,
   workspaceId,
   providerIsRemote,
   workspaceName,
-}: {
-  client: SettingsPlatformClient;
-  /** The workspace the session would run in; nothing renders without it. */
-  workspaceId: string | null;
-  /**
-   * Whether the selected provider is a real one — the gate only applies to
-   * non-fake profiles, so the prompt is offered exactly where the failure
-   * would be.
-   */
-  providerIsRemote: boolean;
-  /** The workspace's display name, so the prompt can name what is granted. */
-  workspaceName?: string;
-}) {
+}: ProviderTrustPromptProps) {
   const { t } = useCopy();
   // `null` = still loading or unavailable; the prompt only exists once the
   // server's answer says the capability is missing.
   const [missingGrant, setMissingGrant] = useState<boolean | null>(null);
   const [granting, setGranting] = useState(false);
   const [granted, setGranted] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  const grantingRef = useRef(false);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -57,6 +57,7 @@ export function ProviderTrustPrompt({
       }
       try {
         const status = await client.getProjectTrust(workspaceId, { signal });
+        if (signal?.aborted) return;
         setMissingGrant(
           !status.granted_capabilities.includes("provider_credentials"),
         );
@@ -75,18 +76,20 @@ export function ProviderTrustPrompt({
   useEffect(() => {
     setGranted(false);
     setDismissed(false);
-    setError(null);
+    setError(false);
+    setMissingGrant(null);
     const controller = new AbortController();
     void load(controller.signal);
     return () => controller.abort();
   }, [load]);
 
   async function grant() {
-    if (!workspaceId || granting) {
+    if (!workspaceId || grantingRef.current) {
       return;
     }
+    grantingRef.current = true;
     setGranting(true);
-    setError(null);
+    setError(false);
     try {
       const status = await client.decideProjectTrust(workspaceId, {
         decision: "grant",
@@ -100,11 +103,10 @@ export function ProviderTrustPrompt({
           !status.granted_capabilities.includes("provider_credentials"),
         );
       }
-    } catch (grantError) {
-      setError(
-        grantError instanceof Error ? grantError.message : String(grantError),
-      );
+    } catch {
+      setError(true);
     } finally {
+      grantingRef.current = false;
       setGranting(false);
     }
   }
@@ -157,7 +159,7 @@ export function ProviderTrustPrompt({
       </div>
       {error ? (
         <p className="chat-error" role="alert">
-          {t("settings.providers.trustGrantFailed", { reason: error })}
+          {t("settings.providers.trustGrantFailed")}
         </p>
       ) : null}
     </div>

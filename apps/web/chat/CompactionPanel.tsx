@@ -33,7 +33,7 @@ export interface CompactionPanelProps {
  * distinguishable. Only the typed `failure_code` classifies a failed summary;
  * the provider's own message is never in the response and never rendered.
  */
-export function CompactionPanel({
+export function useSessionCompaction({
   sessionId,
   sessionStatus,
   busy,
@@ -48,29 +48,40 @@ export function CompactionPanel({
   // A second call must not race the first: the endpoint is not concurrency-safe
   // (only one caller can hold the claim), so the second press is a no-op.
   const runningRef = useRef(false);
+  const generationRef = useRef(0);
+  const [stateSession, setStateSession] = useState(sessionId);
+  const currentSessionRef = useRef(sessionId);
+  currentSessionRef.current = sessionId;
+  const stateMatchesSession = stateSession === sessionId;
 
   // The result belongs to the session that produced it. A session switch clears
   // it rather than showing one session's compaction under another's name.
   useEffect(() => {
+    generationRef.current += 1;
+    setStateSession(sessionId);
     runningRef.current = false;
     setRunning(false);
     setOutcome(null);
     setError(null);
+    return () => { generationRef.current += 1; };
   }, [sessionId]);
 
-  const availability = compactionAvailability({ sessionId, sessionStatus, busy });
+  const availability = compactionAvailability({ sessionId, sessionStatus, busy: busy || !stateMatchesSession });
 
   const compact = useCallback(async () => {
     if (!sessionId || !availability.available || runningRef.current) {
       return;
     }
     runningRef.current = true;
+    const generation = generationRef.current;
     setRunning(true);
     setError(null);
     try {
       const compaction = await client.compactSession(sessionId);
+      if (generation !== generationRef.current || sessionId !== currentSessionRef.current) return;
       setOutcome(compactionOutcome(compaction));
     } catch (failure) {
+      if (generation !== generationRef.current || sessionId !== currentSessionRef.current) return;
       if (failure instanceof ProductApiError && failure.code === "product_session_active") {
         // The session is still running. The endpoint did not queue this call, so
         // retrying it would only be refused again; say so and stop.
@@ -87,11 +98,29 @@ export function CompactionPanel({
         });
       }
     } finally {
-      runningRef.current = false;
-      setRunning(false);
+      if (generation === generationRef.current && sessionId === currentSessionRef.current) {
+        runningRef.current = false;
+        setRunning(false);
+      }
     }
   }, [availability.available, client, sessionId, t]);
 
+  return {
+    running: stateMatchesSession && running,
+    outcome: stateMatchesSession ? outcome : null,
+    error: stateMatchesSession ? error : null,
+    availability,
+    compact,
+  };
+}
+
+export function CompactionPanel(props: CompactionPanelProps) {
+  return <CompactionPanelView state={useSessionCompaction(props)} />;
+}
+
+export function CompactionPanelView({ state }: { state: ReturnType<typeof useSessionCompaction> }) {
+  const { t } = useCopy();
+  const { running, outcome, error, availability, compact } = state;
   return (
     <section className="compaction-panel" aria-label={t("chat.compactAction")}>
       <button

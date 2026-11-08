@@ -15,6 +15,7 @@ import {
   PaperPlaneIcon,
   PlusIcon,
   StopIcon,
+  PieChartIcon,
 } from "@radix-ui/react-icons";
 
 import { useCopy } from "../copy/CopyProvider";
@@ -120,6 +121,7 @@ export function Composer({
   onModelConfigChange,
   controlError,
   contextUsage,
+  onOpenContextTools,
   commands,
   findFiles,
   queuedEditNotice,
@@ -182,6 +184,7 @@ export function Composer({
   onModelConfigChange: (config: SessionModelConfigInput) => Promise<boolean>;
   controlError: string | null;
   contextUsage?: ContextUsage | null;
+  onOpenContextTools?: () => void;
   commands?: ComposerCommand[];
   findFiles?: (query: string) => Promise<ComposerFileSuggestion[]>;
   queuedEditNotice?: string | null;
@@ -985,7 +988,14 @@ export function Composer({
           <span className="chat-composer__sendkey-hint">
             {sendKeyHint(sendKey, t)}
           </span>
-          {contextUsage && contextUsage.used > 0 ? <ContextUsageRing usage={contextUsage} /> : null}
+          {contextUsage && contextUsage.used > 0 ? (
+            <ContextUsageRing usage={contextUsage} onOpenContextTools={onOpenContextTools} />
+          ) : onOpenContextTools ? (
+            <button type="button" className="context-usage" onClick={onOpenContextTools}
+              aria-label={t("chat.contextTools")} title={t("chat.contextTools")}>
+              <PieChartIcon />
+            </button>
+          ) : null}
           {/* §6.1: send and stop share one slot. While a turn runs and the draft
               is empty the slot is Stop; the moment the reader starts a draft the
               slot is Send again, so queue (Enter) and interject (Alt+Enter) stay
@@ -1028,7 +1038,7 @@ export function Composer({
 
 const CONTEXT_USAGE_MODE_KEY = "rove.ui-context-usage-mode";
 
-function ContextUsageRing({ usage }: { usage: ContextUsage }) {
+function ContextUsageRing({ usage, onOpenContextTools }: { usage: ContextUsage; onOpenContextTools?: () => void }) {
   const { t } = useCopy();
   const [mode, setMode] = useState<"used" | "remaining">(() =>
     typeof window !== "undefined" &&
@@ -1161,6 +1171,14 @@ function ContextUsageRing({ usage }: { usage: ContextUsage }) {
               </div>
             ) : null}
           </dl>
+          {onOpenContextTools ? (
+            <button type="button" className="secondary" onClick={() => {
+              setOpen(false);
+              onOpenContextTools();
+            }}>
+              {t("chat.contextTools")}
+            </button>
+          ) : null}
           {usage.window !== null ? (
             <button
               type="button"

@@ -563,9 +563,9 @@ function ProvidersSettings(props: ProviderSettingsProps) {
  */
 export function selectedProfileIsRemote(
   profiles: readonly ProviderProfileRecord[],
-  selection: ActiveProviderSelection,
+  selection: { profileId?: string } | null,
 ): boolean {
-  if (selection.mode !== "profile") {
+  if (!selection?.profileId) {
     return false;
   }
   const selected = profiles.find((profile) => profile.id === selection.profileId);

@@ -318,4 +318,19 @@ describe("CompactionPanel", () => {
     });
     expect(container.textContent).toContain("上下文已压缩。");
   });
+
+  it("ignores a late result after switching sessions", async () => {
+    let finish!: (value: ProductSessionCompaction) => void;
+    const compactSession = vi.fn(() => new Promise<ProductSessionCompaction>((resolve) => { finish = resolve; }));
+    const render = async (sessionId: string) => act(async () => {
+      root.render(<CopyProvider><CompactionPanel sessionId={sessionId} sessionStatus="idle" busy={false} client={{ compactSession }} /></CopyProvider>);
+    });
+    await render(SESSION);
+    await press();
+    await render("01J00000000000000000000009");
+    await act(async () => { finish(response({ summary: "old workspace excerpt" })); });
+    expect(container.textContent).not.toContain("old workspace excerpt");
+    expect(container.textContent).not.toContain("上下文已压缩");
+    expect(button().disabled).toBe(false);
+  });
 });

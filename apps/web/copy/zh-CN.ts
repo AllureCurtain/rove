@@ -286,6 +286,7 @@ const zhCN = {
     usageCachedRow: "缓存",
     usageWindow: "上下文窗口",
     usageWindowFill: "{{used}} / {{total}}（{{percent}}%）",
+    contextTools: "上下文工具",
     usageShowRemaining: "显示剩余",
     usageShowUsed: "显示已用",
     smartStopRestored: "已停止：刚才的消息已放回输入框。",
@@ -754,7 +755,7 @@ const zhCN = {
       trustGrant: "授权",
       trustGrantBusy: "正在授权…",
       trustGranted: "已授权 {{workspace}} 使用提供商凭据，现在可以正常发送消息了。",
-      trustGrantFailed: "授权未完成：{{reason}}",
+      trustGrantFailed: "授权未完成。请检查本地服务，并在项目信任设置中重试。",
       trustDismiss: "暂时忽略",
     },
     runtime: {

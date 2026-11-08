@@ -50,6 +50,7 @@ import type {
 } from "../product/product-api-types";
 
 import { ApprovalCard } from "../chat/Transcript";
+import { CompactionPanelView, type useSessionCompaction } from "../chat/CompactionPanel";
 import { SubagentsPanel } from "./SubagentsPanel";
 import { type WorkPanelLayout } from "./work-panel-layout";
 import { usePanelResize } from "./use-panel-resize";
@@ -85,6 +86,7 @@ export function RunInspector({
   runState,
   restoreState,
   sessionUsage,
+  compaction,
   dialogOpen = false,
   reviews = [],
   selectedReviewId = null,
@@ -118,6 +120,7 @@ export function RunInspector({
   runState: WorkbenchState;
   restoreState?: TranscriptRestoreState;
   sessionUsage?: SessionUsageState;
+  compaction?: ReturnType<typeof useSessionCompaction>;
   dialogOpen?: boolean;
   reviews?: ProductReview[];
   selectedReviewId?: string | null;
@@ -624,6 +627,7 @@ export function RunInspector({
       case "status":
         return (
           <>
+            {compaction ? <CompactionPanelView state={compaction} /> : null}
             {phase === "empty" ? (
               <InspectorEmpty
                 title={t("inspector.emptyTitle")}
