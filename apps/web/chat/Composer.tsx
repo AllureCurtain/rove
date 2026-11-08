@@ -291,23 +291,35 @@ export function Composer({
     chips: string[];
     files: string[];
     delivery?: ProductMessageDelivery;
+    workspaceId?: string;
+    productSessionId?: string;
+    store?: ComposerDraftBinding["store"];
   } | null>(null);
   const sendKey = useSendKeyPreference();
 
-  const canSubmit =
+  const canRequestSubmit =
     Boolean(message.trim()) &&
     !submitting &&
     !disabled &&
     !sendDisabled &&
-    !sendPaused &&
     // A row that is still uploading, still retrying, or already failed is not
     // something a send may quietly drop: the attachment stays visible until the
     // reader removes it or the upload lands.
     !hasUnfinishedFiles(files);
+  const canSubmit = canRequestSubmit && !sendPaused;
 
   useEffect(() => {
     const armed = pendingSendRef.current;
     if (!armed) {
+      return;
+    }
+    if (
+      armed.workspaceId !== draftBinding?.workspaceId ||
+      armed.productSessionId !== draftBinding?.productSessionId ||
+      armed.store !== draftBinding?.store
+    ) {
+      pendingSendRef.current = null;
+      setPendingSend(null);
       return;
     }
     // A structural lock replaces the pause: the draft is still the reader's, so
@@ -345,6 +357,9 @@ export function Composer({
     message,
     sendPaused,
     submitting,
+    draftBinding?.workspaceId,
+    draftBinding?.productSessionId,
+    draftBinding?.store,
   ]);
 
   function failureText(failure: ComposerFileFailure, name: string): string {
@@ -482,6 +497,9 @@ export function Composer({
           chips: attachments.map((attachment) => attachment.text),
           files: files.map((row) => row.id),
           delivery,
+          workspaceId: draftBinding?.workspaceId,
+          productSessionId: draftBinding?.productSessionId,
+          store: draftBinding?.store,
         };
         setPendingSend(message);
       }
@@ -1023,7 +1041,7 @@ export function Composer({
               type="submit"
               className="chat-composer__slot"
               data-slot="send"
-              disabled={!canSubmit}
+              disabled={!canRequestSubmit}
               aria-label={t("chat.send")}
               title={busy ? t("chat.sendWhileRunningHint") : t("chat.send")}
             >

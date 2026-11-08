@@ -63,33 +63,57 @@ test("a stop re-reads the transcript once, not in a loop", async ({ page }) => {
   await expect(page.getByRole("button", { name: "发送", exact: true })).toBeVisible();
 });
 
-test("a send pressed while the stop re-reads the transcript goes out when it lands", async ({
-  page,
-}) => {
+for (const method of ["keyboard", "pointer"] as const) {
+  test(`a ${method} send while the stop re-reads the transcript goes out when it lands`, async ({
+    page,
+  }) => {
+    const { api, composer } = await openSessionWithRun(page);
+    await composer.fill("stop me");
+    await composer.press("Control+Enter");
+    const stop = page.getByRole("button", STOP);
+    await expect(stop).toBeVisible();
+    // The initial restore owns the first pause; wait it out so the press below
+    // lands in the one the stop starts.
+    await expect(page.locator(".chat-composer__meta")).not.toContainText(RESTORING);
+
+    const turnsBefore = api.jobStarts.length;
+    await stop.click();
+    const meta = page.locator(".chat-composer__meta");
+    await expect(meta).toContainText(RESTORING);
+    // F6 puts the stopped send back; that restore is independent of the re-read.
+    await expect(composer).toHaveValue("stop me");
+    const readsBefore = api.transcriptRequests.length;
+
+    if (method === "keyboard") await composer.press("Control+Enter");
+    else await page.getByRole("button", { name: "发送", exact: true }).click();
+    await expect(meta).toContainText(QUEUED);
+    expect(api.jobStarts.length - turnsBefore).toBe(0);
+
+    // The press was not lost: the send goes out once the read lands, exactly once.
+    await expect(composer).toHaveValue("", { timeout: 15_000 });
+    await expect(page.getByRole("button", STOP)).toBeVisible();
+    expect(api.jobStarts.length - turnsBefore).toBe(1);
+    expect(api.transcriptRequests.length - readsBefore).toBeLessThanOrEqual(1);
+  });
+}
+
+test("editing a draft after a deferred pointer send cancels that send", async ({ page }) => {
   const { api, composer } = await openSessionWithRun(page);
   await composer.fill("stop me");
   await composer.press("Control+Enter");
   const stop = page.getByRole("button", STOP);
   await expect(stop).toBeVisible();
-  // The initial restore owns the first pause; wait it out so the press below
-  // lands in the one the stop starts.
-  await expect(page.locator(".chat-composer__meta")).not.toContainText(RESTORING);
-
-  const turnsBefore = api.jobStarts.length;
-  await stop.click();
   const meta = page.locator(".chat-composer__meta");
+  await expect(meta).not.toContainText(RESTORING);
+  await stop.click();
   await expect(meta).toContainText(RESTORING);
-  // F6 puts the stopped send back; that restore is independent of the re-read.
   await expect(composer).toHaveValue("stop me");
-  const readsBefore = api.transcriptRequests.length;
-
-  await composer.press("Control+Enter");
+  const turnsBefore = api.jobStarts.length;
+  await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect(meta).toContainText(QUEUED);
-  expect(api.jobStarts.length - turnsBefore).toBe(0);
-
-  // The press was not lost: the send goes out once the read lands, exactly once.
-  await expect(composer).toHaveValue("", { timeout: 15_000 });
-  await expect(page.getByRole("button", STOP)).toBeVisible();
-  expect(api.jobStarts.length - turnsBefore).toBe(1);
-  expect(api.transcriptRequests.length - readsBefore).toBeLessThanOrEqual(1);
+  await composer.fill("keep this edited draft");
+  await expect(meta).not.toContainText(QUEUED);
+  await expect(meta).not.toContainText(RESTORING);
+  await expect(composer).toHaveValue("keep this edited draft");
+  expect(api.jobStarts.length).toBe(turnsBefore);
 });
