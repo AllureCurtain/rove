@@ -9930,6 +9930,19 @@
       },
       "ToolMutation": {
         "properties": {
+          "after_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "before_version": {
+            "description": "Exact file bytes before/after the mutation, for verified rollback.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "diff": {
             "type": [
               "string",

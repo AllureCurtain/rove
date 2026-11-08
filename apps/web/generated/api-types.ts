@@ -4373,6 +4373,9 @@ export interface components {
         /** @enum {string} */
         ToolExecutionStatus: "ok" | "error" | "rejected" | "partial_success";
         ToolMutation: {
+            after_version?: string | null;
+            /** @description Exact file bytes before/after the mutation, for verified rollback. */
+            before_version?: string | null;
             diff?: string | null;
             operation: components["schemas"]["ToolMutationOperation"];
             path: string;

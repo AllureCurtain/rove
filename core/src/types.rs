@@ -95,6 +95,11 @@ pub struct ToolMutation {
     pub operation: ToolMutationOperation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<String>,
+    /// Exact file bytes before/after the mutation, for verified rollback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
@@ -142,7 +147,16 @@ pub struct ToolExecutionMetadata {
 
 #[cfg(test)]
 mod tests {
-    use super::{ToolCapability, ToolDescriptor};
+    use super::{ToolCapability, ToolDescriptor, ToolMutation};
+
+    #[test]
+    fn legacy_mutation_bytes_remain_unchanged_without_versions() {
+        let legacy = serde_json::json!({"path":"a.txt","operation":"create","diff":"+a"});
+        let mutation: ToolMutation = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(mutation.before_version.is_none());
+        assert!(mutation.after_version.is_none());
+        assert_eq!(serde_json::to_value(mutation).unwrap(), legacy);
+    }
 
     #[test]
     fn model_schema_projection_excludes_operational_metadata() {

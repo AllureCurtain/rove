@@ -385,6 +385,11 @@ impl Tool for FsWriteTool {
                 path: normalized_path,
                 operation,
                 diff: Some(diff),
+                before_version: mutation.before.as_deref().map(|before| {
+                    use sha2::{Digest, Sha256};
+                    format!("sha256:{:x}", Sha256::digest(before.as_bytes()))
+                }),
+                after_version: Some(new_version),
             }],
             envelope: None,
         })
