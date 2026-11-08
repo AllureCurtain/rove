@@ -44,7 +44,7 @@ Config options are authoritative in the environment layer of `apps/bootstrap/src
 | --- | --- |
 | Keyless TUI | `cargo run -p rove-cli -- --model fake` |
 | REPL / one-shot | `cargo run -p rove-cli -- repl --model fake` / `cargo run -p rove-cli -- exec --model fake "<task>"` |
-| Product mode (one process) | `powershell -ExecutionPolicy Bypass -File scripts/serve.ps1` — builds `apps/web` (`pnpm build:web` → `web-dist/`), then runs `rove-api --web-dist`; add `-Provider` for a real provider, `-SkipWebBuild` to reuse an existing bundle. Liveness: `GET /health` |
+| Product mode (one process) | `bash scripts/serve.sh` on macOS/Linux; `powershell -ExecutionPolicy Bypass -File scripts/serve.ps1` — builds `apps/web` (`pnpm build:web` → `web-dist/`), then runs `rove-api --web-dist`; add `-Provider` for a real provider, `-SkipWebBuild` to reuse an existing bundle. POSIX options: `--workspace DIR` (existing directory), `--addr HOST:PORT`, `--provider`, `--skip-web-build`; environment must be exported by the caller (the script does not source `.env`). Liveness: `GET /health` |
 | Start API + Web (fake) | `powershell -ExecutionPolicy Bypass -File scripts/dev.ps1` (add `-Provider` for a real provider) |
 | API only | `cargo run -p rove-api` (add `--web-dist apps/web/web-dist` to also serve the built console on the same origin) |
 | Web dev | `cd apps/web && pnpm dev` |
