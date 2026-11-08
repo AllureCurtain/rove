@@ -227,7 +227,7 @@ test("load older history walks every cursor page without losing a run", async ({
         .poll(async () => {
           const after = await anchorOffset(scroller, anchorOrdinal);
           return after === null ? null : Math.abs(after - offsetBefore);
-        })
+        }, { message: `step ${step}, ${outcome}, run ${anchorOrdinal}, offset ${offsetBefore}` })
         .toBeLessThanOrEqual(1);
     }
     // Bounded lazy rendering: the loaded layer grows toward the whole session
@@ -332,4 +332,54 @@ async function anchorOffset(
       ? section.getBoundingClientRect().top - node.getBoundingClientRect().top
       : null;
   }, ordinal);
+}
+
+for (const takeOver of [false, true]) {
+  test(`history prepend ${takeOver ? "yields to a new gesture" : "keeps the reading position"} when row sizes offset each other`, async ({ page }) => {
+    const { scroller } = await openLongSession(page);
+    await page.addStyleTag({ content: ".transcript-item { content-visibility: visible !important; }" });
+    await scroller.locator("[data-run-ordinal]").last().evaluate((node) => {
+      (node as HTMLElement).style.paddingBottom = "400px";
+    });
+    await revealOlderControl(page, scroller);
+    const ordinal = await topmostVisibleOrdinal(scroller);
+    expect(ordinal).not.toBeNull();
+    const before = await anchorOffset(scroller, ordinal!);
+    await olderHistoryStep(page);
+    await expect.poll(async () => Math.abs((await anchorOffset(scroller, ordinal!))! - before!)).toBeLessThanOrEqual(1);
+    if (takeOver) {
+      await scroller.hover();
+      await page.mouse.wheel(0, 100);
+      await expect.poll(async () => (await anchorOffset(scroller, ordinal!))!).toBeLessThan(before! - 50);
+    }
+    // Model delayed layout above and below the reading position with no total
+    // height change: observing only the content box cannot detect this shift.
+    await scroller.evaluate(async (node, anchorOrdinal) => {
+      await new Promise<void>((resolve) => {
+        let count = 0;
+        const frame = () => {
+          if (++count === 6) resolve();
+          else requestAnimationFrame(frame);
+        };
+        requestAnimationFrame(frame);
+      });
+      const runs = node.querySelectorAll<HTMLElement>("[data-run-ordinal]");
+      if (Number(runs[0].dataset.runOrdinal) >= anchorOrdinal) {
+        throw new Error("the prepend did not mount an older row");
+      }
+      const height = node.scrollHeight;
+      runs[0].style.paddingBottom = "400px";
+      runs[runs.length - 1].style.paddingBottom = "0px";
+      if (node.scrollHeight !== height) throw new Error("the fixture changed the total height");
+    }, ordinal!);
+    const drift = async () => {
+      const after = await anchorOffset(scroller, ordinal!);
+      return after === null || before === null ? Infinity : Math.abs(after - before);
+    };
+    if (takeOver) {
+      await expect.poll(drift).toBeGreaterThan(100);
+    } else {
+      await expect.poll(drift).toBeLessThanOrEqual(1);
+    }
+  });
 }

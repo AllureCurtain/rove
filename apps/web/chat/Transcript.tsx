@@ -514,27 +514,40 @@ export function Transcript({
     offset: number;
     armedAt: number;
   } | null>(null);
-  // Rows just outside the viewport still report their intrinsic estimate; a
-  // correction re-measures the anchor against them, and as they render at real
-  // height the residual has to be re-corrected on the next observer passes.
-  // The armed anchor converges that drift — bounded, and it stands down the
-  // moment a real scroll gesture lands after it was armed, so it can never
-  // fight the reader's own scrolling.
-  const settleAnchorRef = useRef<{
-    element: HTMLElement;
-    offset: number;
-    armedAt: number;
-    until: number;
-  } | null>(null);
+  const settleFrameRef = useRef(0);
   const armSettleAnchor = useCallback(
     (anchor: { element: HTMLElement; offset: number; armedAt: number }) => {
-      settleAnchorRef.current = {
-        ...anchor,
-        until: performance.now() + ANCHOR_SETTLE_MS,
+      cancelAnimationFrame(settleFrameRef.current);
+      const until = performance.now() + ANCHOR_SETTLE_MS;
+      const settle = () => {
+        settleFrameRef.current = 0;
+        const transcript = transcriptRef.current;
+        if (
+          !transcript ||
+          !anchor.element.isConnected ||
+          performance.now() > until ||
+          lastGestureAt() > anchor.armedAt
+        ) {
+          return;
+        }
+        // Rows can change above and below the anchor without changing the
+        // content box's total height, so ResizeObserver alone misses drift.
+        const delta = anchoredScrollDelta({
+          anchorTop: anchor.element.getBoundingClientRect().top,
+          scrollerTop: transcript.getBoundingClientRect().top,
+          anchorOffset: anchor.offset,
+        });
+        if (Math.abs(delta) > 1) {
+          transcript.scrollTo({ top: transcript.scrollTop + delta, behavior: "instant" });
+          recordScrollPosition(transcript.scrollTop);
+        }
+        settleFrameRef.current = requestAnimationFrame(settle);
       };
+      settleFrameRef.current = requestAnimationFrame(settle);
     },
-    [],
+    [lastGestureAt, recordScrollPosition, transcriptRef],
   );
+  useEffect(() => () => cancelAnimationFrame(settleFrameRef.current), [viewSessionId]);
   /**
    * An element anchor: the topmost rendered run and its offset from the
    * viewport top. Positions are laid-out values, so the correction stays
@@ -588,14 +601,13 @@ export function Transcript({
       scrollerTop: transcript.getBoundingClientRect().top,
       anchorOffset: anchor.offset,
     });
-    if (delta === 0) {
-      return;
+    if (delta !== 0) {
+      transcript.scrollTo({
+        top: transcript.scrollTop + delta,
+        behavior: "instant",
+      });
+      recordScrollPosition(transcript.scrollTop);
     }
-    transcript.scrollTo({
-      top: transcript.scrollTop + delta,
-      behavior: "instant",
-    });
-    recordScrollPosition(transcript.scrollTop);
     armSettleAnchor(anchor);
   }, [
     armSettleAnchor,
@@ -629,39 +641,6 @@ export function Transcript({
             behavior: "instant",
           });
           recordScrollPosition(transcript.scrollTop);
-          return;
-        }
-      }
-      if (settleAnchorRef.current !== null) {
-        // The post-prepend correction converges here: every height change above
-        // the anchor (a row swapping its estimate for its real height) fires
-        // the observer again, and each pass pulls the anchor back to where the
-        // reader left it. The write is `instant`: the stylesheet's smooth
-        // scrolling would animate it, and rows crossing the viewport during the
-        // animation render at real height, which lands the correction short.
-        //
-        // The anchor is dropped — not applied — once it expires or the reader
-        // scrolled after it was armed: a stale anchor would otherwise drag the
-        // viewport back to a position the reader already left.
-        const anchor = settleAnchorRef.current;
-        const expired = performance.now() > anchor.until;
-        const tookOver = lastGestureAt() > anchor.armedAt;
-        if (expired || tookOver || !anchor.element.isConnected) {
-          settleAnchorRef.current = null;
-        } else {
-          const delta =
-            anchor.element.getBoundingClientRect().top -
-            transcript.getBoundingClientRect().top -
-            anchor.offset;
-          if (Math.abs(delta) > 1) {
-            transcript.scrollTo({
-              top: transcript.scrollTop + delta,
-              behavior: "instant",
-            });
-            recordScrollPosition(transcript.scrollTop);
-          } else {
-            settleAnchorRef.current = null;
-          }
           return;
         }
       }
@@ -773,7 +752,7 @@ export function Transcript({
     // The older page landed. A cursor page never changes the rendered run set —
     // the window is anchored from the tail — but the control row above the
     // reader does change, so correct before paint with the same element anchor
-    // the mount-growth path uses, then hand the residual to the observer.
+    // the mount-growth path uses, then keep correcting through layout settling.
     olderHistoryRunsRef.current = null;
     const transcript = transcriptRef.current;
     const anchor = historyAnchorRef.current;
