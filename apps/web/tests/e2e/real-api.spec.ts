@@ -628,15 +628,15 @@ test.describe("real API product shell integration", () => {
         .filter({ hasText: parentPrompt });
       await parentBubble.hover();
       await parentBubble.getByRole("button", { name: "Copy session" }).click();
-      const forkResponse = await forkResponsePromise;
-      const forkPayload = (await forkResponse.json()) as {
-        session?: { id?: unknown };
-      };
-      const childSessionId = forkPayload.session?.id;
-      if (typeof childSessionId !== "string" || !childSessionId) {
-        throw new Error("fork response did not include a child product session id");
-      }
+      await forkResponsePromise;
+      await expect(page).toHaveURL((url) =>
+        url.pathname.startsWith(`/w/${workspaceId}/s/`) && url.pathname !== parentRoute,
+      );
+      const childSessionId = new URL(page.url()).pathname.split("/").at(-1)!;
       created.sessionIds.push(childSessionId);
+      const childSession = await readProductSession(request, workspaceId, childSessionId);
+      expect(childSession.parent_session_id).toBe(parentSessionId);
+      expect(childSession.fork_point_run_id).toBe(parentTurn.runId);
       const childRoute = productSessionRoute(workspaceId, childSessionId);
       await expect(page).toHaveURL(childRoute);
       await expect(
