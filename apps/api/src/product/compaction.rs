@@ -49,12 +49,8 @@ pub(crate) async fn compact_product_session(
     // The exclusivity is the turn claim, not a status read: a compact racing a
     // turn loses the claim, and a compact racing another compact is refused the
     // same way instead of interleaving two rewrites of one snapshot.
-    let claim = store.claim_session_turn(&session_id).await?;
-    // The claim is owned by a guard rather than by the linear code below,
-    // because that code does not run when this future is dropped. See
-    // `CompactionClaim`.
-    let mut claim_guard =
-        CompactionClaim::new(store.clone(), claim.claim_id.clone(), claim.previous_status);
+    let (claim, mut claim_guard) =
+        SessionMaintenanceClaim::acquire(store.clone(), session_id).await?;
     if claim.previous_status != ProductSessionStatus::Idle {
         // Restore what the session was: this request never became a turn, so it
         // must not leave the session idle with someone else's work in flight.
@@ -73,7 +69,7 @@ pub(crate) async fn compact_product_session(
     outcome.map(Json)
 }
 
-/// The turn claim a compaction holds, released when it leaves scope.
+/// The turn claim a maintenance operation holds, released when it leaves scope.
 ///
 /// Awaiting the release on every observable path is not enough: an aborted
 /// request or a disconnected client drops the handler future between the claim
@@ -83,7 +79,7 @@ pub(crate) async fn compact_product_session(
 /// session to `needs_attention`, which `claim_session_turn` refuses as well — a
 /// session that only an operator can free. `Drop` is the one hook that runs on
 /// that path too, so the claim is owned by a value whose `Drop` releases it.
-struct CompactionClaim {
+pub(super) struct SessionMaintenanceClaim {
     store: Arc<dyn ProductStore>,
     claim_id: ProductTurnClaimId,
     /// The status to restore if the guard has to release on its own.
@@ -91,8 +87,25 @@ struct CompactionClaim {
     released: bool,
 }
 
-impl CompactionClaim {
-    fn new(
+impl SessionMaintenanceClaim {
+    pub(super) async fn acquire(
+        store: Arc<dyn ProductStore>,
+        session_id: ProductSessionId,
+    ) -> Result<(ProductTurnClaim, Self), ApiError> {
+        // SQLite acquisition runs in a blocking task and may commit after the
+        // request is dropped. A detached owner must wrap the returned claim
+        // before its result can be discarded; there is no await in that gap.
+        tokio::spawn(async move {
+            let claim = store.claim_session_turn(&session_id).await?;
+            let guard = Self::new(store, claim.claim_id.clone(), claim.previous_status);
+            Ok::<_, ProductStoreError>((claim, guard))
+        })
+        .await
+        .map_err(|_| ApiError::internal("maintenance claim acquisition failed"))?
+        .map_err(ApiError::from)
+    }
+
+    pub(super) fn new(
         store: Arc<dyn ProductStore>,
         claim_id: ProductTurnClaimId,
         previous_status: ProductSessionStatus,
@@ -106,13 +119,13 @@ impl CompactionClaim {
     }
 
     /// Release the claim and restore the status this request inherited.
-    async fn release(&mut self) {
+    pub(super) async fn release(&mut self) {
+        release_maintenance_claim(&self.store, &self.claim_id, self.release_status).await;
         self.released = true;
-        release_compaction_claim(&self.store, &self.claim_id, self.release_status).await;
     }
 }
 
-impl Drop for CompactionClaim {
+impl Drop for SessionMaintenanceClaim {
     fn drop(&mut self) {
         if self.released {
             return;
@@ -126,12 +139,12 @@ impl Drop for CompactionClaim {
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
                 handle.spawn(async move {
-                    release_compaction_claim(&store, &claim_id, status).await;
+                    release_maintenance_claim(&store, &claim_id, status).await;
                 });
             }
             Err(_) => tracing::warn!(
                 %claim_id,
-                "could not release the compaction turn claim: no runtime is available to run the release"
+                "could not release the maintenance turn claim: no runtime is available to run the release"
             ),
         }
     }
@@ -152,7 +165,7 @@ fn restorable_status(previous_status: ProductSessionStatus) -> ProductSessionSta
     }
 }
 
-async fn release_compaction_claim(
+async fn release_maintenance_claim(
     store: &Arc<dyn ProductStore>,
     claim_id: &ProductTurnClaimId,
     status: ProductSessionStatus,
@@ -160,7 +173,7 @@ async fn release_compaction_claim(
     if let Err(error) = store.finish_session_turn(claim_id, status).await {
         tracing::warn!(
             %claim_id,
-            "failed to release the compaction turn claim: {error}"
+            "failed to release the maintenance turn claim: {error}"
         );
     }
 }
@@ -574,8 +587,11 @@ mod tests {
 
         let claim = store.claim_session_turn(&session.id).await.unwrap();
         assert_eq!(claim.previous_status, ProductSessionStatus::Idle);
-        let guard =
-            CompactionClaim::new(store.clone(), claim.claim_id.clone(), claim.previous_status);
+        let guard = SessionMaintenanceClaim::new(
+            store.clone(),
+            claim.claim_id.clone(),
+            claim.previous_status,
+        );
         let blocked = store
             .claim_session_turn(&session.id)
             .await
@@ -597,5 +613,65 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("the dropped guard never released the claim: {last:?}");
+    }
+
+    #[tokio::test]
+    async fn canceled_acquisition_after_sql_wait_releases_the_committed_claim() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let database = temp.path().join("product.sqlite");
+        let store = open_product_store(database.clone(), 5_000).unwrap();
+        let root = temp.path().join("workspace");
+        std::fs::create_dir_all(&root).unwrap();
+        let workspace = store
+            .create_workspace(CreateProductWorkspaceRequest {
+                root,
+                kind: ProductWorkspaceKind::Folder,
+                display_name: Some("Acquisition cancellation".to_string()),
+                pinned: false,
+            })
+            .await
+            .unwrap();
+        let session = store
+            .create_session(CreateProductSessionRequest {
+                workspace_id: workspace.id,
+                title: None,
+            })
+            .await
+            .unwrap();
+        let connection = rusqlite::Connection::open(database).unwrap();
+        connection.execute_batch("CREATE TABLE claim_attempts (id TEXT); CREATE TRIGGER observe_claim AFTER INSERT ON product_turn_claims BEGIN INSERT INTO claim_attempts VALUES (NEW.claim_id); END; BEGIN IMMEDIATE;").unwrap();
+
+        let mut request = Box::pin(SessionMaintenanceClaim::acquire(
+            store.clone(),
+            session.id.clone(),
+        ));
+        assert!(futures::poll!(request.as_mut()).is_pending());
+        // The request is canceled while acquisition cannot yet commit. Its
+        // detached owner must still finish acquisition and drop the guard.
+        drop(request);
+        connection.execute_batch("COMMIT;").unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let acquired: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM claim_attempts", [], |row| row.get(0))
+                    .unwrap();
+                let active: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM product_turn_claims", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                if acquired == 1 && active == 0 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the canceled acquisition must commit and then release its claim");
+        let (claim, mut guard) = SessionMaintenanceClaim::acquire(store, session.id)
+            .await
+            .unwrap();
+        assert_eq!(claim.previous_status, ProductSessionStatus::Idle);
+        guard.release().await;
     }
 }

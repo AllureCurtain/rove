@@ -63,6 +63,7 @@ impl Tool for EditFileTool {
 
     async fn execute(&self, args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let path = required_string(&args, "path")?;
+        let normalized_path = normalize_tool_path(path)?;
         let old_text = required_string(&args, "old_text")?;
         let new_text = required_string(&args, "new_text")?;
         let observation_id = required_string(&args, "observation_id")?;
@@ -116,16 +117,18 @@ impl Tool for EditFileTool {
             .map_err(map_environment_error)?;
         Ok(ToolOutput {
             content: serde_json::json!({
-                "path": normalize_tool_path(path)?,
+                "path": normalized_path,
                 "replacements": 1,
                 "previous_version": version,
                 "version": version_bytes(after.as_bytes())
             })
             .to_string(),
             mutations: vec![ToolMutation {
-                path: normalize_tool_path(path)?,
+                diff: Some(localized_diff(&normalized_path, &before, &after)),
+                path: normalized_path,
                 operation: ToolMutationOperation::Update,
-                diff: Some(localized_diff(path, &before, &after)),
+                before_version: Some(version_bytes(before.as_bytes())),
+                after_version: Some(version_bytes(after.as_bytes())),
             }],
             envelope: None,
         })
@@ -235,6 +238,8 @@ impl Tool for DeletePathTool {
                 path: normalized,
                 operation: ToolMutationOperation::Delete,
                 diff,
+                before_version: None,
+                after_version: None,
             }],
             envelope: None,
         })
@@ -353,11 +358,15 @@ impl Tool for MovePathTool {
                     path: normalized_from,
                     operation: ToolMutationOperation::Delete,
                     diff: None,
+                    before_version: None,
+                    after_version: None,
                 },
                 ToolMutation {
                     path: normalized_to,
                     operation: ToolMutationOperation::Create,
                     diff: None,
+                    before_version: None,
+                    after_version: None,
                 },
             ],
             envelope: None,
@@ -817,6 +826,8 @@ impl Tool for WorkspaceRewindTool {
                             action.current.as_deref(),
                             Some(content.as_bytes()),
                         )),
+                        before_version: action.current.as_deref().map(version_bytes),
+                        after_version: Some(version_bytes(content.as_bytes())),
                     });
                 }
                 None if action.current.is_some() => {
@@ -834,6 +845,8 @@ impl Tool for WorkspaceRewindTool {
                             action.current.as_deref(),
                             None,
                         )),
+                        before_version: None,
+                        after_version: None,
                     });
                 }
                 None => {}

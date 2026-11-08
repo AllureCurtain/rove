@@ -243,3 +243,10 @@ Decisions before 2026-10-01 were distilled from the design documents of that per
 - Decision: API docs are generated at runtime from `#[utoipa::path]` and `ToSchema`, served via `/api/openapi.json` and `/swagger-ui`.
 - Why: documentation lives next to route types and cannot drift.
 - Rejected: a hand-written OpenAPI file.
+
+## 2026-11-09 Rollback requires exact file byte identities
+
+- Status: active
+- Decision: attach optional before/after SHA-256 versions to built-in file mutations. Create rollback requires the postimage; update rollback requires the postimage and a reverse-patched candidate matching the preimage. Parse only a bounded complete single-file patch in memory, hold the existing session maintenance claim, reject symlink paths, and refuse legacy/incomplete evidence while preserving read compatibility.
+- Why: display diffs may be truncated, redacted or previously normalized; reconstructing created content from them could reject unchanged files or accept later edits. Sending an unrestricted recorded patch to Git could affect a different path.
+- Rejected: normalizing newlines, trusting a display diff without digests, guessing missing legacy bytes, or claiming session serialization provides cross-process filesystem atomicity.

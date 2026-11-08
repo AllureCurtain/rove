@@ -46,6 +46,8 @@ impl Tool for MutatingTool {
                 path: "notes/today.md".to_string(),
                 operation: ToolMutationOperation::Update,
                 diff: Some("+hello".to_string()),
+                before_version: None,
+                after_version: None,
             }],
             envelope: None,
         })
@@ -172,6 +174,8 @@ async fn session_memory_hook_writes_summary_only_for_final_runs() {
         path: "notes/today.md".to_string(),
         operation: ToolMutationOperation::Update,
         diff: None,
+        before_version: None,
+        after_version: None,
     }];
 
     let hooks = HookRegistry::default().with_post_run(Box::new(SessionMemoryHook));

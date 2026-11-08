@@ -106,3 +106,7 @@ Recovery: on API startup, jobs in `init`/`running` are marked `interrupted`, and
 - Desktop: Windows MSI/NSIS builds and the release pipeline work; signing, the installed end-to-end flow, and macOS/Linux packaging are not yet verified.
 - CLI: `cargo install --path apps/cli` installs `rove`.
 - Config sources: defaults → `~/.rove/config.toml` → trusted project `.rove/config.toml` → `ROVE_*` environment variables → CLI/API overrides.
+
+## Verified file rollback
+
+Built-in file writes and edits add optional SHA-256 `before_version` / `after_version` fields to canonical `ToolMutation` records. Old events and snapshots decode with absent fields and serialize unchanged. Diff rendering retains CRLF and final-newline boundaries. Product rollback holds a cancellation-safe session maintenance claim; it checks exact current bytes, reconstructs a bounded single-file reverse patch in memory, verifies original bytes, and publishes only the requested ordinary file. Display diffs can be truncated or redacted, so they alone cannot authorize restoration. Legacy incomplete evidence stays viewable but cannot drive rollback. External concurrent writers remain outside the session claim.

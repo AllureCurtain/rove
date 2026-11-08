@@ -335,3 +335,29 @@ fn openapi_snapshot_exposes_every_canonical_event_kind() {
         difference(&kind_names, &names),
     );
 }
+
+#[test]
+fn mutation_versions_are_additive_in_the_canonical_completed_event() {
+    let legacy = serde_json::json!({
+        "type": "tool_call_completed",
+        "call_id": "01J00000000000000000000001",
+        "result": {"call_id": "01J00000000000000000000001", "output": "done",
+            "mutations": [{"path": "a.txt", "operation": "create", "diff": "+a"}]}
+    });
+    let mut event: rove_runtime::events::StreamEvent = serde_json::from_value(legacy).unwrap();
+    let encoded = serde_json::to_value(&event).unwrap();
+    assert!(
+        encoded["result"]["mutations"][0]
+            .get("after_version")
+            .is_none()
+    );
+    if let rove_runtime::events::StreamEvent::ToolCallCompleted { result, .. } = &mut event {
+        result.mutations[0].after_version = Some(format!("sha256:{}", "a".repeat(64)));
+    } else {
+        panic!("wrong event");
+    }
+    let encoded = serde_json::to_value(&event).unwrap();
+    let decoded: rove_runtime::events::StreamEvent =
+        serde_json::from_value(encoded.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
+}

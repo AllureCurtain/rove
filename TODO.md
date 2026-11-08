@@ -4,7 +4,7 @@ Updated: 2026-11-09
 
 ## In progress
 
-- **Deferred pointer send** on `fix/deferred-pointer-send`: fixed a confirmed hosted-browser race where terminal transcript restoration disabled Send between pointer actionability and click dispatch. Explicit pointer/keyboard sends survive same-session restoration once, and draft edits/session changes cancel the deferred intent. Fresh blind review, 1016 Web unit/component tests, 236 regular browser cases (7 specialized skipped), four hosted real-API cases (1 optional skipped), and typecheck passed; CI pending.
+- **Verified mutation rollback** on `fix/revert-integrity`: real-use validation found false conflicts for files without final newlines; blind review also confirmed unsafe newline/header reconstruction and symlink/patch targeting. Implemented exact before/after digests, byte-preserving diffs, bounded single-file reversal and exclusive session maintenance; old evidence stays readable but unverifiable rollback is refused. Fresh blind review resolved claim-acquisition cancellation, normalized edit paths and lexical symlink checks. Full Rust workspace 2243 tests passed before final focused safety corrections; final 178 API product-module tests, 5 rollback integration cases, event compatibility, Web typecheck/build, 1011 Web tests and 4 hosted cases passed; fmt and workspace clippy passed. CI pending.
 
 - **Product delivery validation**: PR #54 shipped the POSIX launcher and engineering plan. Combined acceptance at `b00232e` retained FAIL (local MCP fixture timeout and confirmed pointer-send race). Five unchanged MCP cases passed independently; pointer-send is fixed above. Verified mutation rollback is in progress; credentialed provider and clean installation remain unverified.
 
@@ -36,6 +36,8 @@ Ordered by priority.
 ## Recently completed
 
 Keep only the last 10 entries.
+
+- 2026-11-09 PR #55 fixed pointer Send being swallowed during terminal transcript restoration. Explicit pointer/keyboard intent is delivered once after same-session restore; draft edits and session switches cancel it. Fresh blind review, CI, 1016 Web tests, 236 browser cases (7 specialized skipped), 4 hosted cases (1 optional skipped) and typecheck passed. PR #54 added the POSIX launcher and engineering-validation plan; its aggregate FAIL remains preserved as the evidence that exposed this race.
 
 - 2026-11-09 Session maintenance and authorization: manual compaction moved to the run panel, retains pending/results across panel closes, and discards old-session responses. Provider authorization follows the displayed session and workspace, including delayed model settings. Fresh blind review passed. Web unit/component tests 1011, regular browser tests 234 (7 specialized cases skipped), production route-prefetch tests 2, and hosted real-API tests 4 (1 optional skipped) passed; typecheck, production build, style tokens, fmt and workspace clippy passed. Browser test fixes wait for the target session before typing and repeat real scroll gestures until virtual history settles; result/position assertions remain intact. No credentialed provider or installed Desktop claim.
 

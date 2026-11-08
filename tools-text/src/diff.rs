@@ -30,8 +30,8 @@ pub fn render_unified_diff(
     if before == after {
         return String::new();
     }
-    let before_lines: Vec<&str> = before.lines().collect();
-    let after_lines: Vec<&str> = after.lines().collect();
+    let before_lines: Vec<&str> = before.split_inclusive('\n').collect();
+    let after_lines: Vec<&str> = after.split_inclusive('\n').collect();
 
     let prefix = common_prefix_len(&before_lines, &after_lines);
     let suffix = common_suffix_len(&before_lines, &after_lines, prefix);
@@ -51,9 +51,17 @@ pub fn render_unified_diff(
 
     let mut diff = format!(
         "--- a/{path}\n+++ b/{path}\n@@ -{},{} +{},{} @@\n",
-        before_start + 1,
+        if before_end == before_start {
+            before_start
+        } else {
+            before_start + 1
+        },
         before_end.saturating_sub(before_start),
-        after_start + 1,
+        if after_end == after_start {
+            after_start
+        } else {
+            after_start + 1
+        },
         after_end.saturating_sub(after_start)
     );
 
@@ -99,7 +107,9 @@ fn common_suffix_len(before: &[&str], after: &[&str], prefix: usize) -> usize {
 fn push_diff_line(diff: &mut String, prefix: char, line: &str) {
     diff.push(prefix);
     diff.push_str(line);
-    diff.push('\n');
+    if !line.ends_with('\n') {
+        diff.push_str("\n\\ No newline at end of file\n");
+    }
 }
 
 /// Truncate to a byte budget on a character boundary, appending `suffix`.
@@ -124,6 +134,27 @@ mod tests {
     #[test]
     fn identical_content_renders_nothing() {
         assert!(localized_diff("a.txt", "same\n", "same\n").is_empty());
+    }
+
+    #[test]
+    fn newline_only_changes_are_actual_changes() {
+        let added = localized_diff("a.txt", "hello", "hello\n");
+        assert!(added.contains("-hello\n\\ No newline at end of file\n+hello\n"));
+        let removed = localized_diff("a.txt", "hello\n", "hello");
+        assert!(removed.contains("-hello\n+hello\n\\ No newline at end of file\n"));
+        let crlf = localized_diff("a.txt", "hello\n", "hello\r\n");
+        assert!(crlf.contains("-hello\n+hello\r\n"));
+    }
+
+    #[test]
+    fn creation_preserves_terminators_and_header_like_content() {
+        let diff = localized_diff("a.txt", "", "++ header\r\nkeep");
+        assert_eq!(
+            diff,
+            "--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1,2 @@\n+++ header\r\n+keep\n\\ No newline at end of file\n"
+        );
+        let removed = localized_diff("a.txt", "last", "");
+        assert!(removed.contains("@@ -1,1 +0,0 @@\n-last\n\\ No newline at end of file\n"));
     }
 
     #[test]

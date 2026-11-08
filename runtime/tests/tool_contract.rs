@@ -594,11 +594,11 @@ async fn exact_edit_requires_unique_observed_current_text() {
         .await
         .unwrap();
     let observed: serde_json::Value = serde_json::from_str(&observed.content).unwrap();
-    registry
+    let edited = registry
         .execute(
             "edit_file",
             serde_json::json!({
-                "path":"note.txt",
+                "path":"./note.txt",
                 "old_text":"beta",
                 "new_text":"gamma",
                 "observation_id": observed["observation_id"],
@@ -608,6 +608,23 @@ async fn exact_edit_requires_unique_observed_current_text() {
         )
         .await
         .unwrap();
+    assert_eq!(edited.mutations[0].path, "note.txt");
+    assert!(
+        edited.mutations[0]
+            .diff
+            .as_ref()
+            .unwrap()
+            .starts_with("--- a/note.txt\n+++ b/note.txt\n")
+    );
+    assert_eq!(
+        edited.mutations[0].before_version.as_deref(),
+        observed["version"].as_str()
+    );
+    let result: serde_json::Value = serde_json::from_str(&edited.content).unwrap();
+    assert_eq!(
+        edited.mutations[0].after_version.as_deref(),
+        result["version"].as_str()
+    );
     assert_eq!(
         std::fs::read_to_string(workspace.root.join("note.txt")).unwrap(),
         "alpha gamma\n"

@@ -640,6 +640,8 @@ mod tests {
                     path: "notes/today.md".to_string(),
                     operation: ToolMutationOperation::Update,
                     diff: Some("+hello".to_string()),
+                    before_version: None,
+                    after_version: None,
                 }],
                 envelope: None,
             })

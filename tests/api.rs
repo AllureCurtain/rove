@@ -13703,6 +13703,8 @@ async fn product_long_session_deep_tree_large_dir_and_large_diff_stay_bounded() 
     const MUTATIONS: usize = 4200;
     for index in 0..MUTATIONS {
         report.tool_mutations.push(ToolMutation {
+            before_version: None,
+            after_version: None,
             path: format!("src/generated/file{index:05}.rs"),
             operation: ToolMutationOperation::Update,
             diff: Some(format!(
@@ -14814,6 +14816,8 @@ async fn product_diff_returns_canonical_tool_and_git_patches() {
     );
     let mut report = state_store.load_report(created.run_id).await.unwrap();
     report.tool_mutations.push(ToolMutation {
+        before_version: None,
+        after_version: None,
         path: "src/lib.rs".to_string(),
         operation: ToolMutationOperation::Update,
         diff: Some("--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n".to_string()),
@@ -14902,6 +14906,137 @@ async fn product_diff_returns_canonical_tool_and_git_patches() {
 }
 
 #[tokio::test]
+async fn product_mutation_revert_uses_exact_real_tool_bytes_and_refuses_active_turns() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    for (index, content) in [
+        "",
+        "no trailing newline",
+        "++ header\r\nkeep\r\n",
+        "first\nlast",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let session = create_product_session(&app, workspace_id, "Exact rollback").await;
+        let session_id = session["id"].as_str().unwrap();
+        configure_product_session_model(&app, session_id, "fake-raw", 1).await;
+        let path = format!("exact-{index}.txt");
+        let message =
+            serde_json::json!({"tool":"write_file","args":{"path":path,"content":content}})
+                .to_string();
+        let created = create_product_job(&app, session_id, &message).await;
+        let pending = wait_for_approval_event(app.clone(), created.job_id.to_string()).await;
+        let endpoint = format!("/product/sessions/{session_id}/mutations/revert");
+        let blocked = post_json(&app, &endpoint, serde_json::json!({"path":path})).await;
+        assert_eq!(blocked.status(), StatusCode::CONFLICT);
+        let blocked: serde_json::Value = decode_json(blocked).await;
+        assert_eq!(blocked["code"], "product_session_active");
+        let approval = &pending.pending_approvals[0];
+        let approved = post_json(
+            &app,
+            &format!("/jobs/{}/approvals/{}", created.job_id, approval.call_id),
+            serde_json::json!({"decision":"approve"}),
+        )
+        .await;
+        assert_eq!(approved.status(), StatusCode::OK);
+        wait_for_done(app.clone(), created.job_id.to_string()).await;
+        let target = folder.path().join(&path);
+        assert_eq!(std::fs::read(&target).unwrap(), content.as_bytes());
+        let newer = format!("{content}\nLater edit.");
+        std::fs::write(&target, &newer).unwrap();
+        let refused = post_json(&app, &endpoint, serde_json::json!({"path":path})).await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), newer);
+        std::fs::write(&target, content).unwrap();
+        let reverted = post_json(&app, &endpoint, serde_json::json!({"path":path})).await;
+        let status = reverted.status();
+        let reverted: serde_json::Value = decode_json(reverted).await;
+        assert_eq!(status, StatusCode::OK, "{reverted}");
+        assert_eq!(reverted["action"], "deleted_file");
+        assert!(!target.exists());
+        let repeated = post_json(&app, &endpoint, serde_json::json!({"path":path})).await;
+        assert_eq!(repeated.status(), StatusCode::OK);
+    }
+}
+
+#[tokio::test]
+async fn product_mutation_revert_restores_real_overwrites_with_exact_line_endings() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    run_git(folder.path(), &["init"]);
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = post_json(
+        &app,
+        "/product/workspaces",
+        serde_json::json!({
+            "root":folder.path(), "kind":"repo", "display_name":"Exact update", "pinned":false
+        }),
+    )
+    .await;
+    assert_eq!(workspace.status(), StatusCode::CREATED);
+    let workspace: serde_json::Value = decode_json(workspace).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    for (index, (before, after)) in [
+        ("hello", "hello\n"),
+        ("hello\n", "hello"),
+        ("one\r\ntwo\r\n", "one\nTWO\n"),
+        ("", "new"),
+        ("old", ""),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = format!("update-{index}.txt");
+        let target = folder.path().join(&path);
+        std::fs::write(&target, before).unwrap();
+        let session = create_product_session(&app, workspace_id, "Exact overwrite").await;
+        let session_id = session["id"].as_str().unwrap();
+        configure_product_session_model(&app, session_id, "fake-raw", 1).await;
+        let message = serde_json::json!({"tool":"write_file","args":{
+            "path":format!("./{path}"), "content":after, "mode":"overwrite"
+        }})
+        .to_string();
+        let created = create_product_job(&app, session_id, &message).await;
+        let pending = wait_for_approval_event(app.clone(), created.job_id.to_string()).await;
+        let approval = &pending.pending_approvals[0];
+        let approved = post_json(
+            &app,
+            &format!("/jobs/{}/approvals/{}", created.job_id, approval.call_id),
+            serde_json::json!({"decision":"approve"}),
+        )
+        .await;
+        assert_eq!(approved.status(), StatusCode::OK);
+        wait_for_done(app.clone(), created.job_id.to_string()).await;
+        assert_eq!(std::fs::read(&target).unwrap(), after.as_bytes());
+        let reverted = post_json(
+            &app,
+            &format!("/product/sessions/{session_id}/mutations/revert"),
+            serde_json::json!({"path":path}),
+        )
+        .await;
+        let status = reverted.status();
+        let reverted: serde_json::Value = decode_json(reverted).await;
+        assert_eq!(status, StatusCode::OK, "{reverted}");
+        assert_eq!(reverted["action"], "reverse_patched");
+        assert_eq!(std::fs::read(&target).unwrap(), before.as_bytes());
+    }
+}
+
+#[tokio::test]
 async fn product_mutation_revert_deletes_a_created_file() {
     let server = tempfile::TempDir::new().unwrap();
     let folder = tempfile::TempDir::new().unwrap();
@@ -14929,6 +15064,8 @@ async fn product_mutation_revert_deletes_a_created_file() {
     );
     let mut report = state_store.load_report(created.run_id).await.unwrap();
     report.tool_mutations.push(ToolMutation {
+            before_version: None,
+            after_version: Some("sha256:0c1b768b2bce0a9dc3b7350af8c03e0f252ed213b026f0e2567e1c261712392e".to_string()),
         path: "greet.py".to_string(),
         operation: ToolMutationOperation::Create,
         diff: Some(
@@ -14997,6 +15134,8 @@ async fn product_mutation_revert_refuses_a_tampered_created_file() {
     );
     let mut report = state_store.load_report(created.run_id).await.unwrap();
     report.tool_mutations.push(ToolMutation {
+            before_version: None,
+            after_version: Some("sha256:0c1b768b2bce0a9dc3b7350af8c03e0f252ed213b026f0e2567e1c261712392e".to_string()),
         path: "greet.py".to_string(),
         operation: ToolMutationOperation::Create,
         diff: Some(
@@ -15079,6 +15218,12 @@ async fn product_mutation_revert_reverse_applies_an_update_in_a_repo() {
     );
     let mut report = state_store.load_report(created.run_id).await.unwrap();
     report.tool_mutations.push(ToolMutation {
+        before_version: Some(
+            "sha256:9160d4be34c8695bd172a76c7c7966587ea5a4d991ad22c87b2b91af54aa9ebb".to_string(),
+        ),
+        after_version: Some(
+            "sha256:7b9a72466d3960eb2aacccfc848939453490db0678bd4725def3f789b891c919".to_string(),
+        ),
         path: "note.txt".to_string(),
         operation: ToolMutationOperation::Update,
         diff: Some("--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-before\n+after\n".to_string()),
