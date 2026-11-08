@@ -23,6 +23,8 @@ Browser e2e runs are part of the required set. Run without `-SkipBrowser`
 unless browsers are genuinely unavailable, and note any skipped check in the
 record.
 
+The real engineering pilot matrix and documentation checklist live in [docs/engineering-validation.md](../docs/engineering-validation.md). Automated acceptance and a real deployment trial are distinct records.
+
 ## Layout
 
 ```
