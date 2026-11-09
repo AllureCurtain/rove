@@ -22,6 +22,7 @@ Steps:
 3. `cd` into the directory you want to work in and run `rove`.
 4. In the TUI:
    - `/model` switches the model, affecting only the next turn.
+   - `Ctrl+R` selects a resumable session. Switching to another session loads its model selection and queued messages and clears the previous conversation from the screen. Earlier transcript loading is not yet available here; the empty view says so. A failed switch keeps the current session, and merely selecting a session does not execute its queue. An unsent composer draft stays available.
    - Sensitive operations prompt for approval; approve or reject in the dialog.
 
 Notes:

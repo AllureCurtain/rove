@@ -1,6 +1,6 @@
 # TODO
 
-Updated: 2026-11-09
+Updated: 2026-11-10
 
 ## In progress
 
@@ -34,6 +34,8 @@ Ordered by priority.
 ## Recently completed
 
 Keep only the last 10 entries.
+
+- 2026-11-10 TUI resume selection now switches the visible queue and model with the session and clears the previous conversation. Failed target loads preserve the original session; selecting a session does not execute queued work. Pending explicit model choices survive switching away and back without leaking to another session or reviving after consumption. The empty view explains that older transcript loading remains unavailable. A regression failed on the original behavior; 185 CLI tests, CLI clippy, fmt and fresh independent review passed. No local Web/Desktop or full workspace rerun; real terminal and external-provider interaction not verified here.
 
 - 2026-11-09 API host ownership now precedes recovery, including Desktop startup and legacy migration. Duplicate processes cannot interrupt a live pending approval; OS process death releases ownership, and cancelled SQLite waiters retain it until their workers finish. Concurrent first-launch token publication is atomic. Fresh blind review, 228 API unit tests, 201 API integration tests, 21 Desktop tests, fmt/clippy and a native debug build passed. Real-process duplication, pending-approval preservation and crash/restart recovery passed. Native duplicate Desktop startup was refused; visual confirmation of its system-hosted alert remains unverified because the UI tool cannot access UserNotificationCenter. No frontend or clean-install validation claim for this backend-only build.
 

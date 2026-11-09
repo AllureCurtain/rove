@@ -804,6 +804,23 @@ mod tests {
     }
 
     #[test]
+    fn selected_session_without_loaded_history_has_an_explicit_empty_state() {
+        let state = TuiState {
+            active_resume: Some(ResumeCandidate {
+                session_id: SessionId::new(),
+                job_id: JobId::new(),
+                run_id: RunId::new(),
+                goal: "resume target".to_string(),
+                step: 1,
+            }),
+            ..TuiState::default()
+        };
+        let rendered = buffer_text(&draw(120, 30, &state));
+        assert!(rendered.contains("Earlier transcript is not loaded here"));
+        assert!(!rendered.contains("No run yet"));
+    }
+
+    #[test]
     fn navigation_overlays_are_bounded_and_show_safe_help_or_empty_states() {
         let candidate = ResumeCandidate {
             session_id: SessionId::new(),

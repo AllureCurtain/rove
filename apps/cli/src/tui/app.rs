@@ -67,6 +67,7 @@ pub struct TuiApp {
     pressed_keys: PressedKeys,
     pending_run_id: Option<RunId>,
     pending_startup_events: Vec<StreamEvent>,
+    pending_model_changes: VecDeque<(SessionId, rove_app_bootstrap::ModelSelection)>,
 }
 
 impl TuiApp {
@@ -89,6 +90,7 @@ impl TuiApp {
             pressed_keys: PressedKeys::default(),
             pending_run_id: None,
             pending_startup_events: Vec::new(),
+            pending_model_changes: VecDeque::new(),
         }
     }
 
@@ -748,6 +750,61 @@ async fn refresh_tui_messages(runtime: &CliRuntime, app: &mut TuiApp) {
     }
 }
 
+async fn select_resume_session(
+    runtime: &CliRuntime,
+    app: &mut TuiApp,
+    resume_state: TaskState,
+) -> Result<(), SessionPickerError> {
+    if app.session_id != resume_state.session_id {
+        // Read the target before replacing any visible or executable session
+        // state, so a failed load leaves the previous conversation intact.
+        let (selection, revision) = runtime
+            .selection_for_session(resume_state.session_id)
+            .map_err(|_| SessionPickerError::LoadFailed)?;
+        let messages = runtime
+            .message_service
+            .list(
+                &resume_state.session_id.to_string(),
+                MessagePageQuery::latest(MAX_VISIBLE_MESSAGES),
+            )
+            .await
+            .map_err(|_| SessionPickerError::LoadFailed)?;
+        app.pending_model_changes
+            .retain(|(id, _)| *id != app.session_id);
+        if app.state.model_selection_changed
+            && let Some(selection) = &app.state.model_selection
+        {
+            app.pending_model_changes
+                .push_back((app.session_id, selection.clone()));
+            if app.pending_model_changes.len() > crate::tui::state::MAX_SESSION_CANDIDATES {
+                app.pending_model_changes.pop_front();
+            }
+        }
+        let selection_changed = app
+            .pending_model_changes
+            .iter()
+            .any(|(id, pending)| *id == resume_state.session_id && *pending == selection);
+        app.pending_model_changes
+            .retain(|(id, _)| *id != resume_state.session_id);
+        app.state.clear_run_local_ui();
+        app.state.run_history.clear();
+        app.state.run_lifecycle = RunLifecycle::Idle;
+        app.state.quit_confirmation = false;
+        app.state.replace_messages(messages.messages);
+        app.state.message_error = None;
+        app.state.model_selection = Some(selection);
+        app.state.model_selection_revision = revision;
+        app.state.model_selection_changed = selection_changed;
+        app.state.model_notice = None;
+        app.state.provider_health = None;
+        app.state.provider_status = ProviderStatus::Ready;
+        app.pending_startup_events.clear();
+        app.pending_run_id = None;
+    }
+    app.set_active_resume_state(resume_state);
+    Ok(())
+}
+
 /// Complete the start a claimed successor reserved, if this session has one.
 ///
 /// A surface commits the claim before it starts the run, so the claim is
@@ -1046,11 +1103,14 @@ async fn apply_idle_effects(
                                     && job.session_id == resume_state.session_id
                                     && is_terminal_index_status(&job.status) =>
                             {
-                                app.set_active_resume_state(resume_state);
-                                queue.extend(reduce(
-                                    &mut app.state,
-                                    TuiAction::ResumeSelectionSucceeded { run_id },
-                                ));
+                                let action =
+                                    match select_resume_session(runtime, app, resume_state).await {
+                                        Ok(()) => TuiAction::ResumeSelectionSucceeded { run_id },
+                                        Err(error) => {
+                                            TuiAction::ResumeSelectionFailed { run_id, error }
+                                        }
+                                    };
+                                queue.extend(reduce(&mut app.state, action));
                             }
                             Ok(Some(job)) if !is_terminal_index_status(&job.status) => {
                                 queue.extend(reduce(
@@ -2133,8 +2193,8 @@ mod tests {
         ActiveUiControl, InteractionController, PressedKeys, ShutdownInput, ShutdownSignal, TuiApp,
         TuiEngineRun, active_ui_loop, apply_idle_effects, claim_next_tui_successor,
         discard_queued_interactions, is_terminal_index_status, project_tui_follow_up_state,
-        redrive_stranded_tui_successor, run_loop, run_prompt, run_prompt_with_engine, test_control,
-        test_message_service,
+        redrive_stranded_tui_successor, run_loop, run_prompt, run_prompt_with_engine,
+        select_resume_session, test_control, test_message_service,
     };
 
     const REAL_TUI_TURN_TIMEOUT: Duration = Duration::from_secs(300);
@@ -4015,6 +4075,194 @@ mod tests {
             stale_app.state.overlay,
             Some(crate::tui::state::TuiOverlay::SessionPicker(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn session_picker_switches_model_queue_and_transcript_together() {
+        let (_workspace, _data, runtime) = successor_runtime().await;
+        let target = seeded_task_state(SessionId::new(), JobId::new(), RunId::new());
+        runtime.state_store.write_task_state(&target).await.unwrap();
+        runtime
+            .state_store
+            .index
+            .record_report(
+                target.run_id,
+                &runtime
+                    .state_store
+                    .run_store
+                    .run_dir(&target.run_id)
+                    .join("report.json"),
+                "success",
+                "final",
+            )
+            .unwrap();
+        let mut selection = runtime.default_selection().unwrap();
+        selection.reasoning = "high".to_string();
+        runtime
+            .session_selections
+            .update(&target.session_id.to_string(), 0, selection.clone())
+            .unwrap();
+        let target_message = queue_successor_message(
+            &runtime,
+            &target.session_id.to_string(),
+            "target queued message",
+        )
+        .await;
+
+        let mut app = TuiApp::default();
+        let old_message = queue_successor_message(
+            &runtime,
+            &app.session_id.to_string(),
+            "previous queued message",
+        )
+        .await;
+        app.state.messages.push(old_message.clone());
+        app.state.message_error = Some("previous queue error".to_string());
+        app.state.run.assistant_text = "previous session answer".to_string();
+        app.state.run_history.push(app.state.run.clone());
+        app.state.run_lifecycle = RunLifecycle::Completed;
+        app.state.model_selection = Some(runtime.default_selection().unwrap());
+        app.state.model_selection_revision = 9;
+        app.state.model_selection_changed = true;
+        app.state.provider_health = Some("previous model probe".to_string());
+        app.state.model_notice = Some("previous model notice".to_string());
+        app.state.composer = "unfinished draft".to_string();
+
+        let effects = reduce(&mut app.state, TuiAction::OpenSessionPicker);
+        apply_idle_effects(effects, &runtime, &mut app)
+            .await
+            .unwrap();
+        let effects = reduce(&mut app.state, TuiAction::ConfirmOverlay);
+        assert!(
+            apply_idle_effects(effects, &runtime, &mut app)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        assert_eq!(app.session_id, target.session_id);
+        assert!(app.state.run.assistant_text.is_empty());
+        assert!(app.state.run_history.is_empty());
+        assert_eq!(app.state.run_lifecycle, RunLifecycle::Idle);
+        assert_eq!(app.state.messages, vec![target_message]);
+        assert!(app.state.message_error.is_none());
+        assert_eq!(app.state.model_selection, Some(selection));
+        assert_eq!(app.state.model_selection_revision, 1);
+        assert!(!app.state.model_selection_changed);
+        assert!(app.state.provider_health.is_none());
+        assert!(app.state.model_notice.is_none());
+        assert_eq!(app.state.composer, "unfinished draft");
+        let old_messages = runtime
+            .message_service
+            .list(&old_message.session_id, MessagePageQuery::latest(10))
+            .await
+            .unwrap();
+        assert_eq!(old_messages.messages, vec![old_message]);
+    }
+
+    #[tokio::test]
+    async fn failed_session_switch_keeps_previous_session_and_model_intact() {
+        let (_workspace, _data, runtime) = successor_runtime().await;
+        let target = seeded_task_state(SessionId::new(), JobId::new(), RunId::new());
+        let selection_root = runtime.workspace.state_dir.join("session-model-selections");
+        std::fs::create_dir_all(&selection_root).unwrap();
+        std::fs::write(
+            selection_root.join(format!("{}.json", target.session_id)),
+            b"invalid",
+        )
+        .unwrap();
+        let mut app = TuiApp::new(Some(seeded_task_state(
+            SessionId::new(),
+            JobId::new(),
+            RunId::new(),
+        )));
+        let previous_id = app.session_id;
+        let previous_run = app.active_resume_state.as_ref().unwrap().run_id;
+        app.state.model_selection = Some(runtime.default_selection().unwrap());
+        app.state.model_selection_revision = 7;
+        app.state.model_selection_changed = true;
+        app.state.run.assistant_text = "previous answer".to_string();
+        let before = format!("{:?}", app.state);
+
+        assert!(
+            select_resume_session(&runtime, &mut app, target)
+                .await
+                .is_err()
+        );
+        assert_eq!(app.session_id, previous_id);
+        assert_eq!(
+            app.active_resume_state.as_ref().unwrap().run_id,
+            previous_run
+        );
+        assert_eq!(format!("{:?}", app.state), before);
+    }
+
+    #[tokio::test]
+    async fn reselecting_current_session_keeps_its_transcript_and_model_change() {
+        let (_workspace, _data, runtime) = successor_runtime().await;
+        let target = seeded_task_state(SessionId::new(), JobId::new(), RunId::new());
+        let mut app = TuiApp::new(Some(target.clone()));
+        app.state.run.assistant_text = "current answer".to_string();
+        app.state.run_history.push(app.state.run.clone());
+        app.state.model_selection = Some(runtime.default_selection().unwrap());
+        app.state.model_selection_revision = 3;
+        app.state.model_selection_changed = true;
+        select_resume_session(&runtime, &mut app, target)
+            .await
+            .unwrap();
+        assert_eq!(app.state.run.assistant_text, "current answer");
+        assert_eq!(app.state.run_history.len(), 1);
+        assert_eq!(app.state.model_selection_revision, 3);
+        assert!(app.state.model_selection_changed);
+    }
+
+    #[tokio::test]
+    async fn pending_model_choice_survives_round_trip_only_for_its_session() {
+        let (_workspace, _data, runtime) = successor_runtime().await;
+        let first = seeded_task_state(SessionId::new(), JobId::new(), RunId::new());
+        let second = seeded_task_state(SessionId::new(), JobId::new(), RunId::new());
+        let mut selection = runtime.default_selection().unwrap();
+        selection.reasoning = "high".to_string();
+        runtime
+            .session_selections
+            .update(&first.session_id.to_string(), 0, selection.clone())
+            .unwrap();
+        let mut app = TuiApp::new(Some(first.clone()));
+        app.state.model_selection = Some(selection.clone());
+        app.state.model_selection_changed = true;
+
+        select_resume_session(&runtime, &mut app, second.clone())
+            .await
+            .unwrap();
+        assert!(!app.state.model_selection_changed);
+        select_resume_session(&runtime, &mut app, first.clone())
+            .await
+            .unwrap();
+        assert_eq!(app.state.model_selection, Some(selection.clone()));
+        assert!(app.state.model_selection_changed);
+
+        app.state.model_selection_changed = false;
+        select_resume_session(&runtime, &mut app, second.clone())
+            .await
+            .unwrap();
+        select_resume_session(&runtime, &mut app, first.clone())
+            .await
+            .unwrap();
+        assert!(!app.state.model_selection_changed);
+
+        app.state.model_selection_changed = true;
+        select_resume_session(&runtime, &mut app, second)
+            .await
+            .unwrap();
+        selection.reasoning = "low".to_string();
+        runtime
+            .session_selections
+            .update(&first.session_id.to_string(), 1, selection)
+            .unwrap();
+        select_resume_session(&runtime, &mut app, first)
+            .await
+            .unwrap();
+        assert!(!app.state.model_selection_changed);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
