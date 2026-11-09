@@ -292,7 +292,7 @@ impl Server {
         let trust = Arc::new(ProjectTrustRepository::new(
             server_dir.join("project-trust.sqlite"),
         ));
-        let state = ApiState::with_project_trust_repository(workspace, config, trust);
+        let state = ApiState::with_project_trust_repository(workspace, config, trust).unwrap();
         let app = router(state.clone());
         Ok(Self { app, _state: state })
     }

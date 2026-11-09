@@ -230,6 +230,33 @@ mod tests {
         .await
         .expect("job must reach the approval gate");
 
+        let duplicate = start_api_server_at(config.clone(), &workspace).await;
+        assert!(duplicate.is_err());
+        let error = duplicate.err().unwrap();
+        assert!(error.chain().any(|cause| matches!(
+            cause.downcast_ref::<rove_api::ApiOwnershipError>(),
+            Some(rove_api::ApiOwnershipError::Busy)
+        )));
+        let still_active = get_json(&client, &format!("{}{state_path}", handle.base_url)).await;
+        assert_eq!(still_active["status"], "running");
+        assert_eq!(
+            still_active["pending_approvals"].as_array().unwrap().len(),
+            1
+        );
+
+        let other_workspace = root.join("other-workspace");
+        let legacy_trace = other_workspace.join(".rove/runs/legacy/trace.jsonl");
+        std::fs::create_dir_all(legacy_trace.parent().unwrap()).unwrap();
+        std::fs::write(&legacy_trace, "legacy fixture\n").unwrap();
+        assert!(start_api_server_at(config.clone(), &other_workspace)
+            .await
+            .is_err());
+        assert_eq!(
+            std::fs::read_to_string(legacy_trace).unwrap(),
+            "legacy fixture\n"
+        );
+        assert!(!other_workspace.join(".rove/migrated.marker").exists());
+
         let job_events = client
             .get(format!(
                 "{}/jobs/{}/events",
@@ -273,6 +300,7 @@ mod tests {
             .is_err());
         assert!(!workspace.join("must-not-exist.txt").exists());
 
+        drop(host);
         let restarted = start_api_server_at(config, &workspace).await.unwrap();
         let state = get_json(&client, &format!("{}{state_path}", restarted.base_url)).await;
         assert_eq!(state["status"], "cancelled");

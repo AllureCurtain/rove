@@ -2,6 +2,14 @@
 
 New decisions go on top. Do not delete overturned decisions; mark them "superseded" and note which entry replaced them.
 
+## 2026-11-09 API data ownership precedes startup recovery
+
+- Status: active
+- Decision: every `ApiState` constructor takes a nonblocking exclusive OS file lock in its ProductStore directory before runtime or product recovery. Constructors return a typed error on contention. State clones and background maintenance retain the guard; shutdown joins maintenance and task supervisors before clones are dropped. Lock files stay in place and process death releases the handle. Desktop starts its API before Tauri setup so duplicate-host errors reach the native startup dialog.
+- Why: a second API process on another port could mark the first process's live job interrupted and recover its active product claims. A port check or a Desktop-only single-instance plugin cannot protect the shared API boundary. Separate roots remain independent.
+- Implementation: stable Rust supplies file locking. The already-transitive `libc` dependency is made explicit in API on Unix for atomic no-follow opening, which `std` does not expose portably. Desktop uses the existing workspace `tempfile` dependency to publish a complete first-launch token without clobbering another starter; direct writes can expose partial JSON or replace the winning token.
+- Boundary: this coordinates cooperating API hosts on local filesystems; it does not lock external editors, CLI tasks, or deliberately overlapping custom runtime paths under different product roots. PID files and deleting locks on shutdown are rejected because crashes and inode replacement make them unreliable.
+
 ## 2026-11-09 Desktop normal exits share one shutdown gate
 
 - Status: active

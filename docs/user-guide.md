@@ -64,6 +64,8 @@ A local Apple Silicon `.app` can be built from `apps/desktop` with `pnpm dlx @ta
 
 Closing the Desktop window or choosing **Quit** cancels active tasks and waits up to five seconds for the local API to save their terminal state. Repeated close/quit requests share that wait. Unapproved tool calls remain unexecuted. On reopening, cancelled tasks stay cancelled; a forced termination or shutdown timeout may instead leave interrupted work that requires explicit recovery.
 
+If another Rove window or API host already uses the same data directory, a second start is refused. Return to the running app, or close it before reopening. Changing the API port does not permit sharing an active data directory. A process crash releases ownership automatically; do not delete `.rove-api.lock` to clear it. Separate data roots can run independently.
+
 ## Trusting a project
 
 Purpose: allow project config, `.env`, MCP servers, hooks, and agent definitions to take effect.

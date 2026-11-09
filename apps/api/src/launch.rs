@@ -93,7 +93,7 @@ pub(crate) async fn prepare_claimed_product_job_launch(
         }
         None => (req.message.clone(), Vec::new()),
     };
-    let state_store = state_store_for_parts(&workspace, &config);
+    let state_store = state_store_for_parts(&workspace, &config, state.inner._ownership.clone());
     // A fork's first child turn starts with the source run's verified prompt
     // state, but must never resume the source job. The fresh runtime session
     // and job identities keep cancellation, controls, and later follow-ups
@@ -432,6 +432,7 @@ pub(crate) fn new_job_record(input: NewJobRecord<'_>) -> Arc<JobRecord> {
     let (tx, _) = broadcast::channel(EVENT_BUFFER);
     let (completion, _) = watch::channel(false);
     Arc::new(JobRecord {
+        ownership: state.inner._ownership.clone(),
         session_id,
         job_id,
         run_id,

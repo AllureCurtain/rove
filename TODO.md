@@ -14,7 +14,6 @@ Updated: 2026-11-09
 Ordered by priority.
 
 1. Validate the first-use fixes on a credentialed real provider and installed delivery platform; distinguish catalog connectivity from successful task execution.
-   Desktop process ownership also needs validation: a second host must not run startup recovery against a still-active host's data root.
 2. Task state and delivery: pending approval must read as waiting for the user, not tool execution; present the completed change, verification, and remaining work clearly; runtime summaries now expose a concise outcome with expandable original details; status badge layout is fixed in PR #52; manual compaction is available in secondary context tools.
 3. Real-use acceptance: select one supported delivery platform and validate clean installation plus real-provider tasks on disposable repositories (read, edit, test, approve/deny, cancel, refresh/restart, inspect, revert). Use ordinary pointer/keyboard interactions for browser acceptance and record failures and skipped gates explicitly. The 2026-11-08 offline audit does not replace the full acceptance gate or credentialed validation.
 4. F.4, TUI part: long sessions in the terminal can load earlier history on demand (CLI)
@@ -35,6 +34,8 @@ Ordered by priority.
 ## Recently completed
 
 Keep only the last 10 entries.
+
+- 2026-11-09 API host ownership now precedes recovery, including Desktop startup and legacy migration. Duplicate processes cannot interrupt a live pending approval; OS process death releases ownership, and cancelled SQLite waiters retain it until their workers finish. Concurrent first-launch token publication is atomic. Fresh blind review, 228 API unit tests, 201 API integration tests, 21 Desktop tests, fmt/clippy and a native debug build passed. Real-process duplication, pending-approval preservation and crash/restart recovery passed. Native duplicate Desktop startup was refused; visual confirmation of its system-hosted alert remains unverified because the UI tool cannot access UserNotificationCenter. No frontend or clean-install validation claim for this backend-only build.
 
 - 2026-11-09 Desktop normal exit now drains the shared API once across window-close, native macOS Quit and repeated requests. Fresh review exposed and verified the native Quit bypass in the locked framework. Native release acceptance passed pending-approval Cmd+Q, restart showing cancelled history, and repeated close plus Quit during a four-second drain; neither unapproved file was created. Concurrent shutdown/SSE/restart tests, fmt/clippy and release build passed. Two parallel full-suite runs hit four external-adapter startup timeouts; the model crate passed independently and the earlier full suite passed. Final serial workspace verification passed all 2247 tests; the parallel failures remain recorded. Forced termination, duplicate hosts, clean installation and other OS native menus remain unverified.
 

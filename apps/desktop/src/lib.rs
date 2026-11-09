@@ -35,10 +35,12 @@ pub fn run() -> Result<()> {
     }
     config::install_crash_handler()?;
     let bearer_token = desktop_config.bearer_token.clone();
+    // Startup errors must reach main's native dialog, not panic inside Tauri's
+    // setup callback (which runs after Builder::build returns).
+    let server_state = tauri::async_runtime::block_on(setup_async(bearer_token.clone()))?;
 
     tauri::Builder::default()
         .setup(move |app| {
-            let server_state = tauri::async_runtime::block_on(setup_async(bearer_token.clone()))?;
             let api_url = server_state.base_url.clone().unwrap_or_default();
             let init_script = desktop_init_script(&bearer_token, &api_url)?;
             let window_config = app
@@ -204,6 +206,18 @@ pub fn startup_failure_message(log_path: &std::path::Path) -> String {
     )
 }
 
+pub fn startup_error_message(error: &anyhow::Error, log_path: &std::path::Path) -> String {
+    if error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<rove_api::ApiOwnershipError>(),
+            Some(rove_api::ApiOwnershipError::Busy)
+        )
+    }) {
+        return "Rove is already using this data directory. Return to the running app, or close it before opening another instance.".to_string();
+    }
+    startup_failure_message(log_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +246,14 @@ mod tests {
         assert!(message.contains("local API"));
         assert!(message.contains("desktop-startup.log"));
         assert!(!message.contains("provider credential"));
+    }
+
+    #[test]
+    fn duplicate_host_error_is_actionable_through_context_without_payloads() {
+        let error =
+            anyhow::Error::new(rove_api::ApiOwnershipError::Busy).context("secret startup context");
+        let text = startup_error_message(&error, std::path::Path::new("logs"));
+        assert!(text.contains("already using"));
+        assert!(!text.contains("secret"));
     }
 }

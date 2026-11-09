@@ -11,7 +11,7 @@ impl ApiState {
 }
 
 impl ApiState {
-    pub fn new(workspace: Workspace, config: AppConfig) -> Self {
+    pub fn new(workspace: Workspace, config: AppConfig) -> Result<Self, ApiOwnershipError> {
         Self::with_shutdown(workspace, config, CancellationToken::new())
     }
 
@@ -19,7 +19,7 @@ impl ApiState {
         workspace: Workspace,
         config: AppConfig,
         shutdown_token: CancellationToken,
-    ) -> Self {
+    ) -> Result<Self, ApiOwnershipError> {
         let project_trust = match ProjectTrustRepository::operator_default() {
             Ok(repository) => Some(Arc::new(repository)),
             Err(error) => {
@@ -37,7 +37,7 @@ impl ApiState {
         workspace: Workspace,
         config: AppConfig,
         project_trust: Arc<ProjectTrustRepository>,
-    ) -> Self {
+    ) -> Result<Self, ApiOwnershipError> {
         Self::with_shutdown_and_project_trust(
             workspace,
             config,
@@ -51,11 +51,15 @@ impl ApiState {
         mut config: AppConfig,
         shutdown_token: CancellationToken,
         project_trust: Option<Arc<ProjectTrustRepository>>,
-    ) -> Self {
+    ) -> Result<Self, ApiOwnershipError> {
         if config.source_summary.workspace_root == std::path::Path::new(".") {
             config.source_summary.workspace_root = workspace.root.clone();
             config.source_summary.project_config_path = workspace.root.join(".rove/config.toml");
         }
+        let ownership = Arc::new(host_ownership::ApiOwnership::acquire(
+            &config.product_sqlite_path(),
+        )?);
+        let supervisors = TaskTracker::new();
         // The API bearer token is a credential this process holds and already
         // compares against a request header. Registering it once at assembly
         // means a value that matches no pattern is still removed from a trace,
@@ -63,21 +67,22 @@ impl ApiState {
         if let Some(token) = config.api.token_auth.as_deref() {
             rove_runtime::secrets::registry().register_value(token);
         }
-        let state_store = state_store_for_parts(&workspace, &config);
+        let state_store = state_store_for_parts(&workspace, &config, ownership.clone());
         if let Err(err) = state_store.index.initialize() {
             tracing::warn!("failed to initialize API state index: {err}");
         }
         if let Err(err) = state_store.index.mark_running_jobs_interrupted() {
             tracing::warn!("failed to mark stale API jobs interrupted: {err}");
         }
-        spawn_state_index_backfill(&workspace, &config);
+        spawn_state_index_backfill(&workspace, &config, ownership.clone(), &supervisors);
         let product_store_path = config.product_sqlite_path();
         let provider_catalog = ProviderCatalogService::new(UserConfigPaths::for_config_file(
             &config.source_summary.user_config_path,
         ));
-        let product_store = match product::store::open_product_store(
+        let product_store = match product::store::open_product_store_with_guard(
             product_store_path.clone(),
             config.state.sqlite_busy_timeout_ms,
+            ownership.clone(),
         ) {
             Ok(store) => Some(store),
             Err(err) => {
@@ -94,6 +99,7 @@ impl ApiState {
             let runtime_state_resolver: Arc<dyn ProductRuntimeStateResolver> =
                 Arc::new(ApiProductRuntimeStateResolver {
                     config: config.clone(),
+                    ownership: ownership.clone(),
                 });
             match product::transcript::open_product_transcript_reader(
                 Arc::clone(store),
@@ -107,7 +113,13 @@ impl ApiState {
             }
         });
         if let Some(store) = product_store.as_ref() {
-            spawn_product_ownership_recovery(Arc::clone(store), &workspace, &config);
+            spawn_product_ownership_recovery(
+                Arc::clone(store),
+                &workspace,
+                &config,
+                ownership.clone(),
+                &supervisors,
+            );
         }
         let model_health = Arc::new(ModelHealthStore::new(HealthConfig {
             failure_threshold: config.routing.failure_threshold,
@@ -121,10 +133,13 @@ impl ApiState {
                 Arc::clone(store),
                 attachment_storage.clone(),
                 shutdown_token.clone(),
+                ownership.clone(),
+                &supervisors,
             );
         }
-        Self {
+        Ok(Self {
             inner: Arc::new(ApiStateInner {
+                _ownership: ownership,
                 workspace,
                 config,
                 product_store_path,
@@ -140,7 +155,7 @@ impl ApiState {
                 shutdown_token,
                 product_events: broadcast::channel(PRODUCT_EVENT_NOTIFY_BUFFER).0,
                 job_starts: TaskTracker::new(),
-                supervisors: TaskTracker::new(),
+                supervisors,
                 followup_start_attempts: Mutex::new(HashMap::new()),
                 jobs: RwLock::new(HashMap::new()),
                 review_jobs: RwLock::new(HashMap::new()),
@@ -149,12 +164,19 @@ impl ApiState {
                 rate_limit: tokio::sync::Mutex::new(RateLimitState::default()),
                 bench_runs: Arc::new(BenchState::default()),
             }),
-        }
+        })
     }
 
     /// Stable API-global ProductStore location. Requests cannot override it.
     pub fn product_store_path(&self) -> &FsPath {
         &self.inner.product_store_path
+    }
+
+    /// Stop accepting work and join background writers before dropping the last
+    /// state/router clone. Ownership is retained until every clone is dropped.
+    pub async fn shutdown(&self) {
+        self.inner.shutdown_token.cancel();
+        drain_job_supervisors(self).await;
     }
 
     /// The process-wide shutdown signal.
@@ -323,6 +345,7 @@ impl ApiState {
     pub(crate) fn product_state_store_for_workspace(&self, workspace: &Workspace) -> StateStore {
         ApiProductRuntimeStateResolver {
             config: self.inner.config.clone(),
+            ownership: self.inner._ownership.clone(),
         }
         .state_store_for_workspace(workspace.clone())
     }
@@ -333,6 +356,7 @@ impl ApiState {
     ) -> Result<StateStore, ProductStoreError> {
         ApiProductRuntimeStateResolver {
             config: self.inner.config.clone(),
+            ownership: self.inner._ownership.clone(),
         }
         .state_store_for(workspace)
     }
