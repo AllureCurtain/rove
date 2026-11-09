@@ -56,6 +56,10 @@ Steps:
 
 Note: installers are not yet signed, and the installed end-to-end flow has not been formally verified.
 
+## Desktop source build (macOS)
+
+A local Apple Silicon `.app` can be built from `apps/desktop` with `pnpm dlx @tauri-apps/cli@2 build --bundles app --ci`. The result is `target/release/bundle/macos/Rove.app` (or the configured Cargo target directory). Folder selection, offline tasks and session continuation after restart have been checked locally. Signed distribution and clean-machine installation remain unverified. Native provider credential entry currently supports Windows; configure a provider through the CLI before using it on macOS.
+
 ## Trusting a project
 
 Purpose: allow project config, `.env`, MCP servers, hooks, and agent definitions to take effect.

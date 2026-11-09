@@ -85,6 +85,7 @@ Recovery: on API startup, jobs in `init`/`running` are marked `interrupted`, and
     runs/<run_id>/{trace.jsonl, task_state.json, report.json, tool_artifacts/}
     memory/{MEMORY.md, topics/, sessions/}
     session-model-selections/  tasks/<name>/  .migration/
+<platform Desktop config/state/log roots>  ROVE_DESKTOP_ROOT optionally groups these under config/, state/, logs/
 ~/.rove/config.toml                   user provider catalog (ROVE_CONFIG_ROOT override); stores credential references only
 ```
 
