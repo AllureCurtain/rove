@@ -2,6 +2,13 @@
 
 New decisions go on top. Do not delete overturned decisions; mark them "superseded" and note which entry replaced them.
 
+## 2026-11-09 Desktop normal exits share one shutdown gate
+
+- Status: active
+- Decision: window close requests application exit; Tauri's exit-request callback owns the running/draining/finished gate. Repeated requests wait for the shared API shutdown. A once cell lets the final exit callback join that same drain before Tauri cleanup: native macOS Quit skips the request callback in the locked framework version. Cleanup retains its existing five-second deadline and programmatic exit code.
+- Why: handling only window close misses application Quit, and a boolean that allows subsequent close events lets repeated clicks terminate the process during cleanup. The API remains responsible for task cancellation, canonical terminal events and persistence.
+- Boundary: process kill and OS-forced shutdown remain outside the guarantee. Duplicate-process state ownership is a separate concern. Native macOS termination blocks the UI thread during the bounded drain because its termination event cannot be deferred through Tauri's request callback.
+
 ## 2026-11-09 Desktop credential entry follows explicit host capability
 
 - Status: active

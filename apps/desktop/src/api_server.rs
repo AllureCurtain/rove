@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use rove_api::{embedded_api_state, serve_state_listener};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -68,6 +68,11 @@ async fn bind_available_listener() -> Result<tokio::net::TcpListener> {
 /// Start the real `rove-api` router in-process. The Desktop crate owns only
 /// lifecycle and configuration; request handling remains in `rove-api`.
 pub async fn start_api_server(config: ApiServerConfig) -> Result<ApiServerHandle> {
+    let cwd = std::env::current_dir().context("failed to resolve desktop working directory")?;
+    start_api_server_at(config, &cwd).await
+}
+
+async fn start_api_server_at(config: ApiServerConfig, cwd: &Path) -> Result<ApiServerHandle> {
     std::fs::create_dir_all(&config.state_dir).context("failed to create API state directory")?;
     std::fs::create_dir_all(&config.config_dir).context("failed to create API config directory")?;
     std::fs::create_dir_all(&config.logs_dir).context("failed to create API logs directory")?;
@@ -80,9 +85,8 @@ pub async fn start_api_server(config: ApiServerConfig) -> Result<ApiServerHandle
     info!("starting embedded API server on {}", base_url);
 
     let shutdown = CancellationToken::new();
-    let cwd = std::env::current_dir().context("failed to resolve desktop working directory")?;
     let state = embedded_api_state(
-        &cwd,
+        cwd,
         addr,
         config.state_dir.clone(),
         config.bearer_token.clone(),
@@ -161,6 +165,125 @@ pub async fn start_api_server(config: ApiServerConfig) -> Result<ApiServerHandle
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{json, Value};
+
+    async fn get_json(client: &reqwest::Client, url: &str) -> Value {
+        let response = client
+            .get(url)
+            .bearer_auth("test-token")
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        serde_json::from_str(&response.text().await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_pending_approval_and_streams_before_restart() {
+        let root = std::env::temp_dir().join(format!("rove-desktop-exit-{}", uuid::Uuid::new_v4()));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let config = ApiServerConfig {
+            bearer_token: "test-token".to_string(),
+            state_dir: root.join("state"),
+            config_dir: root.join("config"),
+            logs_dir: root.join("logs"),
+        };
+        let handle = start_api_server_at(config.clone(), &workspace)
+            .await
+            .unwrap();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .unwrap();
+        let response = client
+            .post(format!("{}/jobs", handle.base_url))
+            .bearer_auth("test-token")
+            .header("content-type", "application/json")
+            .body(
+                json!({
+                    "message": json!({"tool":"write_file", "args":{
+                        "path":"must-not-exist.txt", "content":"unapproved"
+                    }}).to_string(),
+                    "model":"fake-raw", "approval":"ask", "max_steps":1
+                })
+                .to_string(),
+            )
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        let job: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        let state_path = format!("/jobs/{}/state", job["job_id"].as_str().unwrap());
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let state = get_json(&client, &format!("{}{state_path}", handle.base_url)).await;
+                if !state["pending_approvals"].as_array().unwrap().is_empty() {
+                    assert_eq!(state["pending_approvals"][0]["name"], "write_file");
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("job must reach the approval gate");
+
+        let job_events = client
+            .get(format!(
+                "{}/jobs/{}/events",
+                handle.base_url,
+                job["job_id"].as_str().unwrap()
+            ))
+            .bearer_auth("test-token")
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        let product_events = client
+            .get(format!("{}/product/events", handle.base_url))
+            .bearer_auth("test-token")
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        let old_url = handle.base_url.clone();
+        let host = crate::ApiServerState::new(handle);
+        assert_eq!(
+            host.exit_gate.request(),
+            crate::lifecycle::ExitAction::StartShutdown
+        );
+        tokio::join!(
+            host.shutdown_api(),
+            host.shutdown_api(),
+            host.shutdown_api()
+        );
+        assert_eq!(host.exit_gate.request(), crate::lifecycle::ExitAction::Exit);
+        let terminal_events = job_events.text().await.unwrap();
+        assert!(terminal_events.contains("run_completed"));
+        assert!(terminal_events.contains("cancelled"));
+        product_events.text().await.unwrap();
+        assert!(client
+            .get(format!("{old_url}/product/runtime"))
+            .send()
+            .await
+            .is_err());
+        assert!(!workspace.join("must-not-exist.txt").exists());
+
+        let restarted = start_api_server_at(config, &workspace).await.unwrap();
+        let state = get_json(&client, &format!("{}{state_path}", restarted.base_url)).await;
+        assert_eq!(state["status"], "cancelled");
+        assert!(state["pending_approvals"].as_array().unwrap().is_empty());
+        assert!(state["events"].as_array().unwrap().iter().any(|e| {
+            e["event"]["type"] == "run_completed" && e["event"]["reason"] == "cancelled"
+        }));
+        restarted.shutdown().await.unwrap();
+        assert!(!workspace.join("must-not-exist.txt").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[tokio::test]
     async fn server_starts_and_shuts_down() {
