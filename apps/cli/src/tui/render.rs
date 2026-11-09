@@ -56,6 +56,9 @@ pub fn render(frame: &mut Frame<'_>, state: &TuiState) {
 }
 
 pub fn sync_viewport(state: &mut TuiState, area: Rect) {
+    if let Some(crate::tui::state::TuiOverlay::History(history)) = &mut state.overlay {
+        crate::tui::widgets::sync_history_scroll(history, area);
+    }
     state.terminal_width = area.width;
     state.terminal_height = area.height;
     let layout = render_layout(area);
@@ -801,6 +804,37 @@ mod tests {
         assert!(rendered.contains("chars)"));
         assert!(!rendered.contains(raw_secret));
         assert!(!rendered.contains("live-secret"));
+    }
+
+    #[test]
+    fn saved_partial_notice_survives_continuation_and_history_scroll_is_clamped() {
+        let mut state = TuiState::default();
+        state.run.run_id = Some(RunId::new());
+        state.run.saved_history_notice = Some("partial saved history".into());
+        state.history_notice = state.run.saved_history_notice.clone();
+        state.apply_run_update(crate::terminal::view::RunViewUpdate::RunStarted {
+            run_id: RunId::new(),
+            job_id: JobId::new(),
+            user_message: "continue".into(),
+        });
+        assert!(buffer_text(&draw(120, 32, &state)).contains("partial saved history"));
+        state.overlay = Some(TuiOverlay::History(crate::tui::history::HistoryView {
+            text: "line\n".repeat(100),
+            scroll: u16::MAX,
+            ..Default::default()
+        }));
+        super::sync_viewport(&mut state, Rect::new(0, 0, 120, 32));
+        let Some(TuiOverlay::History(history)) = &state.overlay else {
+            panic!("history missing")
+        };
+        let max = history.max_scroll;
+        assert_eq!(history.scroll, max);
+        crate::tui::reducer::reduce(&mut state, crate::tui::action::TuiAction::OverlayNext);
+        crate::tui::reducer::reduce(&mut state, crate::tui::action::TuiAction::OverlayPrevious);
+        let Some(TuiOverlay::History(history)) = &state.overlay else {
+            panic!("history missing")
+        };
+        assert_eq!(history.scroll, max - 1);
     }
 
     #[test]

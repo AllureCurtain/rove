@@ -583,6 +583,7 @@ where
         }
     }
     refresh_tui_messages(runtime, &mut app).await;
+    restore_selected_history(runtime, &mut app).await;
     let mut shutdown_open = true;
     draw_app(terminal, &mut app.state)?;
 
@@ -755,6 +756,7 @@ async fn select_resume_session(
     app: &mut TuiApp,
     resume_state: TaskState,
 ) -> Result<(), SessionPickerError> {
+    let changed_session = app.session_id != resume_state.session_id;
     if app.session_id != resume_state.session_id {
         // Read the target before replacing any visible or executable session
         // state, so a failed load leaves the previous conversation intact.
@@ -802,7 +804,31 @@ async fn select_resume_session(
         app.pending_run_id = None;
     }
     app.set_active_resume_state(resume_state);
+    if changed_session {
+        restore_selected_history(runtime, app).await;
+    }
     Ok(())
+}
+
+async fn restore_selected_history(runtime: &CliRuntime, app: &mut TuiApp) {
+    let Some(selected) = app.active_resume_state.as_ref() else {
+        return;
+    };
+    match super::history::load_run(
+        &runtime.state_store.index,
+        selected.session_id,
+        selected.run_id,
+    )
+    .await
+    {
+        Ok(saved) => {
+            app.state.run = saved.view;
+            app.state.history_notice = Some(saved.notice);
+        }
+        Err(_) => {
+            app.state.history_notice = Some("Saved history is unavailable. F2 retries browsing; the selected resume target is unchanged.".into());
+        }
+    }
 }
 
 /// Complete the start a claimed successor reserved, if this session has one.
@@ -983,6 +1009,65 @@ async fn apply_idle_effects(
     let mut prompt = None;
     while let Some(effect) = queue.pop_front() {
         match effect {
+            TuiEffect::LoadHistory { anchor, older } => {
+                let mut attempted_run = None;
+                let result = tokio::time::timeout(Duration::from_secs(3), async {
+                    let run = runtime
+                        .state_store
+                        .index
+                        .session_run_neighbor_async(app.session_id, anchor, older)
+                        .await?;
+                    match run {
+                        Some(run) => {
+                            attempted_run = Some(run.run_id);
+                            super::history::load_run(
+                                &runtime.state_store.index,
+                                app.session_id,
+                                run.run_id,
+                            )
+                            .await
+                            .map(Some)
+                        }
+                        None => Ok(None),
+                    }
+                })
+                .await
+                .unwrap_or_else(|_| {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "history read timed out",
+                    ))
+                });
+                if let Some(TuiOverlay::History(history)) = app.state.overlay.as_mut() {
+                    match result {
+                        Ok(Some(saved)) => *history = saved.into_history(),
+                        Ok(None) => {
+                            history.message = Some(
+                                if anchor.is_none() {
+                                    "No saved history in this session."
+                                } else if older {
+                                    "No earlier run in this session."
+                                } else {
+                                    "No later run in this session."
+                                }
+                                .into(),
+                            )
+                        }
+                        Err(_) => {
+                            if let Some(run_id) = attempted_run {
+                                history.run_id = Some(run_id);
+                                history.text.clear();
+                                history.notice = "This saved run could not be read.".into();
+                                history.scroll = 0;
+                            }
+                            history.message = Some(
+                                "History unavailable. Left/Right browse adjacent runs; reopen F2 to retry."
+                                    .into(),
+                            )
+                        }
+                    }
+                }
+            }
             TuiEffect::SendMessage {
                 content,
                 session_state,
@@ -1832,6 +1917,7 @@ async fn apply_active_effects(
                 clear_interactions(interaction, interactions, state);
             }
             TuiEffect::Dispatch(_)
+            | TuiEffect::LoadHistory { .. }
             | TuiEffect::LoadSessions
             | TuiEffect::ResolveResume { .. }
             | TuiEffect::LoadModels { .. }
@@ -4158,6 +4244,158 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(old_messages.messages, vec![old_message]);
+    }
+
+    #[tokio::test]
+    async fn history_browsing_restores_saved_output_without_changing_resume_or_queue() {
+        let (_workspace, _data, runtime) = successor_runtime().await;
+        let session = SessionId::new();
+        let job = JobId::new();
+        let mut states = Vec::new();
+        for label in ["earlier answer", "latest answer"] {
+            let id = RunId::new();
+            let run = runtime.state_store.start_run(session, job, id).unwrap();
+            run.trace_writer
+                .append(&StreamEvent::RunStarted {
+                    run_id: id,
+                    job_id: job,
+                    user_message: label.into(),
+                    content_blocks: Vec::new(),
+                })
+                .unwrap();
+            run.trace_writer
+                .append(&StreamEvent::RunCompleted {
+                    reason: TerminationReason::Final,
+                    output: Some(label.into()),
+                })
+                .unwrap();
+            runtime
+                .state_store
+                .index
+                .record_report(id, &run.run_dir.join("report.json"), "success", "final")
+                .unwrap();
+            states.push(seeded_task_state(session, job, id));
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        let queued = queue_successor_message(&runtime, &session.to_string(), "still waiting").await;
+        let mut app = TuiApp::default();
+        select_resume_session(&runtime, &mut app, states[1].clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            app.state.run.completed.as_ref().unwrap().output.as_deref(),
+            Some("latest answer")
+        );
+        assert!(app.state.modal.is_none());
+        let effects = reduce(&mut app.state, TuiAction::OpenHistory);
+        assert!(
+            apply_idle_effects(effects, &runtime, &mut app)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let effects = reduce(&mut app.state, TuiAction::HistoryNeighbor { older: true });
+        assert!(
+            apply_idle_effects(effects, &runtime, &mut app)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let Some(crate::tui::state::TuiOverlay::History(history)) = &app.state.overlay else {
+            panic!("missing history")
+        };
+        assert!(history.text.contains("earlier answer"));
+        assert_eq!(history.run_id, Some(states[0].run_id));
+        assert_eq!(
+            app.active_resume_state.as_ref().unwrap().run_id,
+            states[1].run_id
+        );
+        assert_eq!(app.state.run.run_id, Some(states[1].run_id));
+        assert_eq!(app.state.messages, vec![queued]);
+        let effects = reduce(&mut app.state, TuiAction::HistoryNeighbor { older: false });
+        apply_idle_effects(effects, &runtime, &mut app)
+            .await
+            .unwrap();
+        let Some(crate::tui::state::TuiOverlay::History(history)) = &app.state.overlay else {
+            panic!("missing history")
+        };
+        assert!(history.text.contains("latest answer"));
+        let effects = reduce(&mut app.state, TuiAction::HistoryNeighbor { older: false });
+        apply_idle_effects(effects, &runtime, &mut app)
+            .await
+            .unwrap();
+        let Some(crate::tui::state::TuiOverlay::History(history)) = &app.state.overlay else {
+            panic!("missing history")
+        };
+        assert!(history.text.contains("latest answer"));
+        assert!(history.message.as_ref().unwrap().contains("No later"));
+        reduce(&mut app.state, TuiAction::CloseOverlay);
+        assert!(app.state.overlay.is_none());
+        assert_eq!(
+            runtime
+                .state_store
+                .index
+                .job_record(job)
+                .unwrap()
+                .unwrap()
+                .run_id,
+            Some(states[1].run_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn unreadable_latest_history_does_not_block_earlier_runs() {
+        let (_workspace, _data, runtime) = successor_runtime().await;
+        let mut app = TuiApp::default();
+        let job = JobId::new();
+        let older = RunId::new();
+        let run = runtime
+            .state_store
+            .start_run(app.session_id, job, older)
+            .unwrap();
+        run.trace_writer
+            .append(&StreamEvent::RunStarted {
+                run_id: older,
+                job_id: job,
+                user_message: "reachable older record".into(),
+                content_blocks: Vec::new(),
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        let latest = RunId::new();
+        let corrupt = runtime
+            .state_store
+            .start_run(app.session_id, job, latest)
+            .unwrap();
+        corrupt
+            .trace_writer
+            .append(&StreamEvent::RunStarted {
+                run_id: RunId::new(),
+                job_id: job,
+                user_message: "foreign identity".into(),
+                content_blocks: Vec::new(),
+            })
+            .unwrap();
+        let effects = reduce(&mut app.state, TuiAction::OpenHistory);
+        apply_idle_effects(effects, &runtime, &mut app)
+            .await
+            .unwrap();
+        let Some(crate::tui::state::TuiOverlay::History(history)) = &app.state.overlay else {
+            panic!("missing history")
+        };
+        assert_eq!(history.run_id, Some(latest));
+        assert!(history.text.is_empty());
+        assert!(history.notice.contains("could not be read"));
+        let effects = reduce(&mut app.state, TuiAction::HistoryNeighbor { older: true });
+        apply_idle_effects(effects, &runtime, &mut app)
+            .await
+            .unwrap();
+        let Some(crate::tui::state::TuiOverlay::History(history)) = &app.state.overlay else {
+            panic!("missing history")
+        };
+        assert_eq!(history.run_id, Some(older));
+        assert!(history.text.contains("reachable older record"));
+        assert!(app.active_resume_state.is_none());
     }
 
     #[tokio::test]

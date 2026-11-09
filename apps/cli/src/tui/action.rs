@@ -29,6 +29,10 @@ pub enum TuiAction {
         input_id: CallId,
     },
     OpenSessionPicker,
+    OpenHistory,
+    HistoryNeighbor {
+        older: bool,
+    },
     OpenToolDetail,
     OpenHelp,
     OpenMessageQueue,

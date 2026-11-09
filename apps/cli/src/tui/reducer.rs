@@ -62,6 +62,30 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
         TuiAction::RejectInteraction { call_id } => resolve_approval(state, call_id, false),
         TuiAction::SubmitInteraction { input_id } => resolve_input(state, input_id),
         TuiAction::OpenSessionPicker => open_session_picker(state),
+        TuiAction::OpenHistory => {
+            if state.run_lifecycle.is_active() || state.modal.is_some() {
+                return Vec::new();
+            }
+            state.overlay = Some(TuiOverlay::History(Default::default()));
+            vec![TuiEffect::LoadHistory {
+                anchor: None,
+                older: true,
+            }]
+        }
+        TuiAction::HistoryNeighbor { older } => {
+            if state.run_lifecycle.is_active() {
+                return Vec::new();
+            }
+            if let Some(TuiOverlay::History(history)) = &mut state.overlay {
+                history.message = Some("Loading saved history...".into());
+                vec![TuiEffect::LoadHistory {
+                    anchor: history.run_id,
+                    older,
+                }]
+            } else {
+                Vec::new()
+            }
+        }
         TuiAction::OpenToolDetail => open_tool_detail(state),
         TuiAction::OpenHelp => open_help(state),
         TuiAction::OpenMessageQueue => open_message_queue(state),
@@ -558,6 +582,16 @@ fn move_overlay(state: &mut TuiState, delta: isize) -> Vec<TuiEffect> {
         return Vec::new();
     };
     match overlay {
+        TuiOverlay::History(history) => {
+            history.scroll = if delta.is_negative() {
+                history.scroll.saturating_sub(delta.unsigned_abs() as u16)
+            } else {
+                history
+                    .scroll
+                    .saturating_add(delta as u16)
+                    .min(history.max_scroll)
+            };
+        }
         TuiOverlay::SessionPicker(picker) => picker.move_selection(delta),
         TuiOverlay::ModelPicker(picker) => picker.move_selection(delta),
         TuiOverlay::ToolDetail(detail) => detail.move_selection(delta),
@@ -581,6 +615,13 @@ fn page_overlay(state: &mut TuiState, down: bool) -> Vec<TuiEffect> {
         return Vec::new();
     };
     match overlay {
+        TuiOverlay::History(history) => {
+            history.scroll = if down {
+                history.scroll.saturating_add(8).min(history.max_scroll)
+            } else {
+                history.scroll.saturating_sub(8)
+            };
+        }
         TuiOverlay::SessionPicker(picker) => picker.move_selection(if down { 8 } else { -8 }),
         TuiOverlay::ModelPicker(picker) => picker.move_selection(if down { 8 } else { -8 }),
         TuiOverlay::ToolDetail(detail) => {

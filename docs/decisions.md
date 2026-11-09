@@ -2,6 +2,13 @@
 
 New decisions go on top. Do not delete overturned decisions; mark them "superseded" and note which entry replaced them.
 
+## 2026-11-10 TUI history uses bounded canonical replay and separate navigation
+
+- Status: active
+- Decision: restore the selected run through the existing event index and terminal projection; F2 browses one run at a time using an indexed session-scoped neighbor query. The browser does not change the resume target. Reading a run is capped at 2,048 events, 4 MiB of accepted event payloads and two seconds; the existing snapshot reader also bounds each database read. UI navigation has a three-second deadline. Timeline and rendered text limits are reported as partial history.
+- Why: reopening a conversation previously showed no saved output, while keeping every old run in memory would grow indefinitely. A separate browser avoids disturbing the current composer, queue or execution target. Schema migration 6 supplies an ordered session index without adding a second transcript store or event contract.
+- Boundary: recorded approvals and inputs are display-only; missing, malformed, conflicting or truncated records remain explicit. Nested subagent events are omitted and marked partial until the terminal supports their hierarchy. Legitimate sequence gaps from model-history and resume-link trace lines are allowed; unexplained trailing high-water residue remains partial. No trace paths from indexed rows are opened by this reader.
+
 ## 2026-11-09 API data ownership precedes startup recovery
 
 - Status: active

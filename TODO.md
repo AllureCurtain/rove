@@ -16,7 +16,7 @@ Ordered by priority.
 1. Validate the first-use fixes on a credentialed real provider and installed delivery platform; distinguish catalog connectivity from successful task execution.
 2. Task state and delivery: pending approval must read as waiting for the user, not tool execution; present the completed change, verification, and remaining work clearly; runtime summaries now expose a concise outcome with expandable original details; status badge layout is fixed in PR #52; manual compaction is available in secondary context tools.
 3. Real-use acceptance: select one supported delivery platform and validate clean installation plus real-provider tasks on disposable repositories (read, edit, test, approve/deny, cancel, refresh/restart, inspect, revert). Use ordinary pointer/keyboard interactions for browser acceptance and record failures and skipped gates explicitly. The 2026-11-08 offline audit does not replace the full acceptance gate or credentialed validation.
-4. F.4, TUI part: long sessions in the terminal can load earlier history on demand (CLI)
+4. TUI history follow-up: browse beyond a single run's display budget and show nested subagent details; the current run browser marks these limits explicitly.
 5. F.5, TUI part: queued successor messages resume delivery after a TUI restart (CLI)
 
 ## Blocked
@@ -34,6 +34,8 @@ Ordered by priority.
 ## Recently completed
 
 Keep only the last 10 entries.
+
+- 2026-11-10 TUI saved history now restores the selected run and provides F2 read-only browsing across earlier/later runs in the same session. Corrupt, omitted, conflicting and display-limited records stay explicit, including after continuation. History never changes the resume target or reactivates approvals. Schema migration 6 adds the ordered session index. CLI 193 tests, 32 runtime index tests, the runtime state contract, targeted clippy/fmt and fresh blind review passed. A real Unix PTY with offline fixtures verified restart display, older/newer navigation, same-session continuation (three runs total) and clean exit. Initial harness failures from diff-screen matching and premature exit observation are retained locally; no external-provider or full workspace validation claim.
 
 - 2026-11-10 TUI resume selection now switches the visible queue and model with the session and clears the previous conversation. Failed target loads preserve the original session; selecting a session does not execute queued work. Pending explicit model choices survive switching away and back without leaking to another session or reviving after consumption. The empty view explains that older transcript loading remains unavailable. A regression failed on the original behavior; 185 CLI tests, CLI clippy, fmt and fresh independent review passed. No local Web/Desktop or full workspace rerun; real terminal and external-provider interaction not verified here.
 
