@@ -69,7 +69,11 @@ fn transcript_text(state: &TuiState) -> Text<'static> {
 
     if lines.is_empty() {
         lines.push(Line::styled(
-            "No run yet. Type a prompt below.",
+            if state.active_resume.is_some() {
+                "Session selected. Earlier transcript is not loaded here. Type a prompt to continue."
+            } else {
+                "No run yet. Type a prompt below."
+            },
             Style::default().fg(Color::DarkGray),
         ));
     }
