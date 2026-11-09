@@ -2,6 +2,13 @@
 
 New decisions go on top. Do not delete overturned decisions; mark them "superseded" and note which entry replaced them.
 
+## 2026-11-09 Desktop credential entry follows explicit host capability
+
+- Status: active
+- Decision: the origin-bounded document-start script advertises `native` credential entry on Windows and `loopback` on macOS/Linux. Windows keeps its native prompt. Other hosts reuse the shared password form and existing authenticated loopback-only onboarding endpoint, including validation, OS keyring publication and compensation. The input is cleared immediately on submit and never copied into React state, storage or diagnostics. Missing capability on older hosts retains native behavior.
+- Why: the native prompt is only implemented on Windows; selecting it on every Desktop host leaves macOS/Linux unable to configure a provider in the app. The existing HTTP service already owns the safe credential lifecycle, so no additional secret-bearing IPC or OS-specific dialog dependency is needed.
+- Supersedes: the Desktop-only native-entry part of the 2026-10-07 credential-entry decision. The server’s loopback bind, bearer/CORS checks and browser origin restriction remain unchanged; the injected capability is UI selection, not authorization.
+
 ## 2026-11-09 Optional Desktop host root for isolated validation
 
 - Status: active

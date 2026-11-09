@@ -131,6 +131,20 @@ describe("browser provider setup", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("authentication failed");
   });
 
+  it("clears the uncontrolled credential immediately while verification is pending", async () => {
+    let reject!: (error: unknown) => void;
+    mocks.onboard.mockReturnValue(new Promise((_resolve, fail) => { reject = fail; }));
+    await fill("profile-api-key", "fixture-pending-key");
+    await click("Verify and save");
+    const input = container.querySelector<HTMLInputElement>("#profile-api-key")!;
+    expect(input.value).toBe("");
+    expect(input.disabled).toBe(true);
+    expect(mocks.onboard).toHaveBeenCalledOnce();
+    await act(async () => reject({ code: "provider_authentication" }));
+    expect(input.value).toBe("");
+    expect(input.disabled).toBe(false);
+  });
+
   it("explains a saved profile when updating the default selection fails", async () => {
     vi.mocked(props.onSelectionChange).mockResolvedValue(false);
     await click("Save changes");

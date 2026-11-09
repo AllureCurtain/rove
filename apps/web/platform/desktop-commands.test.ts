@@ -41,6 +41,18 @@ describe("Desktop commands", () => {
     expect(invoke).toHaveBeenCalledWith("workspace_select");
   });
 
+  it("does not invoke the Windows credential command for loopback-entry hosts", async () => {
+    installDesktopTransport();
+    window.__ROVE_CREDENTIAL_ENTRY__ = "loopback";
+    expect(desktopWorkspacePickerAvailable()).toBe(true);
+    expect(desktopProviderCredentialPromptAvailable()).toBe(false);
+    const invoke = vi.fn();
+    await expect(promptDesktopProviderCredential({
+      label: "Example", providerType: "openai", apiBase: "https://example.test/v1", model: "model",
+    }, invoke)).rejects.toThrow();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it("rejects malformed native command results", async () => {
     installDesktopTransport();
 

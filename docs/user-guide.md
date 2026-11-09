@@ -58,7 +58,7 @@ Note: installers are not yet signed, and the installed end-to-end flow has not b
 
 ## Desktop source build (macOS)
 
-A local Apple Silicon `.app` can be built from `apps/desktop` with `pnpm dlx @tauri-apps/cli@2 build --bundles app --ci`. The result is `target/release/bundle/macos/Rove.app` (or the configured Cargo target directory). Folder selection, offline tasks and session continuation after restart have been checked locally. Signed distribution and clean-machine installation remain unverified. Native provider credential entry currently supports Windows; configure a provider through the CLI before using it on macOS.
+A local Apple Silicon `.app` can be built from `apps/desktop` with `pnpm dlx @tauri-apps/cli@2 build --bundles app --ci`. The result is `target/release/bundle/macos/Rove.app` (or the configured Cargo target directory). Folder selection, offline tasks and session continuation after restart have been checked locally. Signed distribution and clean-machine installation remain unverified. In Settings → Providers, macOS/Linux use the shared **Verify and save** password form. The input clears at submission and the local host saves the verified key in the OS credential store. Windows retains its native credential window. Linux needs an available OS keyring service.
 
 ## Trusting a project
 
