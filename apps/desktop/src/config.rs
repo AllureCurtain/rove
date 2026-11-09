@@ -3,6 +3,19 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub const DESKTOP_ROOT_ENV: &str = "ROVE_DESKTOP_ROOT";
+
+fn desktop_root() -> Result<Option<PathBuf>> {
+    let Some(root) = std::env::var_os(DESKTOP_ROOT_ENV).map(PathBuf::from) else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        root.is_absolute(),
+        "{DESKTOP_ROOT_ENV} must be an absolute path"
+    );
+    Ok(Some(root))
+}
+
 /// Desktop application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DesktopConfig {
@@ -33,6 +46,9 @@ pub fn get_config_path() -> Result<PathBuf> {
 
 /// Get the config directory
 pub fn get_config_dir() -> Result<PathBuf> {
+    if let Some(root) = desktop_root()? {
+        return Ok(root.join("config"));
+    }
     #[cfg(target_os = "windows")]
     {
         let appdata = std::env::var("APPDATA").context("APPDATA environment variable not set")?;
@@ -62,6 +78,9 @@ pub fn get_config_dir() -> Result<PathBuf> {
 
 /// Get the state directory
 pub fn get_state_dir() -> Result<PathBuf> {
+    if let Some(root) = desktop_root()? {
+        return Ok(root.join("state"));
+    }
     #[cfg(target_os = "windows")]
     {
         let appdata = std::env::var("APPDATA").context("APPDATA environment variable not set")?;
@@ -94,6 +113,9 @@ pub fn get_state_dir() -> Result<PathBuf> {
 
 /// Get the logs directory
 pub fn get_logs_dir() -> Result<PathBuf> {
+    if let Some(root) = desktop_root()? {
+        return Ok(root.join("logs"));
+    }
     #[cfg(target_os = "windows")]
     {
         let appdata = std::env::var("APPDATA").context("APPDATA environment variable not set")?;
@@ -232,18 +254,27 @@ mod tests {
     #[test]
     fn test_get_config_dir() {
         let dir = get_config_dir().unwrap();
-        assert!(dir.to_string_lossy().contains("Rove") || dir.to_string_lossy().contains("rove"));
+        assert!(dir.is_absolute());
+        if let Some(root) = desktop_root().unwrap() {
+            assert_eq!(dir, root.join("config"));
+        }
     }
 
     #[test]
     fn test_get_state_dir() {
         let dir = get_state_dir().unwrap();
-        assert!(dir.to_string_lossy().contains("Rove") || dir.to_string_lossy().contains("rove"));
+        assert!(dir.is_absolute());
+        if let Some(root) = desktop_root().unwrap() {
+            assert_eq!(dir, root.join("state"));
+        }
     }
 
     #[test]
     fn test_get_logs_dir() {
         let dir = get_logs_dir().unwrap();
-        assert!(dir.to_string_lossy().contains("Rove") || dir.to_string_lossy().contains("rove"));
+        assert!(dir.is_absolute());
+        if let Some(root) = desktop_root().unwrap() {
+            assert_eq!(dir, root.join("logs"));
+        }
     }
 }

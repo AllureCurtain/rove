@@ -26,6 +26,7 @@ Config options are authoritative in the environment layer of `apps/bootstrap/src
 | Variable | Purpose |
 | --- | --- |
 | `ROVE_DATA_ROOT` | User data root; must be an absolute path. Tests and integration scripts should point at a disposable directory |
+| `ROVE_DESKTOP_ROOT` | Optional absolute root for Desktop token config, runtime state and logs (`config/`, `state/`, `logs/`). Provider catalog and trust-store isolation still use `ROVE_CONFIG_ROOT` and `ROVE_PROJECT_TRUST_STORE`; WebView preferences remain OS-managed |
 | `ROVE_CONFIG_ROOT` | Location of the user provider catalog, default `~/.rove` |
 | `ROVE_PROJECT_TRUST_STORE` | Project Trust store path |
 | `ROVE_PROVIDER` / `ROVE_MODEL` | Provider and model for this process, e.g. `fake` |
@@ -48,7 +49,7 @@ Config options are authoritative in the environment layer of `apps/bootstrap/src
 | Start API + Web (fake) | `powershell -ExecutionPolicy Bypass -File scripts/dev.ps1` (add `-Provider` for a real provider) |
 | API only | `cargo run -p rove-api` (add `--web-dist apps/web/web-dist` to also serve the built console on the same origin) |
 | Web dev | `cd apps/web && pnpm dev` |
-| Desktop dev / package | `cd apps/desktop && pnpm dlx @tauri-apps/cli@2 dev` / `... build --target x86_64-pc-windows-msvc` |
+| Desktop dev / package | `cd apps/desktop && pnpm dlx @tauri-apps/cli@2 dev` / `... build` (native formats for the current platform; `--bundles app` for a macOS app only) |
 | Format & lint | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` |
 | Targeted Rust tests | `cargo test -p <crate>`; integration tests `cargo test -p rove-integration-tests --test it <module>::` (e.g. `e2e::`); API contract `--test api` |
 | Full Rust tests | `cargo test --workspace` (slow; before commits and in CI) |
@@ -132,4 +133,5 @@ Before committing:
 - CI (`.github/workflows/ci.yml`, ubuntu): on PRs and pushes to main, runs Rust fmt/clippy/test plus Web test/typecheck/build; pushes to ordinary branches do not trigger, avoiding double runs per PR. Rust uses `Swatinem/rust-cache` for the registry and `target/`; routine clippy/test exclude `rove-desktop`, which is covered separately by `.github/workflows/desktop.yml` when `apps/desktop`, the root `Cargo.toml`/`Cargo.lock`, or the workflow itself changes (with the WebKit dependency install). The routine job installs `libwayland-dev` + `wayland-protocols` because `rove-api`'s `rfd` dependency builds `wayland-sys` crates through its ashpd backend; full Tauri/WebKit stays desktop-only.
 - Release gate (`.github/workflows/release-gate.yml`, manual trigger, windows): deterministic `local-full` integration; also runs the real-provider gate when credentials are configured.
 - Desktop packaging: in `apps/desktop`, `pnpm dlx @tauri-apps/cli@2 build --target x86_64-pc-windows-msvc`, producing MSI and NSIS. The Web static bundle comes from `pnpm build:desktop` in `apps/web`.
-- Not yet done: code signing, a formal release channel, macOS/Linux packages. Rollback means reinstalling the previous installer; the user data directory is not removed on uninstall.
+- macOS source-build smoke: a local Apple Silicon debug and release `.app` has passed native folder selection, offline task completion, close/restart and continued session. This is not a clean-machine or signed release validation.
+- Not yet done: code signing, a formal release channel, clean-machine macOS/Linux package validation. Rollback means reinstalling the previous installer; the user data directory is not removed on uninstall.

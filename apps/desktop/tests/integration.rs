@@ -4,18 +4,18 @@ use std::sync::{Mutex, MutexGuard};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-struct AppDataOverride {
+struct DesktopRootOverride {
     previous: Option<OsString>,
     _lock: MutexGuard<'static, ()>,
 }
 
-impl AppDataOverride {
+impl DesktopRootOverride {
     fn install(value: &std::path::Path) -> Self {
         let lock = ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let previous = std::env::var_os("APPDATA");
-        std::env::set_var("APPDATA", value);
+        let previous = std::env::var_os(config::DESKTOP_ROOT_ENV);
+        std::env::set_var(config::DESKTOP_ROOT_ENV, value);
         Self {
             previous,
             _lock: lock,
@@ -23,12 +23,12 @@ impl AppDataOverride {
     }
 }
 
-impl Drop for AppDataOverride {
+impl Drop for DesktopRootOverride {
     fn drop(&mut self) {
         if let Some(previous) = self.previous.take() {
-            std::env::set_var("APPDATA", previous);
+            std::env::set_var(config::DESKTOP_ROOT_ENV, previous);
         } else {
-            std::env::remove_var("APPDATA");
+            std::env::remove_var(config::DESKTOP_ROOT_ENV);
         }
     }
 }
@@ -47,7 +47,7 @@ fn test_bearer_token_persistence() {
     std::fs::create_dir_all(&temp_dir).unwrap();
 
     // Override config directory for this test
-    let appdata = AppDataOverride::install(&temp_dir);
+    let desktop_root = DesktopRootOverride::install(&temp_dir);
 
     // First load should generate a token
     let config1 = config::load_or_create_config().unwrap();
@@ -58,10 +58,31 @@ fn test_bearer_token_persistence() {
     let config2 = config::load_or_create_config().unwrap();
     let token2 = config2.bearer_token;
     assert_eq!(token1, token2);
+    assert!(temp_dir.join("config/desktop.json").is_file());
+    assert_eq!(config::get_config_dir().unwrap(), temp_dir.join("config"));
+    assert_eq!(config::get_state_dir().unwrap(), temp_dir.join("state"));
+    assert_eq!(config::get_logs_dir().unwrap(), temp_dir.join("logs"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = std::fs::metadata(config::get_config_path().unwrap())
+            .unwrap()
+            .permissions();
+        assert_eq!(permissions.mode() & 0o777, 0o600);
+    }
 
     // Cleanup
-    drop(appdata);
+    drop(desktop_root);
     std::fs::remove_dir_all(temp_dir).ok();
+}
+
+#[test]
+fn relative_desktop_root_is_refused_before_writing() {
+    let _root = DesktopRootOverride::install(std::path::Path::new("relative-desktop-root"));
+    assert!(config::get_config_dir().is_err());
+    assert!(config::get_state_dir().is_err());
+    assert!(config::get_logs_dir().is_err());
+    assert!(config::load_or_create_config().is_err());
 }
 
 /// Test that config directories are resolved correctly
@@ -71,27 +92,6 @@ fn test_directory_resolution() {
     let config_dir = config::get_config_dir().unwrap();
     let state_dir = config::get_state_dir().unwrap();
     let logs_dir = config::get_logs_dir().unwrap();
-
-    // All paths should contain "Rove" or "rove"
-    let config_str = config_dir.to_string_lossy().to_lowercase();
-    let state_str = state_dir.to_string_lossy().to_lowercase();
-    let logs_str = logs_dir.to_string_lossy().to_lowercase();
-
-    assert!(
-        config_str.contains("rove"),
-        "Config dir missing 'rove': {}",
-        config_str
-    );
-    assert!(
-        state_str.contains("rove"),
-        "State dir missing 'rove': {}",
-        state_str
-    );
-    assert!(
-        logs_str.contains("rove"),
-        "Logs dir missing 'rove': {}",
-        logs_str
-    );
 
     // All paths should be absolute
     assert!(config_dir.is_absolute());

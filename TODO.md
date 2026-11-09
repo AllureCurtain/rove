@@ -25,7 +25,7 @@ Ordered by priority.
   - Credentialed external provider gates on Web and Desktop
   - Real third-party MCP interop (the official filesystem server is rejected for its `anyOf` output schema)
   - Windows ConPTY automation
-  - macOS/Linux packaging
+  - Signed/clean-machine macOS packages and Linux packaging
   - Code signing
   - Full installed Desktop flow
 - Add a Windows Defender exclusion: requires administrator rights, handled by the repository owner
@@ -34,6 +34,8 @@ Ordered by priority.
 ## Recently completed
 
 Keep only the last 10 entries.
+
+- 2026-11-09 Desktop startup: Tauri hooks select the Web package’s pinned pnpm, native bundle targets are enabled, and an absolute optional host root isolates config/state/logs. Persistence tests no longer touch real macOS/Linux config. Local Apple Silicon debug and release `.app` builds passed; native folder selection, offline task, close/restart, history and continued task were checked. 17 Desktop tests passed both normally and with an override lacking the project name; fmt/workspace clippy and fresh blind review passed. Signed/clean-machine distribution, Linux/Windows packaging and credentialed tasks remain unverified.
 
 - 2026-11-09 Readable execution results: typed deterministic/fallback summaries have a localized outcome and expandable original details; non-success and uncertain outcomes open immediately. Model prose, full copy, live projection and history restoration are preserved. Fresh blind review, 2244 Rust tests, 1037 Web tests, 237 browser cases (7 specialized skipped), 4 hosted cases (1 optional skipped), typecheck, production builds, style tokens, fmt and workspace clippy passed. Saved real-API fake-provider history was inspected in the browser. No real-provider task or installed Desktop claim.
 

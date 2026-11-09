@@ -2,6 +2,13 @@
 
 New decisions go on top. Do not delete overturned decisions; mark them "superseded" and note which entry replaced them.
 
+## 2026-11-09 Optional Desktop host root for isolated validation
+
+- Status: active
+- Decision: an explicit absolute `ROVE_DESKTOP_ROOT` relocates only the Desktop bearer configuration, embedded runtime state and logs into `config/`, `state/` and `logs/`. Existing platform defaults stay in effect when unset. Shared provider and trust configuration retain their existing overrides; OS credential and WebView stores remain platform-owned.
+- Why: native startup and persistence tests need disposable host state on every supported OS without changing the process home directory or touching an operator’s Desktop token.
+- Rejected: repurposing `HOME`/`APPDATA`, which affects unrelated libraries and fails to isolate other platforms; silently migrating existing user state.
+
 ## 2026-10-31 Subagent attribution via a wrapped `subagent_event` envelope
 
 - Status: active

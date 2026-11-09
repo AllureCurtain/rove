@@ -31,6 +31,7 @@ delivery vehicle.
   - **Windows**: `%APPDATA%\Rove\config\desktop.json`
   - **macOS**: `~/Library/Application Support/Rove/config/desktop.json`
   - **Linux**: `~/.config/rove/desktop.json` (XDG compliant)
+- Optional `ROVE_DESKTOP_ROOT` must be absolute and places token config, state and logs under `config/`, `state/`, `logs/`. This does not move the shared provider catalog (`ROVE_CONFIG_ROOT`), project trust store (`ROVE_PROJECT_TRUST_STORE`), OS credential store or WebView preferences. Set the first two separately for an isolated trial.
 - File permissions set to `0600` on Unix platforms
 
 ### 3. Tauri Commands (`src/commands.rs`)
@@ -67,8 +68,8 @@ Security-hardened commands exposed to the WebView:
 # Development build
 cargo build -p rove-desktop
 
-# Release build
-cargo build --release -p rove-desktop
+# Package with the shared static Web UI, from apps/desktop
+pnpm dlx @tauri-apps/cli@2 build
 ```
 
 ### Run
@@ -77,8 +78,9 @@ cargo build --release -p rove-desktop
 # Run in development mode (hot-reload Web UI), from apps/desktop
 pnpm dlx @tauri-apps/cli@2 dev
 
-# Run release binary
-cargo run --release -p rove-desktop
+# Local macOS bundle smoke (uses the static UI, no dev server)
+pnpm dlx @tauri-apps/cli@2 build --debug --bundles app --ci
+# Run target/debug/bundle/macos/Rove.app after the build
 ```
 
 ### Test
@@ -112,9 +114,11 @@ Build command from `apps/desktop`:
 pnpm dlx @tauri-apps/cli@2 build --bundles "msi,nsis" --ci
 ```
 
-The Tauri hook runs with `apps/` as its working directory, so the checked-in
-`pnpm --dir web build:desktop` command is intentional. Generated installers
-remain under `target/release/bundle/` and are not committed.
+The Tauri hooks set their working directory explicitly to `../web` relative to
+`apps/desktop`. This lets Corepack select the version pinned by the Web package
+before running `pnpm dev` or `pnpm build:desktop`. Bundle targets default to the
+native formats for the current platform. Generated installers remain under
+`target/release/bundle/` and are not committed.
 
 ### macOS
 
@@ -132,7 +136,14 @@ pnpm dlx @tauri-apps/cli@2 build --target x86_64-apple-darwin
 pnpm dlx @tauri-apps/cli@2 build --target aarch64-apple-darwin
 ```
 
-**Note**: Code signing and notarization are manual for D0. Set `APPLE_SIGNING_IDENTITY` and `APPLE_ID` environment variables, or disable signing in `tauri.conf.json` for local testing.
+A local Apple Silicon debug and release `.app` has been checked with native folder selection,
+offline task completion, normal close, restart and continued conversation. Clean
+machine installation, release signing/notarization and credentialed tasks are
+still unverified. Native credential entry currently supports Windows only; on
+macOS use an existing provider profile configured through the CLI.
+
+Code signing and notarization remain manual. Configure the Apple signing
+credentials for distribution; a local debug bundle does not establish release readiness.
 
 ### Linux
 
@@ -213,15 +224,14 @@ These limitations are acceptable for D0 (internal dogfooding) and will be addres
 
 1. Open DevTools (F12 in debug builds)
 2. Check console for JavaScript errors
-3. Verify `window.__ROVE_TOKEN__` and `window.__ROVE_API_URL__` are set
+3. Verify `Boolean(window.__ROVE_TOKEN__)` and `Boolean(window.__ROVE_API_URL__)` are true; never print or copy the token
 4. Check Network tab for API call failures
 
 ### API calls fail with 401 Unauthorized
 
-1. Verify bearer token is injected: Open DevTools Console, type `window.__ROVE_TOKEN__`
+1. Verify injection without revealing the secret: `Boolean(window.__ROVE_TOKEN__)`
 2. Check that Web UI is sending `Authorization: Bearer <token>` header
-3. Verify the token matches the platform-specific `desktop.json` path listed
-   under [Configuration](#2-configuration-srcconfigrs)
+3. Close the app and restart it using the same config root; do not paste token values into logs or issue reports
 
 ### Port conflict
 
@@ -265,6 +275,4 @@ after the embedded API is ready and before the static page scripts run.
 
 ## Licensing
 
-The desktop crate currently declares MIT package metadata. The repository does
-not yet contain a root license file; add and review one before making a public
-distribution claim.
+The desktop crate and repository are licensed under the root MIT `LICENSE`.

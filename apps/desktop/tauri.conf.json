@@ -4,8 +4,14 @@
   "version": "0.1.0",
   "identifier": "com.rove.agent",
   "build": {
-    "beforeDevCommand": "pnpm --dir web dev",
-    "beforeBuildCommand": "pnpm --dir web build:desktop",
+    "beforeDevCommand": {
+      "script": "pnpm dev",
+      "cwd": "../web"
+    },
+    "beforeBuildCommand": {
+      "script": "pnpm build:desktop",
+      "cwd": "../web"
+    },
     "devUrl": "http://localhost:3000",
     "frontendDist": "../web/desktop-dist"
   },
@@ -37,7 +43,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["msi", "nsis"],
+    "targets": "all",
     "resources": [],
     "icon": [
       "icons/32x32.png",
