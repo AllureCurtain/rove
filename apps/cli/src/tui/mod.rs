@@ -1,6 +1,7 @@
 pub mod action;
 pub mod app;
 pub mod effect;
+pub mod history;
 pub mod keymap;
 pub mod providers;
 pub mod reducer;

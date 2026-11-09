@@ -9,7 +9,7 @@ use crate::events::StreamEvent;
 use crate::types::{JobId, RunId, SessionId, TaskState};
 use rove_core::CallId;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 5;
+pub const CURRENT_SCHEMA_VERSION: i64 = 6;
 const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
 const MAX_SNAPSHOT_EVENTS: usize = 2_000;
 const MAX_SNAPSHOT_EVENT_JSON_BYTES: usize = 1_048_576;
@@ -184,12 +184,17 @@ const MIGRATION_005: &str = r#"
 ALTER TABLE pending_approvals ADD COLUMN decided_via TEXT;
 "#;
 
+const MIGRATION_006: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_runs_session_started ON runs(session_id, started_at, run_id);
+"#;
+
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "runtime_state_index", MIGRATION_001),
     (2, "runs_by_job_index", MIGRATION_002),
     (3, "conversation_messages", MIGRATION_003),
     (4, "drop_event_offsets", MIGRATION_004),
     (5, "pending_approvals_decided_via", MIGRATION_005),
+    (6, "runs_by_session_index", MIGRATION_006),
 ];
 
 #[derive(Debug, Clone)]
@@ -1097,6 +1102,69 @@ impl StateIndex {
         tokio::task::spawn_blocking(move || index.run_records_for_job(job_id, limit))
             .await
             .map_err(std::io::Error::other)?
+    }
+
+    /// Read one neighboring run without scanning or retaining an entire session.
+    /// An anchor must belong to the requested session; browsing never changes
+    /// the mutable job pointer used for execution and recovery.
+    pub async fn session_run_neighbor_async(
+        &self,
+        session_id: SessionId,
+        anchor: Option<RunId>,
+        older: bool,
+    ) -> std::io::Result<Option<RunIndexRecord>> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = index.connect()?;
+            let anchor_time: Option<String> = match anchor {
+                Some(run_id) => Some(
+                    conn.query_row(
+                        "SELECT started_at FROM runs WHERE session_id = ?1 AND run_id = ?2",
+                        params![session_id.to_string(), run_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(io_other)?
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "history anchor is unavailable",
+                        )
+                    })?,
+                ),
+                None => None,
+            };
+            let order = if older || anchor.is_none() {
+                "DESC"
+            } else {
+                "ASC"
+            };
+            let comparison = if older { "<" } else { ">" };
+            let boundary = if anchor.is_some() {
+                format!("AND (started_at, run_id) {comparison} (?2, ?3)")
+            } else {
+                "AND ?2 IS NULL AND ?3 IS NULL".to_string()
+            };
+            conn.query_row(
+                &format!(
+                    "SELECT run_id, session_id, job_id, status, run_dir, trace_path,
+                            task_state_path, report_path, last_event_seq
+                     FROM runs WHERE session_id = ?1
+                       {boundary}
+                     ORDER BY started_at {order}, run_id {order} LIMIT 1"
+                ),
+                params![
+                    session_id.to_string(),
+                    anchor_time,
+                    anchor.map(|id| id.to_string())
+                ],
+                run_record_from_row,
+            )
+            .optional()
+            .map_err(io_other)
+        })
+        .await
+        .map_err(std::io::Error::other)?
     }
 
     pub fn run_records_for_job(
@@ -3131,6 +3199,133 @@ fn io_other(err: rusqlite::Error) -> std::io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn session_history_index_migrates_v5_without_changing_runs() {
+        let (temp, index, session, _, run_id) = indexed_run();
+        let conn = index.connect().unwrap();
+        conn.execute_batch(
+            "DROP INDEX idx_runs_session_started; DELETE FROM schema_migrations WHERE version = 6;",
+        )
+        .unwrap();
+        drop(conn);
+        let reopened = StateIndex::new(temp.path());
+        assert_eq!(
+            reopened
+                .session_run_neighbor_async(session, None, true)
+                .await
+                .unwrap()
+                .unwrap()
+                .run_id,
+            run_id
+        );
+        let conn = reopened.connect().unwrap();
+        assert_eq!(
+            conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            6
+        );
+        let plan: String = conn.query_row(
+            "EXPLAIN QUERY PLAN SELECT run_id FROM runs WHERE session_id = ?1 AND (started_at, run_id) < (?2, ?3) ORDER BY started_at DESC, run_id DESC LIMIT 1",
+            params![session.to_string(), "2026-11-10T00:00:00Z", run_id.to_string()],
+            |row| row.get(3),
+        ).unwrap();
+        assert!(plan.contains("idx_runs_session_started"), "{plan}");
+    }
+
+    #[tokio::test]
+    async fn session_history_neighbors_are_ordered_scoped_and_read_only() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = StateIndex::new(temp.path());
+        index.initialize().unwrap();
+        let session = SessionId::new();
+        let mut runs = vec![RunId::new(), RunId::new(), RunId::new()];
+        runs.sort_by_key(|id| id.to_string());
+        let mut jobs = Vec::new();
+        for run in &runs {
+            let job = JobId::new();
+            index
+                .record_run_started(session, job, *run, temp.path(), &temp.path().join("trace"))
+                .unwrap();
+            jobs.push(job);
+        }
+        let foreign = RunId::new();
+        index
+            .record_run_started(
+                SessionId::new(),
+                JobId::new(),
+                foreign,
+                temp.path(),
+                &temp.path().join("trace"),
+            )
+            .unwrap();
+        index
+            .connect()
+            .unwrap()
+            .execute("UPDATE runs SET started_at = '2026-11-10T00:00:00Z'", [])
+            .unwrap();
+        assert_eq!(
+            index
+                .session_run_neighbor_async(session, None, true)
+                .await
+                .unwrap()
+                .unwrap()
+                .run_id,
+            runs[2]
+        );
+        assert_eq!(
+            index
+                .session_run_neighbor_async(session, Some(runs[2]), true)
+                .await
+                .unwrap()
+                .unwrap()
+                .run_id,
+            runs[1]
+        );
+        assert_eq!(
+            index
+                .session_run_neighbor_async(session, Some(runs[0]), false)
+                .await
+                .unwrap()
+                .unwrap()
+                .run_id,
+            runs[1]
+        );
+        assert!(
+            index
+                .session_run_neighbor_async(session, Some(runs[0]), true)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            index
+                .session_run_neighbor_async(session, Some(runs[2]), false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            index
+                .session_run_neighbor_async(session, Some(foreign), true)
+                .await
+                .is_err()
+        );
+        assert!(
+            index
+                .session_run_neighbor_async(session, Some(RunId::new()), true)
+                .await
+                .is_err()
+        );
+        for (job, run) in jobs.iter().zip(&runs) {
+            let record = index.job_record(*job).unwrap().unwrap();
+            assert_eq!(record.run_id, Some(*run));
+            assert_eq!(record.status, "running");
+        }
+    }
 
     #[cfg(unix)]
     fn create_directory_symlink(target: &Path, link: &Path) -> bool {

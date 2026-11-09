@@ -269,6 +269,7 @@ pub struct RunCompletionView {
 
 #[derive(Debug, Clone, Default)]
 pub struct RunViewState {
+    pub saved_history_notice: Option<String>,
     pub run_id: Option<RunId>,
     pub job_id: Option<JobId>,
     pub user_message: Option<String>,

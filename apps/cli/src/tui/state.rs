@@ -627,6 +627,7 @@ impl MessageQueueState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiOverlay {
+    History(super::history::HistoryView),
     SessionPicker(SessionPickerState),
     ModelPicker(ModelPickerState),
     ToolDetail(ToolDetailState),
@@ -638,6 +639,7 @@ pub enum TuiOverlay {
 impl TuiOverlay {
     pub fn title(&self) -> &'static str {
         match self {
+            Self::History(_) => " Saved history (read only) ",
             Self::SessionPicker(_) => " Resume session ",
             Self::ModelPicker(_) => " Select model ",
             Self::ToolDetail(_) => " Tool detail ",
@@ -670,6 +672,7 @@ impl InteractionModalView {
 
 #[derive(Debug, Clone)]
 pub struct TuiState {
+    pub history_notice: Option<String>,
     pub run_history: Vec<RunViewState>,
     pub run: RunViewState,
     pub run_lifecycle: RunLifecycle,
@@ -776,6 +779,7 @@ impl TuiState {
     }
 
     fn begin_run(&mut self, run_id: rove_runtime::types::RunId) {
+        self.history_notice = None;
         if self.run.run_id.is_some_and(|current| current != run_id) {
             let completed_run = std::mem::take(&mut self.run);
             self.run_history.push(completed_run);
@@ -789,6 +793,7 @@ impl TuiState {
     }
 
     pub fn clear_run_local_ui(&mut self) {
+        self.history_notice = None;
         self.run = RunViewState::default();
         self.transcript_scroll.reset();
         self.modal = None;
@@ -849,6 +854,7 @@ impl TuiState {
 impl Default for TuiState {
     fn default() -> Self {
         Self {
+            history_notice: None,
             run_history: Vec::new(),
             run: RunViewState::default(),
             run_lifecycle: RunLifecycle::Idle,

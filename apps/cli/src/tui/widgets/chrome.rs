@@ -212,6 +212,13 @@ fn activity_content(state: &TuiState) -> (&'static str, String, Style) {
             Style::default().fg(Color::Yellow),
         );
     }
+    if state.run_lifecycle == RunLifecycle::Idle && state.history_notice.is_some() {
+        return (
+            "History",
+            "Saved record; type a prompt to continue, or F2 to browse.".into(),
+            Style::default().fg(Color::Cyan),
+        );
+    }
     if let Some(approval) = run.pending_approvals.last() {
         return (
             "Approval",

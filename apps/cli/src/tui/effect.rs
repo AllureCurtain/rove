@@ -9,6 +9,10 @@ use super::state::SensitiveInput;
 pub enum TuiEffect {
     Dispatch(TerminalAction),
     LoadSessions,
+    LoadHistory {
+        anchor: Option<RunId>,
+        older: bool,
+    },
     ResolveResume {
         run_id: RunId,
     },

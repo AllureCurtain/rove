@@ -23,6 +23,7 @@ pub(crate) fn render_overlay(frame: &mut Frame<'_>, overlay: &TuiOverlay, viewpo
 
     frame.render_widget(Clear, area);
     let accent = match overlay {
+        TuiOverlay::History(_) => Color::Cyan,
         TuiOverlay::SessionPicker(_) => Color::Cyan,
         TuiOverlay::ModelPicker(_) => Color::Green,
         TuiOverlay::ToolDetail(_) => Color::Blue,
@@ -42,6 +43,41 @@ pub(crate) fn render_overlay(frame: &mut Frame<'_>, overlay: &TuiOverlay, viewpo
     }
 
     match overlay {
+        TuiOverlay::History(history) => {
+            let (content, footer) = split_footer(inner);
+            let header_height = content.height.min(4);
+            let header = Rect::new(content.x, content.y, content.width, header_height);
+            let body = Rect::new(
+                content.x,
+                content.y + header_height,
+                content.width,
+                content.height - header_height,
+            );
+            let heading = format!(
+                "{}\n{}",
+                history.message.as_deref().unwrap_or(&history.notice),
+                history.run_id.map(|id| id.to_string()).unwrap_or_default()
+            );
+            frame.render_widget(Paragraph::new(heading).wrap(Wrap { trim: false }), header);
+            let paragraph = Paragraph::new(format!("{}\n\n{}", history.notice, history.text))
+                .wrap(Wrap { trim: false });
+            let max_scroll = paragraph
+                .line_count(body.width)
+                .saturating_sub(usize::from(body.height));
+            frame.render_widget(
+                paragraph.scroll((
+                    history
+                        .scroll
+                        .min(u16::try_from(max_scroll).unwrap_or(u16::MAX)),
+                    0,
+                )),
+                body,
+            );
+            frame.render_widget(
+                Paragraph::new("Left older / Right newer | Up/Down scroll | Esc close"),
+                footer,
+            );
+        }
         TuiOverlay::SessionPicker(picker) => render_session_picker(frame, picker, inner),
         TuiOverlay::ModelPicker(picker) => render_model_picker(frame, picker, inner),
         TuiOverlay::ToolDetail(detail) => render_tool_detail(frame, detail, inner),
@@ -112,6 +148,25 @@ pub(crate) fn render_overlay(frame: &mut Frame<'_>, overlay: &TuiOverlay, viewpo
             render_provider_onboarding(frame, onboarding, inner);
         }
     }
+}
+
+pub(crate) fn sync_history_scroll(history: &mut crate::tui::history::HistoryView, viewport: Rect) {
+    let area = overlay_area(viewport);
+    let width = area.width.saturating_sub(2);
+    let height = area
+        .height
+        .saturating_sub(2)
+        .saturating_sub(1)
+        .saturating_sub(4);
+    let paragraph = Paragraph::new(format!("{}\n\n{}", history.notice, history.text))
+        .wrap(Wrap { trim: false });
+    history.max_scroll = u16::try_from(
+        paragraph
+            .line_count(width)
+            .saturating_sub(usize::from(height)),
+    )
+    .unwrap_or(u16::MAX);
+    history.scroll = history.scroll.min(history.max_scroll);
 }
 
 fn render_provider_onboarding(

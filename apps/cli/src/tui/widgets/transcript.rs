@@ -60,10 +60,22 @@ pub(crate) fn transcript_viewport(state: &TuiState, area: Rect, bordered: bool) 
 
 fn transcript_text(state: &TuiState) -> Text<'static> {
     let mut lines = Vec::new();
+    if let Some(notice) = &state.history_notice
+        && state.run.saved_history_notice.is_none()
+    {
+        lines.push(Line::raw(notice.clone()));
+        lines.push(Line::default());
+    }
 
     for run in &state.run_history {
+        if let Some(notice) = &run.saved_history_notice {
+            lines.push(Line::raw(notice.clone()));
+        }
         push_run_lines(&mut lines, run);
         lines.push(Line::default());
+    }
+    if let Some(notice) = &state.run.saved_history_notice {
+        lines.push(Line::raw(notice.clone()));
     }
     push_run_lines(&mut lines, &state.run);
 
@@ -81,7 +93,7 @@ fn transcript_text(state: &TuiState) -> Text<'static> {
     Text::from(lines)
 }
 
-fn push_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
+pub(crate) fn push_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
     if run.timeline_entries().is_empty() {
         push_legacy_run_lines(lines, run);
     } else {

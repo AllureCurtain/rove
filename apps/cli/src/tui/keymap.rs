@@ -15,6 +15,11 @@ pub struct KeyBinding {
 /// keymap so help cannot drift into documenting unsupported commands.
 pub const KEY_BINDINGS: &[KeyBinding] = &[
     KeyBinding {
+        key: "F2",
+        action: "Browse saved history",
+        context: "idle",
+    },
+    KeyBinding {
         key: "Ctrl+Q",
         action: "Exit",
         context: "global",
@@ -160,6 +165,7 @@ pub fn map_key_event_with_overlay_mode(
         (KeyCode::Char('t'), KeyModifiers::CONTROL)
         | (KeyCode::Char('T'), KeyModifiers::CONTROL) => Some(TuiAction::OpenToolDetail),
         (KeyCode::F(1), KeyModifiers::NONE) => Some(TuiAction::OpenHelp),
+        (KeyCode::F(2), KeyModifiers::NONE) => Some(TuiAction::OpenHistory),
         (KeyCode::Char('m'), KeyModifiers::CONTROL)
         | (KeyCode::Char('M'), KeyModifiers::CONTROL) => Some(TuiAction::OpenMessageQueue),
         (KeyCode::Enter, KeyModifiers::SHIFT) => Some(TuiAction::InsertChar('\n')),
@@ -197,6 +203,12 @@ fn map_overlay_key_event(event: KeyEvent, overlay: &TuiOverlay) -> Option<TuiAct
         return None;
     }
     match (event.code, event.modifiers) {
+        (KeyCode::Left, KeyModifiers::NONE) if matches!(overlay, TuiOverlay::History(_)) => {
+            Some(TuiAction::HistoryNeighbor { older: true })
+        }
+        (KeyCode::Right, KeyModifiers::NONE) if matches!(overlay, TuiOverlay::History(_)) => {
+            Some(TuiAction::HistoryNeighbor { older: false })
+        }
         (KeyCode::Esc, KeyModifiers::NONE) => Some(TuiAction::CloseOverlay),
         (KeyCode::F(1), KeyModifiers::NONE) => Some(TuiAction::OpenHelp),
         (KeyCode::Char('t'), KeyModifiers::CONTROL)

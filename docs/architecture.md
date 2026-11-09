@@ -19,6 +19,8 @@ rove-bench ───────────────────────
 
 Every product surface is a shell: it resolves the workspace, loads the config snapshot, assembles tools and providers, then consumes events from the same Engine. `rove-core::Agent` is only embedded by libraries and tests; the default product entry is `rove-runtime::Engine`, assembled via `rove_app_bootstrap::build_engine`.
 
+TUI saved history reads bounded canonical event snapshots from StateIndex and reuses the terminal projection. Resuming restores the selected run; an independent read-only browser moves between session-scoped run neighbors without changing execution state. Schema migration 6 adds the `(session_id, started_at, run_id)` index for these reads. Partial-history notices remain attached to restored transcript segments across subsequent turns; historical approvals never recreate interaction channels.
+
 ## Modules
 
 | Module | Location | Responsibility |
