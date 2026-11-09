@@ -41,6 +41,7 @@ Every product surface is a shell: it resolves the workspace, loads the config sn
 - Web API types are generated from the OpenAPI snapshot into `apps/web/generated/api-types.ts`; `product-api-types.ts` and `rove-types.ts` expose aliases and boundary guards. API changes update Rust types and annotations first, then the snapshot and generated frontend types.
 - The browser never retains raw provider keys: keys live in server-side or Desktop env vars and the OS credential store. The single exception is `POST /product/provider-onboarding`, a loopback-bind-only route whose body carries a pasted key transiently into the keyring — the Web form offers it only on a loopback-served page and never stores the value.
 - Desktop depends on `rove-api` only within the local package; it does not own a second Engine or ProductStore.
+- Desktop window-close requests enter Tauri's application-exit gate. It starts the embedded API cancellation/drain once and prevents further exit requests while pending. The final exit callback joins the same drain before Tauri cleanup, covering macOS native Quit which bypasses the request event. Completion or the existing five-second abort deadline permits process exit. This is host lifecycle coordination, not a second task-state contract; forced process termination is not intercepted.
 
 ## Authentication and permissions
 

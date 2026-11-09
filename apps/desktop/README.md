@@ -23,6 +23,7 @@ delivery vehicle.
 - Starts the full `rove-api` server with ProductStore, routing, and middleware
 - Polls authenticated `/product/runtime` until ready
 - Provides graceful shutdown with a 5-second timeout followed by task abort
+- Window close and application Quit both wait for this shutdown; additional exit requests cannot skip it. Forced termination and OS shutdown remain outside this guarantee.
 
 ### 2. Configuration (`src/config.rs`)
 
@@ -149,6 +150,12 @@ still unverified. Windows uses its native credential window; macOS/Linux use **V
 in the shared provider form. An OS keyring service must be available (on Linux
 this usually requires a logged-in desktop session).
 
+Native release checks also cover Cmd+Q while a write awaits approval, restart showing
+the cancelled result, and repeated window close plus Quit during a delayed API drain.
+Both unapproved writes remained absent. On macOS the framework's native Quit goes
+straight to termination, so the final callback joins the same bounded drain before
+framework cleanup; it can briefly block the native UI while doing so.
+
 Code signing and notarization remain manual. Configure the Apple signing
 credentials for distribution; a local debug bundle does not establish release readiness.
 
@@ -254,7 +261,7 @@ Desktop uses `localhost:0` to find an available port automatically. If no ports 
 - Simpler lifecycle management (no process spawning, no orphaned processes)
 - Shared memory and zero-copy data structures
 - Easier to test (no IPC or socket mocking required)
-- Graceful shutdown guaranteed (no SIGTERM / SIGKILL coordination)
+- Normal window-close and application-Quit requests share the API shutdown path
 
 **Trade-off**: Crash in API server takes down the entire Desktop app. Acceptable for D0.
 

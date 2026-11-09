@@ -1,13 +1,12 @@
 pub mod api_server;
 pub mod commands;
 pub mod config;
+mod lifecycle;
 
 use anyhow::Result;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-use tauri::{Manager, WebviewWindowBuilder, WindowEvent};
+use lifecycle::{ExitAction, ExitGate};
+use std::sync::Arc;
+use tauri::{Manager, RunEvent, WebviewWindowBuilder, WindowEvent};
 use tracing::{error, info};
 
 /// Initialize the desktop application
@@ -60,26 +59,8 @@ pub fn run() -> Result<()> {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                let app = window.app_handle().clone();
-                let window = window.clone();
-                let Some(state) = app.try_state::<ApiServerState>() else {
-                    return;
-                };
-                if state.closing.swap(true, Ordering::AcqRel) {
-                    return;
-                }
                 api.prevent_close();
-                let state = state.inner.clone();
-                tauri::async_runtime::spawn(async move {
-                    let handle = state.lock().await.take();
-                    if let Some(handle) = handle {
-                        if let Err(error) = handle.shutdown().await {
-                            error!("failed to shut down embedded API server: {error}");
-                        }
-                    }
-                    let _ = window.close();
-                    info!("Desktop API lifecycle stopped");
-                });
+                window.app_handle().exit(0);
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -91,8 +72,36 @@ pub fn run() -> Result<()> {
             commands::open_external,
             commands::show_in_folder,
         ])
-        .run(tauri::generate_context!())
-        .map_err(|e| anyhow::anyhow!("Failed to run Tauri application: {}", e))?;
+        .build(tauri::generate_context!())
+        .map_err(|e| anyhow::anyhow!("Failed to build Tauri application: {}", e))?
+        .run(|app, event| match event {
+            RunEvent::ExitRequested { api, code, .. } => {
+                let Some(state) = app.try_state::<ApiServerState>() else {
+                    return;
+                };
+                match state.exit_gate.request() {
+                    ExitAction::Exit => {}
+                    ExitAction::Wait => api.prevent_exit(),
+                    ExitAction::StartShutdown => {
+                        api.prevent_exit();
+                        let state = state.inner().clone();
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            state.shutdown_api().await;
+                            app.exit(code.unwrap_or(0));
+                        });
+                    }
+                }
+            }
+            RunEvent::Exit => {
+                // Native macOS Quit can skip ExitRequested. Tauri calls this
+                // before cleanup; join any existing drain before returning.
+                if let Some(state) = app.try_state::<ApiServerState>() {
+                    tauri::async_runtime::block_on(state.shutdown_api());
+                }
+            }
+            _ => {}
+        });
 
     Ok(())
 }
@@ -148,14 +157,7 @@ async fn setup_async(bearer_token: String) -> Result<ApiServerState> {
     let api_handle = api_server::start_api_server(api_config).await?;
     info!("API server started at {}", api_handle.base_url);
 
-    let base_url = api_handle.base_url.clone();
-    let api_state = api_handle.api_state.clone();
-    Ok(ApiServerState {
-        base_url: Some(base_url),
-        inner: Arc::new(tokio::sync::Mutex::new(Some(api_handle))),
-        api_state,
-        closing: Arc::new(AtomicBool::new(false)),
-    })
+    Ok(ApiServerState::new(api_handle))
 }
 
 /// API lifecycle state stored in Tauri app state.
@@ -164,7 +166,35 @@ pub struct ApiServerState {
     pub(crate) base_url: Option<String>,
     pub(crate) inner: Arc<tokio::sync::Mutex<Option<api_server::ApiServerHandle>>>,
     pub(crate) api_state: rove_api::ApiState,
-    pub(crate) closing: Arc<AtomicBool>,
+    exit_gate: Arc<ExitGate>,
+    shutdown_complete: Arc<tokio::sync::OnceCell<()>>,
+}
+
+impl ApiServerState {
+    fn new(handle: api_server::ApiServerHandle) -> Self {
+        Self {
+            base_url: Some(handle.base_url.clone()),
+            api_state: handle.api_state.clone(),
+            inner: Arc::new(tokio::sync::Mutex::new(Some(handle))),
+            exit_gate: Arc::new(ExitGate::default()),
+            shutdown_complete: Arc::new(tokio::sync::OnceCell::new()),
+        }
+    }
+
+    async fn shutdown_api(&self) {
+        self.shutdown_complete
+            .get_or_init(|| async {
+                let handle = self.inner.lock().await.take();
+                if let Some(handle) = handle {
+                    if let Err(error) = handle.shutdown().await {
+                        error!("failed to shut down embedded API server: {error}");
+                    }
+                }
+                info!("Desktop API lifecycle stopped");
+                self.exit_gate.finish();
+            })
+            .await;
+    }
 }
 
 pub fn startup_failure_message(log_path: &std::path::Path) -> String {
@@ -177,13 +207,6 @@ pub fn startup_failure_message(log_path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn close_gate_only_claims_the_first_close_request() {
-        let closing = AtomicBool::new(false);
-        assert!(!closing.swap(true, Ordering::AcqRel));
-        assert!(closing.swap(true, Ordering::AcqRel));
-    }
 
     #[test]
     fn initialization_script_is_origin_bounded_and_json_encoded() {
