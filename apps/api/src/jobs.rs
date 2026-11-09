@@ -542,7 +542,7 @@ pub(crate) async fn prepare_generic_job_launch(
     approval_policy: ApprovalPolicy,
 ) -> Result<JobLaunch, ApiError> {
     let (workspace, config) = workspace_and_config_for_create_job(state, req)?;
-    let state_store = state_store_for_parts(&workspace, &config);
+    let state_store = state_store_for_parts(&workspace, &config, state.inner._ownership.clone());
     let resume_state = resolve_resume_state(&state_store, req.resume.as_deref())
         .await
         .map_err(|err| ApiError::bad_request(err.to_string()))?;

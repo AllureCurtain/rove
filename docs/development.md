@@ -52,7 +52,7 @@ Config options are authoritative in the environment layer of `apps/bootstrap/src
 | Desktop dev / package | `cd apps/desktop && pnpm dlx @tauri-apps/cli@2 dev` / `... build` (native formats for the current platform; `--bundles app` for a macOS app only) |
 | Format & lint | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` |
 | Targeted Rust tests | `cargo test -p <crate>`; integration tests `cargo test -p rove-integration-tests --test it <module>::` (e.g. `e2e::`); API contract `--test api` |
-| Full Rust tests | `cargo test --workspace` (slow; before commits and in CI) |
+| Full Rust tests | `cargo test --workspace` (broader regression when warranted; CI runs its configured gates) |
 | Update OpenAPI snapshot | After API changes: `$env:ROVE_UPDATE_OPENAPI=1; cargo test -p rove-integration-tests --test api openapi_snapshot` (in Git Bash: `ROVE_UPDATE_OPENAPI=1 cargo test ...`); rewrites `apps/api/openapi.json` |
 | Web tests | `cd apps/web && pnpm test && pnpm typecheck && pnpm build` |
 | Web E2E | `pnpm test:e2e` (mocked backend), `pnpm test:e2e:prod <spec>` |
@@ -67,6 +67,8 @@ Config options are authoritative in the environment layer of `apps/bootstrap/src
 | Fix MSVC linker env | In PowerShell, `. scripts/msvc-env.ps1` first, then run cargo (use when cargo reports missing `link.exe` or link failures) |
 
 On macOS, SQLite's no-follow guard rejects the system `/var` temporary-directory alias. For the full test suite, use a canonical temporary directory, for example `TMPDIR=/private/tmp cargo test --workspace`; keep the no-follow protection enabled. The external-commit guard tests exercise this boundary.
+
+API hosts acquire `.rove-api.lock` in the ProductStore directory before recovery. Do not remove this file while a host is running: the OS-held file handle, not the file's existence or a PID, determines ownership. Use independent data roots for concurrent instances. Library callers handle the fallible `ApiState` constructor, await `shutdown()`, and drop all state/router clones before reopening. Restart tests must stop the prior runtime; constructing a second state over a live host is now correctly refused.
 
 When compiles are slow: use `cargo check -p <crate>` and targeted tests day to day instead of `--workspace`; desktop (Tauri) makes `--workspace` noticeably slower. Use `cargo clean` to reclaim space when `target/` grows large.
 
@@ -87,8 +89,8 @@ When compiles are slow: use `cargo check -p <crate>` and targeted tests day to d
 
 Before committing:
 
-- [ ] `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` pass
-- [ ] Tests pass for affected crates; run `cargo test --workspace` when shared boundaries changed (events, state, approval, MCP, providers, artifacts)
+- [ ] `cargo fmt --all --check` and `cargo clippy -p <affected-crate> --all-targets -- -D warnings` pass; include affected consumers when a shared interface changes
+- [ ] Run tests for the changed behavior and affected crates first. For shared events, state, approval, MCP, providers or artifacts, add the relevant integration contracts; expand to workspace tests when the dependency impact or unresolved failures justify it. A small isolated fix does not require a local workspace rebuild/test. Reuse valid results until code changes or failures justify another run; CI retains its repository-wide gates
 - [ ] Web changed: `pnpm test`, `pnpm typecheck`, `pnpm build`; also `pnpm test:e2e` when browser-visible flows, SSE, approval/input/cancel/resume, or the API proxy changed
 - [ ] API changed: utoipa annotations, `apps/api/openapi.json` snapshot, `pnpm check:api-types` (generated `apps/web/generated/api-types.ts`), and both implementations are in sync
 - [ ] Schema changed: a new schema migration exists and an old database upgrades cleanly

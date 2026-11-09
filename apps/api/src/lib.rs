@@ -68,6 +68,7 @@ mod error;
 mod events;
 mod followup;
 mod fork;
+mod host_ownership;
 mod jobs;
 mod launch;
 mod review;
@@ -79,6 +80,7 @@ use error::*;
 use events::*;
 use followup::*;
 use fork::*;
+pub use host_ownership::ApiOwnershipError;
 use jobs::*;
 use launch::*;
 use review::*;
@@ -130,6 +132,7 @@ pub struct ApiState {
 }
 
 struct ApiStateInner {
+    _ownership: Arc<host_ownership::ApiOwnership>,
     workspace: Workspace,
     config: AppConfig,
     product_store_path: PathBuf,
@@ -160,6 +163,12 @@ struct ApiStateInner {
     bench_runs: Arc<BenchState>,
 }
 
+impl Drop for ApiStateInner {
+    fn drop(&mut self) {
+        self.shutdown_token.cancel();
+    }
+}
+
 #[derive(Debug, Default)]
 struct RateLimitState {
     window_started_at: Option<Instant>,
@@ -169,6 +178,7 @@ struct RateLimitState {
 #[derive(Clone)]
 struct ApiProductRuntimeStateResolver {
     config: AppConfig,
+    ownership: Arc<host_ownership::ApiOwnership>,
 }
 
 impl ApiProductRuntimeStateResolver {
@@ -178,7 +188,7 @@ impl ApiProductRuntimeStateResolver {
         config.source_summary.project_config_path = workspace.root.join(".rove/config.toml");
         config.source_summary.project_config_loaded = false;
         workspace.state_dir = config.state_dir();
-        state_store_for_parts(&workspace, &config)
+        state_store_for_parts(&workspace, &config, self.ownership.clone())
     }
 }
 
@@ -204,6 +214,7 @@ impl ProductRuntimeStateResolver for ApiProductRuntimeStateResolver {
 }
 
 pub(crate) struct JobRecord {
+    ownership: Arc<host_ownership::ApiOwnership>,
     session_id: SessionId,
     job_id: JobId,
     run_id: RunId,
@@ -543,10 +554,10 @@ pub async fn serve_with_shutdown(
     if config.state_dir_is_contract_managed() {
         config.ensure_contract_layout()?;
     }
-    rove_app_bootstrap::ensure_home_legacy_run_migration(workspace.root.as_path());
     let addr: SocketAddr = config.api.bind_addr.parse()?;
-    let state = ApiState::with_shutdown(workspace, config, shutdown.clone());
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    let state = ApiState::with_shutdown(workspace, config, shutdown.clone())?;
+    rove_app_bootstrap::ensure_home_legacy_run_migration(&state.inner.workspace.root);
     let app = match web_root.as_deref() {
         Some(root) => {
             let app = router_with_web(state.clone(), root)?;
@@ -597,8 +608,9 @@ pub fn embedded_api_state(
     workspace.state_dir = config.state_dir();
     workspace.ensure_state_dir()?;
     config.ensure_contract_layout()?;
+    let state = ApiState::with_shutdown(workspace, config, shutdown)?;
     rove_app_bootstrap::ensure_home_legacy_run_migration(cwd);
-    Ok(ApiState::with_shutdown(workspace, config, shutdown))
+    Ok(state)
 }
 
 /// Serve an already-assembled API state and perform the same complete shutdown
@@ -621,8 +633,7 @@ async fn serve_state_app(
     let shutdown = state.inner.shutdown_token.clone();
     spawn_preview_listener(&state).await;
     let result = serve_listener(listener, app, shutdown).await;
-    state.inner.shutdown_token.cancel();
-    drain_job_supervisors(&state).await;
+    state.shutdown().await;
     result
 }
 

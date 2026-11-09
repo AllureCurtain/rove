@@ -197,6 +197,7 @@ pub struct StateIndex {
     db_path: Arc<PathBuf>,
     state_dir: Arc<PathBuf>,
     busy_timeout_ms: u64,
+    lifetime_guard: Option<Arc<dyn std::fmt::Debug + Send + Sync>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -398,7 +399,15 @@ impl StateIndex {
             db_path: Arc::new(db_path),
             state_dir: Arc::new(state_dir.to_path_buf()),
             busy_timeout_ms,
+            lifetime_guard: None,
         }
+    }
+
+    /// Retain host resources in cloned indexes, including unabortable SQLite
+    /// workers that outlive the async future waiting for them.
+    pub fn with_lifetime_guard(mut self, guard: Arc<dyn std::fmt::Debug + Send + Sync>) -> Self {
+        self.lifetime_guard = Some(guard);
+        self
     }
 
     pub fn path(&self) -> &Path {

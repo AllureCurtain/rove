@@ -28,6 +28,7 @@ delivery vehicle.
 ### 2. Configuration (`src/config.rs`)
 
 - Generates a cryptographically random 32-byte bearer token on first launch
+- Publishes the complete token atomically without replacing a concurrent first-launch winner
 - Stores config in platform-specific directories:
   - **Windows**: `%APPDATA%\Rove\config\desktop.json`
   - **macOS**: `~/Library/Application Support/Rove/config/desktop.json`
@@ -221,7 +222,7 @@ pnpm dlx @tauri-apps/cli@2 build --target x86_64-unknown-linux-gnu
   the platform logs directory
 - **No sandboxing**: Full filesystem and network access (mitigated by command allowlist)
 - **Manual signing**: Code signing and notarization must be done manually on macOS
-- **Single instance**: No enforcement; multiple instances can run simultaneously
+- **Data ownership**: one API host per data directory; a duplicate start shows an actionable error before recovery runs. Separate roots can run independently. A crash releases the OS lock automatically; never remove the lock file while a host is running.
 
 These limitations are acceptable for D0 (internal dogfooding) and will be addressed in post-D0 releases.
 
@@ -282,7 +283,7 @@ after the embedded API is ready and before the static page scripts run.
 
 **Rationale**:
 - Avoids port conflicts with other services
-- Allows multiple Rove instances to run simultaneously (if needed)
+- Allows independent data roots to run simultaneously
 - No user configuration required
 
 **Trade-off**: Port changes on each launch. Acceptable because WebView is controlled and receives the URL automatically.

@@ -56,6 +56,7 @@ Clients should branch on `code` and never parse the `error` text.
 
 ## Concurrency and idempotency
 
+- One API host owns each ProductStore directory. All `ApiState` constructors are fallible and refuse duplicate ownership before runtime or product recovery. Standalone API and Desktop use the same guard. This is a startup error, not an HTTP error or schema change. In-process embedders must await `ApiState::shutdown()` and drop all router/state clones before constructing a replacement.
 - Writes to revisioned resources (preferences, provider catalog, etc.) must carry `expected_revision`; a mismatch returns 409. The provider catalog's version field is `catalog_revision`.
 - Side-effecting creates (send message, fork, migrate, etc.) carry `idempotency_key`; retries return the same result.
 - `POST /jobs` allows only one active turn per product session.

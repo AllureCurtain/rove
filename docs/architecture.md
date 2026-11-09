@@ -41,6 +41,7 @@ Every product surface is a shell: it resolves the workspace, loads the config sn
 - Web API types are generated from the OpenAPI snapshot into `apps/web/generated/api-types.ts`; `product-api-types.ts` and `rove-types.ts` expose aliases and boundary guards. API changes update Rust types and annotations first, then the snapshot and generated frontend types.
 - The browser never retains raw provider keys: keys live in server-side or Desktop env vars and the OS credential store. The single exception is `POST /product/provider-onboarding`, a loopback-bind-only route whose body carries a pasted key transiently into the keyring — the Web form offers it only on a loopback-served page and never stores the value.
 - Desktop depends on `rove-api` only within the local package; it does not own a second Engine or ProductStore.
+- API startup ownership is held by the ProductStore directory lock and is propagated through runtime index/store workers. A cancelled async SQLite waiter leaves the ownership guard with its blocking database worker until that worker finishes. Embedders must drain before destroying their runtime; arbitrary runtime abortion is not a supported handoff between hosts.
 - Desktop window-close requests enter Tauri's application-exit gate. It starts the embedded API cancellation/drain once and prevents further exit requests while pending. The final exit callback joins the same drain before Tauri cleanup, covering macOS native Quit which bypasses the request event. Completion or the existing five-second abort deadline permits process exit. This is host lifecycle coordination, not a second task-state contract; forced process termination is not intercepted.
 
 ## Authentication and permissions
@@ -68,7 +69,7 @@ The execution shape is "planning on the outside, ReAct on the inside":
 
 One product turn (Web/Desktop): `POST /jobs` carries `product_session_id`; the API resolves the server-held workspace and the exact previous runtime identity, preempts the single active turn, and starts the job through the API supervisor. Messages sent during a run are persisted before delivery: they enter a FIFO and are promoted or withdrawn at safe points; when idle, the earliest pending message is claimed atomically and starts a successor turn. Transcripts read the canonical event projection from each workspace's StateStore.
 
-Recovery: on API startup, jobs in `init`/`running` are marked `interrupted`, and approval and input channels are not rebuilt. An explicit resume creates a new run; an in-flight step with no terminal record gets an `interrupted` record and errors out — it is never re-run.
+Recovery: API construction first takes exclusive OS file ownership of the ProductStore directory. A second host fails before recovery, even when it uses another port or workspace. Jobs in `init`/`running` are then marked `interrupted`, and approval and input channels are not rebuilt. An explicit resume creates a new run; an in-flight step with no terminal record gets an `interrupted` record and errors out — it is never re-run. Every API state/router clone and tracked maintenance writer retains ownership; embedders call `ApiState::shutdown()` and drop their clones before opening a new host. The OS releases ownership when the process dies; the empty lock file is intentionally retained.
 
 ## Core entities
 
@@ -79,6 +80,7 @@ Recovery: on API startup, jobs in `init`/`running` are marked `interrupted`, and
 
 ```
 <data_root>/                          Windows %LOCALAPPDATA%\rove, macOS ~/Library/Application Support/rove,
+  .rove-api.lock                     OS-held API ownership; existence alone never means busy
   product.sqlite                      Linux $XDG_DATA_HOME/rove; ROVE_DATA_ROOT overrides (must be absolute)
   attachments/<product_session_id>/<attachment_id>
   workspaces/<storage_key>/           storage_key = first 16 chars of a stable hash of canonical root path + kind (repo/folder)
@@ -92,6 +94,7 @@ Recovery: on API startup, jobs in `init`/`running` are marked `interrupted`, and
 
 - Project directories only carry Trust-gated project config: `.rove/config.toml`, `.env`, `AGENTS.md`, AgentDefinition packages.
 - Moving or renaming a workspace produces a new key and is treated as a new workspace.
+- API ownership coordinates cooperating API hosts, including Desktop. It does not serialize external editors, CLI task execution, or custom runtime paths deliberately shared across different data roots.
 - `rove state paths` shows the resolved layout; `rove state migrate [--apply] [--on-conflict backup-target] [--prune-legacy]` migrates a legacy `.rove/`. Dry-run by default with zero writes; idempotency is judged by per-file sha256; SQLite is snapshotted via `VACUUM INTO` with paths rewritten; conflicts are never silently overwritten.
 
 ## Memory and context

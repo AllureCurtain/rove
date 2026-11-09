@@ -120,11 +120,15 @@ pub(crate) const FAKE_COMPACTION_SUMMARY_SCRIPT: &str =
     "Goal: manual compaction of the product session history";
 
 pub(crate) fn state_store_for_api(state: &ApiState) -> StateStore {
-    state_store_for_parts(&state.inner.workspace, &state.inner.config)
+    state_store_for_parts(
+        &state.inner.workspace,
+        &state.inner.config,
+        state.inner._ownership.clone(),
+    )
 }
 
 pub(crate) fn state_store_for_record(record: &JobRecord) -> StateStore {
-    state_store_for_parts(&record.workspace, &record.config)
+    state_store_for_parts(&record.workspace, &record.config, record.ownership.clone())
 }
 
 pub(crate) fn workspace_and_config_for_create_job(
@@ -487,12 +491,18 @@ pub(crate) fn rebased_workspace_config(
     Ok((workspace, config))
 }
 
-pub(crate) fn state_store_for_parts(workspace: &Workspace, config: &AppConfig) -> StateStore {
-    StateStore::with_index_path(
+pub(crate) fn state_store_for_parts(
+    workspace: &Workspace,
+    config: &AppConfig,
+    ownership: Arc<host_ownership::ApiOwnership>,
+) -> StateStore {
+    let index = StateIndex::with_path(
         &workspace.state_dir,
         config.sqlite_path(),
         config.state.sqlite_busy_timeout_ms,
     )
+    .with_lifetime_guard(ownership);
+    StateStore::with_index(&workspace.state_dir, index)
 }
 
 /// How long a startup backfill may run before the API stops waiting on it.
@@ -513,6 +523,8 @@ pub(crate) fn spawn_product_ownership_recovery(
     store: Arc<dyn ProductStore>,
     workspace: &Workspace,
     config: &AppConfig,
+    ownership: Arc<host_ownership::ApiOwnership>,
+    supervisors: &TaskTracker,
 ) {
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
         tracing::debug!(
@@ -527,31 +539,35 @@ pub(crate) fn spawn_product_ownership_recovery(
     if runs_dirs.is_empty() {
         return;
     }
-    handle.spawn(async move {
-        let sweep = product::ownership::recover_product_ownership(&store, &runs_dirs);
-        match tokio::time::timeout(STATE_INDEX_BACKFILL_TIMEOUT, sweep).await {
-            Ok(summary) if summary.sessions_recovered > 0 || summary.sessions_failed > 0 => {
-                tracing::info!(
+    supervisors.spawn_on(
+        async move {
+            let _ownership = ownership;
+            let sweep = product::ownership::recover_product_ownership(&store, &runs_dirs);
+            match tokio::time::timeout(STATE_INDEX_BACKFILL_TIMEOUT, sweep).await {
+                Ok(summary) if summary.sessions_recovered > 0 || summary.sessions_failed > 0 => {
+                    tracing::info!(
+                        records_found = summary.records_found,
+                        sessions_found = summary.sessions_found,
+                        sessions_recovered = summary.sessions_recovered,
+                        runs_recovered = summary.runs_recovered,
+                        sessions_failed = summary.sessions_failed,
+                        "recovered product sessions from run directories"
+                    );
+                }
+                Ok(summary) => tracing::debug!(
                     records_found = summary.records_found,
                     sessions_found = summary.sessions_found,
-                    sessions_recovered = summary.sessions_recovered,
-                    runs_recovered = summary.runs_recovered,
-                    sessions_failed = summary.sessions_failed,
-                    "recovered product sessions from run directories"
-                );
-            }
-            Ok(summary) => tracing::debug!(
-                records_found = summary.records_found,
-                sessions_found = summary.sessions_found,
-                "product catalog already covers every run on disk"
-            ),
-            Err(_) => tracing::warn!(
-                timeout_secs = STATE_INDEX_BACKFILL_TIMEOUT.as_secs(),
-                "product ownership recovery did not finish in time; the session list may be \
+                    "product catalog already covers every run on disk"
+                ),
+                Err(_) => tracing::warn!(
+                    timeout_secs = STATE_INDEX_BACKFILL_TIMEOUT.as_secs(),
+                    "product ownership recovery did not finish in time; the session list may be \
                  incomplete until the next start"
-            ),
-        }
-    });
+                ),
+            }
+        },
+        &handle,
+    );
 }
 
 /// Reclaim unreferenced attachment payloads, off the boot path.
@@ -574,40 +590,50 @@ pub(crate) fn spawn_attachment_cleanup(
     store: Arc<dyn ProductStore>,
     storage: product::attachments::AttachmentStorage,
     shutdown: CancellationToken,
+    ownership: Arc<host_ownership::ApiOwnership>,
+    supervisors: &TaskTracker,
 ) {
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
         tracing::debug!("no async runtime at API construction; skipping attachment cleanup");
         return;
     };
-    handle.spawn(async move {
-        let start = tokio::time::Instant::now()
-            + Duration::from_secs(product::attachments::ATTACHMENT_CLEANUP_FIRST_DELAY_SECONDS);
-        let period = Duration::from_secs(product::attachments::ATTACHMENT_CLEANUP_INTERVAL_SECONDS);
-        let mut ticker = tokio::time::interval_at(start, period);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            ticker.tick().await;
-            if shutdown.is_cancelled() {
-                return;
+    supervisors.spawn_on(
+        async move {
+            let _ownership = ownership;
+            let start = tokio::time::Instant::now()
+                + Duration::from_secs(product::attachments::ATTACHMENT_CLEANUP_FIRST_DELAY_SECONDS);
+            let period =
+                Duration::from_secs(product::attachments::ATTACHMENT_CLEANUP_INTERVAL_SECONDS);
+            let mut ticker = tokio::time::interval_at(start, period);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    _ = ticker.tick() => {}
+                }
+                if shutdown.is_cancelled() {
+                    return;
+                }
+                let outcome = product::attachments::run_attachment_cleanup(
+                    store.as_ref(),
+                    &storage,
+                    product::attachments::AttachmentCleanupLimits::default(),
+                )
+                .await;
+                // Counts only. An attachment's display name, its bytes, and its path
+                // never reach a log line.
+                tracing::debug!(
+                    expired_rows = outcome.expired_rows,
+                    removed_expired_payloads = outcome.removed_expired_payloads,
+                    removed_orphan_payloads = outcome.removed_orphan_payloads,
+                    reclaimed_partials = outcome.reclaimed_partials,
+                    failures = outcome.failures,
+                    "attachment cleanup run finished"
+                );
             }
-            let outcome = product::attachments::run_attachment_cleanup(
-                store.as_ref(),
-                &storage,
-                product::attachments::AttachmentCleanupLimits::default(),
-            )
-            .await;
-            // Counts only. An attachment's display name, its bytes, and its path
-            // never reach a log line.
-            tracing::debug!(
-                expired_rows = outcome.expired_rows,
-                removed_expired_payloads = outcome.removed_expired_payloads,
-                removed_orphan_payloads = outcome.removed_orphan_payloads,
-                reclaimed_partials = outcome.reclaimed_partials,
-                failures = outcome.failures,
-                "attachment cleanup run finished"
-            );
-        }
-    });
+        },
+        &handle,
+    );
 }
 
 /// Heal the runtime index from the run directories, off the boot path.
@@ -617,7 +643,12 @@ pub(crate) fn spawn_attachment_cleanup(
 /// on its own rather than wait for someone to notice and run `rove repair`.
 /// Deliberately fire-and-forget: a failed or slow rebuild degrades history
 /// lookups, and serving requests without history beats refusing to boot.
-pub(crate) fn spawn_state_index_backfill(workspace: &Workspace, config: &AppConfig) {
+pub(crate) fn spawn_state_index_backfill(
+    workspace: &Workspace,
+    config: &AppConfig,
+    ownership: Arc<host_ownership::ApiOwnership>,
+    supervisors: &TaskTracker,
+) {
     // The constructor is synchronous and is also called from tests that never
     // enter a runtime, so the spawn is conditional rather than assumed.
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
@@ -627,34 +658,39 @@ pub(crate) fn spawn_state_index_backfill(workspace: &Workspace, config: &AppConf
     let state_dir = workspace.state_dir.clone();
     let db_path = config.sqlite_path();
     let busy_timeout_ms = config.state.sqlite_busy_timeout_ms;
-    handle.spawn(async move {
-        let store = StateStore::with_index_path(&state_dir, db_path, busy_timeout_ms);
-        match tokio::time::timeout(STATE_INDEX_BACKFILL_TIMEOUT, store.backfill_missing_runs())
-            .await
-        {
-            Ok(Ok(result)) => match result.repair {
-                Some(repair) => tracing::info!(
-                    runs_on_disk = result.runs_on_disk,
-                    runs_missing = result.runs_missing,
-                    task_states = repair.task_state_count,
-                    events = repair.event_count,
-                    reports = repair.report_count,
-                    corrupt_trace_lines = repair.corrupt_trace_line_count,
-                    "rebuilt state index entries missing for runs on disk"
-                ),
-                None => tracing::debug!(
-                    runs_on_disk = result.runs_on_disk,
-                    "state index already covers every run on disk"
-                ),
-            },
-            Ok(Err(err)) => {
-                tracing::warn!("state index backfill failed: {err}");
-            }
-            Err(_) => tracing::warn!(
-                timeout_secs = STATE_INDEX_BACKFILL_TIMEOUT.as_secs(),
-                "state index backfill did not finish in time; history may be incomplete \
+    supervisors.spawn_on(
+        async move {
+            let index = StateIndex::with_path(&state_dir, db_path, busy_timeout_ms)
+                .with_lifetime_guard(ownership);
+            let store = StateStore::with_index(&state_dir, index);
+            match tokio::time::timeout(STATE_INDEX_BACKFILL_TIMEOUT, store.backfill_missing_runs())
+                .await
+            {
+                Ok(Ok(result)) => match result.repair {
+                    Some(repair) => tracing::info!(
+                        runs_on_disk = result.runs_on_disk,
+                        runs_missing = result.runs_missing,
+                        task_states = repair.task_state_count,
+                        events = repair.event_count,
+                        reports = repair.report_count,
+                        corrupt_trace_lines = repair.corrupt_trace_line_count,
+                        "rebuilt state index entries missing for runs on disk"
+                    ),
+                    None => tracing::debug!(
+                        runs_on_disk = result.runs_on_disk,
+                        "state index already covers every run on disk"
+                    ),
+                },
+                Ok(Err(err)) => {
+                    tracing::warn!("state index backfill failed: {err}");
+                }
+                Err(_) => tracing::warn!(
+                    timeout_secs = STATE_INDEX_BACKFILL_TIMEOUT.as_secs(),
+                    "state index backfill did not finish in time; history may be incomplete \
                  until the next start"
-            ),
-        }
-    });
+                ),
+            }
+        },
+        &handle,
+    );
 }

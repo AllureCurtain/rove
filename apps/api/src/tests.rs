@@ -469,12 +469,16 @@ async fn publish_terminal_event_after_barrier(
 
 #[tokio::test]
 async fn terminal_event_updates_live_status_after_finalization_barrier() {
+    let temp = tempfile::tempdir().unwrap();
     let (tx, _) = broadcast::channel(EVENT_BUFFER);
     let (completion, _) = watch::channel(false);
     let workspace = Workspace::detect(std::env::current_dir().unwrap().as_path()).unwrap();
     let mut config = AppConfig::default();
     config.rebase_to_workspace(&workspace.root);
     let record = JobRecord {
+        ownership: Arc::new(
+            host_ownership::ApiOwnership::acquire(&temp.path().join("product.sqlite")).unwrap(),
+        ),
         session_id: SessionId::new(),
         job_id: JobId::new(),
         run_id: RunId::new(),
@@ -657,10 +661,11 @@ async fn test_job_record(temp_dir: &tempfile::TempDir) -> (ApiState, Arc<JobReco
     config.rebase_to_workspace(&workspace.root);
     workspace.state_dir = config.state_dir();
     workspace.ensure_state_dir().unwrap();
-    let state = ApiState::new(workspace.clone(), config.clone());
+    let state = ApiState::new(workspace.clone(), config.clone()).unwrap();
     let (tx, _) = broadcast::channel(EVENT_BUFFER);
     let (completion, _) = watch::channel(false);
     let record = Arc::new(JobRecord {
+        ownership: state.inner._ownership.clone(),
         session_id: SessionId::new(),
         job_id: JobId::new(),
         run_id: RunId::new(),
@@ -753,6 +758,7 @@ async fn shutdown_drain_waits_for_a_superseded_same_job_supervisor() {
     let (tx, _) = broadcast::channel(EVENT_BUFFER);
     let (completion, _) = watch::channel(false);
     let second = Arc::new(JobRecord {
+        ownership: state.inner._ownership.clone(),
         session_id: first.session_id,
         job_id: first.job_id,
         run_id: RunId::new(),
@@ -892,7 +898,7 @@ async fn dropped_job_start_waiter_does_not_cancel_a_blocked_product_claim() {
         .update(None, &user_document)
         .unwrap();
     config.source_summary.user_config_path = user_paths.config_file;
-    let state = ApiState::new(workspace, config);
+    let state = ApiState::new(workspace, config).unwrap();
     let store = state.product_store().unwrap();
     let product_workspace = store
         .create_workspace(CreateProductWorkspaceRequest {
@@ -1004,7 +1010,7 @@ async fn dropped_job_start_waiter_does_not_cancel_a_blocked_product_claim() {
 async fn shutdown_drains_job_starts_before_supervisors() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(temp_dir.path()).unwrap();
-    let state = ApiState::new(workspace, AppConfig::default());
+    let state = ApiState::new(workspace, AppConfig::default()).unwrap();
     let supervisors = state.inner.supervisors.clone();
     let (start_entered_tx, start_entered_rx) = oneshot::channel();
     let (release_start_tx, release_start_rx) = oneshot::channel();
@@ -1283,7 +1289,7 @@ fn api_state_registers_the_bearer_token_as_a_credential() {
     let mut config = AppConfig::default();
     config.api.token_auth = Some(token.to_string());
 
-    let _state = ApiState::new(workspace, config);
+    let _state = ApiState::new(workspace, config).unwrap();
 
     let secrets = rove_runtime::secrets::registry();
     assert!(secrets.is_known_value(token));

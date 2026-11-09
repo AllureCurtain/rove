@@ -50,6 +50,24 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
+async fn crash_api_runtime<T, F, Fut>(setup: F) -> T
+where
+    T: Send + 'static,
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = T>,
+{
+    tokio::task::spawn_blocking(move || {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let outcome = runtime.block_on(setup());
+        // Drop all live supervisors without graceful cancellation. Disk state
+        // remains in-flight, and the next host must conservatively recover it.
+        runtime.shutdown_timeout(std::time::Duration::from_secs(30));
+        outcome
+    })
+    .await
+    .unwrap()
+}
+
 fn python_command() -> &'static str {
     if cfg!(windows) { "python" } else { "python3" }
 }
@@ -58,7 +76,7 @@ fn python_command() -> &'static str {
 async fn api_does_not_serve_embedded_web_ui_anymore() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let index = app
         .clone()
@@ -86,7 +104,7 @@ fn product_store_path_uses_the_bootstrap_config_state_root() {
     let mut config = test_config();
     config.state.state_dir = PathBuf::from("api-state");
 
-    let state = ApiState::new(workspace, config);
+    let state = ApiState::new(workspace, config).unwrap();
 
     let product_store_path = state.product_store_path();
     assert_eq!(
@@ -109,7 +127,7 @@ async fn product_job_returns_service_unavailable_when_the_store_cannot_open() {
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut config = test_config();
     config.state.sqlite_busy_timeout_ms = 0;
-    let app = router(ApiState::new(workspace, config));
+    let app = router(ApiState::new(workspace, config).unwrap());
 
     let response = post_json(
         &app,
@@ -132,7 +150,7 @@ async fn product_transcript_returns_service_unavailable_when_the_store_cannot_op
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut config = test_config();
     config.state.sqlite_busy_timeout_ms = 0;
-    let app = router(ApiState::new(workspace, config));
+    let app = router(ApiState::new(workspace, config).unwrap());
     let product_session_id = ProductSessionId::new();
 
     let response = app
@@ -154,7 +172,7 @@ async fn product_transcript_returns_service_unavailable_when_the_store_cannot_op
 async fn product_preferences_support_legacy_updates_and_revision_cas() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let initial = app
         .clone()
@@ -236,10 +254,7 @@ async fn product_provider_catalog_exposes_revision_and_rejects_stale_crud() {
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
     config.source_summary.user_config_path = server.path().join("user/config.toml");
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
 
     let listed = get_response(&app, "/product/provider-profiles").await;
     assert_eq!(listed.status(), StatusCode::OK);
@@ -354,10 +369,7 @@ async fn product_default_approval_is_honored_for_product_turns() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Approval policy").await;
@@ -467,10 +479,8 @@ async fn deleting_the_product_catalog_recovers_the_session_list_on_the_next_star
     config.data_root_override = Some(data.path().to_path_buf());
     config.user_state_roots = Some(UserStateRoots::from_root(data.path()));
     let product_sqlite = config.product_sqlite_path();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config.clone(),
-    ));
+    let host = ApiState::new(Workspace::detect(server.path()).unwrap(), config.clone()).unwrap();
+    let app = router(host.clone());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let session = create_product_session(&app, &workspace_id, "Recovered by ownership").await;
@@ -510,13 +520,13 @@ async fn deleting_the_product_catalog_recovers_the_session_list_on_the_next_star
     );
 
     // Lose the catalog, keep the run directories.
+    host.shutdown().await;
     drop(app);
+    drop(host);
     std::fs::remove_file(&product_sqlite).expect("the catalog must exist to be deleted");
 
-    let recovered = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config.clone(),
-    ));
+    let recovered =
+        router(ApiState::new(Workspace::detect(server.path()).unwrap(), config.clone()).unwrap());
     // Recovery runs off the boot path, so the list is polled rather than assumed
     // ready the instant the state is constructed.
     let mut sessions = serde_json::Value::Null;
@@ -589,10 +599,7 @@ async fn product_session_model_changes_apply_from_the_next_run_and_keep_snapshot
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Session model snapshots").await;
@@ -729,10 +736,7 @@ async fn product_session_usage_aggregates_report_totals_with_local_zero_cost() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Session usage rollup").await;
@@ -785,10 +789,7 @@ async fn product_workspace_files_list_and_content_reject_traversal() {
 
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
 
@@ -870,11 +871,14 @@ async fn product_workspace_files_deny_a_revoked_project_trust_root() {
     let authority = std::sync::Arc::new(ProjectTrustRepository::new(
         server.path().join("project-trust.sqlite"),
     ));
-    let app = router(ApiState::with_project_trust_repository(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-        authority.clone(),
-    ));
+    let app = router(
+        ApiState::with_project_trust_repository(
+            Workspace::detect(server.path()).unwrap(),
+            config,
+            authority.clone(),
+        )
+        .unwrap(),
+    );
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let trust_uri = format!("/product/workspaces/{workspace_id}/trust");
@@ -930,10 +934,7 @@ async fn product_session_artifacts_list_system_files_after_a_completed_run() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Artifacts session").await;
@@ -987,10 +988,7 @@ async fn product_session_evidence_export_is_complete_bounded_and_redacted_in_all
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Evidence export session").await;
@@ -1171,10 +1169,7 @@ async fn product_known_credentials_are_redacted_on_every_structured_emitting_sur
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Authority redaction").await;
@@ -1767,10 +1762,7 @@ async fn a_typed_body_rejection_never_echoes_the_value_the_caller_sent() {
     let server = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
 
     // Registered *and* unregistered spellings: the fix is that the rejection
     // text is discarded, not that the value happens to be on a redaction list.
@@ -1860,10 +1852,7 @@ async fn active_product_sessions_reject_archive_session_delete_and_workspace_del
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Active mutation guard").await;
@@ -1934,10 +1923,7 @@ async fn product_memory_routes_are_workspace_scoped_bounded_and_redacted() {
     let server = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.memory.durable_dir = "platform-memory".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, server.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let memory_dir = server.path().join("platform-memory");
@@ -2119,10 +2105,7 @@ async fn product_memory_crud_search_filters_and_cas_use_the_real_workspace() {
     let server = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.memory.durable_dir = "platform-memory".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, server.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let topic_url = format!("/product/memory/topics?workspace_id={workspace_id}");
@@ -2372,10 +2355,7 @@ async fn product_memory_delete_succeeds_for_an_unindexed_topic_file() {
     let server = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.memory.durable_dir = "platform-memory".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, server.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let memory_dir = server.path().join("platform-memory");
@@ -2425,10 +2405,7 @@ async fn product_memory_routes_fail_closed_across_product_workspaces() {
     std::fs::create_dir_all(&workspace_b_root).unwrap();
     let mut config = test_config();
     config.memory.durable_dir = "platform-memory".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace_a = create_product_workspace(&app, &workspace_a_root).await;
     let workspace_b = create_product_workspace(&app, &workspace_b_root).await;
     let workspace_a_id = workspace_a["id"].as_str().unwrap();
@@ -2553,10 +2530,7 @@ async fn product_memory_routes_reject_an_absolute_dir_outside_the_selected_works
         config.workspace_bounded_durable_memory_dir().unwrap(),
         memory_a.canonicalize().unwrap()
     );
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace_a = create_product_workspace(&app, &workspace_a_root).await;
     let workspace_b = create_product_workspace(&app, &workspace_b_root).await;
     let workspace_a_id = workspace_a["id"].as_str().unwrap();
@@ -2615,10 +2589,7 @@ async fn product_memory_routes_reject_topic_and_index_symlinks_when_supported() 
     let server = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.memory.durable_dir = "platform-memory".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, server.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let memory_dir = server.path().join("platform-memory");
@@ -2684,10 +2655,7 @@ async fn product_runtime_reports_bounded_health_without_paths_or_secrets() {
     let mut config = test_config();
     config.state.state_dir = "private-runtime-state".into();
     config.memory.durable_dir = "private-runtime-memory".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     create_product_session(&app, workspace["id"].as_str().unwrap(), "Runtime health").await;
 
@@ -2776,7 +2744,7 @@ async fn product_runtime_reports_bounded_health_without_paths_or_secrets() {
 async fn api_exposes_openapi_json_for_all_routes() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let response = app
         .oneshot(
@@ -3468,7 +3436,7 @@ async fn api_exposes_openapi_json_for_all_routes() {
 async fn openapi_snapshot_matches_the_served_document() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let response = app
         .oneshot(
@@ -3532,7 +3500,7 @@ async fn openapi_snapshot_matches_the_served_document() {
 async fn api_exposes_swagger_ui() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let response = app
         .clone()
@@ -3626,7 +3594,7 @@ async fn api_exposes_swagger_ui() {
 async fn product_migration_rejects_unknown_secret_fields_before_store_access() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let payload = serde_json::json!({
         "source": "web_m1_local_storage",
         "source_schema_version": 1,
@@ -3672,7 +3640,7 @@ async fn product_migration_accepts_a_legal_body_larger_than_axum_default() {
 
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace.clone(), test_config()));
+    let app = router(ApiState::new(workspace.clone(), test_config()).unwrap());
     let workspace_source_id = format!(
         "workspace-{}",
         "w".repeat(MAX_PRODUCT_TEXT_BYTES - "workspace-".len())
@@ -3742,7 +3710,7 @@ async fn product_migration_accepts_a_legal_body_larger_than_axum_default() {
 async fn product_migration_rejects_a_body_above_its_route_limit() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let payload = vec![b' '; MAX_M1_BROWSER_MIGRATION_BODY_BYTES + 1];
 
     let response = app
@@ -3769,7 +3737,7 @@ async fn product_migration_rejects_a_body_above_its_route_limit() {
 async fn product_migration_replays_receipt_before_runtime_artifact_inspection() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace.clone(), test_config()));
+    let app = router(ApiState::new(workspace.clone(), test_config()).unwrap());
     let create = app
         .clone()
         .oneshot(
@@ -3864,10 +3832,7 @@ async fn product_sessions_in_one_workspace_resume_their_own_exact_runs() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session_a = create_product_session(&app, workspace_id, "Session A").await;
@@ -3958,10 +3923,7 @@ async fn product_session_fork_replays_exactly_and_keeps_child_history_independen
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let parent = create_product_session(&app, &workspace_id, "Fork parent").await;
@@ -4171,10 +4133,7 @@ async fn product_session_fork_child_starts_with_a_clean_compaction_breaker() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let parent = create_product_session(&app, &workspace_id, "Fork breaker parent").await;
@@ -4287,10 +4246,7 @@ async fn product_session_fork_rejects_incomplete_and_active_sources() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let empty = create_product_session(&app, workspace_id, "No durable fork source").await;
@@ -4491,10 +4447,7 @@ async fn product_message_fork_cuts_the_child_before_the_edited_user_message() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let parent = create_product_session(&app, &workspace_id, "Edit and resend parent").await;
@@ -4714,10 +4667,7 @@ async fn product_message_fork_from_a_runs_trigger_message_keeps_no_parent_entrie
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let parent = create_product_session(&app, &workspace_id, "Whole run edit parent").await;
@@ -4849,10 +4799,7 @@ async fn product_message_fork_rejects_unusable_truncation_targets() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let parent = create_product_session(&app, &workspace_id, "Edit rejection parent").await;
@@ -5046,10 +4993,7 @@ async fn product_session_resume_fails_closed_when_exact_task_state_is_missing() 
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Missing state").await;
@@ -5105,10 +5049,8 @@ async fn product_session_resume_fails_closed_when_exact_task_state_is_missing() 
 async fn product_session_listing_pages_over_http_and_rejects_broken_page_requests() {
     let server = tempfile::TempDir::new().unwrap();
     let folder = tempfile::TempDir::new().unwrap();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        test_config(),
-    ));
+    let app =
+        router(ApiState::new(Workspace::detect(server.path()).unwrap(), test_config()).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     for index in 0..7 {
@@ -5268,10 +5210,7 @@ async fn product_message_search_finds_hits_and_rejects_every_malformed_request()
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Message search").await;
@@ -5428,10 +5367,7 @@ async fn product_message_search_answers_a_secret_shaped_multi_byte_message() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Secret-shaped search").await;
@@ -5469,10 +5405,7 @@ async fn product_message_search_pages_by_cursor_and_never_leaks_neighbouring_tex
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Message search paging").await;
@@ -5573,10 +5506,7 @@ async fn product_message_search_is_session_scoped_and_authorized_like_the_messag
     let second_folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let first_workspace = create_product_workspace(&app, first_folder.path()).await;
     let second_workspace = create_product_workspace(&app, second_folder.path()).await;
     let first =
@@ -5719,10 +5649,7 @@ async fn product_search_covers_a_whole_workspace_and_pages_without_gaps_or_repea
     let other_folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let other_workspace = create_product_workspace(&app, other_folder.path()).await;
@@ -5856,10 +5783,7 @@ async fn product_search_rejects_every_malformed_request_with_a_typed_failure() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let session_id = product_session_with_a_held_turn(&app, &workspace_id, "Malformed").await;
@@ -6072,10 +5996,7 @@ async fn product_trace_search_finds_a_run_by_something_only_the_event_trace_carr
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Trace search").await;
@@ -6232,10 +6153,7 @@ async fn product_trace_search_redacts_the_trace_line_before_excerpting_it() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
 
@@ -6322,10 +6240,7 @@ async fn product_trace_search_reports_a_cleaned_trace_instead_of_no_matches() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Cleaned trace").await;
@@ -6370,10 +6285,7 @@ async fn product_resume_reports_unavailable_when_the_catalog_profile_is_deleted(
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
     config.source_summary.user_config_path = server.path().join("user/config.toml");
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Deleted Provider resume").await;
@@ -6458,10 +6370,7 @@ async fn product_resume_rejects_same_selection_after_provider_identity_drift() {
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
     config.source_summary.user_config_path = server.path().join("user/config.toml");
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Changed Provider resume").await;
@@ -6544,10 +6453,7 @@ async fn product_session_resume_rejects_a_mismatched_runtime_run_identity() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Corrupt run identity").await;
@@ -6599,10 +6505,7 @@ async fn product_session_resume_rejects_invalid_native_tool_call_ids() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Corrupt tool history").await;
@@ -6666,10 +6569,7 @@ async fn product_preflight_failure_preserves_the_claimed_session_error_status() 
     let other = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Preserve error").await;
@@ -6713,10 +6613,7 @@ async fn product_job_state_omits_the_salvage_marker_when_no_text_was_kept() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Salvage marker").await;
@@ -6819,10 +6716,7 @@ async fn product_cancel_after_streaming_marks_job_state_and_the_transcript() {
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
     config.source_summary.user_config_path = user_config;
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Streaming stop").await;
@@ -6941,7 +6835,7 @@ async fn openapi_documents_the_abort_salvage_marker() {
     // settle.
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let response = get_response(&app, "/api/openapi.json").await;
     assert_eq!(response.status(), StatusCode::OK);
     let spec: serde_json::Value = serde_json::from_str(&raw_body(response).await).unwrap();
@@ -6988,10 +6882,7 @@ async fn product_cancel_releases_the_single_turn_claim_before_continuation() {
     let other = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Cancel flow").await;
@@ -7094,10 +6985,7 @@ async fn product_steer_route_is_idempotent_and_applies_after_an_input_safe_point
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Steer safe point").await;
@@ -7184,10 +7072,7 @@ async fn product_steer_submitted_during_generation_applies_after_the_tool_safe_p
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Generation steer").await;
@@ -7340,10 +7225,7 @@ async fn product_followup_after_final_is_server_owned_and_starts_one_successor()
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Follow-up ownership").await;
@@ -7528,10 +7410,7 @@ async fn product_queue_reorder_is_validated_atomic_and_drives_the_next_turns() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Queue reorder").await;
@@ -7799,10 +7678,7 @@ async fn product_successor_promotion_never_steers_the_live_run_and_survives_revo
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Successor promotion").await;
@@ -7947,59 +7823,64 @@ async fn product_queue_order_survives_a_reopen_and_keeps_one_claim_per_session()
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config.clone(),
-    ));
-    let workspace = create_product_workspace(&app, folder.path()).await;
+    let crashed_config = config.clone();
+    let server_root = server.path().to_path_buf();
+    let folder_root = folder.path().to_path_buf();
+    let (workspace, session, active, first, second, third) =
+        crash_api_runtime(move || async move {
+            let app = router(
+                ApiState::new(
+                    Workspace::detect(server_root.as_path()).unwrap(),
+                    crashed_config,
+                )
+                .unwrap(),
+            );
+            let workspace = create_product_workspace(&app, folder_root.as_path()).await;
+            let workspace_id = workspace["id"].as_str().unwrap();
+            let session =
+                create_product_session(&app, workspace_id, "Queue survives restart").await;
+            let session_id = session["id"].as_str().unwrap();
+            configure_product_session_model(&app, session_id, "fake-raw", 2).await;
+
+            let active = post_json(
+                &app,
+                "/jobs",
+                serde_json::json!({
+                    "message": serde_json::json!({
+                        "tool": "request_input",
+                        "args": { "prompt": "survive a reopen" }
+                    })
+                    .to_string(),
+                    "product_session_id": session_id
+                }),
+            )
+            .await;
+            assert_eq!(active.status(), StatusCode::OK);
+            let active: CreateJobResponse = decode_json(active).await;
+            let pending = wait_for_pending_input(app.clone(), active.job_id.to_string()).await;
+            assert!(
+                !pending.pending_inputs.is_empty(),
+                "the durable turn must be waiting for input before it is interrupted"
+            );
+
+            let first = queue_message(&app, session_id, "queued first", "reopen-1").await;
+            let second = queue_message(&app, session_id, "queued second", "reopen-2").await;
+            let third = queue_message(&app, session_id, "queued third", "reopen-3").await;
+            let reorder = post_json(
+                &app,
+                &format!("/product/sessions/{session_id}/messages/reorder"),
+                serde_json::json!({ "ordered_ids": [third["id"], first["id"], second["id"]] }),
+            )
+            .await;
+            assert_eq!(reorder.status(), StatusCode::OK);
+
+            (workspace, session, active, first, second, third)
+        })
+        .await;
     let workspace_id = workspace["id"].as_str().unwrap();
-    let session = create_product_session(&app, workspace_id, "Queue survives restart").await;
     let session_id = session["id"].as_str().unwrap();
-    configure_product_session_model(&app, session_id, "fake-raw", 2).await;
-
-    let active = post_json(
-        &app,
-        "/jobs",
-        serde_json::json!({
-            "message": serde_json::json!({
-                "tool": "request_input",
-                "args": { "prompt": "survive a reopen" }
-            })
-            .to_string(),
-            "product_session_id": session_id
-        }),
-    )
-    .await;
-    assert_eq!(active.status(), StatusCode::OK);
-    let active: CreateJobResponse = decode_json(active).await;
-    let pending = wait_for_pending_input(app.clone(), active.job_id.to_string()).await;
-    assert!(
-        !pending.pending_inputs.is_empty(),
-        "the durable turn must be waiting for input before it is interrupted"
-    );
-
-    let first = queue_message(&app, session_id, "queued first", "reopen-1").await;
-    let second = queue_message(&app, session_id, "queued second", "reopen-2").await;
-    let third = queue_message(&app, session_id, "queued third", "reopen-3").await;
-    let reorder = post_json(
-        &app,
-        &format!("/product/sessions/{session_id}/messages/reorder"),
-        serde_json::json!({ "ordered_ids": [third["id"], first["id"], second["id"]] }),
-    )
-    .await;
-    assert_eq!(reorder.status(), StatusCode::OK);
-
-    // A second API state over the same state directory is what the process
-    // restart gate can express in-process: it reopens the store, replays the
-    // schema migrations, and runs startup recovery, which is the code path the
-    // design asks about. The first state's supervisors stay alive in-test, so
-    // this proves durable order plus the honest interrupted-delivery recovery
-    // rather than a cold process start; the drain order after a restart is
-    // covered by the store-level recovery test.
-    let reopened = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let reopened =
+        router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let reopened_messages = list_product_messages(&reopened, session_id).await;
     // The move survives the reopen: the persisted positions still describe the
     // requested delivery order, and `seq` still describes creation order.
@@ -8123,10 +8004,7 @@ async fn product_requeued_successor_is_redriven_without_another_user_action() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Requeued successor redrive").await;
@@ -8196,10 +8074,7 @@ async fn product_successor_start_attempts_are_bounded_and_escalate_to_needs_atte
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Bounded successor redrive").await;
@@ -8282,10 +8157,7 @@ async fn product_nonfinal_followups_require_confirmation_and_pending_controls_ca
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Follow-up confirmation").await;
@@ -8453,7 +8325,7 @@ async fn api_server_stops_when_shutdown_token_is_cancelled() {
     let shutdown = CancellationToken::new();
     let server = tokio::spawn(serve_listener(
         listener,
-        router(ApiState::new(workspace, test_config())),
+        router(ApiState::new(workspace, test_config()).unwrap()),
         shutdown.clone(),
     ));
 
@@ -8472,7 +8344,7 @@ async fn api_rejects_missing_bearer_token_when_configured() {
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut config = test_config();
     config.api.token_auth = Some("secret-token".to_string());
-    let app = router(ApiState::new(workspace, config));
+    let app = router(ApiState::new(workspace, config).unwrap());
 
     let response = app
         .oneshot(
@@ -8506,10 +8378,7 @@ async fn project_trust_is_exact_root_digest_bound_and_revocable() {
     std::fs::write(target.path().join(".rove/mcp_servers.json"), "[]").unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, target.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let trust_uri = format!("/product/workspaces/{workspace_id}/trust");
@@ -8618,10 +8487,7 @@ async fn product_provider_selection_is_part_of_trust_and_non_fake_jobs_fail_clos
     )
     .unwrap();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, target.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Provider trust selector").await;
@@ -8736,11 +8602,14 @@ async fn operator_store_revocation_cancels_an_active_api_job() {
     )
     .unwrap();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::with_project_trust_repository(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-        authority,
-    ));
+    let app = router(
+        ApiState::with_project_trust_repository(
+            Workspace::detect(server.path()).unwrap(),
+            config,
+            authority,
+        )
+        .unwrap(),
+    );
     let workspace = create_product_workspace(&app, target.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "External revocation").await;
@@ -8798,11 +8667,14 @@ async fn api_and_bootstrap_share_one_canonical_project_trust_authority() {
     let user_paths = UserConfigPaths::from_root(server.path().join("user-config"));
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::with_project_trust_repository(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-        authority.clone(),
-    ));
+    let app = router(
+        ApiState::with_project_trust_repository(
+            Workspace::detect(server.path()).unwrap(),
+            config,
+            authority.clone(),
+        )
+        .unwrap(),
+    );
     let workspace = create_product_workspace(&app, target.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let trust_uri = format!("/product/workspaces/{workspace_id}/trust");
@@ -8862,10 +8734,7 @@ async fn project_trust_mutation_requires_bearer_and_allowed_origin() {
     config.state.state_dir = "api-state".into();
     config.api.token_auth = Some("trust-token".to_string());
     config.api.cors_origins = vec!["https://allowed.example".to_string()];
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let created = app
         .clone()
         .oneshot(
@@ -8949,7 +8818,7 @@ async fn api_docs_do_not_disable_bearer_token_for_business_routes() {
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut config = test_config();
     config.api.token_auth = Some("secret-token".to_string());
-    let app = router(ApiState::new(workspace, config));
+    let app = router(ApiState::new(workspace, config).unwrap());
 
     let docs = app
         .clone()
@@ -8983,7 +8852,7 @@ async fn api_accepts_matching_bearer_token() {
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut config = test_config();
     config.api.token_auth = Some("secret-token".to_string());
-    let app = router(ApiState::new(workspace, config));
+    let app = router(ApiState::new(workspace, config).unwrap());
 
     let rejected = app
         .clone()
@@ -9020,7 +8889,7 @@ async fn api_tests_openai_provider_profile_without_exposing_key() {
     let provider = start_openai_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let key_env = unique_env_key("ROVE_TEST_PROVIDER_KEY");
     unsafe {
         std::env::set_var(&key_env, "dummy-provider-token");
@@ -9091,7 +8960,7 @@ async fn api_provider_test_refuses_a_key_the_secret_registry_cannot_hold() {
     let provider = start_openai_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let key_env = unique_env_key("ROVE_TEST_PROVIDER_SHORT_KEY");
     let refused = "7bytes!";
     unsafe {
@@ -9152,7 +9021,7 @@ async fn api_lists_provider_models_without_exposing_key() {
     let provider = start_openai_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let key_env = unique_env_key("ROVE_TEST_PROVIDER_MODELS_KEY");
     unsafe {
         std::env::set_var(&key_env, "dummy-models-token");
@@ -9210,7 +9079,7 @@ async fn api_provider_inventory_reports_typed_bounded_failures_without_upstream_
     let provider = start_openai_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let key_env = unique_env_key("ROVE_TEST_PROVIDER_FAILURE_KEY");
     let secret_body = "upstream-secret-provider-token";
     unsafe {
@@ -9308,7 +9177,7 @@ async fn api_tests_openai_responses_provider_profile_without_exposing_key() {
     let provider = start_openai_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let key_env = unique_env_key("ROVE_TEST_RESPONSES_PROVIDER_KEY");
     unsafe {
         std::env::set_var(&key_env, "dummy-responses-provider-token");
@@ -9371,7 +9240,7 @@ async fn api_jobs_accept_openai_provider_profile_per_request() {
     let provider = start_openai_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let key_env = unique_env_key("ROVE_TEST_JOB_PROVIDER_KEY");
     unsafe {
         std::env::set_var(&key_env, "dummy-job-provider-token");
@@ -9439,7 +9308,7 @@ async fn api_job_agent_override_activates_a_trusted_workspace_package() {
     let config = test_config();
     assert_eq!(config.runtime.agent.selector, "builtin:legacy");
     let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
-    let app = router(ApiState::new(workspace, config));
+    let app = router(ApiState::new(workspace, config).unwrap());
 
     let response = post_json(
         &app,
@@ -9481,7 +9350,7 @@ async fn api_rejects_untrusted_or_invalid_agent_selectors_before_creating_a_run(
     let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
     let mut config = test_config();
     config.source_summary.project_activation = ProjectActivationState::Restricted;
-    let app = router(ApiState::new(workspace, config));
+    let app = router(ApiState::new(workspace, config).unwrap());
 
     let unauthorized = post_json(
         &app,
@@ -9519,7 +9388,7 @@ async fn api_jobs_accept_openai_responses_provider_profile_per_request() {
     let provider = start_openai_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let key_env = unique_env_key("ROVE_TEST_RESPONSES_PROVIDER_KEY");
     unsafe {
         std::env::set_var(&key_env, "dummy-responses-provider-token");
@@ -9585,7 +9454,7 @@ async fn api_jobs_accept_anthropic_provider_profile_per_request() {
     let provider = start_anthropic_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let key_env = unique_env_key("ROVE_TEST_ANTHROPIC_KEY");
     unsafe {
         std::env::set_var(&key_env, "dummy-anthropic-token");
@@ -9650,7 +9519,7 @@ async fn api_jobs_accept_ollama_provider_profile_without_key() {
     let provider = start_ollama_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let created = app
         .clone()
@@ -9705,7 +9574,7 @@ async fn api_rejects_disallowed_cors_origin() {
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut config = test_config();
     config.api.cors_origins = vec!["https://allowed.example".to_string()];
-    let app = router(ApiState::new(workspace, config));
+    let app = router(ApiState::new(workspace, config).unwrap());
 
     let response = app
         .oneshot(
@@ -9725,7 +9594,7 @@ async fn api_rejects_disallowed_cors_origin() {
 async fn api_rejects_browser_origin_when_cors_is_not_configured() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let response = app
         .oneshot(
@@ -9754,7 +9623,7 @@ async fn api_allows_same_origin_browser_requests_without_cors_config() {
     // request, not a cross-origin one, so the CORS allowlist must not gate it.
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let response = app
         .oneshot(
@@ -9777,7 +9646,7 @@ async fn api_allows_same_origin_browser_requests_without_cors_config() {
 async fn api_rejects_an_origin_mismatching_the_host() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let response = app
         .oneshot(
@@ -9804,7 +9673,8 @@ async fn web_console_bundle_serves_statics_health_and_api_prefix() {
 
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let app =
-        rove_api::router_with_web(ApiState::new(workspace, test_config()), &web_root).unwrap();
+        rove_api::router_with_web(ApiState::new(workspace, test_config()).unwrap(), &web_root)
+            .unwrap();
 
     for (uri, status) in [
         ("/", StatusCode::OK),
@@ -9857,7 +9727,8 @@ async fn web_console_statics_stay_public_while_the_api_keeps_auth() {
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut config = test_config();
     config.api.token_auth = Some("secret".to_string());
-    let app = rove_api::router_with_web(ApiState::new(workspace, config), &web_root).unwrap();
+    let app =
+        rove_api::router_with_web(ApiState::new(workspace, config).unwrap(), &web_root).unwrap();
 
     // The bundle is public code: statics and liveness answer without a token.
     for uri in ["/", "/health"] {
@@ -9898,7 +9769,7 @@ async fn provider_onboarding_refuses_a_non_loopback_bind() {
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut config = test_config();
     config.api.bind_addr = "0.0.0.0:8787".to_string();
-    let app = router(ApiState::new(workspace, config));
+    let app = router(ApiState::new(workspace, config).unwrap());
 
     let response = app
         .oneshot(
@@ -9934,7 +9805,7 @@ async fn provider_onboarding_refuses_a_non_loopback_bind() {
 async fn provider_onboarding_validates_bodies_without_touching_the_keyring() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let canary = "sk-canary-provider-onboarding";
 
     // Every invalid body fails before the keyring write and before any
@@ -9988,7 +9859,7 @@ async fn api_allows_configured_cors_origin_and_sets_headers() {
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut config = test_config();
     config.api.cors_origins = vec!["https://allowed.example".to_string()];
-    let app = router(ApiState::new(workspace, config));
+    let app = router(ApiState::new(workspace, config).unwrap());
 
     let response = app
         .oneshot(
@@ -10018,7 +9889,7 @@ async fn api_allows_configured_authenticated_cors_preflight() {
     let mut config = test_config();
     config.api.token_auth = Some("desktop-secret".to_string());
     config.api.cors_origins = vec!["tauri://localhost".to_string()];
-    let app = router(ApiState::new(workspace, config));
+    let app = router(ApiState::new(workspace, config).unwrap());
 
     let response = app
         .oneshot(
@@ -10059,7 +9930,7 @@ async fn api_rate_limits_requests_when_configured() {
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut config = test_config();
     config.api.rate_limit_per_minute = Some(2);
-    let app = router(ApiState::new(workspace, config));
+    let app = router(ApiState::new(workspace, config).unwrap());
 
     let request = || {
         Request::builder()
@@ -10081,7 +9952,7 @@ async fn api_rate_limits_requests_when_configured() {
 async fn api_creates_job_streams_events_and_reports_state() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
         .clone()
@@ -10132,7 +10003,7 @@ async fn api_can_create_job_in_task_workspace() {
     config.state.state_dir = "api-state".into();
     config.memory.session_dir = "api-memory/sessions".into();
     config.memory.durable_dir = "api-memory/durable".into();
-    let app = router(ApiState::new(workspace, config));
+    let app = router(ApiState::new(workspace, config).unwrap());
 
     let create = app
         .clone()
@@ -10171,7 +10042,7 @@ async fn api_can_create_job_in_explicit_folder_root() {
     config.state.state_dir = "api-state".into();
     config.memory.session_dir = "api-memory/sessions".into();
     config.memory.durable_dir = "api-memory/durable".into();
-    let app = router(ApiState::new(server_workspace, config));
+    let app = router(ApiState::new(server_workspace, config).unwrap());
 
     let marker = folder.path().join("marker.txt");
     std::fs::write(&marker, "folder-root").unwrap();
@@ -10231,7 +10102,7 @@ async fn api_can_create_job_in_explicit_repo_root() {
     let server_workspace = Workspace::detect(server.path()).unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(server_workspace, config));
+    let app = router(ApiState::new(server_workspace, config).unwrap());
 
     let create_body = serde_json::json!({
         "message": serde_json::json!({
@@ -10279,10 +10150,8 @@ async fn api_can_create_job_in_explicit_repo_root() {
 async fn api_rejects_invalid_folder_and_repo_workspace_bindings() {
     let server = tempfile::TempDir::new().unwrap();
     let folder = tempfile::TempDir::new().unwrap();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        test_config(),
-    ));
+    let app =
+        router(ApiState::new(Workspace::detect(server.path()).unwrap(), test_config()).unwrap());
 
     let missing_root = app
         .clone()
@@ -10409,10 +10278,7 @@ async fn api_hard_resumes_second_turn_in_explicit_folder_workspace() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace_binding = serde_json::json!({
         "kind": "folder",
         "root": folder.path()
@@ -10523,10 +10389,7 @@ async fn api_rejects_resume_when_workspace_root_has_no_task_state() {
     let other = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
 
     let first_body = serde_json::json!({
         "message": "seed folder turn",
@@ -10637,10 +10500,7 @@ async fn api_approves_pending_tool_under_explicit_folder_root() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let output_path = folder.path().join("approved-folder.txt");
 
     let create_body = serde_json::json!({
@@ -10710,7 +10570,7 @@ async fn api_approves_pending_tool_under_explicit_folder_root() {
 async fn api_sse_events_have_ids_and_support_after_resume() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
         .clone()
@@ -10819,7 +10679,7 @@ async fn api_sse_events_have_ids_and_support_after_resume() {
 async fn api_state_includes_input_needed_event_for_snapshot_recovery() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let message = serde_json::json!({
         "tool": "request_input",
         "args": { "prompt": "Which branch should I use?" }
@@ -10881,7 +10741,7 @@ async fn api_writes_run_artifacts_for_completed_job() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
         .clone()
@@ -11026,7 +10886,7 @@ async fn api_writes_run_artifacts_for_completed_job() {
 async fn api_lists_completed_runs_after_job_finishes() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
         .clone()
@@ -11075,7 +10935,7 @@ async fn api_lists_completed_runs_after_job_finishes() {
 async fn api_lists_step_limited_tool_runs_as_done_not_interrupted() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
         .clone()
@@ -11124,7 +10984,7 @@ async fn api_lists_step_limited_tool_runs_as_done_not_interrupted() {
 async fn api_fetches_completed_run_report() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
         .clone()
@@ -11173,7 +11033,7 @@ async fn api_fetches_completed_run_report() {
 async fn api_returns_404_for_missing_run_report() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let response = app
         .oneshot(
@@ -11193,7 +11053,8 @@ async fn api_lists_and_fetches_run_report_after_restart() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let config = test_config();
-    let app = router(ApiState::new(workspace.clone(), config.clone()));
+    let host = ApiState::new(workspace.clone(), config.clone()).unwrap();
+    let app = router(host.clone());
 
     let create = app
         .clone()
@@ -11218,7 +11079,10 @@ async fn api_lists_and_fetches_run_report_after_restart() {
     let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
     assert_eq!(state.status, RunStatus::Done);
 
-    let restarted = router(ApiState::new(workspace, config));
+    host.shutdown().await;
+    drop(app);
+    drop(host);
+    let restarted = router(ApiState::new(workspace, config).unwrap());
     let runs = restarted
         .clone()
         .oneshot(Request::builder().uri("/runs").body(Body::empty()).unwrap())
@@ -11254,7 +11118,7 @@ async fn api_can_resume_latest_task_state() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
         .clone()
@@ -11349,7 +11213,7 @@ async fn api_can_resume_latest_task_state() {
 async fn api_rejects_resume_when_job_is_still_live() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let message = serde_json::json!({
         "tool": "request_input",
         "args": { "prompt": "continue?" }
@@ -11409,7 +11273,7 @@ async fn api_rejects_resume_when_job_is_still_live() {
 async fn api_rejects_invalid_resume_value() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let body = serde_json::json!({
         "message": "continue api",
         "model": "fake",
@@ -11445,7 +11309,8 @@ async fn api_rejects_invalid_resume_value() {
 async fn api_reads_completed_job_state_and_events_after_restart() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace.clone(), test_config()));
+    let host = ApiState::new(workspace.clone(), test_config()).unwrap();
+    let app = router(host.clone());
 
     let create = app
         .clone()
@@ -11466,7 +11331,10 @@ async fn api_reads_completed_job_state_and_events_after_restart() {
     let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
     let original_state = wait_for_done(app.clone(), created.job_id.to_string()).await;
 
-    let restarted = router(ApiState::new(workspace, test_config()));
+    host.shutdown().await;
+    drop(app);
+    drop(host);
+    let restarted = router(ApiState::new(workspace, test_config()).unwrap());
     let state = restarted
         .clone()
         .oneshot(
@@ -11520,7 +11388,7 @@ async fn api_startup_marks_stale_running_jobs_interrupted() {
         .start_run(session_id, job_id, run_id)
         .expect("running job should be indexed");
 
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let state = app
         .oneshot(
             Request::builder()
@@ -11546,44 +11414,110 @@ async fn api_startup_marks_stale_running_jobs_interrupted() {
 }
 
 #[tokio::test]
-async fn api_restart_marks_pending_approval_interrupted_without_replaying_unknown_step() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let workspace = Workspace::detect(tmp.path()).unwrap();
-    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
-    let app = router(ApiState::new(workspace.clone(), test_config()));
-
-    let create = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/jobs")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"message":"{\"tool\":\"write_file\",\"args\":{\"path\":\"pending.txt\",\"content\":\"no\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(create.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
-
+async fn duplicate_api_cannot_recover_a_live_hosts_pending_approval() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = Workspace::detect(root.path()).unwrap();
+    let store = StateStore::new(&workspace.state_dir);
+    let host = ApiState::new(workspace.clone(), test_config()).unwrap();
+    let app = router(host.clone());
+    let created: CreateJobResponse = decode_json(post_json(&app, "/jobs", serde_json::json!({
+        "message": "{\"tool\":\"write_file\",\"args\":{\"path\":\"unapproved.txt\",\"content\":\"no\"}}",
+        "model":"fake-raw", "approval":"ask", "max_steps":1
+    })).await).await;
     let pending = wait_for_pending_approval(app.clone(), created.job_id.to_string()).await;
-    let approval = pending.pending_approvals.first().unwrap();
+    let call_id = pending.pending_approvals[0].call_id;
+    assert!(matches!(
+        ApiState::new(workspace.clone(), test_config()),
+        Err(rove_api::ApiOwnershipError::Busy)
+    ));
     assert_eq!(
-        state_store
+        store
             .index
-            .pending_approval_status(approval.call_id)
+            .job_record(created.job_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        "running"
+    );
+    assert_eq!(
+        store
+            .index
+            .pending_approval_status(call_id)
             .unwrap()
             .as_deref(),
         Some("pending")
     );
+    assert!(!root.path().join("unapproved.txt").exists());
+    host.shutdown().await;
+    assert!(
+        matches!(
+            ApiState::new(workspace.clone(), test_config()),
+            Err(rove_api::ApiOwnershipError::Busy)
+        ),
+        "live router clones still own the directory"
+    );
+    drop(app);
+    drop(host);
+    let restarted = ApiState::new(workspace, test_config()).unwrap();
+    assert_eq!(
+        store
+            .index
+            .job_record(created.job_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        "cancelled"
+    );
+    restarted.shutdown().await;
+    assert!(!root.path().join("unapproved.txt").exists());
+}
 
-    let restarted = router(ApiState::new(workspace, test_config()));
+#[tokio::test]
+async fn api_restart_marks_pending_approval_interrupted_without_replaying_unknown_step() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
+    let crashed_workspace = workspace.clone();
+    let (created, pending) = crash_api_runtime(move || async move {
+        let crashed_store = StateStore::new(&crashed_workspace.state_dir);
+        let app = router(ApiState::new(crashed_workspace.clone(), test_config()).unwrap());
+
+        let create = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/jobs")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"message":"{\"tool\":\"write_file\",\"args\":{\"path\":\"pending.txt\",\"content\":\"no\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+        let pending = wait_for_pending_approval(app.clone(), created.job_id.to_string()).await;
+        let approval = pending.pending_approvals.first().unwrap();
+        assert_eq!(
+            crashed_store
+                .index
+                .pending_approval_status(approval.call_id)
+                .unwrap()
+                .as_deref(),
+            Some("pending")
+        );
+
+        (created, pending)
+    }).await;
+    let approval = pending.pending_approvals.first().unwrap();
+
+    let restarted = router(ApiState::new(workspace, test_config()).unwrap());
     let state = restarted
         .clone()
         .oneshot(
@@ -11665,48 +11599,56 @@ async fn api_restart_marks_pending_input_interrupted() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
-    let app = router(ApiState::new(workspace.clone(), test_config()));
-    let message = serde_json::json!({
-        "tool": "request_input",
-        "args": { "prompt": "Which branch should I use?" }
+    let crashed_workspace = workspace.clone();
+    let (created, pending) = crash_api_runtime(move || async move {
+        let crashed_store = StateStore::new(&crashed_workspace.state_dir);
+        let app = router(ApiState::new(crashed_workspace.clone(), test_config()).unwrap());
+        let message = serde_json::json!({
+            "tool": "request_input",
+            "args": { "prompt": "Which branch should I use?" }
+        })
+        .to_string();
+        let body = serde_json::json!({
+            "message": message,
+            "model": "fake-raw",
+            "max_steps": 1
+        });
+
+        let create = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/jobs")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+        let pending = wait_for_pending_input(app.clone(), created.job_id.to_string()).await;
+        let input = pending.pending_inputs.first().unwrap();
+        assert_eq!(
+            crashed_store
+                .index
+                .pending_input_status(input.input_id)
+                .unwrap()
+                .as_deref(),
+            Some("pending")
+        );
+
+        (created, pending)
     })
-    .to_string();
-    let body = serde_json::json!({
-        "message": message,
-        "model": "fake-raw",
-        "max_steps": 1
-    });
-
-    let create = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/jobs")
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(create.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
-
-    let pending = wait_for_pending_input(app.clone(), created.job_id.to_string()).await;
+    .await;
     let input = pending.pending_inputs.first().unwrap();
-    assert_eq!(
-        state_store
-            .index
-            .pending_input_status(input.input_id)
-            .unwrap()
-            .as_deref(),
-        Some("pending")
-    );
 
-    let restarted = router(ApiState::new(workspace, test_config()));
+    let restarted = router(ApiState::new(workspace, test_config()).unwrap());
     let state = restarted
         .oneshot(
             Request::builder()
@@ -11738,80 +11680,86 @@ async fn api_restart_marks_pending_input_interrupted() {
 async fn api_replays_input_needed_event_after_restart() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
-    let app = router(ApiState::new(workspace.clone(), test_config()));
-    let message = serde_json::json!({
-        "tool": "request_input",
-        "args": { "prompt": "Which branch should I use?" }
-    })
-    .to_string();
-    let body = serde_json::json!({
-        "message": message,
-        "model": "fake-raw",
-        "max_steps": 1
-    });
-
-    let create = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/jobs")
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(create.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
-
-    let pending = wait_for_pending_input(app.clone(), created.job_id.to_string()).await;
-    assert_eq!(pending.status, RunStatus::Running);
-
-    let mut indexed_events = None;
-    for _ in 0..STATE_WAIT_ATTEMPTS {
-        let events = state_store.index.event_records(created.run_id).unwrap();
-        if events
-            .iter()
-            .any(|event| event.event_name == "input_needed")
-        {
-            indexed_events = Some(events);
-            break;
-        }
-        tokio::time::sleep(STATE_WAIT_INTERVAL).await;
-    }
-    let indexed_events = indexed_events.expect("input_needed event should be persisted");
-    assert_eq!(
-        indexed_events
-            .iter()
-            .filter(|event| event.event_name == "input_needed")
-            .count(),
-        1
-    );
-    let trace_path = state_store
-        .run_store
-        .run_dir(&created.run_id)
-        .join("trace.jsonl");
-    let trace = std::fs::read_to_string(trace_path).unwrap();
-    let outcome = rove_runtime::state::trace_reader::read_trace_content(&trace);
-    let trace_input_count = outcome
-        .entries
-        .iter()
-        .filter(|entry| {
-            matches!(
-                entry.entry,
-                rove_runtime::events::TraceEntry::Ui(StreamEvent::InputNeeded { .. })
-            )
+    let crashed_workspace = workspace.clone();
+    let created = crash_api_runtime(move || async move {
+        let crashed_store = StateStore::new(&crashed_workspace.state_dir);
+        let app = router(ApiState::new(crashed_workspace.clone(), test_config()).unwrap());
+        let message = serde_json::json!({
+            "tool": "request_input",
+            "args": { "prompt": "Which branch should I use?" }
         })
-        .count();
-    assert_eq!(trace_input_count, 1);
-    assert!(!outcome.truncated_tail);
+        .to_string();
+        let body = serde_json::json!({
+            "message": message,
+            "model": "fake-raw",
+            "max_steps": 1
+        });
 
-    let restarted = router(ApiState::new(workspace, test_config()));
+        let create = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/jobs")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+        let pending = wait_for_pending_input(app.clone(), created.job_id.to_string()).await;
+        assert_eq!(pending.status, RunStatus::Running);
+
+        let mut indexed_events = None;
+        for _ in 0..STATE_WAIT_ATTEMPTS {
+            let events = crashed_store.index.event_records(created.run_id).unwrap();
+            if events
+                .iter()
+                .any(|event| event.event_name == "input_needed")
+            {
+                indexed_events = Some(events);
+                break;
+            }
+            tokio::time::sleep(STATE_WAIT_INTERVAL).await;
+        }
+        let indexed_events = indexed_events.expect("input_needed event should be persisted");
+        assert_eq!(
+            indexed_events
+                .iter()
+                .filter(|event| event.event_name == "input_needed")
+                .count(),
+            1
+        );
+        let trace_path = crashed_store
+            .run_store
+            .run_dir(&created.run_id)
+            .join("trace.jsonl");
+        let trace = std::fs::read_to_string(trace_path).unwrap();
+        let outcome = rove_runtime::state::trace_reader::read_trace_content(&trace);
+        let trace_input_count = outcome
+            .entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.entry,
+                    rove_runtime::events::TraceEntry::Ui(StreamEvent::InputNeeded { .. })
+                )
+            })
+            .count();
+        assert_eq!(trace_input_count, 1);
+        assert!(!outcome.truncated_tail);
+
+        created
+    })
+    .await;
+
+    let restarted = router(ApiState::new(workspace, test_config()).unwrap());
     let events = restarted
         .oneshot(
             Request::builder()
@@ -11836,7 +11784,7 @@ async fn api_replays_input_needed_event_after_restart() {
 async fn api_can_cancel_job() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
         .clone()
@@ -11878,7 +11826,7 @@ async fn api_cancel_does_not_rewrite_completed_job() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let run_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir).run_store;
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
         .clone()
@@ -11931,7 +11879,7 @@ async fn api_planned_tool_step_completes_after_successful_tool_call() {
     let workspace = Workspace::detect(tmp.path()).unwrap();
     std::fs::write(workspace.root.join("note.txt"), "planned tool done").unwrap();
     let run_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir).run_store;
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
         .clone()
@@ -12029,7 +11977,7 @@ async fn api_approves_pending_destructive_tool_call() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let output_path = workspace.root.join("approved.txt");
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
         .clone()
@@ -12087,7 +12035,7 @@ async fn api_persists_approval_before_releasing_destructive_tool() {
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let output_path = workspace.root.join("approval-commit-order.txt");
     let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
         .clone()
@@ -12155,7 +12103,7 @@ async fn api_rejects_pending_destructive_tool_call() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let output_path = workspace.root.join("rejected.txt");
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
         .clone()
@@ -12223,7 +12171,7 @@ async fn api_rejects_pending_destructive_tool_call() {
 async fn api_planned_rejected_destructive_tool_does_not_replan_same_approval() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
         .clone()
@@ -12292,7 +12240,7 @@ async fn api_cancel_clears_pending_destructive_tool_approval() {
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let output_path = workspace.root.join("cancelled.txt");
     let run_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir).run_store;
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
         .clone()
@@ -12359,11 +12307,7 @@ async fn api_shutdown_token_cancels_pending_job_and_clears_approval() {
     let output_path = workspace.root.join("shutdown-cancelled.txt");
     let run_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir).run_store;
     let shutdown = CancellationToken::new();
-    let app = router(ApiState::with_shutdown(
-        workspace,
-        test_config(),
-        shutdown.clone(),
-    ));
+    let app = router(ApiState::with_shutdown(workspace, test_config(), shutdown.clone()).unwrap());
 
     let create = app
         .clone()
@@ -12420,7 +12364,7 @@ async fn api_defaults_to_ask_for_destructive_tool_calls() {
     let output_path = workspace.root.join("default-ask.txt");
     let mut config = test_config();
     config.state.sqlite_busy_timeout_ms = 0;
-    let app = router(ApiState::new(workspace, config));
+    let app = router(ApiState::new(workspace, config).unwrap());
 
     let unavailable = app
         .clone()
@@ -12477,7 +12421,7 @@ async fn api_auto_approval_runs_destructive_tool_without_pending_approval() {
     let output_path = workspace.root.join("auto.txt");
     let mut config = test_config();
     config.state.sqlite_busy_timeout_ms = 0;
-    let app = router(ApiState::new(workspace, config));
+    let app = router(ApiState::new(workspace, config).unwrap());
 
     let create = app
         .clone()
@@ -12522,7 +12466,7 @@ async fn api_registers_save_memory_tool_for_jobs() {
         .join(".rove")
         .join("memory")
         .join("MEMORY.md");
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let message = serde_json::json!({
         "tool": "save_memory",
         "args": {
@@ -12577,7 +12521,7 @@ async fn api_registers_memory_index_and_topic_read_tools_for_jobs() {
         "---\ntitle: Manual Topic\ntype: reference\ncreated_at: 2026-05-23T00:00:00Z\nupdated_at: 2026-05-23T00:00:00Z\n---\n\nManual durable fact from API.\n",
     )
     .unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let update_message = serde_json::json!({
         "tool": "reindex_memory",
@@ -12676,7 +12620,7 @@ async fn api_debug_memory_lists_topics_and_scores_recall() {
         "# rove Memory\n\n- [数据库配置](topics/db-config.md) — project project memory\n",
     )
     .unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let list = app
         .clone()
@@ -12772,7 +12716,7 @@ async fn api_registers_configured_mcp_tools_for_jobs() {
     .unwrap();
     let mut config = test_config();
     config.tool.mcp_config_path = mcp_config_path;
-    let app = router(ApiState::new(workspace, config));
+    let app = router(ApiState::new(workspace, config).unwrap());
     let message = serde_json::json!({
         "tool": "mcp__mock_server__echo_remote",
         "args": { "message": "hello api mcp" }
@@ -12857,10 +12801,7 @@ async fn product_mcp_first_write_promotes_legacy_into_marker_bound_contract_stat
     config.tool.mcp_config_path.clear();
     config.data_root_override = Some(data.path().to_path_buf());
     config.user_state_roots = Some(roots.clone());
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
 
@@ -12902,10 +12843,7 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
     let folder_b = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace_a = create_product_workspace(&app, folder_a.path()).await;
     let workspace_a_id = workspace_a["id"].as_str().unwrap();
     let workspace_b = create_product_workspace(&app, folder_b.path()).await;
@@ -13285,10 +13223,7 @@ async fn restricted_product_workspace_cannot_probe_or_activate_mcp() {
     )
     .unwrap();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
 
@@ -13339,10 +13274,8 @@ async fn restricted_product_workspace_cannot_probe_or_activate_mcp() {
 async fn product_mcp_probe_returns_typed_stdio_failures() {
     let server = tempfile::TempDir::new().unwrap();
     let folder = tempfile::TempDir::new().unwrap();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        test_config(),
-    ));
+    let app =
+        router(ApiState::new(Workspace::detect(server.path()).unwrap(), test_config()).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let mock = workspace_path_string("tests/fixtures/mcp_mock_server.py");
@@ -13515,10 +13448,8 @@ async fn product_mcp_probe_discovers_tools_over_legacy_sse() {
 
     let server = tempfile::TempDir::new().unwrap();
     let folder = tempfile::TempDir::new().unwrap();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        test_config(),
-    ));
+    let app =
+        router(ApiState::new(Workspace::detect(server.path()).unwrap(), test_config()).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let created = post_json(
@@ -13563,10 +13494,7 @@ async fn product_long_session_deep_tree_large_dir_and_large_diff_stay_bounded() 
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let session = create_product_session(&app, &workspace_id, "Load smoke").await;
@@ -13756,10 +13684,7 @@ async fn product_concurrent_multi_workspace_control_operations_stay_isolated_and
     let folder_b = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
 
     let workspace_a = create_product_workspace(&app, folder_a.path()).await;
     let workspace_a_id = workspace_a["id"].as_str().unwrap().to_string();
@@ -14086,7 +14011,7 @@ async fn api_sse_stream_dropped_mid_flight_loses_no_events_on_reconnect() {
 
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let created = post_json(
         &app,
@@ -14227,10 +14152,8 @@ async fn api_sse_stream_dropped_mid_flight_loses_no_events_on_reconnect() {
 async fn product_mcp_maps_corrupt_locked_and_unsafe_config_to_typed_conflicts() {
     let server = tempfile::TempDir::new().unwrap();
     let folder = tempfile::TempDir::new().unwrap();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        test_config(),
-    ));
+    let app =
+        router(ApiState::new(Workspace::detect(server.path()).unwrap(), test_config()).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let config_dir = folder.path().join(".rove");
@@ -14312,7 +14235,7 @@ async fn product_mcp_maps_corrupt_locked_and_unsafe_config_to_typed_conflicts() 
 async fn api_exposes_pending_request_input_tool_for_jobs() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let message = serde_json::json!({
         "tool": "request_input",
         "args": { "prompt": "Which branch should I use?" }
@@ -14370,7 +14293,7 @@ async fn api_exposes_pending_request_input_tool_for_jobs() {
 async fn api_answers_pending_request_input_tool_call() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let message = serde_json::json!({
         "tool": "request_input",
         "args": { "prompt": "Which branch should I use?" }
@@ -14471,10 +14394,7 @@ async fn product_workspace_files_are_bounded_typed_and_safely_delivered() {
 
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
 
@@ -14649,10 +14569,7 @@ async fn product_artifacts_are_hashed_session_bound_and_report_cleanup() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Artifact evidence").await;
@@ -14798,10 +14715,7 @@ async fn product_diff_returns_canonical_tool_and_git_patches() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Tool diff").await;
@@ -14911,10 +14825,7 @@ async fn product_mutation_revert_uses_exact_real_tool_bytes_and_refuses_active_t
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     for (index, content) in [
@@ -14975,10 +14886,7 @@ async fn product_mutation_revert_restores_real_overwrites_with_exact_line_ending
     run_git(folder.path(), &["init"]);
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = post_json(
         &app,
         "/product/workspaces",
@@ -15042,10 +14950,7 @@ async fn product_mutation_revert_deletes_a_created_file() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Revert create").await;
@@ -15107,10 +15012,7 @@ async fn product_mutation_revert_refuses_a_tampered_created_file() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Revert tampered").await;
@@ -15185,10 +15087,7 @@ async fn product_mutation_revert_reverse_applies_an_update_in_a_repo() {
 
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = post_json(
         &app,
         "/product/workspaces",
@@ -15330,10 +15229,7 @@ async fn product_transcript_cursor_pages_older_runs_without_gaps_or_repeats() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state-transcript-pages".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let session = create_product_session(&app, &workspace_id, "Transcript pages").await;
@@ -15482,10 +15378,7 @@ async fn product_transcript_page_query_rejects_unbounded_pages() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state-transcript-page-bounds".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let session = create_product_session(&app, &workspace_id, "Transcript page bounds").await;
@@ -15911,7 +15804,7 @@ impl ContractFixture {
         let folder = tempfile::TempDir::new().unwrap();
         let mut config = test_config();
         config.state.state_dir = "api-state".into();
-        let state = ApiState::new(Workspace::detect(server.path()).unwrap(), config);
+        let state = ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap();
         let app = router(state.clone());
         let workspace = create_product_workspace(&app, folder.path()).await;
         let workspace_id = workspace["id"].as_str().unwrap().to_string();
@@ -16651,7 +16544,7 @@ impl CompactionFixture {
         let folder = tempfile::TempDir::new().unwrap();
         let mut config = test_config();
         config.state.state_dir = "api-state".into();
-        let state = ApiState::new(Workspace::detect(server.path()).unwrap(), config);
+        let state = ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap();
         let app = router(state.clone());
         let workspace = create_product_workspace(&app, folder.path()).await;
         let workspace_id = workspace["id"].as_str().unwrap().to_string();
@@ -18741,7 +18634,7 @@ struct PreviewServer {
 
 async fn spawn_preview_server(config: AppConfig) -> PreviewServer {
     let server_dir = tempfile::TempDir::new().unwrap();
-    let state = ApiState::new(Workspace::detect(server_dir.path()).unwrap(), config);
+    let state = ApiState::new(Workspace::detect(server_dir.path()).unwrap(), config).unwrap();
     rove_api::spawn_preview_listener(&state).await;
     let preview_addr = state
         .preview_origin_addr()
@@ -19187,10 +19080,9 @@ async fn product_preview_credentials_and_origins_stay_separate() {
 async fn product_preview_reports_typed_unavailable_without_a_listener() {
     let site = preview_site();
     let server_dir = tempfile::TempDir::new().unwrap();
-    let app = router(ApiState::new(
-        Workspace::detect(server_dir.path()).unwrap(),
-        test_config(),
-    ));
+    let app = router(
+        ApiState::new(Workspace::detect(server_dir.path()).unwrap(), test_config()).unwrap(),
+    );
     let workspace = create_product_workspace(&app, site.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
 
@@ -19244,10 +19136,7 @@ async fn product_session_authorizations_project_request_and_decision_side() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Authorization history").await;
@@ -19335,10 +19224,7 @@ async fn product_session_authorizations_reject_unknown_session_and_bound_limit()
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Empty authorizations").await;
@@ -19445,10 +19331,7 @@ async fn product_events_stream_delivers_catalog_facts_and_resumes_without_gaps()
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
 
     // Subscribe with no cursor first: this is the fresh-tab case, and the stream
     // must follow from now rather than answer with a replay window.
@@ -19709,11 +19592,14 @@ async fn product_events_stream_delivers_catalog_facts_and_resumes_without_gaps()
 
     // The stream ends with the server, so an open connection cannot outlive it.
     let shutdown = CancellationToken::new();
-    let shutdown_app = router(ApiState::with_shutdown(
-        Workspace::detect(server.path()).unwrap(),
-        test_config(),
-        shutdown.clone(),
-    ));
+    let shutdown_app = router(
+        ApiState::with_shutdown(
+            Workspace::detect(server.path()).unwrap(),
+            test_config(),
+            shutdown.clone(),
+        )
+        .unwrap(),
+    );
     let response = shutdown_app
         .clone()
         .oneshot(
@@ -19752,10 +19638,7 @@ async fn product_events_stream_skips_undecodable_rows_instead_of_stalling() {
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let app = router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
 
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
@@ -19908,7 +19791,7 @@ async fn create_attachment_session(server: &Path) -> (Router, tempfile::TempDir,
     let folder = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(Workspace::detect(server).unwrap(), config));
+    let app = router(ApiState::new(Workspace::detect(server).unwrap(), config).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let session = create_product_session(&app, &workspace_id, "Attachments").await;

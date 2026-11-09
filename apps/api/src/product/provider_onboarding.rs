@@ -609,7 +609,8 @@ mod tests {
             user_paths.clone(),
         )
         .unwrap();
-        let state = ApiState::new(Workspace::open_folder(&workspace_root).unwrap(), config);
+        let state =
+            ApiState::new(Workspace::open_folder(&workspace_root).unwrap(), config).unwrap();
         let catalog = ProviderCatalogService::new(user_paths);
         let credentials = Arc::new(RecordingCredentialStore::default());
         let service =

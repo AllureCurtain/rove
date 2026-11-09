@@ -200,7 +200,8 @@ async fn compact_claimed_session(
         true,
     )
     .await?;
-    let state_store = crate::state_store_for_parts(&workspace, &config);
+    let state_store =
+        crate::state_store_for_parts(&workspace, &config, state.inner._ownership.clone());
     // The state is loaded exactly the way a turn loads it. `project_product_follow_up_state`
     // is deliberately not applied: that projection resets the step, plan, and
     // ledger the *next* turn owns, and compaction must not decide those.

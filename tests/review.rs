@@ -169,7 +169,8 @@ async fn product_review_is_hard_read_only_idempotent_and_stale_aware() {
     let workspace = Workspace::detect(server.path()).unwrap();
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
-    let app = router(ApiState::new(workspace, config.clone()));
+    let host = ApiState::new(workspace, config.clone()).unwrap();
+    let app = router(host.clone());
     let product_workspace = create_workspace(&app, repo.path(), "repo").await;
     let session = create_session(&app, product_workspace["id"].as_str().unwrap()).await;
     let session_id = session["id"].as_str().unwrap();
@@ -283,12 +284,12 @@ async fn product_review_is_hard_read_only_idempotent_and_stale_aware() {
         assert_eq!(cancelled["status"], "pass");
     }
 
+    host.shutdown().await;
     drop(app);
+    drop(host);
     std::fs::write(repo.path().join("tracked.txt"), "changed again\n").unwrap();
-    let restarted_app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        config,
-    ));
+    let restarted_app =
+        router(ApiState::new(Workspace::detect(server.path()).unwrap(), config).unwrap());
     let stale = get(&restarted_app, &format!("/product/reviews/{review_id}")).await;
     assert_eq!(stale.status(), StatusCode::OK);
     assert_eq!(json(stale).await["status"], "needs_attention");
@@ -299,7 +300,7 @@ async fn product_review_rejects_non_repo_workspace_with_typed_error() {
     let server = tempfile::TempDir::new().unwrap();
     let folder = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(server.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
+    let app = router(ApiState::new(workspace, test_config()).unwrap());
     let product_workspace = create_workspace(&app, folder.path(), "folder").await;
     let session = create_session(&app, product_workspace["id"].as_str().unwrap()).await;
 
@@ -320,10 +321,8 @@ async fn product_review_rejects_non_repo_workspace_with_typed_error() {
 #[tokio::test]
 async fn review_routes_are_published_in_openapi() {
     let server = tempfile::TempDir::new().unwrap();
-    let app = router(ApiState::new(
-        Workspace::detect(server.path()).unwrap(),
-        test_config(),
-    ));
+    let app =
+        router(ApiState::new(Workspace::detect(server.path()).unwrap(), test_config()).unwrap());
     let response = get(&app, "/api/openapi.json").await;
     assert_eq!(response.status(), StatusCode::OK);
     let spec = json(response).await;

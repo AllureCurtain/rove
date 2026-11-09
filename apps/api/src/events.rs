@@ -17,6 +17,7 @@ pub(crate) async fn wait_for_job_completion(record: &JobRecord) {
 }
 
 pub(crate) async fn drain_job_supervisors(state: &ApiState) {
+    state.inner.shutdown_token.cancel();
     state.inner.job_starts.close();
     state.inner.job_starts.wait().await;
     state.inner.supervisors.close();

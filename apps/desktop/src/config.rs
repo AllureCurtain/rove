@@ -148,40 +148,32 @@ pub fn get_logs_dir() -> Result<PathBuf> {
 
 /// Load or create desktop configuration
 pub fn load_or_create_config() -> Result<DesktopConfig> {
-    let config_path = get_config_path()?;
+    load_or_create_config_at(&get_config_path()?)
+}
 
-    if config_path.exists() {
-        // Load existing config
-        let content =
-            std::fs::read_to_string(&config_path).context("Failed to read config file")?;
-        let config: DesktopConfig =
-            serde_json::from_str(&content).context("Failed to parse config file")?;
-        Ok(config)
-    } else {
-        // Create new config
-        let config = DesktopConfig::default();
-
-        // Ensure parent directory exists
-        if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent).context("Failed to create config directory")?;
-        }
-
-        // Write config to disk
-        let content =
-            serde_json::to_string_pretty(&config).context("Failed to serialize config")?;
-        std::fs::write(&config_path, content).context("Failed to write config file")?;
-
-        // Set file permissions to 0600 on Unix
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&config_path)?.permissions();
-            perms.set_mode(0o600);
-            std::fs::set_permissions(&config_path, perms)?;
-        }
-
-        tracing::info!("Created new config at {:?}", config_path);
-        Ok(config)
+fn load_or_create_config_at(config_path: &std::path::Path) -> Result<DesktopConfig> {
+    use std::io::Write;
+    let read = || -> Result<DesktopConfig> {
+        let content = std::fs::read_to_string(config_path).context("Failed to read config file")?;
+        serde_json::from_str(&content).context("Failed to parse config file")
+    };
+    match std::fs::symlink_metadata(config_path) {
+        Ok(_) => return read(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("Failed to inspect config file"),
+    }
+    let parent = config_path
+        .parent()
+        .context("Config directory is missing")?;
+    std::fs::create_dir_all(parent).context("Failed to create config directory")?;
+    let config = DesktopConfig::default();
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(&serde_json::to_vec_pretty(&config)?)?;
+    temporary.as_file().sync_all()?;
+    match temporary.persist_noclobber(config_path) {
+        Ok(_) => Ok(config),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => read(),
+        Err(error) => Err(error.error).context("Failed to publish desktop config"),
     }
 }
 
@@ -232,6 +224,37 @@ pub fn record_startup_failure() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_first_launch_publishes_one_complete_token() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config/desktop.json");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    load_or_create_config_at(&path).unwrap().bearer_token
+                })
+            })
+            .collect();
+        let tokens: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert!(tokens.iter().all(|token| token == &tokens[0]));
+        assert_eq!(
+            load_or_create_config_at(&path).unwrap().bearer_token,
+            tokens[0]
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
 
     #[test]
     fn test_generate_bearer_token() {

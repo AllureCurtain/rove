@@ -48,6 +48,7 @@ use schema::ProductDatabase;
 #[derive(Debug, Clone)]
 struct SqliteProductStore {
     repository: ProductRepository,
+    lifetime_guard: Option<Arc<dyn std::fmt::Debug + Send + Sync>>,
 }
 
 impl SqliteProductStore {
@@ -59,7 +60,10 @@ impl SqliteProductStore {
         let repository =
             ProductRepository::new(ProductDatabase::new(path.into(), busy_timeout_ms)?);
         repository.initialize_and_recover()?;
-        Ok(Self { repository })
+        Ok(Self {
+            repository,
+            lifetime_guard: None,
+        })
     }
 
     async fn blocking<T, F>(&self, operation: F) -> Result<T, ProductStoreError>
@@ -68,14 +72,18 @@ impl SqliteProductStore {
         F: FnOnce(ProductRepository) -> Result<T, ProductStoreError> + Send + 'static,
     {
         let repository = self.repository.clone();
-        tokio::task::spawn_blocking(move || operation(repository))
-            .await
-            .map_err(|_| {
-                ProductStoreError::new(
-                    ProductErrorCode::ProductStorageFailure,
-                    "product store blocking operation did not complete",
-                )
-            })?
+        let guard = self.lifetime_guard.clone();
+        tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            operation(repository)
+        })
+        .await
+        .map_err(|_| {
+            ProductStoreError::new(
+                ProductErrorCode::ProductStorageFailure,
+                "product store blocking operation did not complete",
+            )
+        })?
     }
 }
 
@@ -85,6 +93,18 @@ pub fn open_product_store(
     busy_timeout_ms: u64,
 ) -> Result<Arc<dyn ProductStore>, ProductStoreError> {
     Ok(Arc::new(SqliteProductStore::open(path, busy_timeout_ms)?))
+}
+
+/// Keep a host resource alive through database workers even when their async
+/// callers time out or are cancelled.
+pub fn open_product_store_with_guard(
+    path: PathBuf,
+    busy_timeout_ms: u64,
+    guard: Arc<dyn std::fmt::Debug + Send + Sync>,
+) -> Result<Arc<dyn ProductStore>, ProductStoreError> {
+    let mut store = SqliteProductStore::open(path, busy_timeout_ms)?;
+    store.lifetime_guard = Some(guard);
+    Ok(Arc::new(store))
 }
 
 #[async_trait]

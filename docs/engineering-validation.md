@@ -21,6 +21,7 @@ Use the same commit and record the OS, Rust/Node/pnpm versions, browser build, p
 | Continue | Send a second related task, queue another during a run | Correct session and repository; accepted message executed once; independent verification of result |
 | Cancel | Stop during a model/tool wait, then continue | Terminal state stays stopped; partial output identified; no repeated completed write |
 | Refresh/restart | Refresh while waiting for approval; restart a supported host | Same pending action or explicit safe recovery; no silent resend or duplicate change |
+| Duplicate launch | Open a second host on the same data root during a pending approval | Second host refused before recovery; original task and approval unchanged; crash release permits explicit recovery |
 | Inspect/revert | Open changed file and diff; revert one unchanged recorded mutation | Exact original bytes restored; conflicting later edits refused |
 | Isolate | Switch between two repositories and fork a completed conversation | Correct model, trust prompt and transcript per session; child continuation independent |
 | Long history | Read earlier turns, load additional pages, return to latest | Stable reading position, bounded rendered window, user scrolling takes precedence |
