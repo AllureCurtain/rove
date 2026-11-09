@@ -32,7 +32,7 @@ Every product surface is a shell: it resolves the workspace, loads the config sn
 | rove-product-store | `apps/product-store/` | Product control-plane contract types (`/product/*` request/response, `ProductStore` trait, error codes) and the SQLite implementation (`product.sqlite` schema migrations and repositories), attachment path rules, pricing tables. No HTTP dependency |
 | rove-api | `apps/api/` | Axum routes, job lifecycle and SSE, OpenAPI, auth/CORS/rate limiting, product routes and transcript projection, benchmark routes. With `--web-dist`/`ROVE_WEB_DIST` it also serves the built Web bundle on the same origin (API additionally mounted under `/api`, SPA fallback for browser navigation, `/health` for liveness). Re-exports rove-product-store via `rove_api::product` |
 | rove-bench | `apps/bench/` | Runs deterministic, network-free benchmarks from JSON definitions |
-| rove-desktop | `apps/desktop/` | Tauri 2 host: starts an embedded API on a random loopback port, injects the bearer token before page scripts run, loads the same Web static build, native folder picker, credentials written to the Windows Credential Manager |
+| rove-desktop | `apps/desktop/` | Tauri 2 host: starts an embedded API on a random loopback port, injects the bearer token before page scripts run, loads the same Web static build, native folder picker, Windows native credential entry; macOS/Linux reuse the shared loopback form; credentials stored through the shared OS keyring service |
 | Web | `apps/web/` | Next.js product UI: workspace → session → chat, Inspector, Settings; the server-side `/api/*` proxy injects `ROVE_API_TOKEN` upstream |
 
 ## Frontend/backend boundary

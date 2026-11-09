@@ -100,6 +100,11 @@ pub fn run() -> Result<()> {
 fn desktop_init_script(bearer_token: &str, api_url: &str) -> Result<String> {
     let token = serde_json::to_string(bearer_token)?;
     let api_url = serde_json::to_string(api_url)?;
+    let credential_entry = if cfg!(target_os = "windows") {
+        "native"
+    } else {
+        "loopback"
+    };
     let allow_dev_origin = if cfg!(debug_assertions) {
         "window.location.origin === 'http://localhost:3000'"
     } else {
@@ -113,6 +118,7 @@ fn desktop_init_script(bearer_token: &str, api_url: &str) -> Result<String> {
   if (!appOrigin && !({allow_dev_origin})) return;
   Object.defineProperty(window, '__ROVE_TOKEN__', {{ value: {token}, writable: false, configurable: false }});
   Object.defineProperty(window, '__ROVE_API_URL__', {{ value: {api_url}, writable: false, configurable: false }});
+  Object.defineProperty(window, '__ROVE_CREDENTIAL_ENTRY__', {{ value: '{credential_entry}', writable: false, configurable: false }});
 }})();"#
     ))
 }
@@ -188,6 +194,12 @@ mod tests {
         assert!(script.contains("value: \"token-value\""));
         assert!(script.contains("value: \"http://127.0.0.1:49152\""));
         assert!(script.contains("writable: false"));
+        let entry = if cfg!(target_os = "windows") {
+            "native"
+        } else {
+            "loopback"
+        };
+        assert!(script.contains(&format!("value: '{entry}'")));
     }
 
     #[test]

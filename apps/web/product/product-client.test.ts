@@ -1909,8 +1909,9 @@ describe("attachment transport", () => {
     ]);
   });
 
-  it("onboards a provider credential through the loopback endpoint", async () => {
-    const calls: Array<{ url: string; method: string; body?: string }> = [];
+  it.each([false, true])("onboards through the existing endpoint (desktop=%s)", async (desktop) => {
+    if (desktop) vi.stubGlobal("window", { __ROVE_API_URL__: "http://127.0.0.1:49152", __ROVE_TOKEN__: "fixture-token" });
+    const calls: Array<{ url: string; method: string; body?: string; authorization: string | null }> = [];
     const receipt = {
       profile_id: providerProfile.id,
       label: "Gateway",
@@ -1931,6 +1932,7 @@ describe("attachment transport", () => {
       async (input: RequestInfo | URL, init?: RequestInit) => {
         calls.push({
           url: String(input),
+          authorization: new Headers(init?.headers).get("authorization"),
           method: init?.method ?? "GET",
           body: typeof init?.body === "string" ? init.body : undefined,
         });
@@ -1948,7 +1950,8 @@ describe("attachment transport", () => {
       credential: "sk-test-only",
     });
 
-    expect(calls[0]?.url).toBe("/api/product/provider-onboarding");
+    expect(calls[0]?.url).toBe(`${desktop ? "http://127.0.0.1:49152" : "/api"}/product/provider-onboarding`);
+    expect(calls[0]?.authorization).toBe(desktop ? "Bearer fixture-token" : null);
     expect(calls[0]?.method).toBe("POST");
     expect(JSON.parse(calls[0]?.body ?? "")).toEqual({
       label: "Gateway",

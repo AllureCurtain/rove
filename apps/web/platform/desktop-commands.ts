@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import type { ProviderType } from "../lib/rove-types";
-import { desktopTransport } from "./desktop-transport";
+import { desktopCredentialEntry, desktopTransport } from "./desktop-transport";
 
 type DesktopInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type DesktopRemoteProviderType = Extract<
@@ -240,7 +240,7 @@ export async function revealDesktopPath(
 }
 
 export function desktopProviderCredentialPromptAvailable(): boolean {
-  return desktopTransport() !== null;
+  return desktopCredentialEntry() === "native";
 }
 
 export async function promptDesktopProviderCredential(

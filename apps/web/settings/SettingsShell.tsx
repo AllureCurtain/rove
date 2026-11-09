@@ -18,6 +18,7 @@ import {
   useDesktopProvider,
   type DesktopProviderProbe,
 } from "../platform/desktop-commands";
+import { providerCredentialEntryAvailable } from "../platform/desktop-transport";
 import { createProductApiClient } from "../product/product-client";
 import type { ProductApprovalPreference } from "../product/product-api-types";
 import {
@@ -572,19 +573,6 @@ export function selectedProfileIsRemote(
   return selected !== undefined && selected.providerType !== "fake";
 }
 
-function isLoopbackBrowserOrigin(): boolean {
-  if (typeof window === "undefined") {
-    return false;
-  }
-  const host = window.location.hostname;
-  return (
-    host === "localhost" ||
-    host === "127.0.0.1" ||
-    host === "::1" ||
-    host === "[::1]"
-  );
-}
-
 function BrowserProvidersSettings({
   profiles,
   selection,
@@ -622,14 +610,14 @@ function BrowserProvidersSettings({
   // never enters React state, props, or the render tree.
   const apiKeyInputRef = useRef<HTMLInputElement>(null);
   // Hydration-safe: the server render and first client render both assume the
-  // field is unavailable; mount reveals whether the page is served loopback.
-  const [loopbackOrigin, setLoopbackOrigin] = useState(false);
+  // field is unavailable; mount checks the origin or injected host capability.
+  const [credentialEntry, setCredentialEntry] = useState(false);
   const profileDeleteBusy = deletingProfileId !== null;
   const formBusy = saveBusy || testBusy || modelsBusy || profileDeleteBusy;
   const editingProfile = profiles.find((profile) => profile.id === editingProfileId);
   const usesStoredCredential = editingProfile?.credentialSource?.source === "keyring"
     || editingProfile?.credentialSource?.source === "file";
-  const credentialCapable = loopbackOrigin && providerRequiresKey(providerType);
+  const credentialCapable = credentialEntry && providerRequiresKey(providerType);
   // The provider test's inline result lives here, so this panel is what decides
   // whether the result still has somewhere to appear.
   const mountedRef = useRef(true);
@@ -640,7 +628,7 @@ function BrowserProvidersSettings({
   }, []);
 
   useEffect(() => {
-    setLoopbackOrigin(isLoopbackBrowserOrigin());
+    setCredentialEntry(providerCredentialEntryAvailable());
   }, []);
 
   const activeProfile = useMemo(
@@ -779,6 +767,8 @@ function BrowserProvidersSettings({
     setStatus(null);
     // Read the secret once, then clear the field regardless of outcome.
     const credential = apiKeyInputRef.current?.value.trim() ?? "";
+    if (apiKeyInputRef.current) apiKeyInputRef.current.value = "";
+    setHasDraftKey(false);
     try {
       if (credential) {
         const editing = editingProfileId

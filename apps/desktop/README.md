@@ -40,11 +40,17 @@ Security-hardened commands exposed to the WebView:
 
 - `workspace_select()`: Native folder picker dialog, wired into both shared-Web
   workspace forms through `@tauri-apps/api`
-- `provider_credential_prompt()`: Opens the Windows credential UI, writes the
+- `provider_credential_prompt()` (Windows): Opens the Windows credential UI, writes the
   API key directly to the OS keyring, and returns only a bounded receipt
 - `get_app_paths()`: Returns config/state/logs directory paths
 - `open_external(url)`: Opens URLs in default browser (http/https only)
 - `show_in_folder(path)`: Shows file in native file manager (with path validation)
+
+On macOS/Linux, the shared provider form sends its password input through the
+existing authenticated loopback onboarding endpoint. The host advertises this
+capability before page scripts run. The field is cleared immediately on submit;
+keys never enter React state, local storage or responses. The same onboarding
+service owns provider verification, keyring storage and failed-write compensation.
 
 ### 4. WebView Integration (`src/lib.rs`)
 
@@ -139,8 +145,9 @@ pnpm dlx @tauri-apps/cli@2 build --target aarch64-apple-darwin
 A local Apple Silicon debug and release `.app` has been checked with native folder selection,
 offline task completion, normal close, restart and continued conversation. Clean
 machine installation, release signing/notarization and credentialed tasks are
-still unverified. Native credential entry currently supports Windows only; on
-macOS use an existing provider profile configured through the CLI.
+still unverified. Windows uses its native credential window; macOS/Linux use **Verify and save**
+in the shared provider form. An OS keyring service must be available (on Linux
+this usually requires a logged-in desktop session).
 
 Code signing and notarization remain manual. Configure the Apple signing
 credentials for distribution; a local debug bundle does not establish release readiness.
