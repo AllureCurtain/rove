@@ -98,82 +98,9 @@ impl ProcedureMode {
     }
 }
 
-/// How risky following the procedure is.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, utoipa::ToSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum RiskLevel {
-    Low,
-    Medium,
-    High,
-}
-
-impl RiskLevel {
-    pub fn code(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "low" => Some(Self::Low),
-            "medium" => Some(Self::Medium),
-            "high" => Some(Self::High),
-            _ => None,
-        }
-    }
-}
-
-/// Declared side effects.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, utoipa::ToSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum SideEffect {
-    ReadOnly,
-    WritesWorkspace,
-    WritesExternalState,
-    DeletesData,
-    RestartsService,
-    SendsNotification,
-}
-
-impl SideEffect {
-    pub fn code(self) -> &'static str {
-        match self {
-            Self::ReadOnly => "read_only",
-            Self::WritesWorkspace => "writes_workspace",
-            Self::WritesExternalState => "writes_external_state",
-            Self::DeletesData => "deletes_data",
-            Self::RestartsService => "restarts_service",
-            Self::SendsNotification => "sends_notification",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "read_only" => Some(Self::ReadOnly),
-            "writes_workspace" => Some(Self::WritesWorkspace),
-            "writes_external_state" => Some(Self::WritesExternalState),
-            "deletes_data" => Some(Self::DeletesData),
-            "restarts_service" => Some(Self::RestartsService),
-            "sends_notification" => Some(Self::SendsNotification),
-            _ => None,
-        }
-    }
-
-    /// Whether this effect is observable outside the current workspace.
-    pub fn is_destructive(self) -> bool {
-        matches!(
-            self,
-            Self::DeletesData | Self::RestartsService | Self::WritesExternalState
-        )
-    }
-}
+/// How risky following the procedure is, and the declared side effects.
+/// The records live in `rove-foundation`; this keeps the original paths.
+pub use rove_foundation::agents_leaves::{RiskLevel, SideEffect};
 
 /// The typed metadata block of a procedure document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

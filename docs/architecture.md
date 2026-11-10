@@ -12,6 +12,8 @@ rove-bench ───────────────────────
                                            ▼
                 rove-runtime         Engine, planning, state, tools/MCP, memory, context
                                            ▼
+                rove-foundation      serialized identity/lifecycle data, workspace boundary types
+                                           ▼
                 rove-core            Agent kernel, Tool contract and registry
                                            ▼
                 rove-models          model protocols, provider adapters, routing, Fake model
@@ -28,7 +30,8 @@ TUI saved history reads bounded canonical event snapshots from StateIndex and re
 | rove-models | `models/` | Normalized `Message`/`ModelToolSchema`/`Usage`/`ModelError`, `ModelClient`/`ModelEvent`, per-provider protocols, routing, health, Fake model. No local dependencies |
 | rove-core | `core/` | Runtime-agnostic multi-turn agent kernel: in-memory `Agent`, `AgentEvent`, action parsing, `Tool`/`ToolRegistry`/`ToolDescriptor`, cancel and steer control, the `tool_result.rs` tool-result envelope |
 | rove-protocol | `protocol/` | Lowest-level shared types, re-exported by upper layers |
-| rove-runtime | `runtime/` | IDs and `RunRequest`/`TaskState`, workspace and path boundaries, `StreamEvent`, state storage (trace/task/report files + SQLite index, repair, cleanup, recovery), context and compaction, memory, built-in tools, MCP proxy, `Executor` and hooks, planning and StepRunner, `Engine`, AgentDefinition and `AGENTS.md` instruction discovery, read-only Review, unified conversation message domain |
+| rove-foundation | `crates/foundation/` | Serialized identity/lifecycle data extracted from runtime: `RuntimeIdentity`/`RunModelSnapshot`, `StreamEvent`, `Session`, `types` (IDs, plans, providers), `secrets`, `capability`, workspace `boundary`/`root`, `prompt_metadata`, `hashing`, agent leaf identities (`AgentProfileIdentity`/`AgentDiagnostic`/`AgentSelector`/`ProcedureReference`/`RiskLevel`/`SideEffect`/`ProcedureTrust`), MCP snapshot records, environment records, planning/execution lifecycle records, registered user-input plumbing. Depends only on rove-core/models/protocol; no behaviour. `TaskState`/`PromptCheckpoint`/`RunRequest` stay in runtime (they embed `AgentRuntimeProfile`) |
+| rove-runtime | `runtime/` | `RunRequest`/`TaskState`/`PromptCheckpoint` snapshots, state storage (trace/task/report files + SQLite index, repair, cleanup, recovery), context and compaction, memory, built-in tools, MCP proxy, `Executor` and hooks, planning and StepRunner, `Engine`, AgentDefinition and `AGENTS.md` instruction discovery, read-only Review, unified conversation message domain. Re-exports rove-foundation at the historic `foundation`/`types`/`events`/`session`/`runtime_identity`/`secrets`/`capability`/`workspace`/`execution`/`prompt_metadata` paths so downstream needs no import rewrite |
 | rove-app-bootstrap | `apps/bootstrap/` | `AppConfig` layered loading, user provider catalog `~/.rove/config.toml`, Project Trust store, user state directory and legacy `.rove/` migration, provider factories, product tool registry, Engine assembly |
 | rove-cli | `apps/cli/` | The `rove` binary: full-screen TUI by default, plus `repl`, `exec`, `review`, `sessions`, `state`, `trust`, `provider` subcommands |
 | rove-product-store | `apps/product-store/` | Product control-plane contract types (`/product/*` request/response, `ProductStore` trait, error codes) and the SQLite implementation (`product.sqlite` schema migrations and repositories), attachment path rules, pricing tables. No HTTP dependency |

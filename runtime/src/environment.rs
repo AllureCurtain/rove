@@ -18,7 +18,7 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use crate::boundary::{resolve_workspace_read_path, resolve_workspace_write_path};
-use crate::workspace::{Workspace, WorkspaceKind};
+use crate::workspace::Workspace;
 
 const MAX_IN_MEMORY_FILES: usize = 4_096;
 const MAX_FILE_MUTATION_CAPTURE_BYTES: u64 = 16 * 1024 * 1024;
@@ -34,28 +34,10 @@ const TRAVERSAL_SCAN_MULTIPLIER: usize = 8;
 const STDIO_PROCESS_REAP_TIMEOUT: Duration = Duration::from_secs(5);
 const STDIO_PROCESS_REAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-pub struct ExecutionEnvironmentIdentity {
-    pub adapter: String,
-    pub workspace_kind: WorkspaceKind,
-    /// A stable redacted identity. The canonical local path is never persisted
-    /// in this structure or in resume diagnostics.
-    pub workspace_digest: String,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
-#[serde(default)]
-pub struct ExecutionCapabilities {
-    pub filesystem_read: bool,
-    pub filesystem_write: bool,
-    pub process_run: bool,
-    pub process_stdio: bool,
-    pub observations: bool,
-    pub process_background: bool,
-    pub process_pty: bool,
-    pub workspace_checkpoints: bool,
-    pub artifact_projection: bool,
-}
+/// The serialized environment identity/capability records live in
+/// `rove-foundation`; this keeps the original `rove_runtime::environment::*`
+/// paths.
+pub use rove_foundation::environment_types::{ExecutionCapabilities, ExecutionEnvironmentIdentity};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EnvironmentError {

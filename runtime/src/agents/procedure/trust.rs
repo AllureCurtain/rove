@@ -8,68 +8,9 @@
 
 use serde::{Deserialize, Serialize};
 
-/// How much authority a procedure source carries.
-///
-/// Ordered most to least trusted, so `Ord` can be used for policy comparisons.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Serialize,
-    Deserialize,
-    utoipa::ToSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum ProcedureTrust {
-    /// Shipped inside the runtime or a builtin Agent package.
-    BuiltinTrusted,
-    /// Tracked in the workspace under a configured procedure root.
-    WorkspaceTrusted,
-    /// Installed by an explicit operator action outside the workspace.
-    UserInstalled,
-    /// Everything else: uploaded, downloaded, model-authored, or retrieved.
-    /// Never selectable as a procedure (design §25.5 case 8).
-    ExternalUntrusted,
-}
-
-impl ProcedureTrust {
-    pub fn code(self) -> &'static str {
-        match self {
-            Self::BuiltinTrusted => "builtin_trusted",
-            Self::WorkspaceTrusted => "workspace_trusted",
-            Self::UserInstalled => "user_installed",
-            Self::ExternalUntrusted => "external_untrusted",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "builtin_trusted" => Some(Self::BuiltinTrusted),
-            "workspace_trusted" => Some(Self::WorkspaceTrusted),
-            "user_installed" => Some(Self::UserInstalled),
-            "external_untrusted" => Some(Self::ExternalUntrusted),
-            _ => None,
-        }
-    }
-
-    /// Whether a procedure at this trust level may ever be *selected*.
-    ///
-    /// External content can still be read by an explicit workspace tool — it
-    /// simply never acquires instruction authority by being retrieved.
-    pub fn is_selectable(self) -> bool {
-        !matches!(self, Self::ExternalUntrusted)
-    }
-
-    /// Trust levels permitted by default when a package does not narrow them.
-    pub fn default_allowed() -> [Self; 2] {
-        [Self::BuiltinTrusted, Self::WorkspaceTrusted]
-    }
-}
+/// How much authority a procedure source carries. The record lives in
+/// `rove-foundation`; this keeps the original path.
+pub use rove_foundation::agents_leaves::ProcedureTrust;
 
 /// Where a procedure document was found. Trust is a function of this alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

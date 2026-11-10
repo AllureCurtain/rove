@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use crate::environment::{ExecutionCapabilities, ExecutionEnvironmentIdentity};
+use crate::environment_types::{ExecutionCapabilities, ExecutionEnvironmentIdentity};
 use crate::execution::ExecutionPolicy;
 use crate::prompt_metadata::{stable_hash, tool_signature};
+use crate::root::{Workspace, WorkspaceKind};
 use crate::types::ApprovalPolicy;
-use crate::workspace::{Workspace, WorkspaceKind};
 use rove_core::ToolDescriptor;
 
 /// Secret-free provider/model fact pinned for one run.
@@ -54,11 +54,11 @@ pub struct RuntimeIdentity {
     pub execution_capabilities: Option<ExecutionCapabilities>,
     /// Content-free identity of the immutable Agent snapshot used by the run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<crate::agents::AgentProfileIdentity>,
+    pub agent: Option<crate::agents_leaves::AgentProfileIdentity>,
     /// Secret-free MCP identities and catalog/health snapshots pinned by the
     /// run. Empty in artifacts written before rich MCP refresh support.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mcp_servers: Vec<crate::tools::mcp_proxy::McpServerRuntimeSnapshot>,
+    pub mcp_servers: Vec<crate::mcp_types::McpServerRuntimeSnapshot>,
 }
 
 impl RuntimeIdentity {
@@ -107,7 +107,7 @@ pub struct RuntimeIdentityInput<'a> {
     pub capability_snapshot_id: Option<&'a str>,
     pub execution_environment: Option<&'a ExecutionEnvironmentIdentity>,
     pub execution_capabilities: Option<&'a ExecutionCapabilities>,
-    pub agent: Option<&'a crate::agents::AgentProfileIdentity>,
+    pub agent: Option<&'a crate::agents_leaves::AgentProfileIdentity>,
 }
 
 pub fn workspace_fingerprint(workspace: &Workspace) -> String {
@@ -244,8 +244,8 @@ pub fn evaluate_runtime_identity(
 }
 
 fn mcp_resume_identity_matches(
-    saved: &[crate::tools::mcp_proxy::McpServerRuntimeSnapshot],
-    current: &[crate::tools::mcp_proxy::McpServerRuntimeSnapshot],
+    saved: &[crate::mcp_types::McpServerRuntimeSnapshot],
+    current: &[crate::mcp_types::McpServerRuntimeSnapshot],
 ) -> bool {
     saved.len() == current.len()
         && saved.iter().zip(current).all(|(saved, current)| {
@@ -265,8 +265,8 @@ fn mcp_resume_identity_matches(
 mod tests {
     use crate::execution::ExecutionPolicy;
     use crate::prompt_metadata::tool_signature;
+    use crate::root::{Workspace, WorkspaceKind};
     use crate::types::ApprovalPolicy;
-    use crate::workspace::{Workspace, WorkspaceKind};
     use rove_core::ToolDescriptor;
 
     use super::{
@@ -468,12 +468,12 @@ mod tests {
             execution_policy: ExecutionPolicy::from_max_steps_and_plan_flag(4, true),
             tools: &[],
             capability_snapshot_id: Some("sha256:current-capabilities"),
-            execution_environment: Some(&crate::environment::ExecutionEnvironmentIdentity {
+            execution_environment: Some(&crate::environment_types::ExecutionEnvironmentIdentity {
                 adapter: "local".to_string(),
                 workspace_kind: workspace.kind.clone(),
                 workspace_digest: workspace_fingerprint(&workspace),
             }),
-            execution_capabilities: Some(&crate::environment::ExecutionCapabilities {
+            execution_capabilities: Some(&crate::environment_types::ExecutionCapabilities {
                 filesystem_read: true,
                 filesystem_write: true,
                 process_run: true,
@@ -621,21 +621,21 @@ mod tests {
 
     fn mcp_snapshot(
         catalog_hash: &str,
-        status: crate::tools::mcp_proxy::McpServerHealthStatus,
+        status: crate::mcp_types::McpServerHealthStatus,
         refreshed_at: &str,
-    ) -> crate::tools::mcp_proxy::McpServerRuntimeSnapshot {
-        crate::tools::mcp_proxy::McpServerRuntimeSnapshot {
+    ) -> crate::mcp_types::McpServerRuntimeSnapshot {
+        crate::mcp_types::McpServerRuntimeSnapshot {
             server_config_id: "monitoring".to_string(),
             server_config_hash: "sha256:config".to_string(),
             required: false,
-            transport: crate::tools::mcp_proxy::McpTransport::StreamableHttp,
+            transport: crate::mcp_types::McpTransport::StreamableHttp,
             protocol_version: Some("2025-03-26".to_string()),
             server_identity_hash: "sha256:server".to_string(),
             catalog_hash: Some(catalog_hash.to_string()),
             capability_snapshot_id: Some(catalog_hash.to_string()),
             tool_count: 2,
             status,
-            failure_code: (status == crate::tools::mcp_proxy::McpServerHealthStatus::Degraded)
+            failure_code: (status == crate::mcp_types::McpServerHealthStatus::Degraded)
                 .then(|| "mcp_notification_poll_failed".to_string()),
             refreshed_at: refreshed_at.to_string(),
         }
@@ -648,13 +648,13 @@ mod tests {
         let mut saved = lifecycle_identity("evaluator", "finalizer", policy.clone(), &workspace);
         saved.mcp_servers = vec![mcp_snapshot(
             "sha256:catalog-v1",
-            crate::tools::mcp_proxy::McpServerHealthStatus::Ready,
+            crate::mcp_types::McpServerHealthStatus::Ready,
             "2026-08-09T00:00:00Z",
         )];
         let mut current = lifecycle_identity("evaluator", "finalizer", policy, &workspace);
         current.mcp_servers = vec![mcp_snapshot(
             "sha256:catalog-v1",
-            crate::tools::mcp_proxy::McpServerHealthStatus::Degraded,
+            crate::mcp_types::McpServerHealthStatus::Degraded,
             "2026-08-10T00:00:00Z",
         )];
 
@@ -688,7 +688,7 @@ mod tests {
         );
         current.mcp_servers = vec![mcp_snapshot(
             "sha256:catalog-v1",
-            crate::tools::mcp_proxy::McpServerHealthStatus::Ready,
+            crate::mcp_types::McpServerHealthStatus::Ready,
             "2026-08-10T00:00:00Z",
         )];
         let mut legacy_value = serde_json::to_value(&current).unwrap();
