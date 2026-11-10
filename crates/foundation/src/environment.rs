@@ -18,7 +18,7 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use crate::boundary::{resolve_workspace_read_path, resolve_workspace_write_path};
-use crate::workspace::Workspace;
+use crate::root::Workspace;
 
 const MAX_IN_MEMORY_FILES: usize = 4_096;
 const MAX_FILE_MUTATION_CAPTURE_BYTES: u64 = 16 * 1024 * 1024;
@@ -34,10 +34,7 @@ const TRAVERSAL_SCAN_MULTIPLIER: usize = 8;
 const STDIO_PROCESS_REAP_TIMEOUT: Duration = Duration::from_secs(5);
 const STDIO_PROCESS_REAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-/// The serialized environment identity/capability records live in
-/// `rove-foundation`; this keeps the original `rove_runtime::environment::*`
-/// paths.
-pub use rove_foundation::environment_types::{ExecutionCapabilities, ExecutionEnvironmentIdentity};
+use crate::environment_types::{ExecutionCapabilities, ExecutionEnvironmentIdentity};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EnvironmentError {
@@ -842,7 +839,7 @@ impl WorkspaceFileSystem for LocalFileSystem {
                 if file_type.is_some_and(|kind| kind.is_symlink())
                     || std::fs::symlink_metadata(entry.path())
                         .map(|metadata| {
-                            crate::workspace::boundary::is_symlink_or_reparse(&metadata)
+                            crate::boundary::is_symlink_or_reparse(&metadata)
                         })
                         .unwrap_or(false)
                 {
@@ -1938,7 +1935,7 @@ impl Observation {
         let version = version.into();
         let digest = format!("sha256:{:x}", Sha256::digest(bytes));
         let end = start.saturating_add(bytes.len());
-        let id = crate::context::prompt_metadata::stable_hash(&format!(
+        let id = crate::prompt_metadata::stable_hash(&format!(
             "{source}|{start}|{end}|{digest}|{version}"
         ));
         Self {
@@ -2095,7 +2092,7 @@ impl WorkspaceCheckpointStore {
             identity.push('\0');
             mapped.insert(file.path.clone(), file);
         }
-        let id = crate::context::prompt_metadata::stable_hash(&identity);
+        let id = crate::prompt_metadata::stable_hash(&identity);
         let checkpoint = WorkspaceCheckpoint {
             id: id.clone(),
             files: mapped,
@@ -2156,7 +2153,7 @@ impl ArtifactSink for TransientArtifactStore {
         let digest = version_bytes(bytes);
         let artifact_ref = format!(
             "observation:{}",
-            crate::context::prompt_metadata::stable_hash(&format!("{source}|{digest}"))
+            crate::prompt_metadata::stable_hash(&format!("{source}|{digest}"))
         );
         let mut state = self.state.write().await;
         if state.values.len() >= MAX_ARTIFACT_PROJECTIONS
@@ -2336,7 +2333,7 @@ fn traversal_path_set(
         }
         let metadata = std::fs::symlink_metadata(entry.path())
             .map_err(|error| EnvironmentError::Host(error.to_string()))?;
-        if crate::workspace::boundary::is_symlink_or_reparse(&metadata) {
+        if crate::boundary::is_symlink_or_reparse(&metadata) {
             continue;
         }
         let relative = relative_workspace_path(canonical_root, entry.path())?;
@@ -2383,7 +2380,12 @@ fn traversal_sensitive_count(
     Ok(count)
 }
 
-pub(crate) fn is_sensitive_traversal_path(path: &str) -> bool {
+/// Whether a workspace-relative path component names a sensitive location a
+/// traversal must never descend into (`.git`, `.rove`, `.env*`). `pub` because
+/// both the engine's review path and the tool layer's fs tool consult it;
+/// hidden — it is a boundary predicate, not part of the public contract.
+#[doc(hidden)]
+pub fn is_sensitive_traversal_path(path: &str) -> bool {
     path.split('/').any(|component| {
         let name = component.to_ascii_lowercase();
         name == ".git"
@@ -2445,7 +2447,7 @@ fn match_ignore_file(
 }
 
 fn rove_runtime_hash_workspace(workspace: &Workspace) -> String {
-    crate::context::prompt_metadata::workspace_fingerprint(workspace)
+    crate::prompt_metadata::workspace_fingerprint(workspace)
 }
 
 #[cfg(test)]
