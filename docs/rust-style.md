@@ -121,7 +121,7 @@ These encode a decision rove made, not a Google item restated.
 
 - **Borrows over deep copies**; `&[T]`/`&str`/`Option<&T>` parameters. The
   two known `&Option<T>` params (`engine/facade.rs` `trace_writer`,
-  `models/error.rs` `retry_after_ms`) get fixed when their file is next
+  `crates/models/error.rs` `retry_after_ms`) get fixed when their file is next
   touched.
 
 - **Errors are `Result` + typed error enums** (`thiserror` at module edges,

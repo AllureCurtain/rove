@@ -1,6 +1,6 @@
 # API conventions
 
-Per-endpoint fields are authoritative in the runtime-generated OpenAPI: `GET /api/openapi.json`, Swagger UI at `/swagger-ui`. The spec is generated from utoipa annotations in `apps/api/src` (`#[utoipa::path]`, `ToSchema`); the checked-in `apps/api/openapi.json` is its snapshot, and a consistency test in `tests/api.rs` keeps them from drifting (regenerate after API changes with `ROVE_UPDATE_OPENAPI=1 cargo test -p rove-integration-tests --test api openapi_snapshot`). This file only covers general conventions.
+Per-endpoint fields are authoritative in the runtime-generated OpenAPI: `GET /api/openapi.json`, Swagger UI at `/swagger-ui`. The spec is generated from utoipa annotations in `apps/api/src` (`#[utoipa::path]`, `ToSchema`); the checked-in `apps/api/openapi.json` is its snapshot, and a consistency test in `crates/tests/api.rs` keeps them from drifting (regenerate after API changes with `ROVE_UPDATE_OPENAPI=1 cargo test -p rove-integration-tests --test api openapi_snapshot`). This file only covers general conventions.
 
 ## Basics
 
@@ -65,12 +65,12 @@ Clients should branch on `code` and never parse the `error` text.
 
 - `GET /jobs/{job_id}/events`: replays persisted events first, then streams live events; replay still works after a server restart.
 - `GET /product/events`: the product journal, capped at the latest 10000 lines. Resume with SSE `id:` + `Last-Event-ID`; no polling needed.
-- Event payloads are the canonical `StreamEvent`, sanitized once more before sending. `JobStreamEvent.event` is typed `StreamEvent` in OpenAPI: every variant is a `oneOf` member discriminated by `type` (variants with flattened fields carry the discriminator inside `allOf`), and `tests/event_contract.rs` pins the published kinds to `STREAM_EVENT_KINDS`.
+- Event payloads are the canonical `StreamEvent`, sanitized once more before sending. `JobStreamEvent.event` is typed `StreamEvent` in OpenAPI: every variant is a `oneOf` member discriminated by `type` (variants with flattened fields carry the discriminator inside `allOf`), and `crates/tests/event_contract.rs` pins the published kinds to `STREAM_EVENT_KINDS`.
 - Clients declare `event_contract` in the request to select a transcript event contract version. Without it, the old contract applies and bytes are unchanged; the server never infers the contract from UA or other fields.
 
 ## Change process
 
 1. Update types and utoipa annotations in `apps/api/src` (new fields need defaults and compatibility).
-2. Update the backend implementation and add tests (`apps/api` unit tests, or `tests/api.rs`).
+2. Update the backend implementation and add tests (`apps/api` unit tests, or `crates/tests/api.rs`).
 3. Regenerate the frontend types and fix call sites: `cd apps/web && pnpm gen:api-types` rewrites `generated/api-types.ts` from the snapshot; `pnpm check:api-types` fails CI on drift. The `Product*` exports in `product/product-api-types.ts`, `settings/settings-platform-api-types.ts`, and `lib/rove-types.ts` are compile-time aliases of the generated schemas — add a mapping when a schema is new, never a second declaration. Runtime parsing stays only at untrusted boundaries (SSE frames, `localStorage`/migration imports, API error payloads) and for request-side validation the server would reject.
-4. For event changes: the producer, persistence, SSE, Web consumers, and the contract test (`tests/event_contract.rs`) all change together.
+4. For event changes: the producer, persistence, SSE, Web consumers, and the contract test (`crates/tests/event_contract.rs`) all change together.

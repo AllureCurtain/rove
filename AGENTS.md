@@ -13,16 +13,16 @@ A local-first coding agent: one persistent Rust runtime powering Desktop, Web, C
 ## Layout
 
 ```
-models/          rove-models: model protocols, provider adapters, routing, Fake model (no local deps)
-core/            rove-core: in-memory Agent kernel, Tool contract and registry
+crates/protocol/ rove-protocol: lowest-level shared types
+crates/models/   rove-models: model protocols, provider adapters, routing, Fake model (no local deps)
+crates/core/     rove-core: in-memory Agent kernel, Tool contract and registry
 crates/foundation/  rove-foundation: serialized identity/lifecycle data, workspace boundary types
 crates/agents/   rove-agents: AgentDefinition, run profiles, instructions, procedure catalog
 crates/state/    rove-state: durable run state, trace, SQLite index, durable memory
 crates/review/   rove-review: read-only Review contracts, target snapshots, submission tools
 crates/tools/    rove-tools: built-in tools, Executor pipeline, hooks, MCP client
 crates/engine/   rove-engine: Engine, planning, delegate turn-driver, context; conventions in crates/engine/AGENTS.md
-protocol/        rove-protocol: lowest-level shared types
-tools-text/      rove-tools-text: text tool helpers
+crates/tools-text/ rove-tools-text: text tool helpers
 apps/bootstrap/  rove-app-bootstrap: configuration, Project Trust, Engine assembly
 apps/cli/        rove-cli: the `rove` binary (TUI / REPL / exec / admin commands)
 apps/product-store/  rove-product-store: product contract types and ProductStore (SQLite), no HTTP
@@ -30,13 +30,13 @@ apps/api/        rove-api: HTTP/SSE/OpenAPI, conventions in apps/api/AGENTS.md
 apps/bench/      rove-bench: deterministic benchmarks
 apps/desktop/    rove-desktop: Tauri host
 apps/web/        Next.js product UI, conventions in apps/web/AGENTS.md
-tests/           rove-integration-tests: cross-crate contract tests
+crates/tests/    rove-integration-tests: cross-crate contract tests
 benchmarks/      benchmark definitions and evidence
 scripts/         development, integration, and acceptance scripts
 docs/            project documentation
 ```
 
-Dependencies flow one way only: `rove-models <- rove-core <- rove-foundation <- rove-agents <- rove-state <- rove-tools <- rove-engine <- rove-app-bootstrap <- {rove-cli, rove-api, rove-bench}`, with `rove-review` also depending on `{rove-foundation, rove-core}` alone and feeding `{rove-tools, rove-engine}`; `rove-product-store <- rove-api <- rove-desktop`; `rove-protocol` is the lowest-level type shared by core/engine; `rove-models` has no local dependencies. Guarded by `tests/workspace_architecture.rs`.
+Dependencies flow one way only: `rove-models <- rove-core <- rove-foundation <- rove-agents <- rove-state <- rove-tools <- rove-engine <- rove-app-bootstrap <- {rove-cli, rove-api, rove-bench}`, with `rove-review` also depending on `{rove-foundation, rove-core}` alone and feeding `{rove-tools, rove-engine}`; `rove-product-store <- rove-api <- rove-desktop`; `rove-protocol` is the lowest-level type shared by core/engine; `rove-models` has no local dependencies. Guarded by `crates/tests/workspace_architecture.rs`.
 
 ## Common commands
 

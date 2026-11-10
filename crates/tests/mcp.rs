@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 fn workspace_root() -> PathBuf {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     root.pop();
+    root.pop();
     root
 }
 
@@ -145,7 +146,9 @@ async fn mcp_proxy_registers_and_calls_stdio_tools() {
             required: true,
             transport: McpTransport::Stdio,
             command: python_command(),
-            args: vec![workspace_path_string("tests/fixtures/mcp_mock_server.py").to_string()],
+            args: vec![
+                workspace_path_string("crates/tests/fixtures/mcp_mock_server.py").to_string(),
+            ],
             env: Default::default(),
             env_names: Vec::new(),
             url: String::new(),
@@ -204,7 +207,9 @@ async fn required_mcp_stdio_activation_timeout_fails_closed_without_raw_diagnost
             required: true,
             transport: McpTransport::Stdio,
             command: python_command(),
-            args: vec![workspace_path_string("tests/fixtures/mcp_hanging_server.py").to_string()],
+            args: vec![
+                workspace_path_string("crates/tests/fixtures/mcp_hanging_server.py").to_string(),
+            ],
             env: Default::default(),
             env_names: Vec::new(),
             url: String::new(),
@@ -238,7 +243,9 @@ async fn mcp_tool_call_error_maps_to_structured_tool_error() {
             required: true,
             transport: McpTransport::Stdio,
             command: python_command(),
-            args: vec![workspace_path_string("tests/fixtures/mcp_error_server.py").to_string()],
+            args: vec![
+                workspace_path_string("crates/tests/fixtures/mcp_error_server.py").to_string(),
+            ],
             env: Default::default(),
             env_names: Vec::new(),
             url: String::new(),
@@ -287,7 +294,8 @@ async fn dropping_stdio_mcp_registry_cleans_up_child_process() {
                 transport: McpTransport::Stdio,
                 command: python_command(),
                 args: vec![
-                    workspace_path_string("tests/fixtures/mcp_lifecycle_server.py").to_string(),
+                    workspace_path_string("crates/tests/fixtures/mcp_lifecycle_server.py")
+                        .to_string(),
                 ],
                 env,
                 env_names: Vec::new(),

@@ -927,7 +927,7 @@ mod tests {
         PATH.get_or_init(|| {
             let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
             let src = manifest.join("tests/fixtures/external_adapter_v1_fixture.rs");
-            let out_dir = manifest.join("../target/debug");
+            let out_dir = manifest.join("../../target/debug");
             let _ = fs::create_dir_all(&out_dir);
             let out = out_dir.join(if cfg!(windows) {
                 "external_adapter_v1_fixture.exe"

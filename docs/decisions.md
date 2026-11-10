@@ -86,7 +86,7 @@ Decisions before 2026-10-01 were distilled from the design documents of that per
 ## 2026-10-07 Web API types generated from OpenAPI; SSE event schemas registered first
 
 - Status: active
-- Decision: the hand-written REST types in `apps/web/product/product-api-types.ts` are replaced by `openapi-typescript` output generated from the checked-in `apps/api/openapi.json`; a small hand-written validation layer stays at trust boundaries (responses are still runtime-checked where a wrong shape would corrupt state). SSE event payloads are out of scope for `openapi.json` until their types carry `ToSchema`: `StreamEvent` and its payload graph get `utoipa::ToSchema` derives and register in the `ApiDoc` components so `event` stops being a bare `object`. The hand-maintained e2e mock `tests/e2e/product-api-mock.ts` is then type-checked against the generated types instead of the removed hand-written ones.
+- Decision: the hand-written REST types in `apps/web/product/product-api-types.ts` are replaced by `openapi-typescript` output generated from the checked-in `apps/api/openapi.json`; a small hand-written validation layer stays at trust boundaries (responses are still runtime-checked where a wrong shape would corrupt state). SSE event payloads are out of scope for `openapi.json` until their types carry `ToSchema`: `StreamEvent` and its payload graph get `utoipa::ToSchema` derives and register in the `ApiDoc` components so `event` stops being a bare `object`. The hand-maintained e2e mock `apps/web/tests/e2e/product-api-mock.ts` is then type-checked against the generated types instead of the removed hand-written ones.
 - Why: the API's utoipa annotations are already authoritative; hand-written TypeScript mirrors drift silently (there is a snapshot test for the spec itself, but nothing guards the TS side). Generating removes the drift class; registering event schemas in OpenAPI is what makes the generated types useful for streams rather than only request/response envelopes.
 - Rejected: schemars side-car schema export for `StreamEvent` — produces a second schema pipeline that can disagree with utoipa; keeping runtime validators everywhere — overkill once types are generated, validators stay only where a malformed payload is a real risk.
 
@@ -137,7 +137,7 @@ Decisions before 2026-10-01 were distilled from the design documents of that per
 - Status: active
 - Decision: CI uses `Swatinem/rust-cache` to cache both the cargo registry and `target/` (including cache-on-failure); routine `cargo clippy`/`cargo test --workspace` exclude `rove-desktop`; desktop runs clippy + test separately in `.github/workflows/desktop.yml` when `apps/desktop`, the root `Cargo.toml`/`Cargo.lock`, or the workflow itself changes.
 - Why: previously every run compiled about 700 dependencies plus the whole workspace from scratch, and the Tauri/WebKit dependency tree accounts for the bulk of compile time while rarely changing. Why not reuse `actions/cache`: it only handles static paths, does not prune stale entries, and does not scope increments per job; `rust-cache` is the standard for Rust projects (a curated third-party action in the same class as `dtolnay/rust-toolchain`, already in use).
-- Rejected: adding `paths-ignore` for doc-only changes — `tests/code_hygiene.rs` reads repo files (`.gitignore`, benchmark results README) and asserts on them, so doc changes can break tests; removing desktop from CI entirely — the paths filter is narrowed to desktop's own files plus shared manifests, and the residual risk (a runtime change breaking the desktop build) is covered by release-gate and local builds.
+- Rejected: adding `paths-ignore` for doc-only changes — `crates/tests/code_hygiene.rs` reads repo files (`.gitignore`, benchmark results README) and asserts on them, so doc changes can break tests; removing desktop from CI entirely — the paths filter is narrowed to desktop's own files plus shared manifests, and the residual risk (a runtime change breaking the desktop build) is covered by release-gate and local builds.
 
 ## 2026-10-04 Remove the v1 skin runtime switch
 
@@ -157,7 +157,7 @@ Decisions before 2026-10-01 were distilled from the design documents of that per
 ## 2026-10-01 Compile-time work: merge test binaries, extract ProductStore, do not split runtime
 
 - Status: active
-- Decision: keep only 3 integration test binaries (`it`, `api`, `secret_authority_unarmed`), with new tests added to `tests/it.rs`; ProductStore and product contracts live in a separate `rove-product-store` crate; `apps/api/src/lib.rs` split into modules by responsibility; runtime is not split for now.
+- Decision: keep only 3 integration test binaries (`it`, `api`, `secret_authority_unarmed`), with new tests added to `crates/tests/it.rs`; ProductStore and product contracts live in a separate `rove-product-store` crate; `apps/api/src/lib.rs` split into modules by responsibility; runtime is not split for now.
 - Why: measured bottlenecks were the repeated linking of full-stack test binaries and the oversized api unit. Test builds after a runtime change dropped from 146s to about 66s. Data in docs/refactor-plan.md.
 - Rejected: switching to the `rust-lld` linker, which made no measurable difference; disabling `rfd`/`rove-bench` via features, which only removed 6 crates with no compile-time change; splitting runtime now — submodules have cycles, and downstream crates depend on all submodules via Engine, so it would still trigger full rebuilds.
 
@@ -255,7 +255,7 @@ Decisions before 2026-10-01 were distilled from the design documents of that per
 ## 2026-07-22 Modular Cargo workspace; built-in vector RAG removed
 
 - Status: active
-- Decision: split into the one-way dependency chain `rove-models <- rove-core <- rove-runtime <- rove-app-bootstrap <- apps/*`, guarded by `tests/workspace_architecture.rs`. Removed the built-in vector RAG (LanceDB); workspace retrieval is now tools (`read_file`, `search_code`, `run_shell`) plus layered file memory.
+- Decision: split into the one-way dependency chain `rove-models <- rove-core <- rove-runtime <- rove-app-bootstrap <- apps/*`, guarded by `crates/tests/workspace_architecture.rs`. Removed the built-in vector RAG (LanceDB); workspace retrieval is now tools (`read_file`, `search_code`, `run_shell`) plus layered file memory.
 - Why: the core can be embedded externally, and surfaces are just shells. RAG brought heavy dependencies and state with unclear benefit.
 - Rejected: a single large crate; keeping RAG as a default feature. If semantic retrieval is ever needed, it must be designed as an optional external capability.
 

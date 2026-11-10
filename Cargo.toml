@@ -1,22 +1,22 @@
 [workspace]
 members = [
-    "protocol",
-    "models",
-    "core",
+    "crates/protocol",
+    "crates/models",
+    "crates/core",
     "crates/foundation",
     "crates/agents",
     "crates/state",
     "crates/review",
     "crates/tools",
     "crates/engine",
-    "tools-text",
+    "crates/tools-text",
     "apps/bootstrap",
     "apps/bench",
     "apps/product-store",
     "apps/api",
     "apps/cli",
     "apps/desktop",
-    "tests",
+    "crates/tests",
 ]
 default-members = ["apps/cli"]
 resolver = "3"
@@ -57,16 +57,16 @@ pretty_assertions = "1"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29", "unstable-rendered-line-info"] }
 regex = "1"
 reqwest = { version = "0.13.3", features = ["json", "stream"] }
-rove-core = { path = "core" }
+rove-core = { path = "crates/core" }
 rove-foundation = { path = "crates/foundation" }
 rove-agents = { path = "crates/agents" }
 rove-state = { path = "crates/state" }
 rove-review = { path = "crates/review" }
 rove-tools = { path = "crates/tools" }
-rove-models = { path = "models" }
-rove-protocol = { path = "protocol" }
+rove-models = { path = "crates/models" }
+rove-protocol = { path = "crates/protocol" }
 rove-engine = { path = "crates/engine" }
-rove-tools-text = { path = "tools-text" }
+rove-tools-text = { path = "crates/tools-text" }
 rove-app-bootstrap = { path = "apps/bootstrap" }
 rove-bench = { path = "apps/bench" }
 rove-api = { path = "apps/api" }

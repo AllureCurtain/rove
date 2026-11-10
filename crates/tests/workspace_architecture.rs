@@ -385,7 +385,7 @@ fn runtime_model_turns_use_the_core_normalization_boundary() {
 fn embedded_and_durable_execution_share_the_core_agent_kernel() {
     let root = workspace_root();
     for relative in [
-        "core/src/agent.rs",
+        "crates/core/src/agent.rs",
         "crates/engine/src/engine/run_loop.rs",
         "crates/engine/src/engine/step_runner.rs",
     ] {
@@ -406,6 +406,7 @@ fn embedded_and_durable_execution_share_the_core_agent_kernel() {
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
+        .and_then(Path::parent)
         .expect("integration-test package should be below the workspace root")
         .to_path_buf()
 }

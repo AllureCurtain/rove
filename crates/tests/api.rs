@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 fn workspace_root() -> PathBuf {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     root.pop();
+    root.pop();
     root
 }
 
@@ -12709,7 +12710,7 @@ async fn api_registers_configured_mcp_tools_for_jobs() {
                 "name": "mock-server",
                 "transport": "stdio",
                 "command": python_command(),
-                "args": [workspace_path_string("tests/fixtures/mcp_mock_server.py")]
+                "args": [workspace_path_string("crates/tests/fixtures/mcp_mock_server.py")]
             }]
         })
         .to_string(),
@@ -12857,7 +12858,7 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
             "name": "raw_env",
             "transport": "stdio",
             "command": python_command(),
-            "args": [workspace_path_string("tests/fixtures/mcp_mock_server.py")],
+            "args": [workspace_path_string("crates/tests/fixtures/mcp_mock_server.py")],
             "env": {"ROVE_SECRET": secret_canary}
         }),
         serde_json::json!({
@@ -12865,7 +12866,7 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
             "transport": "stdio",
             "command": python_command(),
             "args": [
-                workspace_path_string("tests/fixtures/mcp_mock_server.py"),
+                workspace_path_string("crates/tests/fixtures/mcp_mock_server.py"),
                 format!("--token={secret_canary}")
             ]
         }),
@@ -12891,7 +12892,7 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
             "required": true,
             "transport": "stdio",
             "command": python_command(),
-            "args": [workspace_path_string("tests/fixtures/mcp_mock_server.py")],
+            "args": [workspace_path_string("crates/tests/fixtures/mcp_mock_server.py")],
             "env_names": ["PATH"],
             "request_timeout_ms": 2_000
         }),
@@ -12979,7 +12980,7 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
             "name": "mock_server",
             "transport": "stdio",
             "command": python_command(),
-            "args": [workspace_path_string("tests/fixtures/mcp_mock_server.py")]
+            "args": [workspace_path_string("crates/tests/fixtures/mcp_mock_server.py")]
         }),
     )
     .await;
@@ -13095,7 +13096,7 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
             "required": true,
             "transport": "stdio",
             "command": python_command(),
-            "args": [workspace_path_string("tests/fixtures/mcp_mock_server.py")],
+            "args": [workspace_path_string("crates/tests/fixtures/mcp_mock_server.py")],
             "env_names": ["PATH"],
             "request_timeout_ms": 2_000
         }),
@@ -13279,8 +13280,8 @@ async fn product_mcp_probe_returns_typed_stdio_failures() {
         router(ApiState::new(Workspace::detect(server.path()).unwrap(), test_config()).unwrap());
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
-    let mock = workspace_path_string("tests/fixtures/mcp_mock_server.py");
-    let hanging = workspace_path_string("tests/fixtures/mcp_hanging_server.py");
+    let mock = workspace_path_string("crates/tests/fixtures/mcp_mock_server.py");
+    let hanging = workspace_path_string("crates/tests/fixtures/mcp_hanging_server.py");
     let fixture_timeout_ms = 2_000_u64;
     let cases = [
         (
@@ -14169,7 +14170,7 @@ async fn product_mcp_maps_corrupt_locked_and_unsafe_config_to_typed_conflicts() 
             "name": "mapping_server",
             "transport": "stdio",
             "command": python_command(),
-            "args": [workspace_path_string("tests/fixtures/mcp_mock_server.py")]
+            "args": [workspace_path_string("crates/tests/fixtures/mcp_mock_server.py")]
         }),
     )
     .await;
@@ -14190,7 +14191,7 @@ async fn product_mcp_maps_corrupt_locked_and_unsafe_config_to_typed_conflicts() 
             "name": "second_server",
             "transport": "stdio",
             "command": python_command(),
-            "args": [workspace_path_string("tests/fixtures/mcp_mock_server.py")]
+            "args": [workspace_path_string("crates/tests/fixtures/mcp_mock_server.py")]
         }),
     )
     .await;
