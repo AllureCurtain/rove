@@ -63,7 +63,13 @@ pub mod agents {
 pub mod context;
 pub mod conversation;
 pub mod engine;
-pub mod environment;
+/// The execution-environment port (`ExecutionEnvironment`, `WorkspaceFileSystem`,
+/// `ProcessHost`, the `Local*`/`InMemory*` implementations) lives in
+/// `rove-foundation`; `rove_runtime::environment::*` resolves as before.
+pub mod environment {
+    pub use rove_foundation::environment::*;
+    pub use rove_foundation::environment_types::*;
+}
 pub mod planning;
 pub mod review;
 pub mod tools;

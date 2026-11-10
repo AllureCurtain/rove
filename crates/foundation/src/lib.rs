@@ -4,14 +4,18 @@
 //! runtime identity, task types, durable stream events, sessions, secret
 //! redaction, capability snapshots, workspace detection + path boundary,
 //! prompt metadata, content hashing, agent leaf identities, MCP snapshot
-//! records, environment records, and the planning/execution lifecycle
+//! records, environment ports + records, and the planning/execution lifecycle
 //! records. Behaviour (engine loops, planning evaluation, tool execution,
-//! MCP transport, process/filesystem ports) stays in `rove-runtime`.
+//! MCP transport) stays in `rove-runtime` — the execution-environment
+//! port (`ExecutionEnvironment`, `WorkspaceFileSystem`, `ProcessHost`, the
+//! `Local*`/`InMemory*` implementations) is a foundation concern because both
+//! the engine and the tool layer dispatch through it.
 
 pub mod agents_leaves;
 pub mod boundary;
 pub mod capability;
 pub mod compaction_facts;
+pub mod environment;
 pub mod environment_types;
 pub mod events;
 pub mod execution;
@@ -30,6 +34,7 @@ pub use agents_leaves::*;
 pub use boundary::*;
 pub use capability::*;
 pub use compaction_facts::*;
+pub use environment::*;
 pub use environment_types::*;
 pub use events::*;
 pub use execution::*;

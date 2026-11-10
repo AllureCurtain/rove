@@ -15,7 +15,7 @@ src/memory/       moved to `rove-state` (crates/state); `crate::memory::*` re-ex
 src/foundation/   moved to `rove-foundation`; `task_state` moved to `rove-state`; both re-exported from lib.rs
 src/review/       read-only Review
 src/workspace/    workspace identification (moved to `rove-foundation`; re-exported)
-src/environment.rs   ExecutionEnvironment (filesystem/process ports, observation, checkpoints)
+src/environment.rs   moved to `rove-foundation` (crates/foundation/environment.rs — the execution-environment port both Engine and tools dispatch through); `crate::environment::*` re-exported
 src/conversation.rs  unified conversation message domain
 ```
 
