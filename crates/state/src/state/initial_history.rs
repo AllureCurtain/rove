@@ -15,8 +15,8 @@ use std::path::Path;
 
 use rove_core::history::HistoryItem;
 
-use crate::events::{TraceEntry, TraceLink};
 use crate::types::RunId;
+use rove_foundation::events::{TraceEntry, TraceLink};
 
 use super::reverse_trace_scanner::{ReverseJsonlScanner, ScanOutcome};
 use super::trace::TraceLine;
@@ -427,8 +427,8 @@ mod tests {
         HistoryItem::Message(rove_models::Message::assistant(text))
     }
 
-    fn ui_event(delta: &str) -> crate::events::StreamEvent {
-        crate::events::StreamEvent::LlmChunk {
+    fn ui_event(delta: &str) -> rove_foundation::events::StreamEvent {
+        rove_foundation::events::StreamEvent::LlmChunk {
             delta: delta.to_string(),
         }
     }

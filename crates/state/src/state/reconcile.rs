@@ -21,10 +21,10 @@ use std::path::Path;
 
 use rove_core::history::HistoryItem;
 
-use crate::events::StreamEvent;
-use crate::execution::{ExecutionLifecycleState, StepLedgerState, StepRecordStatus};
-use crate::foundation::session::Session;
 use crate::types::TaskState;
+use rove_foundation::events::StreamEvent;
+use rove_foundation::execution::{ExecutionLifecycleState, StepLedgerState, StepRecordStatus};
+use rove_foundation::session::Session;
 
 /// Bounded outcome of reconciling one run's trace tail into its snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -88,7 +88,7 @@ pub async fn reconcile_task_state_with_trace(
             continue;
         }
         match &entry.entry {
-            crate::events::TraceEntry::Ui(event) => {
+            rove_foundation::events::TraceEntry::Ui(event) => {
                 if apply_event(state, event) {
                     outcome.changed = true;
                 }
@@ -96,11 +96,12 @@ pub async fn reconcile_task_state_with_trace(
             }
             // Explicit history lines are merged below; they still advance the
             // sequence high-water mark because they share the run's seq space.
-            crate::events::TraceEntry::History(_) => {}
+            rove_foundation::events::TraceEntry::History(_) => {}
             // A resume link is provenance about where this run's history came
             // from, and the identity header restates what the snapshot already
             // knows. Neither carries a lifecycle fact to project onto it.
-            crate::events::TraceEntry::Link(_) | crate::events::TraceEntry::Meta(_) => {}
+            rove_foundation::events::TraceEntry::Link(_)
+            | rove_foundation::events::TraceEntry::Meta(_) => {}
         }
         outcome.observed(entry.seq);
     }
@@ -256,7 +257,7 @@ fn merge_aligned_by_suffix(
 /// A message that cannot round-trip is compared as it is, which can only make the
 /// alignment fail — never match two different messages.
 fn redacted_history(messages: &[rove_models::Message]) -> Vec<rove_models::Message> {
-    let registry = crate::secrets::registry();
+    let registry = rove_foundation::secrets::registry();
     messages
         .iter()
         .map(|message| {
@@ -457,7 +458,7 @@ fn apply_event(state: &mut TaskState, event: &StreamEvent) -> bool {
 /// completed record is never downgraded.
 fn apply_finalization(
     lifecycle: &mut ExecutionLifecycleState,
-    record: &crate::execution::FinalizationRecord,
+    record: &rove_foundation::execution::FinalizationRecord,
 ) -> bool {
     match lifecycle.finalization.as_ref() {
         Some(saved) if saved == record => false,
@@ -470,7 +471,10 @@ fn apply_finalization(
     }
 }
 
-fn push_revision(ledger: &mut StepLedgerState, revision: &crate::execution::PlanRevision) {
+fn push_revision(
+    ledger: &mut StepLedgerState,
+    revision: &rove_foundation::execution::PlanRevision,
+) {
     if ledger
         .plan_lifecycle
         .revisions
@@ -509,16 +513,16 @@ fn replace_if_changed<T: PartialEq>(slot: &mut T, next: T) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::TraceEntry;
-    use crate::execution::{
+    use crate::types::{
+        JobId, PlanStep, PromptCheckpoint, PromptCompactionMode, PromptCompactionState, RunId,
+        SessionId, TaskPlan, TaskState, TerminationReason,
+    };
+    use rove_foundation::events::TraceEntry;
+    use rove_foundation::execution::{
         ExecutionBudgetDimension, ExecutionBudgetExhaustion, ExecutionBudgetSnapshot,
         ExecutionBudgetUsage, ExecutionDegradation, ExecutionPhase, ExecutionPolicy,
         FinalOutcomeStatus, FinalizationMode, FinalizationPhase, FinalizationRecord,
         PlanFinishReason, StepCompletionBasis, StepRecord,
-    };
-    use crate::types::{
-        JobId, PlanStep, PromptCheckpoint, PromptCompactionMode, PromptCompactionState, RunId,
-        SessionId, TaskPlan, TaskState, TerminationReason,
     };
     use rove_models::Message;
 
@@ -940,7 +944,7 @@ mod tests {
     #[tokio::test]
     async fn an_in_flight_attempt_is_recorded_and_cleared_only_by_its_own_terminal_fact() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let attempt = crate::execution::StepAttempt {
+        let attempt = rove_foundation::execution::StepAttempt {
             plan_id: "plan-1".to_string(),
             plan_revision_id: "rev-1".to_string(),
             step_id: "s1".to_string(),
@@ -1299,7 +1303,7 @@ mod tests {
 
         let tmp = tempfile::TempDir::new().unwrap();
         let canary = "reconcile-credential-canary-4b90";
-        assert!(crate::secrets::registry().register_value(canary));
+        assert!(rove_foundation::secrets::registry().register_value(canary));
 
         let run_id = RunId::new();
         let store = RunStore::new(tmp.path());
@@ -1338,7 +1342,10 @@ mod tests {
                 .map(|message| message.content.clone())
                 .collect::<Vec<_>>(),
             vec![
-                format!("carry {} onward", crate::secrets::KNOWN_SECRET_MARKER),
+                format!(
+                    "carry {} onward",
+                    rove_foundation::secrets::KNOWN_SECRET_MARKER
+                ),
                 "done".to_string()
             ],
         );

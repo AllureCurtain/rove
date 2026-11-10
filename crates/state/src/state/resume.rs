@@ -1,9 +1,9 @@
-use crate::runtime_identity::{
-    RuntimeIdentity, RuntimeIdentityEvaluation, evaluate_runtime_identity,
-};
 use crate::state::reconcile::reconcile_task_state_with_trace;
 use crate::state::store::StateStore;
 use crate::types::{RunId, TaskState};
+use rove_foundation::runtime_identity::{
+    RuntimeIdentity, RuntimeIdentityEvaluation, evaluate_runtime_identity,
+};
 
 pub async fn resolve_resume_state(
     state_store: &StateStore,

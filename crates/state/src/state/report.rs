@@ -3,18 +3,18 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::execution::{
-    ExecutionLifecycleState, FinalOutcomeStatus, PlanDecisionRecord, PlanRevision, StepRecord,
-};
-use crate::prompt_metadata::PromptBuildMetadata;
-use crate::runtime_identity::RuntimeIdentity;
 use crate::types::MessageDeliveryRecord;
 use crate::types::{JobId, RunId, SessionId, TerminationReason};
-use crate::workspace::WorkspaceKind;
 use rove_core::{
     ArtifactValidation, Sensitivity, ToolArtifactKind, ToolArtifactRef, ToolExecutionMetadata,
     ToolMutation,
 };
+use rove_foundation::WorkspaceKind;
+use rove_foundation::execution::{
+    ExecutionLifecycleState, FinalOutcomeStatus, PlanDecisionRecord, PlanRevision, StepRecord,
+};
+use rove_foundation::prompt_metadata::PromptBuildMetadata;
+use rove_foundation::runtime_identity::RuntimeIdentity;
 use rove_models::Usage;
 
 /// Summary report for a completed run.
@@ -170,7 +170,7 @@ pub fn write_report(run_dir: &Path, report: &RunReport) -> std::io::Result<PathB
     // pasted into a bug report, so it gets the same authority-first redaction
     // as the trace: a credential the process knows is removed here too, not
     // only by the export's pattern backstop.
-    let json = crate::secrets::registry().redact_json_text(&json);
+    let json = rove_foundation::secrets::registry().redact_json_text(&json);
     atomic_write(&path, json.as_bytes())?;
     Ok(path)
 }
@@ -185,7 +185,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 mod tests {
     use super::RunReport;
     use crate::types::{JobId, RunId, SessionId, TerminationReason};
-    use crate::workspace::WorkspaceKind;
+    use rove_foundation::WorkspaceKind;
 
     #[test]
     fn legacy_report_without_step_records_deserializes() {
@@ -213,7 +213,7 @@ mod tests {
         // remove it, and a report is exactly the file a user pastes into a bug
         // report.
         let canary = "report-known-credential-canary-2e64";
-        assert!(crate::secrets::registry().register_value(canary));
+        assert!(rove_foundation::secrets::registry().register_value(canary));
         let mut report = RunReport::new(
             SessionId::new(),
             JobId::new(),
@@ -230,7 +230,7 @@ mod tests {
 
         assert!(!written.contains(canary), "{written}");
         assert!(
-            written.contains(crate::secrets::KNOWN_SECRET_MARKER),
+            written.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER),
             "{written}"
         );
         // The redacted report still deserializes into the same type, so the
@@ -240,7 +240,7 @@ mod tests {
             parsed.output.unwrap(),
             format!(
                 "final answer referencing {}",
-                crate::secrets::KNOWN_SECRET_MARKER
+                rove_foundation::secrets::KNOWN_SECRET_MARKER
             )
         );
     }

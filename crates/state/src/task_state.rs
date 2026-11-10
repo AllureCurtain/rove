@@ -1,11 +1,11 @@
-//! Task snapshot types that remain in `rove-runtime`.
+//! Task snapshot types that live in `rove-state`.
 //!
 //! `TaskState` and `PromptCheckpoint` embed the behaviour aggregate
-//! [`crate::agents::AgentRuntimeProfile`] (the immutable compiled run snapshot
+//! [`rove_agents::AgentRuntimeProfile`] (the immutable compiled run snapshot
 //! including instruction bundles and procedure selections), so they cannot
 //! sink into `rove-foundation` without dragging the whole agents module with
-//! them. Their serialized layout is unchanged — they are re-exported at
-//! `rove_runtime::types::*` exactly as before.
+//! them. Their serialized layout is unchanged — `rove-runtime` re-exports
+//! them at `rove_runtime::types::*` exactly as before.
 
 pub use rove_core::{
     Action, CallId, ToolCallAction, ToolCapability, ToolContext, ToolDescriptor, ToolError,
@@ -15,8 +15,8 @@ pub use rove_core::{
 pub use rove_models::{Message, ModelToolSchema, Role, ToolCallRef, Usage};
 use serde::{Deserialize, Serialize};
 
-use crate::session::{Session, SessionError};
-use crate::types::{PromptCompactionState, TaskPlan};
+use rove_foundation::session::{Session, SessionError};
+use rove_foundation::types::{PromptCompactionState, TaskPlan};
 
 /// Identifiers and lifecycle vocabulary that cross the wire.
 pub use rove_protocol::{
@@ -53,21 +53,21 @@ pub struct TaskState {
     #[serde(default)]
     pub plan: Option<TaskPlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_identity: Option<crate::runtime_identity::RuntimeIdentity>,
+    pub runtime_identity: Option<rove_foundation::runtime_identity::RuntimeIdentity>,
     /// Exact Agent snapshot used by this run. It is retained in state only;
     /// events and reports project the content-free identity instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_profile: Option<crate::agents::AgentRuntimeProfile>,
+    pub agent_profile: Option<rove_agents::AgentRuntimeProfile>,
     #[serde(
         default,
-        skip_serializing_if = "crate::execution::StepLedgerState::is_empty"
+        skip_serializing_if = "rove_foundation::execution::StepLedgerState::is_empty"
     )]
-    pub step_ledger: crate::execution::StepLedgerState,
+    pub step_ledger: rove_foundation::execution::StepLedgerState,
     #[serde(
         default,
-        skip_serializing_if = "crate::execution::ExecutionLifecycleState::is_empty"
+        skip_serializing_if = "rove_foundation::execution::ExecutionLifecycleState::is_empty"
     )]
-    pub execution_lifecycle: crate::execution::ExecutionLifecycleState,
+    pub execution_lifecycle: rove_foundation::execution::ExecutionLifecycleState,
 }
 
 impl TaskState {
@@ -81,7 +81,7 @@ impl TaskState {
         let mut session = session.clone();
         session.close_unresolved_tool_calls()?;
         session
-            .suffix(crate::session::CHECKPOINT_SESSION_TAIL_ENTRIES)
+            .suffix(rove_foundation::session::CHECKPOINT_SESSION_TAIL_ENTRIES)
             .messages_for_provider(protocol)
     }
 
@@ -180,13 +180,13 @@ pub struct PromptCheckpoint {
     #[serde(default)]
     pub compaction: PromptCompactionState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_identity: Option<crate::runtime_identity::RuntimeIdentity>,
+    pub runtime_identity: Option<rove_foundation::runtime_identity::RuntimeIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_profile: Option<crate::agents::AgentRuntimeProfile>,
+    pub agent_profile: Option<rove_agents::AgentRuntimeProfile>,
     #[serde(default)]
-    pub step_ledger: crate::execution::StepLedgerCheckpoint,
+    pub step_ledger: rove_foundation::execution::StepLedgerCheckpoint,
     #[serde(default)]
-    pub execution_lifecycle: crate::execution::ExecutionLifecycleCheckpoint,
+    pub execution_lifecycle: rove_foundation::execution::ExecutionLifecycleCheckpoint,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub message_deliveries: Vec<MessageDeliveryRecord>,
     /// Set by a constructor that bounded the stored history on purpose rather
@@ -226,8 +226,9 @@ impl PromptCheckpoint {
             compaction: PromptCompactionState::default(),
             runtime_identity: None,
             agent_profile: None,
-            step_ledger: crate::execution::StepLedgerCheckpoint::default(),
-            execution_lifecycle: crate::execution::ExecutionLifecycleCheckpoint::default(),
+            step_ledger: rove_foundation::execution::StepLedgerCheckpoint::default(),
+            execution_lifecycle: rove_foundation::execution::ExecutionLifecycleCheckpoint::default(
+            ),
             message_deliveries: Vec::new(),
             history_pruned: false,
         }

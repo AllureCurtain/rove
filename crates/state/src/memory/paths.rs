@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::Workspace;
+use rove_foundation::Workspace;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryPaths {

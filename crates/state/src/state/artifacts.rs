@@ -1,22 +1,22 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::agents::AgentRuntimeProfile;
-use crate::context::compaction::inherits_session_breaker;
-use crate::events::StreamEvent;
-use crate::execution::{
-    ExecutionLifecycleState, PlanIdentity, StepLedgerState, StepRecordStatus,
-    planned_step_failure_message,
-};
-use crate::prompt_metadata::{PromptBuildMetadata, estimate_messages_tokens};
-use crate::runtime_identity::RuntimeIdentity;
-use crate::session::{CHECKPOINT_SESSION_TAIL_ENTRIES, Session, SessionEntry};
+use crate::inherits_session_breaker;
 use crate::types::{
     JobId, MessageDeliveryRecord, PromptCheckpoint, PromptCompactionMode, PromptCompactionState,
     RunId, SessionId, TaskPlan, TaskState, TerminationReason,
 };
-use crate::workspace::Workspace;
+use rove_agents::AgentRuntimeProfile;
 use rove_core::{CallId, ToolArtifactRef, ToolExecutionMetadata, ToolMutation};
+use rove_foundation::Workspace;
+use rove_foundation::events::StreamEvent;
+use rove_foundation::execution::{
+    ExecutionLifecycleState, PlanIdentity, StepLedgerState, StepRecordStatus,
+    planned_step_failure_message,
+};
+use rove_foundation::prompt_metadata::{PromptBuildMetadata, estimate_messages_tokens};
+use rove_foundation::runtime_identity::RuntimeIdentity;
+use rove_foundation::session::{CHECKPOINT_SESSION_TAIL_ENTRIES, Session, SessionEntry};
 use rove_models::{
     AssistantTurn, ContentBlock, InternalCallId, Message, Role, ToolCall,
     ToolResult as CanonicalToolResult, ToolResultStatus, Usage, WireCallReference,
@@ -1016,14 +1016,14 @@ fn canonical_failure_status(metadata: &rove_core::ToolExecutionMetadata) -> Tool
 #[cfg(test)]
 mod tests {
     use super::RunArtifactRecorder;
-    use crate::events::StreamEvent;
-    use crate::runtime_identity::RuntimeIdentity;
     use crate::state::store::StateStore;
     use crate::types::{
         ApprovalPolicy, JobId, PromptCompactionMode, PromptCompactionState, RunId, SessionId,
     };
-    use crate::workspace::{Workspace, WorkspaceKind};
     use rove_core::{CallId, ToolExecutionMetadata, ToolExecutionStatus, ToolResult};
+    use rove_foundation::events::StreamEvent;
+    use rove_foundation::runtime_identity::RuntimeIdentity;
+    use rove_foundation::{Workspace, WorkspaceKind};
     use rove_models::Role;
 
     fn runtime_identity() -> RuntimeIdentity {

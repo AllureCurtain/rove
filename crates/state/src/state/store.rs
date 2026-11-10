@@ -457,12 +457,14 @@ impl StateStore {
             // trace's own opening line first, so one crashed run can no longer
             // fail the entire repair on a foreign key.
             let identity = read.entries.iter().find_map(|record| match &record.entry {
-                crate::events::TraceEntry::Meta(crate::events::RunMeta::RunIdentity {
-                    session_id,
-                    job_id,
-                    run_id: meta_run_id,
-                    started_at,
-                }) if *meta_run_id == run_id => Some((*session_id, *job_id, started_at.clone())),
+                rove_foundation::events::TraceEntry::Meta(
+                    rove_foundation::events::RunMeta::RunIdentity {
+                        session_id,
+                        job_id,
+                        run_id: meta_run_id,
+                        started_at,
+                    },
+                ) if *meta_run_id == run_id => Some((*session_id, *job_id, started_at.clone())),
                 _ => None,
             });
             match identity {
@@ -498,7 +500,7 @@ impl StateStore {
 
             for record in &read.entries {
                 match &record.entry {
-                    crate::events::TraceEntry::Ui(event) => {
+                    rove_foundation::events::TraceEntry::Ui(event) => {
                         // The index stores bare event JSON so SSE/transcript
                         // projections keep their wire format unchanged. Repair
                         // is a failure path, so it applies the same
@@ -511,18 +513,18 @@ impl StateStore {
                     }
                     // History lines never travel on SSE/transcript replays;
                     // they only advance the sequence high-water mark.
-                    crate::events::TraceEntry::History(_) => {
+                    rove_foundation::events::TraceEntry::History(_) => {
                         self.index.advance_event_seq(run_id, record.seq)?;
                     }
                     // Same for a resume link: provenance, not a replayable
                     // event, but it owns a sequence number all the same.
-                    crate::events::TraceEntry::Link(_) => {
+                    rove_foundation::events::TraceEntry::Link(_) => {
                         self.index.advance_event_seq(run_id, record.seq)?;
                     }
                     // The identity header sits at `RUN_META_SEQ`, below every
                     // event, so it has no high-water mark to contribute. Its
                     // content was already consumed above to create the run row.
-                    crate::events::TraceEntry::Meta(_) => {}
+                    rove_foundation::events::TraceEntry::Meta(_) => {}
                 }
             }
         }
@@ -693,9 +695,9 @@ fn termination_reason_label(reason: &TerminationReason) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{RunMeta, TraceEntry};
-    use crate::foundation::StreamEvent;
     use crate::state::trace::{RUN_META_SEQ, TraceLine};
+    use rove_foundation::StreamEvent;
+    use rove_foundation::events::{RunMeta, TraceEntry};
 
     #[tokio::test]
     async fn index_repair_never_reindexes_a_known_credential() {
@@ -704,7 +706,7 @@ mod tests {
         // remove it. Repair runs when the index is corrupt or empty — a failure
         // path — and a disclosure there would be no less a disclosure.
         let canary = "repair-known-credential-canary-8b41";
-        assert!(crate::secrets::registry().register_value(canary));
+        assert!(rove_foundation::secrets::registry().register_value(canary));
 
         let store =
             StateStore::with_index_path(dir.path(), dir.path().join(".rove/state.sqlite"), 5_000);
@@ -758,7 +760,7 @@ mod tests {
         let indexed = &snapshot.events[0].event_json;
         assert!(!indexed.contains(canary), "{indexed}");
         assert!(
-            indexed.contains(crate::secrets::KNOWN_SECRET_MARKER),
+            indexed.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER),
             "{indexed}"
         );
         // The row is still a decodable canonical event, so SSE replay and the
