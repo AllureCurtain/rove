@@ -5,10 +5,10 @@ Global rules live in the root AGENTS.md; this file only covers `runtime/` specif
 ## Layers
 
 ```
-src/engine/       Engine facade (facade.rs), unplanned/planned loops, StepRunner, model/tool turns, retry recovery
+src/engine/       Engine facade (facade.rs), unplanned/planned loops, StepRunner, model/tool turns, retry recovery, delegate turn-driver (subrun.rs)
 src/planning/     plans, revisions, evaluation, execution policy and budgets
 src/state/        moved to `rove-state` (crates/state); `crate::state::*` re-exported from lib.rs
-src/tools/        built-in tools, Executor, hooks, MCP (mcp_proxy.rs, mcp/); tools/review.rs moved to `rove-review` (re-exported)
+src/tools/        moved to `rove-tools` (crates/tools); `crate::tools::*` re-exported from lib.rs. Only the delegate turn-driver stays — in `engine/subrun.rs` — because it must call the turn primitives
 src/agents/       moved to `rove-agents` (crates/agents); `crate::agents::*` re-exported from lib.rs
 src/context/      ContextManager, compaction
 src/memory/       moved to `rove-state` (crates/state); `crate::memory::*` re-exported from lib.rs
@@ -21,7 +21,7 @@ src/conversation.rs  unified conversation message domain
 
 ## Conventions
 
-- This crate depends only on `rove-models`, `rove-core`, `rove-protocol`, `rove-foundation`, `rove-agents`, `rove-state`, `rove-review`, and `rove-tools-text` — never on any app crate.
+- This crate depends only on `rove-models`, `rove-core`, `rove-protocol`, `rove-foundation`, `rove-agents`, `rove-state`, `rove-review`, `rove-tools`, and `rove-tools-text` — never on any app crate.
 - Errors: internally use `thiserror` for typed errors with a stable `code`. Do not leak `anyhow` into the public API.
 - New serializable fields always get `#[serde(default)]`, plus `skip_serializing_if` where appropriate, so old traces and snapshots still decode and unmodified records keep their exact bytes.
 - Events may only be added, never have semantics changed. When `StreamEvent` changes, persistence, API/SSE, Web, and `tests/event_contract.rs` all change together.

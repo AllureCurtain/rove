@@ -82,8 +82,9 @@ impl McpCatalogSnapshot {
 pub fn mcp_tool_identity(server_name: &str, remote_name: &str) -> (String, String) {
     let sanitized_server = bounded_identity_component(server_name, "server");
     let sanitized_tool = bounded_identity_component(remote_name, "tool");
-    let identity_hash =
-        crate::prompt_metadata::stable_hash(&format!("mcp-tool:v1:{server_name}\0{remote_name}"));
+    let identity_hash = rove_foundation::prompt_metadata::stable_hash(&format!(
+        "mcp-tool:v1:{server_name}\0{remote_name}"
+    ));
     let short_hash = identity_hash
         .strip_prefix("sha256:")
         .unwrap_or(&identity_hash)
@@ -237,8 +238,9 @@ fn parse_catalog_entry(
         })?;
     }
     let annotations = parse_annotations(tool.get("annotations"))?;
-    let raw_descriptor_hash =
-        crate::prompt_metadata::stable_hash(&serde_json::to_string(tool).unwrap_or_default());
+    let raw_descriptor_hash = rove_foundation::prompt_metadata::stable_hash(
+        &serde_json::to_string(tool).unwrap_or_default(),
+    );
     Ok(McpCatalogEntry {
         remote_name,
         local_name,
@@ -369,7 +371,7 @@ impl CatalogBuilder {
             server_name: self.server_name,
             protocol_version: self.protocol_version,
             server_identity_hash: self.server_identity_hash.unwrap_or_else(|| {
-                crate::prompt_metadata::stable_hash("mcp-server:unnegotiated:v1")
+                rove_foundation::prompt_metadata::stable_hash("mcp-server:unnegotiated:v1")
             }),
             entries: self.entries,
             catalog_hash,
@@ -398,7 +400,7 @@ fn catalog_hash(server_name: &str, protocol_version: &str, entries: &[McpCatalog
         "protocol_version": protocol_version,
         "tools": projection,
     });
-    crate::prompt_metadata::stable_hash(&payload.to_string())
+    rove_foundation::prompt_metadata::stable_hash(&payload.to_string())
 }
 
 #[cfg(test)]

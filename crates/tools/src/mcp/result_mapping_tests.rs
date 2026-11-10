@@ -4,7 +4,7 @@ use rove_core::{ArtifactTrust, ToolArtifactKind, ToolContentBlock, ToolResultOut
 use serde_json::json;
 
 use super::result_mapping::{McpResultContext, decode_base64_strict, envelope_from_mcp_result};
-use crate::state::tool_artifacts::{MAX_SINGLE_ARTIFACT_BYTES, ToolArtifactStore};
+use rove_state::state::tool_artifacts::{MAX_SINGLE_ARTIFACT_BYTES, ToolArtifactStore};
 
 fn context<'a>(store: Option<&'a ToolArtifactStore>) -> McpResultContext<'a> {
     McpResultContext {

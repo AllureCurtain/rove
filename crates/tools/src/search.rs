@@ -6,13 +6,13 @@ use regex::{Regex, RegexBuilder};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::environment::{
-    EnvironmentError, Observation, WorkspaceEntryKind, WorkspaceTraversalOptions,
-};
-use crate::tools::coding::map_environment_error;
-use crate::tools::runtime_context::runtime_tool_services;
+use crate::coding::map_environment_error;
+use crate::runtime_context::runtime_tool_services;
 use rove_core::ToolDescriptor;
 use rove_core::{Tool, ToolContext, ToolError, ToolOutput};
+use rove_foundation::environment::{
+    EnvironmentError, Observation, WorkspaceEntryKind, WorkspaceTraversalOptions,
+};
 
 /// Built-in structured workspace search (not shell `rg`, not vector RAG).
 pub struct SearchCodeTool {
@@ -394,7 +394,7 @@ impl Tool for SearchCodeTool {
 }
 
 async fn scan_filesystem(
-    filesystem: &dyn crate::environment::WorkspaceFileSystem,
+    filesystem: &dyn rove_foundation::environment::WorkspaceFileSystem,
     request: SearchScanRequest<'_>,
 ) -> Result<SearchScan, EnvironmentError> {
     let SearchScanRequest {
@@ -544,12 +544,12 @@ async fn scan_filesystem(
         complete,
         truncated_reason: truncated_reason
             .or_else(|| traversal.truncated.then(|| "max_files_scanned".to_string())),
-        version: crate::context::prompt_metadata::stable_hash(&version_material),
+        version: rove_foundation::prompt_metadata::stable_hash(&version_material),
     })
 }
 
 async fn search_continuation_start(
-    services: &crate::tools::runtime_context::RuntimeToolServices,
+    services: &crate::runtime_context::RuntimeToolServices,
     continuation: Option<&str>,
     source: &str,
     version: &str,
@@ -614,7 +614,7 @@ fn compile_glob(pattern: &str) -> Result<globset::GlobMatcher, ToolError> {
     } else {
         format!("**/{pattern}")
     };
-    crate::tools::coding::compile_workspace_glob(&pattern)
+    crate::coding::compile_workspace_glob(&pattern)
 }
 
 fn exact_search_output(mut result: SearchOutput) -> Result<(SearchOutput, String), ToolError> {

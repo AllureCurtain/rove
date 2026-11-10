@@ -8,6 +8,7 @@ pub(crate) mod plan_loop;
 pub mod recovery;
 pub(crate) mod run_loop;
 pub(crate) mod step_runner;
+pub(crate) mod subrun;
 pub(crate) mod tool_turn;
 
 pub use control::{RunControlHandle, SteerId, SteerMessage};

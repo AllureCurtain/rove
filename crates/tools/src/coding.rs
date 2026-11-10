@@ -5,13 +5,13 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::environment::{
-    CheckpointFile, EnvironmentError, Observation, VersionedFile, WorkspaceEntryKind,
-    WorkspaceTraversal, WorkspaceTraversalOptions,
-};
-use crate::tools::runtime_context::{RuntimeToolServices, runtime_tool_services};
+use crate::runtime_context::{RuntimeToolServices, runtime_tool_services};
 use rove_core::{
     Tool, ToolContext, ToolDescriptor, ToolError, ToolMutation, ToolMutationOperation, ToolOutput,
+};
+use rove_foundation::environment::{
+    CheckpointFile, EnvironmentError, Observation, VersionedFile, WorkspaceEntryKind,
+    WorkspaceTraversal, WorkspaceTraversalOptions,
 };
 
 pub(crate) const MAX_VERSIONED_FILE_BYTES: usize = 16 * 1024 * 1024;

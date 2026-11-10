@@ -2,10 +2,10 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::environment::EnvironmentError;
-use crate::tools::coding::map_environment_error;
-use crate::tools::runtime_context::runtime_tool_services;
+use crate::coding::map_environment_error;
+use crate::runtime_context::runtime_tool_services;
 use rove_core::{Tool, ToolContext, ToolDescriptor, ToolError, ToolOutput};
+use rove_foundation::environment::EnvironmentError;
 
 const MAX_REPOSITORY_MAP_BYTES: usize = 32 * 1024;
 const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
@@ -124,7 +124,7 @@ impl Tool for RepositoryMapTool {
         }
         members.sort();
         members.dedup();
-        let digest = crate::context::prompt_metadata::stable_hash(&identity);
+        let digest = rove_foundation::prompt_metadata::stable_hash(&identity);
         let mut result = RepositoryMap {
             source: "verified_manifests",
             manifests,

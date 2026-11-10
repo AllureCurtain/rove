@@ -6,14 +6,14 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::Value;
 
-use crate::memory::durable::{MemoryScope, MemoryType, parse_frontmatter};
-use crate::memory::management::{
+use crate::runtime_context::runtime_tool_services;
+use rove_core::ToolDescriptor;
+use rove_core::{Tool, ToolContext, ToolError, ToolOutput};
+use rove_state::memory::durable::{MemoryScope, MemoryType, parse_frontmatter};
+use rove_state::memory::management::{
     checked_topic_file, is_valid_memory_topic_slug, management_guard,
     recover_interrupted_index_replacement, write_memory_index_unlocked,
 };
-use crate::tools::runtime_context::runtime_tool_services;
-use rove_core::ToolDescriptor;
-use rove_core::{Tool, ToolContext, ToolError, ToolOutput};
 
 const MAX_MEMORY_INDEX_LINES: usize = 200;
 const MAX_MEMORY_INDEX_BYTES: usize = 25_000;
@@ -652,7 +652,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::memory::management::delete_memory_topic_for_product_sync;
+    use rove_state::memory::management::delete_memory_topic_for_product_sync;
 
     #[test]
     fn normalized_topic_stays_valid_after_unicode_lowercase_expansion() {

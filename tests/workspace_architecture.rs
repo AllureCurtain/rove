@@ -126,7 +126,7 @@ fn local_package_dependencies_follow_the_modular_workspace_direction() {
     );
     assert_eq!(
         local_dependencies
-            .get("rove-runtime")
+            .get("rove-tools")
             .cloned()
             .unwrap_or_default(),
         BTreeSet::from([
@@ -139,7 +139,25 @@ fn local_package_dependencies_follow_the_modular_workspace_direction() {
             "rove-state".to_string(),
             "rove-tools-text".to_string(),
         ]),
-        "rove-runtime must depend only on rove-models, rove-core, rove-foundation, rove-agents, rove-state, rove-review, rove-protocol and rove-tools-text among local packages"
+        "rove-tools must depend only on rove-foundation, rove-agents, rove-state, rove-review, rove-core, rove-models, rove-protocol and rove-tools-text among local packages"
+    );
+    assert_eq!(
+        local_dependencies
+            .get("rove-runtime")
+            .cloned()
+            .unwrap_or_default(),
+        BTreeSet::from([
+            "rove-agents".to_string(),
+            "rove-core".to_string(),
+            "rove-foundation".to_string(),
+            "rove-models".to_string(),
+            "rove-protocol".to_string(),
+            "rove-review".to_string(),
+            "rove-state".to_string(),
+            "rove-tools".to_string(),
+            "rove-tools-text".to_string(),
+        ]),
+        "rove-runtime must depend only on rove-models, rove-core, rove-foundation, rove-agents, rove-state, rove-review, rove-tools, rove-protocol and rove-tools-text among local packages"
     );
     assert_eq!(
         local_dependencies
@@ -222,6 +240,22 @@ fn local_dependency_is_allowed(package: &str, dependency: &str) -> bool {
         // Read-only review domain: contracts, capture/sanitize/finalize, and
         // the submission tools; foundation data + core/models/protocol only.
         "rove-review" => matches!(dependency, "rove-models" | "rove-core" | "rove-foundation"),
+        // Built-in tools, Executor pipeline, hooks, and the MCP client: the
+        // extracted crates below runtime plus core/models/protocol, never
+        // runtime itself. The delegate turn-driver stays in rove-runtime so
+        // this edge never becomes a cycle.
+        "rove-tools" => {
+            matches!(
+                dependency,
+                "rove-models"
+                    | "rove-core"
+                    | "rove-foundation"
+                    | "rove-agents"
+                    | "rove-state"
+                    | "rove-review"
+                    | "rove-tools-text"
+            )
+        }
         "rove-runtime" => {
             matches!(
                 dependency,
@@ -231,6 +265,7 @@ fn local_dependency_is_allowed(package: &str, dependency: &str) -> bool {
                     | "rove-agents"
                     | "rove-state"
                     | "rove-review"
+                    | "rove-tools"
                     | "rove-tools-text"
             )
         }
