@@ -8938,7 +8938,7 @@ export interface operations {
                 limit_runs?: number;
                 /**
                  * @description Newest canonical-event contract version this client can decode, as
-                 *     defined by `STREAM_EVENT_KINDS` in `runtime/src/foundation/events.rs`.
+                 *     defined by `STREAM_EVENT_KINDS` in `crates/foundation/src/events.rs`.
                  *     Omit to keep the legacy contract: every durable row the server can decode
                  *     is delivered. When a version is declared, a durable row whose kind
                  *     entered the contract after it is withheld and reported as an
