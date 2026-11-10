@@ -838,9 +838,7 @@ impl WorkspaceFileSystem for LocalFileSystem {
                 let file_type = entry.file_type();
                 if file_type.is_some_and(|kind| kind.is_symlink())
                     || std::fs::symlink_metadata(entry.path())
-                        .map(|metadata| {
-                            crate::boundary::is_symlink_or_reparse(&metadata)
-                        })
+                        .map(|metadata| crate::boundary::is_symlink_or_reparse(&metadata))
                         .unwrap_or(false)
                 {
                     traversal.link_entries = traversal.link_entries.saturating_add(1);
