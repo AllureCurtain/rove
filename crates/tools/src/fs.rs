@@ -4,16 +4,16 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::environment::{
-    EnvironmentError, FileMutationOperation, Observation, WorkspaceEntryKind,
-};
-use crate::tools::coding::{
+use crate::coding::{
     MAX_TOOL_CONTENT_BYTES, MAX_VERSIONED_FILE_BYTES, file_source, localized_diff,
     map_environment_error, normalize_tool_path, require_file_observation,
 };
-use crate::tools::runtime_context::runtime_tool_services;
+use crate::runtime_context::runtime_tool_services;
 use rove_core::ToolDescriptor;
 use rove_core::{Tool, ToolContext, ToolError, ToolMutation, ToolMutationOperation, ToolOutput};
+use rove_foundation::environment::{
+    EnvironmentError, FileMutationOperation, Observation, WorkspaceEntryKind,
+};
 
 /// Read a UTF-8 file inside the workspace.
 pub struct FsReadTool;
@@ -94,7 +94,7 @@ impl Tool for FsReadTool {
                 reason: "Missing required argument: path".to_string(),
             })?;
         let normalized_path = normalize_tool_path(raw_path)?;
-        if crate::environment::is_sensitive_traversal_path(&normalized_path) {
+        if rove_foundation::environment::is_sensitive_traversal_path(&normalized_path) {
             return Err(ToolError::PermissionDenied {
                 reason: "sensitive workspace paths are not model-readable".to_string(),
             });

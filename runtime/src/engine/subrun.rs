@@ -1,47 +1,38 @@
-//! Fork-A subagent delegation: a `task` tool that runs a nested
-//! [`run_agent_kernel`] synchronously inside the parent run.
+//! Driver half of Fork-A subagent delegation.
 //!
-//! The parent model sees a single `task` tool result. The child kernel's own
-//! [`StreamEvent`]s travel to the parent event stream already wrapped in
-//! [`StreamEvent::SubagentEvent`], so every consumer sees one flat stream and
-//! model-history projection drops the wrapped events automatically.
-//!
-//! The `SubRunSpawner` is attached to the invocation's [`ToolContext`] by the
-//! engine at run time (it needs the live model client and the event sink, which
-//! do not exist when the tool registry is built). An embedding that never
-//! attaches a spawner gets a clean
-//! `delegation is not available in this embedding` error rather than a panic.
+//! The request/outcome types, the [`SubRunSpawn`] trait, and the `task` tool
+//! itself live in `rove-tools`; this module holds everything that must touch
+//! the engine's turn primitives (`run_model_turn`, `run_tool_turn`,
+//! `ToolTurnContext`, `append_tool_history`) to actually drive a child kernel.
+//! `tool_turn.rs` attaches the spawner to each invocation's `ToolContext` as
+//! `Arc<dyn SubRunSpawn>` so `DelegateTool` resolves it without naming this
+//! type.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_stream::stream;
-use async_trait::async_trait;
 use futures::future::BoxFuture;
 use futures::stream::{BoxStream, StreamExt};
-use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use rove_core::{
     AgentKernelHost, KernelBeforeModelTurnItem, KernelFinalAction, KernelHook, KernelItem,
     KernelLimits, KernelModelTurnItem, KernelState, KernelTermination, KernelToolAction,
-    KernelToolTurnItem, Tool, ToolContext, ToolDescriptor, ToolError, ToolOutput, ToolRegistry,
-    run_agent_kernel,
+    KernelToolTurnItem, ToolRegistry, run_agent_kernel,
 };
-use rove_models::{Message, ModelClient, ModelToolSchema, Usage};
+use rove_models::{Message, ModelClient, ModelToolSchema};
+use rove_tools::delegate::{
+    DELEGATE_TOOL_NAME, SubRunApprovalParts, SubRunError, SubRunOutcome, SubRunRequest,
+    SubRunSpawn, SubUsageLedger, SubagentRegistry,
+};
+use rove_tools::runtime_context::RuntimeToolServices;
 
 use crate::engine::model_turn::{ModelTurnItem, run_model_turn};
 use crate::engine::tool_turn::{
     ToolAction, ToolTurnContext, ToolTurnItem, ToolTurnOutcome, append_tool_history, run_tool_turn,
 };
 use crate::events::StreamEvent;
-use crate::hooks::HookRegistry;
-use crate::tools::runtime_context::RuntimeToolServices;
-
-/// Model-facing name of the delegation tool. Exported so the engine can filter
-/// it out of a child's own registry snapshot (a delegated run may not delegate).
-pub const DELEGATE_TOOL_NAME: &str = "task";
 
 /// Hard cap on delegation depth. The child is built without a model or event
 /// sink on its tool context, so it can never spawn in this phase; the guard is
@@ -60,103 +51,6 @@ const MAX_TURNS_LIMIT: u32 = 64;
 const MAX_TOOL_CALLS_LIMIT: u32 = 256;
 const MAX_REPAIRS_LIMIT: u32 = 4;
 
-/// What the parent model is allowed to ask for.
-#[derive(Debug, Clone)]
-pub struct SubRunRequest {
-    /// The child's task, presented as its single user message.
-    pub prompt: String,
-    /// Optional agent label; validated but not selected against — there is
-    /// exactly one child profile in this phase. Kept so the wire schema does
-    /// not change when stage 3 adds routing.
-    #[allow(dead_code)]
-    pub agent: Option<String>,
-    /// Optional cap on the child's model turns. Clamped to `MAX_TURNS_LIMIT`.
-    pub max_turns: Option<u32>,
-}
-
-/// What the parent engine needs back: the child's final answer for the tool
-/// result, plus the counters the parent budget must absorb.
-#[derive(Debug)]
-pub struct SubRunOutcome {
-    /// The child's final text, or `None` when it never produced one.
-    pub output: Option<String>,
-    /// Token usage accumulated across all child model turns.
-    pub usage: Usage,
-    /// Kernel counters the parent budget should also charge.
-    pub model_turns: u32,
-    pub tool_calls: u32,
-    pub repairs: u32,
-}
-
-/// Live child cancellation handles keyed by the parent `task` call that
-/// spawned them.
-///
-/// The map is the control surface for per-subagent stop: a `SubRunSpawner`
-/// registers its child token under its `parent_call_id` while the sub-run is
-/// driving its kernel, and removes the entry when the run ends, so a lookup
-/// that misses means the subagent is already gone. The `Engine` holds the
-/// registry for a run; embeddings that need child-scoped cancel (the API's
-/// `/jobs/{job_id}/subagents/{call_id}/stop`) inject a shared clone so the
-/// handle the route cancels is the same token the kernel is polling.
-///
-/// `std::sync::Mutex` is deliberate: critical sections are map inserts and
-/// removes only — no `.await` is ever held across one.
-#[derive(Debug, Default, Clone)]
-pub struct SubagentRegistry {
-    tokens: Arc<std::sync::Mutex<HashMap<rove_core::CallId, CancellationToken>>>,
-}
-
-impl SubagentRegistry {
-    /// Record the child token a sub-run is about to drive. A second
-    /// registration under the same `parent_call_id` replaces the first;
-    /// `parent_call_id` is the engine's per-call identity, so a collision
-    /// would already mean two tool calls share one id.
-    pub fn register(&self, parent_call_id: rove_core::CallId, token: CancellationToken) {
-        self.tokens
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(parent_call_id, token);
-    }
-
-    /// Drop the entry when its sub-run ends. An absent id is fine — the entry
-    /// may never have been registered (e.g. a depth-refused run).
-    pub fn remove(&self, parent_call_id: &rove_core::CallId) {
-        self.tokens
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(parent_call_id);
-    }
-
-    /// Cancel the live subagent under `parent_call_id`. `false` means the id
-    /// is unknown or its sub-run already ended — the caller maps that to a
-    /// not-found rather than treating it as a second stop of a dead child.
-    pub fn cancel(&self, parent_call_id: &rove_core::CallId) -> bool {
-        let token = self
-            .tokens
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(parent_call_id)
-            .cloned();
-        match token {
-            Some(token) if !token.is_cancelled() => {
-                token.cancel();
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// Parent call ids with a live registration, for introspection and tests.
-    pub fn active_ids(&self) -> Vec<rove_core::CallId> {
-        self.tokens
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .keys()
-            .copied()
-            .collect()
-    }
-}
-
 /// Removes a sub-run's registry entry when dropped, so `SubRunSpawner::run`
 /// cannot leak a dead token through any of its early-return paths.
 struct SubagentRegistration {
@@ -170,66 +64,15 @@ impl Drop for SubagentRegistration {
     }
 }
 
-/// Usage a delegated sub-run has spent, pushed to a shared ledger the parent
-/// run loop drains when it charges its own `ExecutionBudgetTracker`.
-///
-/// Kept as a plain tuple list rather than a running total so each `task` call
-/// contributes exactly one entry and nothing is double-charged on a retry.
-#[derive(Debug, Default)]
-pub struct SubUsageLedger {
-    entries: Vec<(u32, u32, u32, Usage)>,
-}
-
-impl SubUsageLedger {
-    pub fn record(&mut self, model_turns: u32, tool_calls: u32, repairs: u32, usage: Usage) {
-        self.entries.push((model_turns, tool_calls, repairs, usage));
-    }
-
-    /// Take every recorded sub-run's counters. Draining means each entry is
-    /// charged exactly once even if a caller polls more than once.
-    pub fn drain(&mut self) -> Vec<(u32, u32, u32, Usage)> {
-        std::mem::take(&mut self.entries)
-    }
-}
-
-/// Errors the tool maps to `ToolError` without a panic.
-#[derive(Debug, thiserror::Error)]
-pub enum SubRunError {
-    #[error("delegation depth limit reached")]
-    DepthLimit,
-    #[error("subagent run was cancelled")]
-    Cancelled,
-    #[error("subagent model call failed: {0}")]
-    ModelFailed(String),
-    #[error("subagent reached its model-turn limit")]
-    TurnLimit,
-    #[error("subagent reached its tool-call limit")]
-    ToolCallLimit,
-    #[error("subagent reached its repair limit")]
-    RepairLimit,
-    #[error("subagent ended without a final answer")]
-    Incomplete,
-}
-
-/// Approval/hook/provider pieces a child `ToolTurnContext` needs that are not
-/// part of `RuntimeToolServices`. Public so the engine can fill them from its
-/// own `ToolTurnContext` when it builds the spawner.
-#[derive(Clone)]
-pub struct SubRunApprovalParts {
-    pub approval_decision: crate::types::ApprovalDecision,
-    pub approval_provider: Option<Arc<dyn crate::types::ToolApprovalProvider>>,
-    pub hooks: HookRegistry,
-    pub run_mode: crate::types::RunMode,
-}
-
 /// Runs one delegation request to completion inside the current tool call.
 ///
-/// Owned by the engine through `ToolContext::with_extension`. Holds everything
-/// a child kernel needs that the tool itself does not know: the live model
-/// client, a frozen registry snapshot (with `task` already removed), runtime
-/// services for child tool contexts, the side-channel into the parent event
-/// stream, the parent call identity, and the depth guard.
-pub struct SubRunSpawner {
+/// Owned by the engine through `ToolContext::with_extension` (as
+/// `Arc<dyn SubRunSpawn>`). Holds everything a child kernel needs that the
+/// tool itself does not know: the live model client, a frozen registry
+/// snapshot (with `task` already removed), runtime services for child tool
+/// contexts, the side-channel into the parent event stream, the parent call
+/// identity, and the depth guard.
+pub(crate) struct SubRunSpawner {
     model: Arc<dyn ModelClient>,
     /// Frozen when the tool turn started, so a catalog refresh during the
     /// child run cannot swap tools underneath it. It still contains `task` —
@@ -259,7 +102,7 @@ pub struct SubRunSpawner {
 
 impl SubRunSpawner {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         model: Arc<dyn ModelClient>,
         registry: ToolRegistry,
         services: RuntimeToolServices,
@@ -287,7 +130,7 @@ impl SubRunSpawner {
     /// [`SubRunSpawner::run`] registers the token it actually drives under
     /// `parent_call_id`; this helper stays for callers that need a child token
     /// without running the kernel.
-    pub fn child_token_for(&self, parent: &CancellationToken) -> CancellationToken {
+    fn child_token_for(&self, parent: &CancellationToken) -> CancellationToken {
         parent.child_token()
     }
 
@@ -298,7 +141,7 @@ impl SubRunSpawner {
     /// future per-subagent stop can target just this child. Every
     /// `KernelItem::Event` is pushed into the side channel as
     /// `SubagentEvent { parent_call_id }`.
-    pub async fn run(
+    async fn run(
         &self,
         request: SubRunRequest,
         parent_token: &CancellationToken,
@@ -414,6 +257,20 @@ impl SubRunSpawner {
             | KernelTermination::IncompleteModelTurn
             | KernelTermination::IncompleteToolTurn => Err(SubRunError::Incomplete),
         }
+    }
+}
+
+impl SubRunSpawn for SubRunSpawner {
+    fn run<'a>(
+        &'a self,
+        request: SubRunRequest,
+        parent_token: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<SubRunOutcome, SubRunError>> {
+        Box::pin(SubRunSpawner::run(self, request, parent_token))
+    }
+
+    fn child_token_for(&self, parent: &CancellationToken) -> CancellationToken {
+        SubRunSpawner::child_token_for(self, parent)
     }
 }
 
@@ -603,122 +460,6 @@ impl AgentKernelHost for SubagentKernelHost {
     fn finish_output(&mut self, _state: &KernelState) -> Self::Output {}
 }
 
-/// The model-facing `task` tool. Stateless: everything it needs arrives on the
-/// `ToolContext` extensions the engine attached for this call.
-pub struct DelegateTool;
-
-impl DelegateTool {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for DelegateTool {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl Tool for DelegateTool {
-    fn schema(&self) -> ToolDescriptor {
-        ToolDescriptor {
-            name: DELEGATE_TOOL_NAME.to_string(),
-            description: "Delegate a bounded subtask to a nested agent that runs \
-                with the same tools and workspace, then returns its final \
-                answer. Use for self-contained work that benefits from an \
-                isolated context."
-                .to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "The task the subagent should complete"
-                    },
-                    "agent": {
-                        "type": "string",
-                        "description": "Optional agent label for the sub-run"
-                    },
-                    "max_turns": {
-                        "type": "integer",
-                        "description": "Optional cap on the subagent's model turns"
-                    }
-                },
-                "required": ["prompt"],
-                "additionalProperties": false
-            }),
-            destructive: false,
-            // It spends the parent budget and can run other tools, so it must
-            // never run inside a parallel batch.
-            parallel_safe: false,
-            capability_id: Some("agent.delegate.task".to_string()),
-            capability: None,
-        }
-    }
-
-    async fn execute(&self, args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
-        let prompt = args
-            .get("prompt")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|prompt| !prompt.is_empty())
-            .ok_or_else(|| ToolError::InvalidArgs {
-                reason: "Missing required argument: prompt".to_string(),
-            })?
-            .to_string();
-        let agent = args
-            .get("agent")
-            .and_then(|value| value.as_str())
-            .map(str::to_string);
-        let max_turns = args
-            .get("max_turns")
-            .and_then(|value| value.as_u64())
-            .and_then(|value| u32::try_from(value).ok());
-
-        let Some(spawner) = ctx.extension::<SubRunSpawner>() else {
-            return Err(ToolError::ExecutionFailed {
-                reason: "delegation is not available in this embedding".to_string(),
-            });
-        };
-
-        match spawner
-            .run(
-                SubRunRequest {
-                    prompt,
-                    agent,
-                    max_turns,
-                },
-                &ctx.cancel_token,
-            )
-            .await
-        {
-            Ok(outcome) => Ok(tool_output_for_subrun(outcome)),
-            Err(SubRunError::DepthLimit) => Err(ToolError::PermissionDenied {
-                reason: "delegation depth limit reached".to_string(),
-            }),
-            Err(SubRunError::Cancelled) => Err(ToolError::ExecutionFailed {
-                reason: "subagent run was cancelled".to_string(),
-            }),
-            Err(error) => Err(ToolError::ExecutionFailed {
-                reason: error.to_string(),
-            }),
-        }
-    }
-}
-
-/// Pack the child's final answer into the tool result.
-///
-/// The budget counters are charged separately through `SubUsageLedger`, so the
-/// envelope carries only the single text truth — nothing the model never needs
-/// to see is duplicated into a structured side-channel.
-fn tool_output_for_subrun(outcome: SubRunOutcome) -> ToolOutput {
-    let text = outcome
-        .output
-        .unwrap_or_else(|| "subagent finished without a final answer".to_string());
-    ToolOutput::from_envelope(rove_core::ToolOutputEnvelope::text(text))
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -727,17 +468,18 @@ mod tests {
 
     use rove_core::{CallId, Tool, ToolContext, ToolRegistry};
     use rove_models::{FakeModelClient, FakeTurn};
-
-    use super::{
-        DelegateTool, MAX_DELEGATION_DEPTH, SubRunApprovalParts, SubRunRequest, SubRunSpawner,
-        SubUsageLedger, SubagentRegistry,
+    use rove_tools::delegate::{
+        DelegateTool, SubRunApprovalParts, SubRunError, SubRunRequest, SubRunSpawn, SubUsageLedger,
+        SubagentRegistry,
     };
+    use rove_tools::echo::EchoTool;
+    use rove_tools::runtime_context::RuntimeToolServices;
+
+    use super::{MAX_DELEGATION_DEPTH, SubRunSpawner};
     use crate::environment::local_environment;
     use crate::events::StreamEvent;
     use crate::hooks::HookRegistry;
     use crate::memory::paths::MemoryPaths;
-    use crate::tools::echo::EchoTool;
-    use crate::tools::runtime_context::RuntimeToolServices;
     use crate::types::{ApprovalDecision, ApprovalPolicy, RunMode};
     use crate::workspace::Workspace;
 
@@ -782,44 +524,6 @@ mod tests {
         (spawner, ledger, subagents)
     }
 
-    #[test]
-    fn task_schema_requires_prompt() {
-        let descriptor = DelegateTool::new().schema();
-        assert_eq!(descriptor.name, "task");
-        assert!(!descriptor.destructive);
-        assert!(!descriptor.parallel_safe);
-        assert_eq!(
-            descriptor.parameters["required"],
-            serde_json::json!(["prompt"])
-        );
-        assert_eq!(descriptor.parameters["additionalProperties"], false);
-    }
-
-    #[tokio::test]
-    async fn delegate_tool_fails_cleanly_without_a_spawner() {
-        let ctx = ToolContext::new(CallId::new(), CancellationToken::new());
-        let error = DelegateTool::new()
-            .execute(serde_json::json!({"prompt": "do a thing"}), &ctx)
-            .await
-            .unwrap_err();
-        match error {
-            rove_core::ToolError::ExecutionFailed { reason } => {
-                assert!(reason.contains("delegation is not available"));
-            }
-            other => panic!("expected ExecutionFailed, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn delegate_tool_validates_prompt_presence() {
-        let ctx = ToolContext::new(CallId::new(), CancellationToken::new());
-        let error = DelegateTool::new()
-            .execute(serde_json::json!({"prompt": "   "}), &ctx)
-            .await
-            .unwrap_err();
-        assert!(matches!(error, rove_core::ToolError::InvalidArgs { .. }));
-    }
-
     #[tokio::test]
     async fn depth_guard_refuses_nested_delegation() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -837,17 +541,17 @@ mod tests {
             MAX_DELEGATION_DEPTH,
         );
 
-        let result = spawner
-            .run(
-                SubRunRequest {
-                    prompt: "go deeper".to_string(),
-                    agent: None,
-                    max_turns: None,
-                },
-                &CancellationToken::new(),
-            )
-            .await;
-        assert!(matches!(result, Err(super::SubRunError::DepthLimit)));
+        let result = SubRunSpawn::run(
+            &spawner,
+            SubRunRequest {
+                prompt: "go deeper".to_string(),
+                agent: None,
+                max_turns: None,
+            },
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(result, Err(SubRunError::DepthLimit)));
     }
 
     /// The core Fork-A contract: a scripted child turn runs a real tool call,
@@ -878,17 +582,17 @@ mod tests {
         let (spawner, ledger, _subagents) =
             fixture_spawner(model, registry, &workspace, events, parent_call_id, 0);
 
-        let outcome = spawner
-            .run(
-                SubRunRequest {
-                    prompt: "say hi via echo".to_string(),
-                    agent: None,
-                    max_turns: Some(8),
-                },
-                &CancellationToken::new(),
-            )
-            .await
-            .expect("the sub-run completes");
+        let outcome = SubRunSpawn::run(
+            &spawner,
+            SubRunRequest {
+                prompt: "say hi via echo".to_string(),
+                agent: None,
+                max_turns: Some(8),
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("the sub-run completes");
 
         assert_eq!(outcome.output.as_deref(), Some("the child answer"));
         assert_eq!(outcome.model_turns, 2);
@@ -955,6 +659,7 @@ mod tests {
         let (spawner, _ledger, _subagents) =
             fixture_spawner(model, registry, &workspace, events, CallId::new(), 0);
 
+        let spawner: Arc<dyn SubRunSpawn> = Arc::new(spawner);
         let ctx = ToolContext::new(CallId::new(), CancellationToken::new())
             .with_extension(Arc::new(spawner));
         let output = DelegateTool::new()
@@ -1009,16 +714,16 @@ mod tests {
         let run = tokio::spawn({
             let parent_token = parent_token.clone();
             async move {
-                spawner
-                    .run(
-                        SubRunRequest {
-                            prompt: "hold".to_string(),
-                            agent: None,
-                            max_turns: Some(4),
-                        },
-                        &parent_token,
-                    )
-                    .await
+                SubRunSpawn::run(
+                    &spawner,
+                    SubRunRequest {
+                        prompt: "hold".to_string(),
+                        agent: None,
+                        max_turns: Some(4),
+                    },
+                    &parent_token,
+                )
+                .await
             }
         });
 
@@ -1033,7 +738,7 @@ mod tests {
 
         assert!(subagents.cancel(&parent_call_id));
         let result = run.await.expect("the sub-run task completes");
-        assert!(matches!(result, Err(super::SubRunError::Cancelled)));
+        assert!(matches!(result, Err(SubRunError::Cancelled)));
         assert!(
             !parent_token.is_cancelled(),
             "a child-scoped stop must not reach the parent token"
@@ -1058,17 +763,17 @@ mod tests {
         let (spawner, _ledger, subagents) =
             fixture_spawner(model, registry, &workspace, events, parent_call_id, 0);
 
-        spawner
-            .run(
-                SubRunRequest {
-                    prompt: "finish".to_string(),
-                    agent: None,
-                    max_turns: Some(4),
-                },
-                &CancellationToken::new(),
-            )
-            .await
-            .expect("the sub-run completes");
+        SubRunSpawn::run(
+            &spawner,
+            SubRunRequest {
+                prompt: "finish".to_string(),
+                agent: None,
+                max_turns: Some(4),
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("the sub-run completes");
 
         assert!(subagents.active_ids().is_empty());
         assert!(!subagents.cancel(&parent_call_id));

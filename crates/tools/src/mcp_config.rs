@@ -517,7 +517,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::tools::mcp_proxy::McpTransportPolicy;
+    use crate::mcp_proxy::McpTransportPolicy;
 
     fn config_path(temp: &TempDir) -> PathBuf {
         temp.path().join(".rove/mcp_servers.json")

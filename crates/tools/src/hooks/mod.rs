@@ -5,13 +5,13 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use tokio_util::sync::CancellationToken;
 
-use crate::events::StreamEvent;
-use crate::memory::paths::MemoryPaths;
-use crate::types::{
+use rove_core::ToolError;
+use rove_foundation::events::StreamEvent;
+use rove_foundation::root::Workspace;
+use rove_foundation::types::{
     JobId, PlanStep, RunId, SessionId, TerminationReason, ToolContext, ToolMutation, ToolResult,
 };
-use crate::workspace::Workspace;
-use rove_core::ToolError;
+use rove_state::memory::paths::MemoryPaths;
 
 mod session_memory;
 
@@ -91,8 +91,8 @@ impl RunSummary {
             StreamEvent::StepResult { record }
                 if matches!(
                     record.status,
-                    crate::execution::StepRecordStatus::Succeeded
-                        | crate::execution::StepRecordStatus::Skipped
+                    rove_foundation::execution::StepRecordStatus::Succeeded
+                        | rove_foundation::execution::StepRecordStatus::Skipped
                 ) =>
             {
                 let title = self

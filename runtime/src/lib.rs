@@ -9,6 +9,7 @@
 //!   engine/       Engine facade, run/plan/tool/model turn loops
 //!   planning/     ExecutionPolicy, planner, plan evaluator
 //!   tools/        built-in tools, Executor, hooks, tool input
+//!                  (moved to rove-tools)
 //!   state/        StateStore, trace, artifacts, resume
 //!                  (moved to rove-state)
 //!   memory/       durable + session memory
@@ -24,10 +25,13 @@
 //!
 //! `rove-foundation` (crates/foundation) holds the serialized identity and
 //! lifecycle data, `rove-agents` (crates/agents) the agent catalog,
-//! `rove-state` (crates/state) the durable run state, and `rove-review`
-//! (crates/review) the read-only Review domain extracted from this crate.
+//! `rove-state` (crates/state) the durable run state, `rove-review`
+//! (crates/review) the read-only Review domain, and `rove-tools`
+//! (crates/tools) the built-in tools and Executor pipeline extracted from
+//! this crate. The delegate turn-driver stays here in `engine::subrun`
+//! because it must call the engine's turn primitives.
 //! Historic flat public paths (`execution`, `executor`, `hooks`, `types`,
-//! `events`, `foundation`, `state`, `memory`, `review`, `tools::review`, …)
+//! `events`, `foundation`, `state`, `memory`, `review`, `tools::*`, …)
 //! remain available as crate-root re-exports so apps and integration tests do
 //! not need a mass import rewrite in this PR.
 
@@ -78,7 +82,33 @@ pub mod planning;
 /// snapshot-backed submission tools) lives in `rove-review`;
 /// `rove_runtime::review::*` resolves as before.
 pub mod review;
-pub mod tools;
+/// Built-in tools, the `Executor` pipeline, hooks, MCP, and tool input moved
+/// to `rove-tools` (crates/tools); `rove_runtime::tools::*` resolves exactly
+/// as before via this re-export. The sub-run driver (`SubRunSpawner`) stays in
+/// `engine::subrun` because it must call the engine's turn primitives.
+pub mod tools {
+    pub use rove_tools::coding;
+    pub use rove_tools::delegate;
+    pub use rove_tools::echo;
+    pub use rove_tools::executor;
+    pub use rove_tools::fs;
+    pub use rove_tools::history;
+    pub use rove_tools::hooks;
+    pub use rove_tools::mcp;
+    pub use rove_tools::mcp_config;
+    pub use rove_tools::mcp_proxy;
+    pub use rove_tools::memory;
+    pub use rove_tools::repository;
+    pub use rove_tools::request_input;
+    pub use rove_tools::review;
+    pub use rove_tools::runtime_context;
+    pub use rove_tools::search;
+    pub use rove_tools::shell;
+    #[doc(hidden)]
+    pub use rove_tools::tool_input;
+
+    pub use rove_tools::Executor;
+}
 
 /// Durable run state (StateStore, trace, task_state, report, SQLite index,
 /// repair, reconciliation, Tool Artifacts) lives in `rove-state`

@@ -1,16 +1,16 @@
-use crate::boundary::check_tool_allowed;
 use crate::hooks::{HookRegistry, PostToolHookContext};
-use crate::review::{descriptor_allowed, is_review_mode};
-use crate::tool_input::RegisteredUserInput;
-use crate::tools::runtime_context::runtime_tool_services;
-use crate::types::{
-    CallId, ToolContext, ToolDescriptor, ToolExecutionMetadata, ToolMutation, ToolResult,
-    ToolRiskLevel,
-};
+use crate::runtime_context::runtime_tool_services;
 use rove_core::{
     ArtifactTrust, Sensitivity, ToolArtifactKind, ToolArtifactSource, ToolError,
     ToolOutputEnvelope, ToolRegistry, ToolResultOutcome,
 };
+use rove_foundation::boundary::check_tool_allowed;
+use rove_foundation::types::{
+    CallId, ToolContext, ToolDescriptor, ToolExecutionMetadata, ToolMutation, ToolResult,
+    ToolRiskLevel,
+};
+use rove_foundation::user_input::RegisteredUserInput;
+use rove_review::{descriptor_allowed, is_review_mode};
 use tokio::sync::mpsc;
 
 /// The executor runs tools through the pipeline.
@@ -77,7 +77,7 @@ impl<'a> Executor<'a> {
         check_tool_allowed(&schema, services.approval_policy)?;
 
         // Step 5: execute
-        let mut output = crate::tool_input::scope(
+        let mut output = rove_foundation::user_input::scope(
             call_id,
             input_events,
             self.registry.execute(name, args.clone(), ctx),
@@ -149,9 +149,9 @@ async fn retain_eligible_output(
             ToolArtifactKind::Text,
             output.content.as_bytes(),
             source,
-            crate::state::tool_artifacts::ArtifactClaim {
+            rove_state::state::tool_artifacts::ArtifactClaim {
                 mime_type: Some("text/plain; charset=utf-8".to_string()),
-                ..crate::state::tool_artifacts::ArtifactClaim::default()
+                ..rove_state::state::tool_artifacts::ArtifactClaim::default()
             },
             sensitivity,
             ArtifactTrust::LocalTool,
@@ -542,18 +542,18 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{Executor, local_tool_output_sensitivity};
-    use crate::environment::local_environment;
-    use crate::memory::paths::MemoryPaths;
-    use crate::state::tool_artifacts::ToolArtifactStore;
-    use crate::tools::runtime_context::{
+    use crate::runtime_context::{
         runtime_tool_context, runtime_tool_context_with_mode_and_artifacts,
     };
-    use crate::types::{
+    use rove_core::{Sensitivity, Tool, ToolOutput, ToolRegistry};
+    use rove_foundation::environment::local_environment;
+    use rove_foundation::root::Workspace;
+    use rove_foundation::types::{
         ApprovalPolicy, CallId, RunId, RunMode, ToolContext, ToolDescriptor, ToolExecutionStatus,
         ToolMutation, ToolMutationOperation, ToolRiskLevel,
     };
-    use crate::workspace::Workspace;
-    use rove_core::{Sensitivity, Tool, ToolOutput, ToolRegistry};
+    use rove_state::memory::paths::MemoryPaths;
+    use rove_state::state::tool_artifacts::ToolArtifactStore;
 
     struct MutatingTool;
 

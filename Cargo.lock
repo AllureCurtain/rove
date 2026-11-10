@@ -4580,17 +4580,11 @@ dependencies = [
 name = "rove-runtime"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-stream",
  "async-trait",
  "chrono",
- "fs2",
  "futures",
- "globset",
- "ignore",
  "insta",
- "regex",
- "reqwest",
  "rove-agents",
  "rove-core",
  "rove-foundation",
@@ -4598,19 +4592,17 @@ dependencies = [
  "rove-protocol",
  "rove-review",
  "rove-state",
+ "rove-tools",
  "rove-tools-text",
  "rusqlite",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
- "toml 0.8.23",
  "tracing",
  "ulid",
- "walkdir",
 ]
 
 [[package]]
@@ -4635,6 +4627,36 @@ dependencies = [
  "tokio",
  "tracing",
  "ulid",
+]
+
+[[package]]
+name = "rove-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "futures",
+ "globset",
+ "regex",
+ "reqwest",
+ "rove-agents",
+ "rove-core",
+ "rove-foundation",
+ "rove-models",
+ "rove-protocol",
+ "rove-review",
+ "rove-state",
+ "rove-tools-text",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "toml 0.8.23",
+ "tracing",
 ]
 
 [[package]]

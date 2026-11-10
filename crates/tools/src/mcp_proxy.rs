@@ -13,16 +13,16 @@ use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use crate::environment::{
-    EnvironmentError, ExecutionEnvironment, StdioProcessGuard, local_environment,
-};
-use crate::state::tool_artifacts::ToolArtifactStore;
-use crate::tools::mcp::catalog::{
+use crate::mcp::catalog::{
     CatalogBuilder, McpCatalogSnapshot, McpToolAnnotations, mcp_server_namespace,
     parse_catalog_page,
 };
-use crate::tools::mcp::protocol::{negotiate_protocol_version, server_identity_hash};
-use crate::workspace::Workspace;
+use crate::mcp::protocol::{negotiate_protocol_version, server_identity_hash};
+use rove_foundation::environment::{
+    EnvironmentError, ExecutionEnvironment, StdioProcessGuard, local_environment,
+};
+use rove_foundation::root::Workspace;
+use rove_state::state::tool_artifacts::ToolArtifactStore;
 
 use rove_core::ToolDescriptor;
 use rove_core::{
@@ -321,7 +321,7 @@ pub async fn register_mcp_tools_with_environment(
 struct ActivatedMcpServer {
     tools: Vec<Box<dyn Tool>>,
     catalog: McpCatalogSnapshot,
-    refresh_client: Option<Arc<crate::tools::mcp::client::StreamableHttpClient>>,
+    refresh_client: Option<Arc<crate::mcp::client::StreamableHttpClient>>,
 }
 
 async fn activate_mcp_server(
@@ -399,7 +399,7 @@ fn catalog_from_tool_infos(infos: &[McpToolInfo]) -> anyhow::Result<McpCatalogSn
         server_identity_hash: first.server_identity_hash.clone(),
         entries: infos
             .iter()
-            .map(|tool| crate::tools::mcp::catalog::McpCatalogEntry {
+            .map(|tool| crate::mcp::catalog::McpCatalogEntry {
                 remote_name: tool.remote_name.clone(),
                 local_name: tool.schema.name.clone(),
                 title: None,
@@ -408,7 +408,7 @@ fn catalog_from_tool_infos(infos: &[McpToolInfo]) -> anyhow::Result<McpCatalogSn
                 output_schema: tool.output_schema.clone(),
                 annotations: tool.annotations.clone(),
                 capability_id: tool.schema.capability_id.clone().unwrap_or_default(),
-                raw_descriptor_hash: crate::prompt_metadata::stable_hash(
+                raw_descriptor_hash: rove_foundation::prompt_metadata::stable_hash(
                     &serde_json::to_string(&tool.schema).unwrap_or_default(),
                 ),
             })
@@ -418,7 +418,7 @@ fn catalog_from_tool_infos(infos: &[McpToolInfo]) -> anyhow::Result<McpCatalogSn
 }
 
 fn streamable_http_proxy_tools(
-    client: Arc<crate::tools::mcp::client::StreamableHttpClient>,
+    client: Arc<crate::mcp::client::StreamableHttpClient>,
     catalog: &McpCatalogSnapshot,
 ) -> Vec<Box<dyn Tool>> {
     tool_infos_from_catalog(catalog)
@@ -433,7 +433,7 @@ fn streamable_http_proxy_tools(
 }
 
 fn spawn_streamable_catalog_controller(
-    client: Arc<crate::tools::mcp::client::StreamableHttpClient>,
+    client: Arc<crate::mcp::client::StreamableHttpClient>,
     server: McpServerConfig,
     publisher: ToolRegistryPublisher,
     state: Weak<McpRuntimeState>,
@@ -498,7 +498,7 @@ fn mcp_refresh_backoff(consecutive_failures: u32) -> Duration {
 }
 
 async fn refresh_streamable_catalog(
-    client: &Arc<crate::tools::mcp::client::StreamableHttpClient>,
+    client: &Arc<crate::mcp::client::StreamableHttpClient>,
     server: &McpServerConfig,
     publisher: &ToolRegistryPublisher,
     state: &Weak<McpRuntimeState>,
@@ -606,7 +606,7 @@ fn server_runtime_snapshot(
 }
 
 fn configured_server_identity_hash(server: &McpServerConfig) -> String {
-    crate::prompt_metadata::stable_hash(&format!(
+    rove_foundation::prompt_metadata::stable_hash(&format!(
         "mcp-server-config:v1:{}:{:?}",
         server.name, server.transport
     ))
@@ -628,14 +628,14 @@ fn safe_server_config_hash(server: &McpServerConfig) -> String {
     env_names.extend(server.env_names.clone());
     env_names.sort();
     env_names.dedup();
-    crate::prompt_metadata::stable_hash(
+    rove_foundation::prompt_metadata::stable_hash(
         &serde_json::json!({
             "name": server.name,
             "enabled": server.enabled,
             "required": server.required,
             "transport": server.transport,
-            "command_hash": crate::prompt_metadata::stable_hash(&server.command),
-            "args_hash": crate::prompt_metadata::stable_hash(&serde_json::to_string(&server.args).unwrap_or_default()),
+            "command_hash": rove_foundation::prompt_metadata::stable_hash(&server.command),
+            "args_hash": rove_foundation::prompt_metadata::stable_hash(&serde_json::to_string(&server.args).unwrap_or_default()),
             "env_names": env_names,
             "endpoint": endpoint,
             "policy": server.policy,
@@ -683,7 +683,7 @@ fn activation_failure_code(error: &anyhow::Error) -> &'static str {
 /// and the error name the variable and the reason, and neither ever names the
 /// value.
 pub fn resolve_mcp_server_environment(server: McpServerConfig) -> anyhow::Result<McpServerConfig> {
-    let secrets = crate::secrets::registry();
+    let secrets = rove_foundation::secrets::registry();
     resolve_mcp_server_environment_with(
         server,
         |name| std::env::var(name).ok(),
@@ -702,7 +702,7 @@ enum ValueDecision {
     /// The authority holds the value and will redact it everywhere it emits.
     Registered,
     /// The authority refused it, with the reason when it reports one.
-    Refused(Option<crate::secrets::SecretRefusalReason>),
+    Refused(Option<rove_foundation::secrets::SecretRefusalReason>),
 }
 
 /// The injectable form of [`resolve_mcp_server_environment`].
@@ -723,7 +723,7 @@ fn resolve_mcp_server_environment_with(
         }
         let value = lookup(name)
             .ok_or_else(|| anyhow::anyhow!("MCP environment variable `{name}` is unavailable"))?;
-        if !crate::secrets::is_registrable_value(&value) {
+        if !rove_foundation::secrets::is_registrable_value(&value) {
             // The bailed message never carries the value.
             anyhow::bail!(
                 "MCP environment variable `{name}` does not hold a registrable credential value"
@@ -835,7 +835,7 @@ fn classify_mcp_probe_error(error: anyhow::Error) -> McpProbeFailure {
         McpProbeFailureKind::Timeout
     } else if error.chain().any(|source| {
         source
-            .downcast_ref::<crate::tools::mcp::protocol::McpProtocolError>()
+            .downcast_ref::<crate::mcp::protocol::McpProtocolError>()
             .is_some()
             || source.downcast_ref::<serde_json::Error>().is_some()
             || source
@@ -875,7 +875,7 @@ impl Tool for McpProxyTool {
     }
 
     async fn execute(&self, args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
-        let services = crate::tools::runtime_context::runtime_tool_services(ctx).ok();
+        let services = crate::runtime_context::runtime_tool_services(ctx).ok();
         let artifacts = services.and_then(|services| services.tool_artifacts.as_deref());
         let started = std::time::Instant::now();
         let result = self
@@ -888,7 +888,7 @@ impl Tool for McpProxyTool {
         let duration_ms = elapsed_millis(started);
         let context = mcp_result_context(&self.tool, ctx, artifacts, duration_ms, None);
         Ok(ToolOutput::from_envelope(
-            crate::tools::mcp::result_mapping::envelope_from_mcp_result(&result, &context).await,
+            crate::mcp::result_mapping::envelope_from_mcp_result(&result, &context).await,
         ))
     }
 }
@@ -1346,7 +1346,7 @@ impl Tool for McpSseProxyTool {
     }
 
     async fn execute(&self, args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
-        let services = crate::tools::runtime_context::runtime_tool_services(ctx).ok();
+        let services = crate::runtime_context::runtime_tool_services(ctx).ok();
         let artifacts = services.and_then(|services| services.tool_artifacts.as_deref());
         let started = std::time::Instant::now();
         let result = self
@@ -1359,7 +1359,7 @@ impl Tool for McpSseProxyTool {
         let duration_ms = elapsed_millis(started);
         let context = mcp_result_context(&self.tool, ctx, artifacts, duration_ms, None);
         Ok(ToolOutput::from_envelope(
-            crate::tools::mcp::result_mapping::envelope_from_mcp_result(&result, &context).await,
+            crate::mcp::result_mapping::envelope_from_mcp_result(&result, &context).await,
         ))
     }
 }
@@ -1372,17 +1372,17 @@ impl Tool for McpSseProxyTool {
 /// works while a public endpoint still requires TLS.
 async fn connect_streamable_http(
     server: &McpServerConfig,
-) -> anyhow::Result<crate::tools::mcp::client::StreamableHttpClient> {
-    use crate::tools::mcp::client::{McpClientPolicy, StreamableHttpClient};
-    use crate::tools::mcp::http_safety::HttpEndpointPolicy;
-    use crate::tools::mcp::streamable_http::{StreamableHttpPolicy, streamable_http_transport};
+) -> anyhow::Result<crate::mcp::client::StreamableHttpClient> {
+    use crate::mcp::client::{McpClientPolicy, StreamableHttpClient};
+    use crate::mcp::http_safety::HttpEndpointPolicy;
+    use crate::mcp::streamable_http::{StreamableHttpPolicy, streamable_http_transport};
 
     let transport = streamable_http_transport(
         &server.url,
         StreamableHttpPolicy {
             request_timeout_ms: server.policy.request_timeout_ms,
             endpoint: HttpEndpointPolicy::loopback_permitted(),
-            max_reconnect_attempts: crate::tools::mcp::streamable_http::MAX_MCP_RECONNECT_ATTEMPTS,
+            max_reconnect_attempts: crate::mcp::streamable_http::MAX_MCP_RECONNECT_ATTEMPTS,
         },
     )
     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
@@ -1406,7 +1406,7 @@ async fn connect_streamable_http(
 /// Remote annotations are ignored for safety: every MCP tool stays destructive
 /// and non-parallel-safe until the local safety path says otherwise.
 async fn streamable_http_tool_infos(
-    client: &crate::tools::mcp::client::StreamableHttpClient,
+    client: &crate::mcp::client::StreamableHttpClient,
 ) -> anyhow::Result<Vec<McpToolInfo>> {
     let snapshot = client
         .discover_catalog()
@@ -1443,7 +1443,7 @@ fn tool_infos_from_catalog(snapshot: &McpCatalogSnapshot) -> Vec<McpToolInfo> {
 }
 
 pub struct McpStreamableHttpProxyTool {
-    client: Arc<crate::tools::mcp::client::StreamableHttpClient>,
+    client: Arc<crate::mcp::client::StreamableHttpClient>,
     tool: McpToolInfo,
 }
 
@@ -1454,7 +1454,7 @@ pub struct McpStreamableHttpProxyTool {
 /// or artifact ledger can prove two calls shared a session without carrying the
 /// value that would let a reader resume it.
 fn session_correlation_hash(session_id: &str) -> String {
-    crate::prompt_metadata::stable_hash(&format!("mcp-session:v1:{session_id}"))
+    rove_foundation::prompt_metadata::stable_hash(&format!("mcp-session:v1:{session_id}"))
 }
 
 impl McpStreamableHttpProxyTool {
@@ -1467,8 +1467,8 @@ impl McpStreamableHttpProxyTool {
         ctx: &ToolContext<'_>,
         artifacts: Option<&'a ToolArtifactStore>,
         duration_ms: u64,
-    ) -> crate::tools::mcp::result_mapping::McpResultContext<'a> {
-        crate::tools::mcp::result_mapping::McpResultContext {
+    ) -> crate::mcp::result_mapping::McpResultContext<'a> {
+        crate::mcp::result_mapping::McpResultContext {
             call_id: ctx.call_id.to_string(),
             remote_tool_name: self.tool.remote_name.clone(),
             server_config_id: self.tool.server_name.clone(),
@@ -1504,7 +1504,7 @@ impl Tool for McpStreamableHttpProxyTool {
         // Services are optional here on purpose: an embedding without a run
         // directory still gets a correct envelope, it just cannot retain binary
         // payloads, and the mapping records that loss instead of inlining bytes.
-        let services = crate::tools::runtime_context::runtime_tool_services(ctx).ok();
+        let services = crate::runtime_context::runtime_tool_services(ctx).ok();
         let artifacts = services.and_then(|services| services.tool_artifacts.as_deref());
 
         let started = std::time::Instant::now();
@@ -1515,8 +1515,7 @@ impl Tool for McpStreamableHttpProxyTool {
             Ok(result) => {
                 let context = self.result_context(ctx, artifacts, duration_ms).await;
                 let envelope =
-                    crate::tools::mcp::result_mapping::envelope_from_mcp_result(&result, &context)
-                        .await;
+                    crate::mcp::result_mapping::envelope_from_mcp_result(&result, &context).await;
                 Ok(ToolOutput::from_envelope(envelope))
             }
             // A committed request whose effect is unknown must not be presented
@@ -1524,7 +1523,7 @@ impl Tool for McpStreamableHttpProxyTool {
             Err(error) if error.is_indeterminate() => {
                 let context = self.result_context(ctx, artifacts, duration_ms).await;
                 Ok(ToolOutput::from_envelope(
-                    crate::tools::mcp::result_mapping::indeterminate_envelope(
+                    crate::mcp::result_mapping::indeterminate_envelope(
                         &context,
                         &error.to_string(),
                     ),
@@ -1547,8 +1546,8 @@ fn mcp_result_context<'a>(
     artifacts: Option<&'a ToolArtifactStore>,
     duration_ms: u64,
     session_hash: Option<String>,
-) -> crate::tools::mcp::result_mapping::McpResultContext<'a> {
-    crate::tools::mcp::result_mapping::McpResultContext {
+) -> crate::mcp::result_mapping::McpResultContext<'a> {
+    crate::mcp::result_mapping::McpResultContext {
         call_id: ctx.call_id.to_string(),
         remote_tool_name: tool.remote_name.clone(),
         server_config_id: tool.server_name.clone(),
@@ -1676,7 +1675,7 @@ mod refresh_health_tests {
         assert_eq!(failure.kind, McpProbeFailureKind::NoTools);
 
         let protocol = classify_mcp_probe_error(anyhow::Error::new(
-            crate::tools::mcp::protocol::McpProtocolError::MalformedFrame,
+            crate::mcp::protocol::McpProtocolError::MalformedFrame,
         ));
         assert_eq!(protocol.kind, McpProbeFailureKind::Protocol);
     }
@@ -1783,7 +1782,11 @@ mod environment_resolution_tests {
         let error = resolve_mcp_server_environment_with(
             server,
             |_| Some(canary.to_string()),
-            |_| ValueDecision::Refused(Some(crate::secrets::SecretRefusalReason::ValueCapReached)),
+            |_| {
+                ValueDecision::Refused(Some(
+                    rove_foundation::secrets::SecretRefusalReason::ValueCapReached,
+                ))
+            },
         )
         .unwrap_err();
 

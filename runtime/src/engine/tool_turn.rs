@@ -8,14 +8,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agents::AgentRuntimeProfile;
 use crate::agents::instructions::normalize_workspace_target;
+use crate::engine::subrun::SubRunSpawner;
 use crate::environment::ExecutionEnvironment;
 use crate::events::StreamEvent;
-use crate::executor::Executor;
-use crate::hooks::HookRegistry;
 use crate::memory::paths::MemoryPaths;
 use crate::state::tool_artifacts::{ArtifactLedgerEntry, ToolArtifactStore};
 use crate::tool_input::RegisteredUserInput;
-use crate::tools::runtime_context::runtime_tool_context_with_mode_and_artifacts;
 use crate::types::{
     ApprovalDecision, ApprovalPolicy, CallId, Message, PendingToolApproval, ToolApprovalProvider,
     ToolApprovalRequest, ToolCallAction, ToolCallRef, ToolExecutionMetadata, ToolExecutionStatus,
@@ -25,6 +23,12 @@ use crate::workspace::Workspace;
 use rove_core::ToolError;
 use rove_core::ToolRegistry;
 use rove_models::{InternalCallId, ToolResultStatus};
+use rove_tools::delegate::{SubRunApprovalParts, SubRunSpawn, SubUsageLedger, SubagentRegistry};
+use rove_tools::executor::Executor;
+use rove_tools::hooks::HookRegistry;
+use rove_tools::runtime_context::{
+    RuntimeToolServices, runtime_tool_context_with_mode_and_artifacts,
+};
 
 const APPROVAL_REASON: &str = "destructive tool requires explicit approval";
 
@@ -175,10 +179,10 @@ pub(crate) struct ToolTurnContext<'a> {
     pub subagent_depth: u8,
     /// Shared sink a delegated sub-run's kernel counters land in. The owning
     /// run loop drains it when it charges its `ExecutionBudgetTracker`.
-    pub subagent_usage_ledger: Arc<std::sync::Mutex<crate::tools::delegate::SubUsageLedger>>,
+    pub subagent_usage_ledger: Arc<std::sync::Mutex<SubUsageLedger>>,
     /// Live child cancel handles for this run's `task` calls, shared with the
     /// embedding so a per-subagent stop can reach exactly one subagent.
-    pub subagents: crate::tools::delegate::SubagentRegistry,
+    pub subagents: SubagentRegistry,
 }
 
 #[derive(Debug)]
@@ -317,6 +321,7 @@ impl<'a> ToolTurnContext<'a> {
             self.run_mode,
         );
         if let Some(spawner) = self.build_subrun_spawner(call.call_id, subagent_events) {
+            let spawner: Arc<dyn SubRunSpawn> = Arc::new(spawner);
             tool_context = tool_context.with_extension(Arc::new(spawner));
         }
         let result = executor
@@ -338,7 +343,7 @@ impl<'a> ToolTurnContext<'a> {
         &self,
         parent_call_id: CallId,
         events: Option<mpsc::Sender<StreamEvent>>,
-    ) -> Option<crate::tools::delegate::SubRunSpawner> {
+    ) -> Option<SubRunSpawner> {
         let (model, events) = (self.model.as_ref()?, events?);
         // Snapshot so an MCP catalog refresh cannot change the child's tool
         // surface mid-run. `task` stays registered (a `ToolRegistry` has no
@@ -346,10 +351,10 @@ impl<'a> ToolTurnContext<'a> {
         // context is built without a model or side-channel, so a dispatched
         // `task` there degrades through `DelegateTool`'s absent-spawner error.
         let registry = self.registry.snapshot();
-        Some(crate::tools::delegate::SubRunSpawner::new(
+        Some(SubRunSpawner::new(
             Arc::clone(model),
             registry,
-            crate::tools::runtime_context::RuntimeToolServices {
+            RuntimeToolServices {
                 workspace: self.workspace.clone(),
                 environment: Arc::clone(&self.environment),
                 memory_paths: self.memory_paths.clone(),
@@ -358,7 +363,7 @@ impl<'a> ToolTurnContext<'a> {
                 tool_artifacts: self.tool_artifacts.clone(),
                 run_mode: self.run_mode,
             },
-            crate::tools::delegate::SubRunApprovalParts {
+            SubRunApprovalParts {
                 approval_decision: self.approval_decision,
                 approval_provider: self.approval_provider.clone(),
                 hooks: self.hooks.clone(),
@@ -809,10 +814,8 @@ mod tests {
     };
     use crate::environment::local_environment;
     use crate::events::StreamEvent;
-    use crate::hooks::HookRegistry;
     use crate::memory::paths::MemoryPaths;
     use crate::state::tool_artifacts::{ArtifactClaim, ToolArtifactStore};
-    use crate::tools::echo::EchoTool;
     use crate::types::{
         ApprovalDecision, ApprovalPolicy, CallId, PendingUserInput, ToolCallAction,
         ToolExecutionStatus, UserInputProvider, UserInputRequest,
@@ -822,6 +825,9 @@ mod tests {
         ArtifactTrust, Sensitivity, Tool, ToolArtifactKind, ToolArtifactSource, ToolContext,
         ToolDescriptor, ToolError, ToolOutput, ToolOutputEnvelope, ToolRegistry,
     };
+    use rove_tools::delegate::{SubUsageLedger, SubagentRegistry};
+    use rove_tools::echo::EchoTool;
+    use rove_tools::hooks::HookRegistry;
 
     struct ImmediateInputProvider;
 
@@ -934,10 +940,8 @@ mod tests {
             run_mode: crate::types::RunMode::Normal,
             model: None,
             subagent_depth: 0,
-            subagent_usage_ledger: Arc::new(std::sync::Mutex::new(
-                crate::tools::delegate::SubUsageLedger::default(),
-            )),
-            subagents: crate::tools::delegate::SubagentRegistry::default(),
+            subagent_usage_ledger: Arc::new(std::sync::Mutex::new(SubUsageLedger::default())),
+            subagents: SubagentRegistry::default(),
         };
 
         assert!(base.can_run_parallel_batch(&calls));
@@ -972,10 +976,8 @@ mod tests {
             run_mode: crate::types::RunMode::Normal,
             model: None,
             subagent_depth: 0,
-            subagent_usage_ledger: Arc::new(std::sync::Mutex::new(
-                crate::tools::delegate::SubUsageLedger::default(),
-            )),
-            subagents: crate::tools::delegate::SubagentRegistry::default(),
+            subagent_usage_ledger: Arc::new(std::sync::Mutex::new(SubUsageLedger::default())),
+            subagents: SubagentRegistry::default(),
         };
         let action = ToolAction::Call(ToolCallAction {
             call_id: CallId::new(),
@@ -1027,10 +1029,8 @@ mod tests {
             run_mode: crate::types::RunMode::Normal,
             model: None,
             subagent_depth: 0,
-            subagent_usage_ledger: Arc::new(std::sync::Mutex::new(
-                crate::tools::delegate::SubUsageLedger::default(),
-            )),
-            subagents: crate::tools::delegate::SubagentRegistry::default(),
+            subagent_usage_ledger: Arc::new(std::sync::Mutex::new(SubUsageLedger::default())),
+            subagents: SubagentRegistry::default(),
         };
         let items = run_tool_turn(
             ctx,

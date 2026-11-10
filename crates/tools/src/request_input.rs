@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::tools::runtime_context::runtime_tool_services;
+use crate::runtime_context::runtime_tool_services;
 use rove_core::ToolDescriptor;
 use rove_core::{Tool, ToolContext, ToolError, ToolOutput};
 
@@ -45,7 +45,8 @@ impl Tool for RequestInputTool {
 
         if let Some(provider) = &runtime_tool_services(ctx)?.input_provider {
             let answer =
-                crate::tool_input::request_input(provider.as_ref(), prompt.clone()).await?;
+                rove_foundation::user_input::request_input(provider.as_ref(), prompt.clone())
+                    .await?;
             return Ok(ToolOutput::text(answer));
         }
 

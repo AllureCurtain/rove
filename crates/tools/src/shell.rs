@@ -4,11 +4,13 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::environment::{BackgroundProcessStatus, EnvironmentError, Observation, ProcessRequest};
-use crate::tools::coding::map_environment_error;
-use crate::tools::runtime_context::runtime_tool_services;
+use crate::coding::map_environment_error;
+use crate::runtime_context::runtime_tool_services;
 use rove_core::{Tool, ToolContext, ToolError, ToolOutput};
 use rove_core::{ToolCapability, ToolDescriptor};
+use rove_foundation::environment::{
+    BackgroundProcessStatus, EnvironmentError, Observation, ProcessRequest,
+};
 
 /// Execute a shell command in the workspace.
 pub struct ShellTool {

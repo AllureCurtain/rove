@@ -25,7 +25,7 @@ use rove_core::{
 };
 use serde_json::Value;
 
-use crate::state::tool_artifacts::{ArtifactClaim, ToolArtifactStore};
+use rove_state::state::tool_artifacts::{ArtifactClaim, ToolArtifactStore};
 
 /// Everything the mapping needs that does not come from the result itself.
 pub struct McpResultContext<'a> {

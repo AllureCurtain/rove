@@ -1,4 +1,8 @@
 //! Built-in tools, tool executor pipeline, hooks, and input registration.
+//!
+//! Extracted from `rove-runtime` (the historic `runtime/src/tools/` tree);
+//! `rove_runtime::tools::*` and the flat `rove_runtime::{executor, hooks,
+//! tool_input}` paths resolve unchanged through re-export shims.
 
 pub mod coding;
 pub mod delegate;

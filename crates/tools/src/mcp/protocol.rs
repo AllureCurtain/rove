@@ -491,7 +491,7 @@ pub fn server_identity_hash(result: &Value) -> Result<String, McpProtocolError> 
         });
     }
     let canonical_capabilities = canonical_json(capabilities);
-    Ok(crate::prompt_metadata::stable_hash(
+    Ok(rove_foundation::prompt_metadata::stable_hash(
         &serde_json::json!({
             "name": name,
             "version": version,

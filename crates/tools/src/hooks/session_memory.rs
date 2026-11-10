@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 
 use crate::hooks::{PostRunHook, PostRunHookContext};
-use crate::memory::session::write_session_summary_to_dir_sync;
-use crate::types::{TerminationReason, ToolMutationOperation};
+use rove_foundation::types::{TerminationReason, ToolMutationOperation};
+use rove_state::memory::session::write_session_summary_to_dir_sync;
 
 pub struct SessionMemoryHook;
 

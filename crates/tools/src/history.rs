@@ -2,11 +2,11 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::state::tool_artifacts::is_valid_artifact_id;
-use crate::tools::runtime_context::runtime_tool_services;
+use crate::runtime_context::runtime_tool_services;
 use rove_core::{
     ArtifactId, Sensitivity, Tool, ToolContext, ToolDescriptor, ToolError, ToolOutput,
 };
+use rove_state::state::tool_artifacts::is_valid_artifact_id;
 
 const MAX_ARTIFACT_RESOLVE_BYTES: usize = 64 * 1024;
 
@@ -142,13 +142,13 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::environment::local_environment;
-    use crate::memory::paths::MemoryPaths;
-    use crate::state::tool_artifacts::{ArtifactClaim, ToolArtifactStore};
-    use crate::tools::runtime_context::runtime_tool_context_with_artifacts;
-    use crate::types::{ApprovalPolicy, CallId};
-    use crate::workspace::Workspace;
+    use crate::runtime_context::runtime_tool_context_with_artifacts;
     use rove_core::{ArtifactTrust, ToolArtifactKind, ToolArtifactSource};
+    use rove_foundation::environment::local_environment;
+    use rove_foundation::root::Workspace;
+    use rove_foundation::types::{ApprovalPolicy, CallId};
+    use rove_state::memory::paths::MemoryPaths;
+    use rove_state::state::tool_artifacts::{ArtifactClaim, ToolArtifactStore};
     use tokio_util::sync::CancellationToken;
 
     fn context<'a>(workspace: &'a Workspace, store: Arc<ToolArtifactStore>) -> ToolContext<'a> {
