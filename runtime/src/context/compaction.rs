@@ -528,8 +528,12 @@ impl CompactionRuntime {
 /// The predicate is deliberately one function: the snapshot writer and the run
 /// path have to agree about which session a breaker belongs to, or one of them
 /// would inherit what the other carries forward.
+///
+/// The predicate itself moved to `rove-state` with `TaskState`: the
+/// session-breaker contract is a property of the persisted snapshot, and the
+/// snapshot writer there reads it without depending back on this crate.
 pub(crate) fn inherits_session_breaker(resume_state: &TaskState, session_id: SessionId) -> bool {
-    resume_state.session_id == session_id
+    rove_state::inherits_session_breaker(resume_state, session_id)
 }
 
 #[derive(Debug, Clone)]

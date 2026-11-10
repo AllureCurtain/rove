@@ -4574,6 +4574,7 @@ dependencies = [
  "rove-foundation",
  "rove-models",
  "rove-protocol",
+ "rove-state",
  "rove-tools-text",
  "rusqlite",
  "serde",
@@ -4588,6 +4589,30 @@ dependencies = [
  "ulid",
  "utoipa",
  "walkdir",
+]
+
+[[package]]
+name = "rove-state"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "fs2",
+ "insta",
+ "rove-agents",
+ "rove-core",
+ "rove-foundation",
+ "rove-models",
+ "rove-protocol",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "ulid",
 ]
 
 [[package]]

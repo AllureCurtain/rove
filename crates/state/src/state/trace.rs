@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 
 use super::index::StateIndex;
-use crate::events::{StreamEvent, TraceEntry};
 use crate::types::RunId;
+use rove_foundation::events::{StreamEvent, TraceEntry};
 
 /// Self-describing envelope for one `trace.jsonl` line.
 ///
@@ -135,7 +135,7 @@ impl TraceWriter {
         let line = TraceLine {
             ts: now_rfc3339(),
             seq,
-            event: TraceEntry::Link(crate::events::TraceLink::ResumedFrom {
+            event: TraceEntry::Link(rove_foundation::events::TraceLink::ResumedFrom {
                 from_run,
                 through_seq,
             }),
@@ -169,7 +169,7 @@ impl TraceWriter {
         let line = TraceLine {
             ts: started_at.clone(),
             seq: RUN_META_SEQ,
-            event: TraceEntry::Meta(crate::events::RunMeta::RunIdentity {
+            event: TraceEntry::Meta(rove_foundation::events::RunMeta::RunIdentity {
                 session_id,
                 job_id,
                 run_id,
@@ -192,7 +192,7 @@ impl TraceWriter {
         // export's pattern pass remains the backstop for values the runtime was
         // never told about, and still runs on read in the export and the trace
         // search.
-        let json = crate::secrets::registry().redact_json_text(&json);
+        let json = rove_foundation::secrets::registry().redact_json_text(&json);
         writeln!(file, "{}", json)?;
         Ok(json)
     }
@@ -210,7 +210,7 @@ impl TraceWriter {
 /// disclosure there would be no less a disclosure.
 pub(crate) fn redact_event_json(event: &StreamEvent) -> std::io::Result<String> {
     let bare = serde_json::to_string(event).map_err(std::io::Error::other)?;
-    Ok(crate::secrets::registry().redact_json_text(&bare))
+    Ok(rove_foundation::secrets::registry().redact_json_text(&bare))
 }
 
 /// Manages the run directory structure under `.rove/runs/<run_id>/`.
@@ -253,8 +253,8 @@ impl RunStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::secrets::{KNOWN_SECRET_MARKER, registry};
     use crate::types::RunId;
+    use rove_foundation::secrets::{KNOWN_SECRET_MARKER, registry};
 
     fn model_status(message: &str) -> StreamEvent {
         StreamEvent::ModelStatus {
@@ -336,7 +336,7 @@ mod tests {
         let written = std::fs::read_to_string(writer.path()).unwrap();
         assert!(!written.contains("innocent-value"), "{written}");
         assert!(
-            written.contains(crate::secrets::DECLARED_SECRET_FIELD_MARKER),
+            written.contains(rove_foundation::secrets::DECLARED_SECRET_FIELD_MARKER),
             "{written}"
         );
         // The line is still a well-formed trace envelope.

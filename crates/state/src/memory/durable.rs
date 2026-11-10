@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::Workspace;
+use rove_foundation::Workspace;
 
 const MAX_MEMORY_INDEX_LINES: usize = 200;
 const MAX_MEMORY_INDEX_BYTES: usize = 25_000;

@@ -15,7 +15,10 @@ A local-first coding agent: one persistent Rust runtime powering Desktop, Web, C
 ```
 models/          rove-models: model protocols, provider adapters, routing, Fake model (no local deps)
 core/            rove-core: in-memory Agent kernel, Tool contract and registry
-runtime/         rove-runtime: Engine, planning, state and recovery, tools/MCP, memory, context; conventions in runtime/AGENTS.md
+crates/foundation/  rove-foundation: serialized identity/lifecycle data, workspace boundary types
+crates/agents/   rove-agents: AgentDefinition, run profiles, instructions, procedure catalog
+crates/state/    rove-state: durable run state, trace, SQLite index, durable memory
+runtime/         rove-runtime: Engine, planning, tools/MCP, memory, context; conventions in runtime/AGENTS.md
 protocol/        rove-protocol: lowest-level shared types
 tools-text/      rove-tools-text: text tool helpers
 apps/bootstrap/  rove-app-bootstrap: configuration, Project Trust, Engine assembly
@@ -31,7 +34,7 @@ scripts/         development, integration, and acceptance scripts
 docs/            project documentation
 ```
 
-Dependencies flow one way only: `rove-models <- rove-core <- rove-runtime <- rove-app-bootstrap <- {rove-cli, rove-api, rove-bench}`; `rove-product-store <- rove-api <- rove-desktop`; `rove-protocol` is the lowest-level type shared by core/runtime; `rove-models` has no local dependencies. Guarded by `tests/workspace_architecture.rs`.
+Dependencies flow one way only: `rove-models <- rove-core <- rove-foundation <- rove-agents <- rove-state <- rove-runtime <- rove-app-bootstrap <- {rove-cli, rove-api, rove-bench}`; `rove-product-store <- rove-api <- rove-desktop`; `rove-protocol` is the lowest-level type shared by core/runtime; `rove-models` has no local dependencies. Guarded by `tests/workspace_architecture.rs`.
 
 ## Common commands
 
@@ -57,7 +60,7 @@ cd apps/web && pnpm test && pnpm typecheck             # Web
 - With no provider key and no network, local deterministic execution must work (`--model fake`).
 - Secrets must never appear in committed config, logs, traces, reports, API responses, screenshots, fixtures, or benchmark evidence.
 - API fields are authoritative in the runtime-generated OpenAPI (`/api/openapi.json`, utoipa annotations). Change types and annotations first, then the frontend. The checked-in `apps/api/openapi.json` snapshot is kept in sync by tests; regenerate it with `ROVE_UPDATE_OPENAPI=1` after API changes.
-- ProductStore and runtime StateIndex schemas may only change through their respective schema migrations (`apps/product-store/src/store/schema.rs`, `runtime/src/state/index.rs`); conventions in apps/api/AGENTS.md and runtime/AGENTS.md.
+- ProductStore and runtime StateIndex schemas may only change through their respective schema migrations (`apps/product-store/src/store/schema.rs`, `crates/state/src/state/index.rs`); conventions in apps/api/AGENTS.md and runtime/AGENTS.md.
 - Read DESIGN.md before touching styles; design tokens only.
 - Read docs/decisions.md before making a technology choice or overturning an existing one.
 - A new dependency must explain why existing ones are insufficient; do not relax lints, add crate-level `allow`, or delete tests to make checks pass.

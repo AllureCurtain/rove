@@ -1,7 +1,7 @@
 use std::io::ErrorKind;
 use std::path::Path;
 
-use crate::{SessionId, Workspace};
+use rove_foundation::{SessionId, Workspace};
 
 const MAX_SESSION_SUMMARY_LINES: usize = 200;
 const MAX_SESSION_SUMMARY_BYTES: usize = 25_000;

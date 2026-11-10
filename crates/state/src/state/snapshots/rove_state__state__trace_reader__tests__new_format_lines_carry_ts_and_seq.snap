@@ -1,0 +1,21 @@
+---
+source: crates/state/src/state/trace_reader.rs
+assertion_line: 199
+expression: "outcome.entries.iter().map(|record|\n(record.seq, record.ts.clone(), match &record.entry\n{\n    TraceEntry::Ui(event) => event.event_name().to_string(),\n    TraceEntry::History(_) => \"history\".to_string(), TraceEntry::Link(_) =>\n    \"link\".to_string(), TraceEntry::Meta(_) => \"meta\".to_string(),\n})).collect::<Vec<_>>()"
+---
+[
+    (
+        1,
+        Some(
+            "2026-08-25T00:00:00+00:00",
+        ),
+        "llm_chunk",
+    ),
+    (
+        2,
+        Some(
+            "2026-08-25T00:00:01+00:00",
+        ),
+        "llm_chunk",
+    ),
+]

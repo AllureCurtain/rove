@@ -20,6 +20,7 @@ rove-core.workspace = true
 rove-foundation.workspace = true
 rove-models.workspace = true
 rove-protocol.workspace = true
+rove-state.workspace = true
 rove-tools-text.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

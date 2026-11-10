@@ -11,7 +11,7 @@
 //! instead of failing.
 use std::path::Path;
 
-use crate::events::{StreamEvent, TraceEntry};
+use rove_foundation::events::{StreamEvent, TraceEntry};
 
 use super::trace::TraceLine;
 

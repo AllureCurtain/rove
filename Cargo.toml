@@ -5,6 +5,7 @@ members = [
     "core",
     "crates/foundation",
     "crates/agents",
+    "crates/state",
     "runtime",
     "tools-text",
     "apps/bootstrap",
@@ -57,6 +58,7 @@ reqwest = { version = "0.13.3", features = ["json", "stream"] }
 rove-core = { path = "core" }
 rove-foundation = { path = "crates/foundation" }
 rove-agents = { path = "crates/agents" }
+rove-state = { path = "crates/state" }
 rove-models = { path = "models" }
 rove-protocol = { path = "protocol" }
 rove-runtime = { path = "runtime" }

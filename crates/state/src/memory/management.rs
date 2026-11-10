@@ -615,10 +615,8 @@ fn read_topic_ready_slug(path: &Path) -> std::io::Result<String> {
     Ok(slug.to_string())
 }
 
-pub(crate) fn checked_topic_file(
-    memory_dir: &Path,
-    slug: &str,
-) -> std::io::Result<Option<PathBuf>> {
+#[doc(hidden)]
+pub fn checked_topic_file(memory_dir: &Path, slug: &str) -> std::io::Result<Option<PathBuf>> {
     let topics_dir = memory_dir.join("topics");
     let topic_path = topics_dir.join(format!("{slug}.md"));
     let metadata = match fs::symlink_metadata(&topic_path) {
@@ -836,7 +834,8 @@ struct IndexReplacement {
     replacement_content: Vec<u8>,
 }
 
-pub(crate) fn management_guard() -> std::io::Result<MutexGuard<'static, ()>> {
+#[doc(hidden)]
+pub fn management_guard() -> std::io::Result<MutexGuard<'static, ()>> {
     MANAGEMENT_LOCK
         .lock()
         .map_err(|_| std::io::Error::other("memory management lock is poisoned"))
@@ -931,10 +930,8 @@ fn prepare_index_replacement(
     }))
 }
 
-pub(crate) fn write_memory_index_unlocked(
-    memory_dir: &Path,
-    content: Vec<u8>,
-) -> std::io::Result<()> {
+#[doc(hidden)]
+pub fn write_memory_index_unlocked(memory_dir: &Path, content: Vec<u8>) -> std::io::Result<()> {
     if content.len() > usize::try_from(MAX_MEMORY_INDEX_BYTES).unwrap_or(usize::MAX) {
         return Err(invalid_data("memory index exceeds its supported size"));
     }
@@ -1101,7 +1098,8 @@ struct RecoveryArtifacts {
     ready: Option<PathBuf>,
 }
 
-pub(crate) fn recover_interrupted_index_replacement(memory_dir: &Path) -> std::io::Result<()> {
+#[doc(hidden)]
+pub fn recover_interrupted_index_replacement(memory_dir: &Path) -> std::io::Result<()> {
     let Some((canonical_memory, candidates)) = recovery_candidates(memory_dir)? else {
         return Ok(());
     };

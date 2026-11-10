@@ -1,7 +1,7 @@
 use crate::memory::durable::{recall_durable_memory_from_dir_sync, recall_durable_memory_sync};
 use crate::memory::paths::MemoryPaths;
 use crate::memory::session::{read_session_summary_from_dir_sync, read_session_summary_sync};
-use crate::{SessionId, Workspace};
+use rove_foundation::{SessionId, Workspace};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PromptMemory {
