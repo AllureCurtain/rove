@@ -113,6 +113,19 @@ fn local_package_dependencies_follow_the_modular_workspace_direction() {
     );
     assert_eq!(
         local_dependencies
+            .get("rove-review")
+            .cloned()
+            .unwrap_or_default(),
+        BTreeSet::from([
+            "rove-core".to_string(),
+            "rove-foundation".to_string(),
+            "rove-models".to_string(),
+            "rove-protocol".to_string(),
+        ]),
+        "rove-review must depend only on rove-foundation, rove-core, rove-models and rove-protocol among local packages"
+    );
+    assert_eq!(
+        local_dependencies
             .get("rove-runtime")
             .cloned()
             .unwrap_or_default(),
@@ -122,10 +135,11 @@ fn local_package_dependencies_follow_the_modular_workspace_direction() {
             "rove-foundation".to_string(),
             "rove-models".to_string(),
             "rove-protocol".to_string(),
+            "rove-review".to_string(),
             "rove-state".to_string(),
             "rove-tools-text".to_string(),
         ]),
-        "rove-runtime must depend only on rove-models, rove-core, rove-foundation, rove-agents, rove-state, rove-protocol and rove-tools-text among local packages"
+        "rove-runtime must depend only on rove-models, rove-core, rove-foundation, rove-agents, rove-state, rove-review, rove-protocol and rove-tools-text among local packages"
     );
     assert_eq!(
         local_dependencies
@@ -205,6 +219,9 @@ fn local_dependency_is_allowed(package: &str, dependency: &str) -> bool {
                 "rove-models" | "rove-core" | "rove-foundation" | "rove-agents"
             )
         }
+        // Read-only review domain: contracts, capture/sanitize/finalize, and
+        // the submission tools; foundation data + core/models/protocol only.
+        "rove-review" => matches!(dependency, "rove-models" | "rove-core" | "rove-foundation"),
         "rove-runtime" => {
             matches!(
                 dependency,
@@ -213,6 +230,7 @@ fn local_dependency_is_allowed(package: &str, dependency: &str) -> bool {
                     | "rove-foundation"
                     | "rove-agents"
                     | "rove-state"
+                    | "rove-review"
                     | "rove-tools-text"
             )
         }

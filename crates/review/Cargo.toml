@@ -1,0 +1,23 @@
+[package]
+name = "rove-review"
+version.workspace = true
+edition.workspace = true
+description = "Hard read-only code-review contracts, target snapshots, and submission tools for Rove"
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+globset.workspace = true
+regex.workspace = true
+rove-core.workspace = true
+rove-foundation.workspace = true
+rove-models.workspace = true
+rove-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+utoipa.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

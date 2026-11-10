@@ -20,6 +20,7 @@ rove-core.workspace = true
 rove-foundation.workspace = true
 rove-models.workspace = true
 rove-protocol.workspace = true
+rove-review.workspace = true
 rove-state.workspace = true
 rove-tools-text.workspace = true
 rusqlite.workspace = true
@@ -32,7 +33,6 @@ tokio-util.workspace = true
 toml.workspace = true
 tracing.workspace = true
 ulid.workspace = true
-utoipa.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]

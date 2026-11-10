@@ -18,15 +18,18 @@
 //!                  (moved to rove-foundation)
 //!   foundation/   types, events, session, runtime identity, secret authority
 //!                  (moved to rove-foundation / rove-state)
+//!   review/       read-only Review
+//!                  (moved to rove-review)
 //! ```
 //!
 //! `rove-foundation` (crates/foundation) holds the serialized identity and
-//! lifecycle data, `rove-agents` (crates/agents) the agent catalog, and
-//! `rove-state` (crates/state) the durable run state extracted from this
-//! crate. Historic flat public paths (`execution`, `executor`, `hooks`,
-//! `types`, `events`, `foundation`, `state`, `memory`, …) remain available as
-//! crate-root re-exports so apps and integration tests do not need a mass
-//! import rewrite in this PR.
+//! lifecycle data, `rove-agents` (crates/agents) the agent catalog,
+//! `rove-state` (crates/state) the durable run state, and `rove-review`
+//! (crates/review) the read-only Review domain extracted from this crate.
+//! Historic flat public paths (`execution`, `executor`, `hooks`, `types`,
+//! `events`, `foundation`, `state`, `memory`, `review`, `tools::review`, …)
+//! remain available as crate-root re-exports so apps and integration tests do
+//! not need a mass import rewrite in this PR.
 
 /// Agent definitions, run profiles, instruction bundles, and the procedure
 /// catalog live in `rove-agents` (crates/agents); `rove_runtime::agents::*`
@@ -71,6 +74,9 @@ pub mod environment {
     pub use rove_foundation::environment_types::*;
 }
 pub mod planning;
+/// The read-only Review domain (target snapshots, sanitize/finalize, and the
+/// snapshot-backed submission tools) lives in `rove-review`;
+/// `rove_runtime::review::*` resolves as before.
 pub mod review;
 pub mod tools;
 
