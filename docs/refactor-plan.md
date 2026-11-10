@@ -139,13 +139,15 @@ Decision (2026-11-10): split `rove-runtime` is now the committed direction; the 
   ```
   rove-foundation   foundation/ + workspace/ + environment identity types
                     + prompt_metadata (stable_hash/tool_signature/workspace_fingerprint)
-                    + sunk pure-data types: AgentProfileIdentity/AgentRuntimeProfile/
-                      AgentDiagnostic/ProcedureReference·RiskLevel·SideEffect,
-                      McpServerRuntimeSnapshot/McpTransport/…,
+                    + agents::hashing (content/composite/structured_hash — pure fns)
+                    + sunk pure-data LEAF types only: AgentProfileIdentity,
+                      AgentDiagnostic, AgentSelector, ProcedureReference·
+                      RiskLevel·SideEffect, McpTransport·McpTransportPolicy·
+                      McpServerHealthStatus·McpServerRuntimeSnapshot,
                       ExecutionPolicy + planning lifecycle records (StepRecord,
                       PlanRevision, budgets…), CapabilityMutationClass,
                       ExecutionCapabilities/ExecutionEnvironmentIdentity
-                    deps: rove-core, rove-models, rove-protocol only  (~10–13k)
+                    deps: rove-core, rove-models, rove-protocol only  (~8–11k)
   rove-state        state/ + memory/ durable side   deps: foundation, core
   rove-agents       agents/ (activation/validation/package/procedure logic)
                     deps: foundation, core           (its identity types now in foundation)
@@ -165,6 +167,8 @@ Decision (2026-11-10): split `rove-runtime` is now the committed direction; the 
   5. `rove-engine`: what remains (engine/planning/context/review) becomes the orchestrator crate.
 
 - De-risk: keep `pub use` re-export shims in `rove-runtime` through the whole migration and only delete them in a final cleanup PR, so `rove-api`/`rove-cli`/`rove-bootstrap`/`rove-desktop` never have to change mid-flight. Update `tests/workspace_architecture.rs` allowlists per PR.
+
+- **Sink only data leaves, never behaviour-bearing types.** `AgentRuntimeProfile` (agents/profile.rs) is a behaviour-bearing aggregate — it embeds `InstructionBundle`, `ProcedureSelection`, `HydratedProcedure`, `ValidationReport` and exposes `allows_capability`/`prompt_slot`/`from_profile`. It stays in `rove-agents`; foundation only needs its *identity projection* `AgentProfileIdentity`. So the conversion direction flips: instead of `AgentProfileIdentity::from_profile(profile)` living on the data type, `rove-agents` gives `AgentRuntimeProfile` an `identity() -> AgentProfileIdentity` method — agents depends on foundation for the leaf type, foundation never hears of the aggregate. Same rule for any other type that pulls a whole cluster: sink the leaf, keep the constructor on the behaviour side.
 
 - Exit criteria (any stage): land only while each split crate compiles standalone with a one-way `Cargo.toml`; measure `cargo check -p <crate>` + `cargo test --workspace --no-run` after a touch in each new crate vs the Phase-1 baseline (65–68s full, 20s `rove_runtime` lib test). If a stage yields no parallelism gain and no dependency-hygiene win, stop and reassess — the goal is a clean acyclic graph and smaller rebuild units, not crates for their own sake.
 
