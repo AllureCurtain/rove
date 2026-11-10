@@ -97,24 +97,76 @@ Slowest units after a runtime change now: `rove_api` lib test 23s, two `rove-des
 
 ## Phase 2: decide after phase 1 lands and is measured
 
-Decision (2026-10-01): do not split runtime for now; rationale in item 6. The remaining phase-2 items become on-demand work.
+Decision (2026-11-10): split `rove-runtime` is now the committed direction; the blocker documented on 2026-10-01 (module cycles) has been re-measured and is smaller and better understood than first thought. Plan below; superseded 2026-10-01 deferral kept in git history. Items 7–8 remain on-demand.
 
 
-### 6. Split rove-runtime into multiple crates (deferred)
+### 6. Split rove-runtime into multiple crates (planned)
 
-- Dependency reality: cycles exist between submodules — `foundation↔planning`, `foundation↔tools`, `foundation↔agents`, `foundation↔context`, `foundation↔workspace`, `review↔tools`, `agents↔planning`. To split, the ~30 places where `foundation` references upper layers must first be pushed down or inverted.
-- Benefit assessment: downstream bootstrap, api, and cli all depend on tools, state, and agents via `Engine`; after a split, changing those submodules would still force full downstream recompilation — the only savings would be ~20s of runtime-internal parallelism.
-- When to revisit: if a submodule (e.g. tools/MCP) needs independent use outside runtime, or if runtime's own compile becomes the dominant wait.
+- Re-measured module graph (2026-11-10, `crate::X` cross-dir references, test code excluded):
 
-- Candidate split boundaries:
-  - `tools` (incl. MCP, 14.5k lines)
-  - `agents` (12k lines)
-  - `state` (11.5k lines)
-  - the rest — engine, planning, context, memory — stays in runtime
-- Why deferred:
-  - runtime submodule changes are spread out (13–98 each), so the payoff is less certain than for api.
-  - Types cross submodule boundaries heavily (engine↔state, tools↔environment); the split cost is high.
-- Prerequisite to start: after phase 1, runtime changes are still the dominant wait. Also requires mapping the submodule dependency graph first to confirm no cycles.
+  ```
+  foundation → agents(3 files) · tools(1) · workspace(1) · planning/exec via events
+  agents     → context(1: stable_hash) · workspace(3)
+  tools      → context(2) · engine(1: delegate turn primitives) · memory(4) · review(2) · state(6) · workspace(3)
+  state      → agents(1) · context(1) · foundation(1) · workspace(2)
+  planning   → agents(1: procedure types)
+  review     → context(1) · tools(2) · workspace(1)
+  engine     → everything below it (the orchestrator — expected)
+  ```
+
+- **Root cause found:** the "cycles" are almost all *data-type* references, not
+  behaviour. `foundation/` is meant to be the base layer, but its serialised
+  records (`RuntimeIdentity`, `StreamEvent`) embed types owned by upper layers —
+  `AgentProfileIdentity`, `McpServerRuntimeSnapshot`, `ExecutionCapabilities`,
+  the planning lifecycle types — so the base ends up depending on its own
+  dependants. Three more edges are just calls to one pure helper,
+  `context::prompt_metadata::stable_hash`. The single real behaviour cycle is
+  `tools/delegate.rs → engine::{run_model_turn, run_tool_turn, ToolTurnContext}`,
+  and that is *misplaced turn primitives*: `delegate` already drives
+  `rove_core::run_agent_kernel` itself, it only borrows engine's turn helpers —
+  it never depends on the `Engine` object.
+
+- **Layer rule adopted (the design fix):** *serialised identity & lifecycle
+  data lives at the bottom; behaviour lives above it.* This is the same split
+  `rove-protocol` already models (IDs/envelope with no deps). Concretely:
+  the base crate owns record/enum shapes; the crates that *produce* them keep
+  the logic.
+
+- Target layout (crate names follow the `rove_*` = project_component convention
+  used by `rove-core`/`rove-models`/`rove-tools-text`; Bevy-style one-word
+  components, no "runtime" infix):
+
+  ```
+  rove-foundation   foundation/ + workspace/ + environment identity types
+                    + prompt_metadata (stable_hash/tool_signature/workspace_fingerprint)
+                    + sunk pure-data types: AgentProfileIdentity/AgentRuntimeProfile/
+                      AgentDiagnostic/ProcedureReference·RiskLevel·SideEffect,
+                      McpServerRuntimeSnapshot/McpTransport/…,
+                      ExecutionPolicy + planning lifecycle records (StepRecord,
+                      PlanRevision, budgets…), CapabilityMutationClass,
+                      ExecutionCapabilities/ExecutionEnvironmentIdentity
+                    deps: rove-core, rove-models, rove-protocol only  (~10–13k)
+  rove-state        state/ + memory/ durable side   deps: foundation, core
+  rove-agents       agents/ (activation/validation/package/procedure logic)
+                    deps: foundation, core           (its identity types now in foundation)
+  rove-tools        tools/ + mcp/ + hooks/          deps: foundation, state, agents, core
+  rove-engine       engine/ + planning/ + context/ + review/ + memory session side
+                    deps: all of the above + runtime leftovers (conversation, environment behaviour)
+  ```
+
+- Naming settled against open-source convention (researched 2026-11-10): `project_component` is the dominant pattern for publishable workspaces (helix `helix-*`, zellij `zellij-*`, goose `goose-*`, bevy `bevy_*`); bare names (`zed`'s `agent`/`editor`, TiKV's `raftstore`) only work when crates are never published. `rove-*` already matches — keep it. `rove-engine` for the orchestrator follows goose's precedent where the core lib wraps its agent loop (agent-inside); the alternative `rove` bare-name core collides with the `rove` CLI binary, so `rove-engine` is the clearer pick.
+- Directory convention: once a workspace exceeds ~15 crates the open-source norm is a `crates/` dir (zed, goose, bevy). After the split rove has ~18. Adopt `crates/` for the **library** crates and keep `apps/` for deliverable shells — the same `components/`+`cmd/` split TiKV uses. Move `models`, `core`, `protocol`, `tools-text`, `tests` under `crates/` in the same migration series (each move is its own path-only PR so `git log --follow` history is preserved).
+
+- Migration order — bottom-up, each an independent measured PR:
+  1. `rove-foundation`: move `workspace/`, `foundation/`, `prompt_metadata.rs`; sink the identity/lifecycle data types listed above (pure moves, `pub use` shims left in `rove-runtime` so downstream keeps compiling). Verify `rove-foundation` has zero back-edges.
+  2. `rove-state`: move `state/` + memory durable side.
+  3. `rove-agents`: move `agents/` logic; foundation already owns the identity types.
+  4. `rove-tools`: move `tools/`+`mcp/`+`hooks/`; break `delegate` by moving the turn primitives it borrows (`run_model_turn`, `run_tool_turn`, `ToolTurnContext`, `ModelTurnItem`/`ToolTurnItem`) into `rove-core` or a `rove-engine-turn` shim — whichever keeps `rove-tools` from needing `rove-engine`.
+  5. `rove-engine`: what remains (engine/planning/context/review) becomes the orchestrator crate.
+
+- De-risk: keep `pub use` re-export shims in `rove-runtime` through the whole migration and only delete them in a final cleanup PR, so `rove-api`/`rove-cli`/`rove-bootstrap`/`rove-desktop` never have to change mid-flight. Update `tests/workspace_architecture.rs` allowlists per PR.
+
+- Exit criteria (any stage): land only while each split crate compiles standalone with a one-way `Cargo.toml`; measure `cargo check -p <crate>` + `cargo test --workspace --no-run` after a touch in each new crate vs the Phase-1 baseline (65–68s full, 20s `rove_runtime` lib test). If a stage yields no parallelism gain and no dependency-hygiene win, stop and reassess — the goal is a clean acyclic graph and smaller rebuild units, not crates for their own sake.
 
 ### 7. Whether to unify the two SQLite stores
 

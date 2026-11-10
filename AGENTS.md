@@ -76,6 +76,7 @@ cd apps/web && pnpm test && pnpm typecheck             # Web
 | Changing the technical approach | docs/decisions.md |
 | User-visible feature changes | docs/user-guide.md |
 | Structural refactor in progress | docs/refactor-plan.md |
+| Rust style rules, allowed exceptions, cleanup cadence | docs/rust-style.md (full guide: docs/rust-style-google.md) |
 
 ## Doc update rules
 
