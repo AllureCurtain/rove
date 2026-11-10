@@ -155,14 +155,8 @@ impl ProcedureDocument {
 }
 
 /// An audit-grade pointer to a procedure, safe to persist and to show.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct ProcedureReference {
-    pub id: String,
-    pub version: String,
-    pub trust: ProcedureTrust,
-    pub source_path: String,
-    pub content_hash: String,
-}
+/// The record lives in `rove-foundation`; this keeps the original path.
+pub use rove_foundation::agents_leaves::ProcedureReference;
 
 #[cfg(test)]
 mod tests {

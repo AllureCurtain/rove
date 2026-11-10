@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use super::instructions::{InstructionBundle, InstructionDiscoveryError};
 use super::package::{AgentPackage, PackageLoadError, load_agent_package};
 use super::procedure::catalog::{EligibilityContext, ProcedureCatalog};
-use super::procedure::document::{DocumentError, ProcedureDocument, ProcedureReference};
+use super::procedure::document::{DocumentError, ProcedureDocument};
 use super::procedure::hydration::{HydratedProcedure, hydrate};
 use super::procedure::metadata::ProcedureMode;
 use super::procedure::selection::{ProcedureSelection, SelectionRequest, select_procedures};
@@ -80,24 +80,20 @@ impl Default for AgentActivationConfig {
     }
 }
 
-/// Stable, content-free identity safe for events, reports, and diagnostics.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct AgentProfileIdentity {
-    pub selector: AgentSelector,
-    pub agent_id: String,
-    pub display_name: String,
-    pub definition_version: String,
-    pub manifest_hash: String,
-    pub package_hash: String,
-    pub profile_hash: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instruction_bundle_hash: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub procedures: Vec<ProcedureReference>,
+/// Stable, content-free identity safe for events, reports, and diagnostics,
+/// plus the bounded diagnostic record. Both live in `rove-foundation`;
+/// `from_profile` stays here because it reads the behaviour aggregate
+/// `AgentRuntimeProfile`.
+pub use rove_foundation::agents_leaves::{AgentDiagnostic, AgentProfileIdentity};
+
+/// Runtime-side conversion from the compiled profile to the content-free
+/// identity record.
+pub trait AgentProfileIdentityExt {
+    fn from_profile(profile: &AgentRuntimeProfile) -> AgentProfileIdentity;
 }
 
-impl AgentProfileIdentity {
-    pub fn from_profile(profile: &AgentRuntimeProfile) -> Self {
+impl AgentProfileIdentityExt for AgentProfileIdentity {
+    fn from_profile(profile: &AgentRuntimeProfile) -> Self {
         Self {
             selector: profile.selector.clone(),
             agent_id: profile.agent_id.clone(),
@@ -125,21 +121,17 @@ impl AgentProfileIdentity {
     }
 }
 
-/// One bounded diagnostic produced while resolving an Agent context.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct AgentDiagnostic {
-    pub code: String,
-    pub subject: String,
-    pub message: String,
-}
-
-impl AgentDiagnostic {
-    fn new(code: &str, subject: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            code: code.to_string(),
-            subject: bound_text(&subject.into(), 160),
-            message: bound_text(&message.into(), 240),
-        }
+/// Construct a bounded diagnostic; kept local to runtime because the
+/// `AgentDiagnostic` record itself lives in `rove-foundation`.
+fn agent_diagnostic(
+    code: &str,
+    subject: impl Into<String>,
+    message: impl Into<String>,
+) -> AgentDiagnostic {
+    AgentDiagnostic {
+        code: code.to_string(),
+        subject: bound_text(&subject.into(), 160),
+        message: bound_text(&message.into(), 240),
     }
 }
 
@@ -1025,15 +1017,11 @@ fn collect_profile_diagnostics(
     diagnostics: &mut Vec<AgentDiagnostic>,
 ) {
     for issue in &profile.validation.issues {
-        diagnostics.push(AgentDiagnostic::new(
-            &issue.code,
-            &issue.field,
-            &issue.message,
-        ));
+        diagnostics.push(agent_diagnostic(&issue.code, &issue.field, &issue.message));
     }
     if let Some(bundle) = profile.instructions.as_ref() {
         for rejection in &bundle.rejected {
-            diagnostics.push(AgentDiagnostic::new(
+            diagnostics.push(agent_diagnostic(
                 &rejection.code,
                 &rejection.source_path,
                 &rejection.message,
@@ -1041,7 +1029,7 @@ fn collect_profile_diagnostics(
         }
     }
     for bound in profile.clamped_bounds() {
-        diagnostics.push(AgentDiagnostic::new(
+        diagnostics.push(agent_diagnostic(
             "agent_bound_clamped",
             bound,
             "Agent-requested bound was reduced by current operator policy",
@@ -1049,14 +1037,14 @@ fn collect_profile_diagnostics(
     }
     if let Some(selection) = profile.procedures.as_ref() {
         if selection.selected.is_empty() {
-            diagnostics.push(AgentDiagnostic::new(
+            diagnostics.push(agent_diagnostic(
                 "procedure_selection_no_match",
                 "procedures",
                 "No eligible procedure matched the current goal; the runtime continued without procedure guidance.",
             ));
         }
         if !selection.risk_excluded.is_empty() {
-            diagnostics.push(AgentDiagnostic::new(
+            diagnostics.push(agent_diagnostic(
                 "procedure_risk_excluded",
                 "procedures",
                 format!(
@@ -1066,7 +1054,7 @@ fn collect_profile_diagnostics(
             ));
         }
         if !selection.conflict_excluded.is_empty() {
-            diagnostics.push(AgentDiagnostic::new(
+            diagnostics.push(agent_diagnostic(
                 "procedure_conflict_excluded",
                 "procedures",
                 format!(
@@ -1078,7 +1066,7 @@ fn collect_profile_diagnostics(
     }
     for procedure in &profile.hydrated_procedures {
         if procedure.truncated {
-            diagnostics.push(AgentDiagnostic::new(
+            diagnostics.push(agent_diagnostic(
                 "procedure_snapshot_truncated",
                 &procedure.reference.id,
                 format!(
@@ -1089,7 +1077,7 @@ fn collect_profile_diagnostics(
         }
         for capability in &procedure.optional_capabilities {
             if !profile.effective_capabilities.contains(capability) {
-                diagnostics.push(AgentDiagnostic::new(
+                diagnostics.push(agent_diagnostic(
                     "procedure_optional_capability_unavailable",
                     format!("{}:{capability}", procedure.reference.id),
                     "optional procedure capability is unavailable in this run",
@@ -1116,7 +1104,7 @@ fn load_workspace_procedures(
         let resolved = match resolve_workspace_read_path_without_links(&workspace.root, &raw) {
             Ok(path) if path.is_dir() => path,
             Ok(_) => {
-                diagnostics.push(AgentDiagnostic::new(
+                diagnostics.push(agent_diagnostic(
                     "procedure_root_not_directory",
                     raw,
                     "configured procedure root is not a directory",
@@ -1124,7 +1112,7 @@ fn load_workspace_procedures(
                 continue;
             }
             Err(error) => {
-                diagnostics.push(AgentDiagnostic::new(
+                diagnostics.push(agent_diagnostic(
                     "procedure_root_unavailable",
                     raw,
                     error.to_string(),
@@ -1138,7 +1126,7 @@ fn load_workspace_procedures(
         }
     }
     if package.definition.procedure_policy.roots.len() > MAX_WORKSPACE_PROCEDURE_ROOTS {
-        diagnostics.push(AgentDiagnostic::new(
+        diagnostics.push(agent_diagnostic(
             "too_many_procedure_roots",
             "procedure_policy.roots",
             format!("at most {MAX_WORKSPACE_PROCEDURE_ROOTS} roots are loaded"),
@@ -1161,7 +1149,7 @@ fn load_procedure_directory(
         .enumerate()
     {
         if inspected_entries >= MAX_WORKSPACE_PROCEDURE_ENTRIES {
-            diagnostics.push(AgentDiagnostic::new(
+            diagnostics.push(agent_diagnostic(
                 "procedure_discovery_entry_limit",
                 root.display().to_string(),
                 format!(
@@ -1171,7 +1159,7 @@ fn load_procedure_directory(
             return;
         }
         if documents.len() >= MAX_WORKSPACE_PROCEDURES {
-            diagnostics.push(AgentDiagnostic::new(
+            diagnostics.push(agent_diagnostic(
                 "procedure_catalog_limit",
                 root.display().to_string(),
                 format!("at most {MAX_WORKSPACE_PROCEDURES} workspace procedures are loaded"),
@@ -1181,7 +1169,7 @@ fn load_procedure_directory(
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                diagnostics.push(AgentDiagnostic::new(
+                diagnostics.push(agent_diagnostic(
                     "procedure_walk_failed",
                     root.display().to_string(),
                     error.to_string(),
@@ -1193,7 +1181,7 @@ fn load_procedure_directory(
         let metadata = match std::fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) => {
-                diagnostics.push(AgentDiagnostic::new(
+                diagnostics.push(agent_diagnostic(
                     "procedure_metadata_unavailable",
                     relative_path(&workspace.root, path),
                     error.to_string(),
@@ -1203,7 +1191,7 @@ fn load_procedure_directory(
         };
         if crate::workspace::boundary::is_symlink_or_reparse(&metadata) {
             if path.extension().and_then(|extension| extension.to_str()) == Some("md") {
-                diagnostics.push(AgentDiagnostic::new(
+                diagnostics.push(agent_diagnostic(
                     "linked_procedure_refused",
                     relative_path(&workspace.root, path),
                     "linked procedure documents are not loaded",
@@ -1221,7 +1209,7 @@ fn load_procedure_directory(
             ProcedureDocument::parse(&text, ProcedureOrigin::WorkspaceRoot, &source_path)
         }) {
             Ok(document) => documents.push(document),
-            Err(error) => diagnostics.push(AgentDiagnostic::new(
+            Err(error) => diagnostics.push(agent_diagnostic(
                 error.code(),
                 source_path,
                 error.to_string(),

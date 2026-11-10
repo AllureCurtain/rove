@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::agents::procedure::ProcedureReference;
-use crate::agents::{AgentDiagnostic, AgentProfileIdentity};
+use crate::agents_leaves::ProcedureReference;
+use crate::agents_leaves::{AgentDiagnostic, AgentProfileIdentity};
 use crate::execution::{
     ExecutionBudgetSnapshot, ExecutionDegradation, ExecutionPhase, ExecutionPolicy,
     FinalizationRecord, PlanDecisionRecord, PlanIdentity, PlanRevision, ProcedureApplication,

@@ -74,16 +74,29 @@ fn local_package_dependencies_follow_the_modular_workspace_direction() {
     );
     assert_eq!(
         local_dependencies
-            .get("rove-runtime")
+            .get("rove-foundation")
             .cloned()
             .unwrap_or_default(),
         BTreeSet::from([
             "rove-core".to_string(),
             "rove-models".to_string(),
             "rove-protocol".to_string(),
+        ]),
+        "rove-foundation must depend only on rove-core, rove-models and rove-protocol among local packages"
+    );
+    assert_eq!(
+        local_dependencies
+            .get("rove-runtime")
+            .cloned()
+            .unwrap_or_default(),
+        BTreeSet::from([
+            "rove-core".to_string(),
+            "rove-foundation".to_string(),
+            "rove-models".to_string(),
+            "rove-protocol".to_string(),
             "rove-tools-text".to_string(),
         ]),
-        "rove-runtime must depend only on rove-models, rove-core, rove-protocol and rove-tools-text among local packages"
+        "rove-runtime must depend only on rove-models, rove-core, rove-foundation, rove-protocol and rove-tools-text among local packages"
     );
     assert_eq!(
         local_dependencies
@@ -148,7 +161,14 @@ fn local_dependency_is_allowed(package: &str, dependency: &str) -> bool {
         "rove-core" => dependency == "rove-models",
         // Pure text kernels: no IO, no async, no local dependencies.
         "rove-tools-text" => false,
-        "rove-runtime" => matches!(dependency, "rove-models" | "rove-core" | "rove-tools-text"),
+        // Serialized identity/lifecycle data only: core/models/protocol, no siblings.
+        "rove-foundation" => matches!(dependency, "rove-models" | "rove-core"),
+        "rove-runtime" => {
+            matches!(
+                dependency,
+                "rove-models" | "rove-core" | "rove-foundation" | "rove-tools-text"
+            )
+        }
         "rove-app-bootstrap" => {
             matches!(dependency, "rove-models" | "rove-core" | "rove-runtime")
         }

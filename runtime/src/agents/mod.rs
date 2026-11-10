@@ -31,9 +31,9 @@ pub mod validation;
 
 pub use activation::{
     AgentActivationConfig, AgentActivationError, AgentDiagnostic, AgentProfileIdentity,
-    AgentPromptAssembly, AgentRuntime, ProcedurePromptAssembly, ResolvedAgentRun,
-    ScopedInstructionApplication, ScopedInstructionPrompt, procedure_prompt_for_target,
-    scoped_instruction_path_hints, scoped_instruction_prompt,
+    AgentProfileIdentityExt, AgentPromptAssembly, AgentRuntime, ProcedurePromptAssembly,
+    ResolvedAgentRun, ScopedInstructionApplication, ScopedInstructionPrompt,
+    procedure_prompt_for_target, scoped_instruction_path_hints, scoped_instruction_prompt,
 };
 pub use authority::{AuthorityClass, ContentClass};
 pub use definition::{AgentDefinition, legacy_definition};
