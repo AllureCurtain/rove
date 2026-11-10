@@ -20,16 +20,16 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::definition::{
+use crate::definition::{
     ExecutionDefaults, PromptSlotRole, ReferencedFileKind, RuntimeCompatibility,
 };
-use super::hashing::composite_hash;
-use super::instructions::InstructionBundle;
-use super::package::AgentPackage;
-use super::procedure::hydration::HydratedProcedure;
-use super::procedure::selection::ProcedureSelection;
-use super::selector::AgentSelector;
-use super::validation::{
+use crate::hashing::composite_hash;
+use crate::instructions::InstructionBundle;
+use crate::package::AgentPackage;
+use crate::procedure::hydration::HydratedProcedure;
+use crate::procedure::selection::ProcedureSelection;
+use crate::selector::AgentSelector;
+use crate::validation::{
     FeatureEvaluation, OperatorConstraints, ValidationReport, evaluate_feature_requirement,
     resolve_effective_capabilities,
 };
@@ -643,10 +643,10 @@ pub fn legacy_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::instructions::DiscoveredInstruction;
-    use crate::agents::package::load_agent_package;
-    use crate::agents::procedure::catalog::{EligibilityContext, ProcedureCatalog};
-    use crate::agents::procedure::selection::{SelectionRequest, select_procedures};
+    use crate::instructions::DiscoveredInstruction;
+    use crate::package::load_agent_package;
+    use crate::procedure::catalog::{EligibilityContext, ProcedureCatalog};
+    use crate::procedure::selection::{SelectionRequest, select_procedures};
     use std::fs;
     use tempfile::TempDir;
 
@@ -937,7 +937,7 @@ display_name = "Ops"
             .unwrap_err();
         assert!(matches!(
             error,
-            crate::agents::package::PackageLoadError::ValidationFailed { report, .. }
+            crate::package::PackageLoadError::ValidationFailed { report, .. }
                 if report.has_code("required_capability_denied")
         ));
     }
@@ -988,7 +988,7 @@ display_name = "Ops"
         // across a policy reload could produce.
         package
             .validation
-            .push(crate::agents::validation::ValidationIssue::error(
+            .push(crate::validation::ValidationIssue::error(
                 "synthetic",
                 "field",
                 "injected for this test",
@@ -1150,9 +1150,9 @@ display_name = "Ops"
             "Run the formatter before committing.\n",
         )]);
 
-        let document = crate::agents::procedure::document::ProcedureDocument::parse(
+        let document = crate::procedure::document::ProcedureDocument::parse(
             "---\nschema_version: 1\nid: build.fmt\nversion: 1.0.0\nstatus: active\ntitle: Format\nmode: diagnose\nrisk_level: low\nintents: [format]\n---\n\nRun it.\n",
-            crate::agents::procedure::trust::ProcedureOrigin::WorkspacePackage,
+            crate::procedure::trust::ProcedureOrigin::WorkspacePackage,
             "procedures/fmt.md",
         )
         .unwrap();

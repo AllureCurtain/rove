@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::frontmatter::SplitDocument;
+use crate::procedure::frontmatter::SplitDocument;
 
 /// Procedure frontmatter schema version understood by this build.
 pub const PROCEDURE_SCHEMA_VERSION: u16 = 1;
@@ -709,8 +709,8 @@ pub fn parse_metadata(document: &SplitDocument) -> Result<ProcedureMetadata, Vec
 
 #[cfg(test)]
 mod tests {
-    use super::super::frontmatter::split_document;
     use super::*;
+    use crate::procedure::frontmatter::split_document;
 
     /// A minimal valid document, used as the base for negative cases so each
     /// test changes exactly one thing.

@@ -9,7 +9,7 @@ src/engine/       Engine facade (facade.rs), unplanned/planned loops, StepRunner
 src/planning/     plans, revisions, evaluation, execution policy and budgets
 src/state/        StateStore, trace, task_state, report, SQLite index (index.rs), repair, reconciliation, Tool Artifacts
 src/tools/        built-in tools, Executor, hooks, MCP (mcp_proxy.rs, mcp/)
-src/agents/       AgentDefinition, run profiles, AGENTS.md instruction discovery, procedure catalog
+src/agents/       moved to `rove-agents` (crates/agents); `crate::agents::*` re-exported from lib.rs
 src/context/      ContextManager, compaction
 src/memory/       session memory and persistent memory
 src/foundation/   IDs, events, sessions, runtime identity, secret redaction

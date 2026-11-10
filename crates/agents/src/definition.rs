@@ -1,9 +1,9 @@
 //! `AgentDefinition` — the versioned, author-maintained package source.
 //!
 //! This is the *source* side of design §8.1. It is deserialized from
-//! `agents/<id>/agent.toml`, validated (see [`crate::agents::validation`]),
+//! `agents/<id>/agent.toml`, validated (see [`crate::validation`]),
 //! and only then compiled into an immutable
-//! [`AgentRuntimeProfile`](crate::agents::profile::AgentRuntimeProfile).
+//! [`AgentRuntimeProfile`](crate::profile::AgentRuntimeProfile).
 //!
 //! Two properties matter more than the field list:
 //!
@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::hashing::structured_hash;
+use crate::hashing::structured_hash;
 
 /// Manifest schema version understood by this build.
 pub const AGENT_DEFINITION_SCHEMA_VERSION: u16 = 1;
@@ -307,7 +307,7 @@ impl AgentDefinition {
     /// Computed from the parsed value rather than the file bytes, so
     /// reordering TOML keys or reflowing whitespace does not invalidate a
     /// pinned run. The full package hash additionally covers referenced file
-    /// contents; see [`crate::agents::package`].
+    /// contents; see [`crate::package`].
     pub fn manifest_hash(&self) -> String {
         structured_hash("agent-definition", self)
     }

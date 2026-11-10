@@ -4278,6 +4278,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rove-agents"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rove-core",
+ "rove-foundation",
+ "rove-models",
+ "rove-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml 0.8.23",
+ "walkdir",
+]
+
+[[package]]
 name = "rove-api"
 version = "0.1.0"
 dependencies = [
@@ -4552,6 +4569,7 @@ dependencies = [
  "insta",
  "regex",
  "reqwest",
+ "rove-agents",
  "rove-core",
  "rove-foundation",
  "rove-models",

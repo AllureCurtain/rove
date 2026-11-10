@@ -30,12 +30,12 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::definition::{AgentDefinition, ReferencedFileKind};
-use super::hashing::{composite_hash, content_hash};
-use super::procedure::document::{DocumentError, ProcedureDocument};
-use super::procedure::trust::ProcedureOrigin;
-use super::selector::{AgentSelector, AgentSource};
-use super::validation::{
+use crate::definition::{AgentDefinition, ReferencedFileKind};
+use crate::hashing::{composite_hash, content_hash};
+use crate::procedure::document::{DocumentError, ProcedureDocument};
+use crate::procedure::trust::ProcedureOrigin;
+use crate::selector::{AgentSelector, AgentSource};
+use crate::validation::{
     MAX_INSTRUCTION_FILE_BYTES, MAX_PACKAGE_INJECTABLE_BYTES, OperatorConstraints,
     ValidationReport, validate_definition,
 };
@@ -225,7 +225,7 @@ fn resolve_in_package(root: &Path, relative: &str) -> Result<PathBuf, PackageLoa
     for component in normalized.components() {
         candidate.push(component.as_os_str());
         match std::fs::symlink_metadata(&candidate) {
-            Ok(metadata) if crate::workspace::boundary::is_symlink_or_reparse(&metadata) => {
+            Ok(metadata) if rove_foundation::boundary::is_symlink_or_reparse(&metadata) => {
                 return Err(PackageLoadError::SymlinkedPath {
                     path: relative.to_string(),
                 });
@@ -524,8 +524,8 @@ pub fn load_agent_package(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::definition::PromptSlotRole;
-    use crate::agents::procedure::trust::ProcedureTrust;
+    use crate::definition::PromptSlotRole;
+    use crate::procedure::trust::ProcedureTrust;
     use std::fs;
     use tempfile::TempDir;
 

@@ -86,7 +86,7 @@ fn local_package_dependencies_follow_the_modular_workspace_direction() {
     );
     assert_eq!(
         local_dependencies
-            .get("rove-runtime")
+            .get("rove-agents")
             .cloned()
             .unwrap_or_default(),
         BTreeSet::from([
@@ -94,9 +94,23 @@ fn local_package_dependencies_follow_the_modular_workspace_direction() {
             "rove-foundation".to_string(),
             "rove-models".to_string(),
             "rove-protocol".to_string(),
+        ]),
+        "rove-agents must depend only on rove-foundation, rove-core, rove-models and rove-protocol among local packages"
+    );
+    assert_eq!(
+        local_dependencies
+            .get("rove-runtime")
+            .cloned()
+            .unwrap_or_default(),
+        BTreeSet::from([
+            "rove-agents".to_string(),
+            "rove-core".to_string(),
+            "rove-foundation".to_string(),
+            "rove-models".to_string(),
+            "rove-protocol".to_string(),
             "rove-tools-text".to_string(),
         ]),
-        "rove-runtime must depend only on rove-models, rove-core, rove-foundation, rove-protocol and rove-tools-text among local packages"
+        "rove-runtime must depend only on rove-models, rove-core, rove-foundation, rove-agents, rove-protocol and rove-tools-text among local packages"
     );
     assert_eq!(
         local_dependencies
@@ -163,10 +177,15 @@ fn local_dependency_is_allowed(package: &str, dependency: &str) -> bool {
         "rove-tools-text" => false,
         // Serialized identity/lifecycle data only: core/models/protocol, no siblings.
         "rove-foundation" => matches!(dependency, "rove-models" | "rove-core"),
+        // Agent definitions, profiles, instructions, procedures: foundation
+        // data + core/models/protocol, never runtime.
+        "rove-agents" => {
+            matches!(dependency, "rove-models" | "rove-core" | "rove-foundation")
+        }
         "rove-runtime" => {
             matches!(
                 dependency,
-                "rove-models" | "rove-core" | "rove-foundation" | "rove-tools-text"
+                "rove-models" | "rove-core" | "rove-foundation" | "rove-agents" | "rove-tools-text"
             )
         }
         "rove-app-bootstrap" => {

@@ -15,6 +15,7 @@ globset.workspace = true
 ignore.workspace = true
 regex.workspace = true
 reqwest.workspace = true
+rove-agents.workspace = true
 rove-core.workspace = true
 rove-foundation.workspace = true
 rove-models.workspace = true
