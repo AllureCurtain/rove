@@ -2,6 +2,13 @@
 
 New decisions go on top. Do not delete overturned decisions; mark them "superseded" and note which entry replaced them.
 
+## 2026-11-10 Adopt Google Rust Style; reopen the rove-runtime crate split
+
+- Status: active
+- Decision: two linked changes. (1) `docs/rust-style.md` adopts the Google Rust Style Guide as filtered for rove (full text in `docs/rust-style-google.md`); formatting stays on the stable toolchain, so the nightly-only `imports_granularity`/`format_macro_matchers` normalizations are skipped and the ~14 multi-module `use` sites are cleaned by hand/review rather than a pinned-nightly fmt pass. (2) Reopen the `rove-runtime` split (supersedes the deferral part of the 2026-10-01 entry): a re-measured module graph shows the blocker cycles have mostly dissolved — what remains are *data-type* references where `foundation`'s serialised records embed types owned by upper layers, plus one misplaced turn-primitive borrow in `tools/delegate`. The fix is the layer rule *serialised identity/lifecycle data lives at the bottom, behaviour above it* — the same split `rove-protocol` already models.
+- Plan: `docs/refactor-plan.md` item 6 — sink the identity/lifecycle record types into a new `rove-foundation`, then extract `rove-state`, `rove-agents`, `rove-tools`, `rove-engine` bottom-up, each an independent measured PR with `pub use` shims left in `rove-runtime` so downstream never changes mid-flight. Library crates move under `crates/`; `apps/` stays for shells (TiKV `components/`+`cmd/` precedent). `rove-engine` names the orchestrator (goose precedent: core wraps its agent loop).
+- Boundary: crate names keep the `rove_*` convention; a stage lands only if it compiles standalone with a one-way `Cargo.toml` and a measurable rebuild win — otherwise the series stops and is reassessed. Style cleanup stays per-directory, never a repo-wide import/unwrap reflow. The 2026-10-01 compile-time measurements (test-binary merge, ProductStore extraction, api lib split) remain in effect.
+
 ## 2026-11-10 TUI history uses bounded canonical replay and separate navigation
 
 - Status: active

@@ -13,11 +13,12 @@ Updated: 2026-11-10
 
 Ordered by priority.
 
-1. Validate the first-use fixes on a credentialed real provider and installed delivery platform; distinguish catalog connectivity from successful task execution.
-2. Task state and delivery: pending approval must read as waiting for the user, not tool execution; present the completed change, verification, and remaining work clearly; runtime summaries now expose a concise outcome with expandable original details; status badge layout is fixed in PR #52; manual compaction is available in secondary context tools.
-3. Real-use acceptance: select one supported delivery platform and validate clean installation plus real-provider tasks on disposable repositories (read, edit, test, approve/deny, cancel, refresh/restart, inspect, revert). Use ordinary pointer/keyboard interactions for browser acceptance and record failures and skipped gates explicitly. The 2026-11-08 offline audit does not replace the full acceptance gate or credentialed validation.
-4. TUI history follow-up: browse beyond a single run's display budget and show nested subagent details; the current run browser marks these limits explicitly.
-5. F.5, TUI part: queued successor messages resume delivery after a TUI restart (CLI)
+1. Runtime crate split (reopened 2026-11-10): adopt `docs/rust-style.md`; sink serialised identity/lifecycle data into a new `rove-foundation`, then extract `rove-state`, `rove-agents`, `rove-tools`, `rove-engine` bottom-up per `docs/refactor-plan.md` item 6, each a measured PR with `pub use` shims in `rove-runtime`.
+2. Validate the first-use fixes on a credentialed real provider and installed delivery platform; distinguish catalog connectivity from successful task execution.
+3. Task state and delivery: pending approval must read as waiting for the user, not tool execution; present the completed change, verification, and remaining work clearly; runtime summaries now expose a concise outcome with expandable original details; status badge layout is fixed in PR #52; manual compaction is available in secondary context tools.
+4. Real-use acceptance: select one supported delivery platform and validate clean installation plus real-provider tasks on disposable repositories (read, edit, test, approve/deny, cancel, refresh/restart, inspect, revert). Use ordinary pointer/keyboard interactions for browser acceptance and record failures and skipped gates explicitly. The 2026-11-08 offline audit does not replace the full acceptance gate or credentialed validation.
+5. TUI history follow-up: browse beyond a single run's display budget and show nested subagent details; the current run browser marks these limits explicitly.
+6. F.5, TUI part: queued successor messages resume delivery after a TUI restart (CLI)
 
 ## Blocked
 
