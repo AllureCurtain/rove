@@ -5,8 +5,8 @@ use crate::tui::state::{
 };
 use crate::tui::state::{ModelCandidate, ModelPickerError};
 use rove_app_bootstrap::ModelSelection;
-use rove_runtime::conversation::{ConversationMessage, MessageDomainError};
-use rove_runtime::types::{CallId, RunId};
+use rove_engine::conversation::{ConversationMessage, MessageDomainError};
+use rove_foundation::types::{CallId, RunId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiAction {

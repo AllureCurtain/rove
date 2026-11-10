@@ -13,7 +13,7 @@ pub(crate) use overlay::render_overlay;
 pub(crate) use overlay::sync_history_scroll;
 pub(crate) use transcript::{transcript, transcript_viewport};
 
-use rove_runtime::types::TerminationReason;
+use rove_foundation::types::TerminationReason;
 
 fn termination_label(reason: &TerminationReason) -> &'static str {
     match reason {

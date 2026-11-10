@@ -34,14 +34,15 @@ use rove_app_bootstrap::{
     ProjectTrustRepository, UserConfigPaths, UserStateRoots, capability_digest_map,
     provider_capability_selector_for_workspace,
 };
-use rove_runtime::events::StreamEvent;
-use rove_runtime::execution::StepRecordStatus;
-use rove_runtime::state::store::StateStore;
-use rove_runtime::types::{
-    Message, PromptCompactionMode, Role, RunId, RunStatus, SessionId, TaskState, TerminationReason,
+use rove_foundation::events::StreamEvent;
+use rove_foundation::execution::StepRecordStatus;
+use rove_foundation::root::Workspace;
+use rove_foundation::types::{
+    Message, PromptCompactionMode, Role, RunId, RunStatus, SessionId, TerminationReason,
     ToolCallRef, ToolMutation, ToolMutationOperation,
 };
-use rove_runtime::workspace::Workspace;
+use rove_state::state::store::StateStore;
+use rove_state::task_state::TaskState;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -1187,7 +1188,7 @@ async fn product_known_credentials_are_redacted_on_every_structured_emitting_sur
     // configuration saying "this name carries the credential".
     let canary = "authority-known-credential-canary-3d84af";
     const DECLARED_FIELD: &str = "x_tenant_credential_canary_name";
-    let secrets = rove_runtime::secrets::registry();
+    let secrets = rove_foundation::secrets::registry();
     assert!(secrets.register_value(canary));
     secrets.register_field_name(DECLARED_FIELD);
     // A second, independent credential: the file preview is a different route
@@ -1248,7 +1249,7 @@ async fn product_known_credentials_are_redacted_on_every_structured_emitting_sur
         "trace.jsonl leaked a known credential: {trace}"
     );
     assert!(
-        trace.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER),
+        trace.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER),
         "trace.jsonl must show the removal: {trace}"
     );
     // The authority pass did not touch the pattern-shaped value: the trace file
@@ -1279,7 +1280,7 @@ async fn product_known_credentials_are_redacted_on_every_structured_emitting_sur
     let frames = String::from_utf8(body.to_vec()).unwrap();
     assert!(!frames.contains(canary), "an SSE frame leaked: {frames}");
     assert!(
-        frames.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER),
+        frames.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER),
         "the frames must show the removal: {frames}"
     );
     assert!(frames.contains("keep-normal-output"), "{frames}");
@@ -1346,7 +1347,7 @@ async fn product_known_credentials_are_redacted_on_every_structured_emitting_sur
         let snippet = hit["snippet"].as_str().unwrap();
         assert!(!snippet.contains(canary), "a snippet leaked: {snippet}");
         assert!(
-            snippet.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER),
+            snippet.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER),
             "the snippet must show the removal: {snippet}"
         );
     }
@@ -1367,7 +1368,7 @@ async fn product_known_credentials_are_redacted_on_every_structured_emitting_sur
             "{uri} leaked a known credential: {text}"
         );
         assert!(
-            text.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER),
+            text.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER),
             "{uri} must show the removal: {text}"
         );
         assert!(text.contains("keep-searchable-output"), "{uri}: {text}");
@@ -1476,7 +1477,7 @@ async fn product_known_credentials_are_redacted_on_every_structured_emitting_sur
         "the file preview leaked: {text}"
     );
     assert!(
-        text.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER),
+        text.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER),
         "the file preview must show the removal: {text}"
     );
     assert!(
@@ -1523,7 +1524,7 @@ async fn product_known_credentials_are_redacted_on_every_structured_emitting_sur
         "the task_state download leaked a known credential: {served}"
     );
     assert!(
-        served.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER),
+        served.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER),
         "the task_state download must show the removal: {served}"
     );
     assert!(
@@ -1614,7 +1615,7 @@ async fn product_known_credentials_are_redacted_on_every_structured_emitting_sur
         !whole.contains(canary),
         "the artifact content route leaked: {whole}"
     );
-    assert!(whole.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER));
+    assert!(whole.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER));
 
     //     A window *inside* the credential is the case a window-then-redact route
     //     cannot survive: eight bytes of a longer credential contain no whole
@@ -1660,7 +1661,7 @@ async fn product_known_credentials_are_redacted_on_every_structured_emitting_sur
     starts.push(credential_at.min(whole.len() - 1));
     starts.push(
         whole
-            .find(rove_runtime::secrets::KNOWN_SECRET_MARKER)
+            .find(rove_foundation::secrets::KNOWN_SECRET_MARKER)
             .expect("the redacted text carries the marker"),
     );
     let mut covered = vec![false; whole.len()];
@@ -1734,7 +1735,7 @@ async fn product_known_credentials_are_redacted_on_every_structured_emitting_sur
         "the workspace window leaked: {text}"
     );
     assert!(
-        text.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER),
+        text.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER),
         "the workspace window must show the removal: {text}"
     );
     let file_size = std::fs::metadata(folder.path().join("authority-notes.txt"))
@@ -1767,7 +1768,7 @@ async fn a_typed_body_rejection_never_echoes_the_value_the_caller_sent() {
     // Registered *and* unregistered spellings: the fix is that the rejection
     // text is discarded, not that the value happens to be on a redaction list.
     let canary = "rejected-body-credential-canary-8d41f0";
-    assert!(rove_runtime::secrets::registry().register_value(canary));
+    assert!(rove_foundation::secrets::registry().register_value(canary));
     let unregistered = "rejected-body-unregistered-canary-2e7a";
 
     for value in [canary, unregistered] {
@@ -9307,7 +9308,7 @@ async fn api_job_agent_override_activates_a_trusted_workspace_package() {
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let config = test_config();
     assert_eq!(config.runtime.agent.selector, "builtin:legacy");
-    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
+    let state_store = rove_state::state::store::StateStore::new(&workspace.state_dir);
     let app = router(ApiState::new(workspace, config).unwrap());
 
     let response = post_json(
@@ -9347,7 +9348,7 @@ async fn api_rejects_untrusted_or_invalid_agent_selectors_before_creating_a_run(
     let tmp = tempfile::TempDir::new().unwrap();
     write_api_agent_definition(tmp.path());
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
+    let state_store = rove_state::state::store::StateStore::new(&workspace.state_dir);
     let mut config = test_config();
     config.source_summary.project_activation = ProjectActivationState::Restricted;
     let app = router(ApiState::new(workspace, config).unwrap());
@@ -10309,7 +10310,7 @@ async fn api_hard_resumes_second_turn_in_explicit_folder_workspace() {
     let first_state = wait_for_done(app.clone(), first.job_id.to_string()).await;
     assert_eq!(first_state.status, RunStatus::Done);
 
-    let state_store = rove_runtime::state::store::StateStore::new(&folder.path().join("api-state"));
+    let state_store = rove_state::state::store::StateStore::new(&folder.path().join("api-state"));
     let first_task_state: TaskState = serde_json::from_slice(
         &std::fs::read(
             state_store
@@ -10740,7 +10741,7 @@ async fn api_state_includes_input_needed_event_for_snapshot_recovery() {
 async fn api_writes_run_artifacts_for_completed_job() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
+    let state_store = rove_state::state::store::StateStore::new(&workspace.state_dir);
     let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
@@ -11117,7 +11118,7 @@ async fn api_lists_and_fetches_run_report_after_restart() {
 async fn api_can_resume_latest_task_state() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
+    let state_store = rove_state::state::store::StateStore::new(&workspace.state_dir);
     let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
@@ -11380,10 +11381,10 @@ async fn api_reads_completed_job_state_and_events_after_restart() {
 async fn api_startup_marks_stale_running_jobs_interrupted() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
-    let session_id = rove_runtime::types::SessionId::new();
-    let job_id = rove_runtime::types::JobId::new();
-    let run_id = rove_runtime::types::RunId::new();
+    let state_store = rove_state::state::store::StateStore::new(&workspace.state_dir);
+    let session_id = rove_foundation::types::SessionId::new();
+    let job_id = rove_foundation::types::JobId::new();
+    let run_id = rove_foundation::types::RunId::new();
     state_store
         .start_run(session_id, job_id, run_id)
         .expect("running job should be indexed");
@@ -11476,7 +11477,7 @@ async fn duplicate_api_cannot_recover_a_live_hosts_pending_approval() {
 async fn api_restart_marks_pending_approval_interrupted_without_replaying_unknown_step() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
+    let state_store = rove_state::state::store::StateStore::new(&workspace.state_dir);
     let crashed_workspace = workspace.clone();
     let (created, pending) = crash_api_runtime(move || async move {
         let crashed_store = StateStore::new(&crashed_workspace.state_dir);
@@ -11598,7 +11599,7 @@ async fn api_restart_marks_pending_approval_interrupted_without_replaying_unknow
 async fn api_restart_marks_pending_input_interrupted() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
+    let state_store = rove_state::state::store::StateStore::new(&workspace.state_dir);
     let crashed_workspace = workspace.clone();
     let (created, pending) = crash_api_runtime(move || async move {
         let crashed_store = StateStore::new(&crashed_workspace.state_dir);
@@ -11741,14 +11742,14 @@ async fn api_replays_input_needed_event_after_restart() {
             .run_dir(&created.run_id)
             .join("trace.jsonl");
         let trace = std::fs::read_to_string(trace_path).unwrap();
-        let outcome = rove_runtime::state::trace_reader::read_trace_content(&trace);
+        let outcome = rove_state::state::trace_reader::read_trace_content(&trace);
         let trace_input_count = outcome
             .entries
             .iter()
             .filter(|entry| {
                 matches!(
                     entry.entry,
-                    rove_runtime::events::TraceEntry::Ui(StreamEvent::InputNeeded { .. })
+                    rove_foundation::events::TraceEntry::Ui(StreamEvent::InputNeeded { .. })
                 )
             })
             .count();
@@ -11825,7 +11826,7 @@ async fn api_can_cancel_job() {
 async fn api_cancel_does_not_rewrite_completed_job() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let run_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir).run_store;
+    let run_store = rove_state::state::store::StateStore::new(&workspace.state_dir).run_store;
     let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
@@ -11878,7 +11879,7 @@ async fn api_planned_tool_step_completes_after_successful_tool_call() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     std::fs::write(workspace.root.join("note.txt"), "planned tool done").unwrap();
-    let run_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir).run_store;
+    let run_store = rove_state::state::store::StateStore::new(&workspace.state_dir).run_store;
     let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
@@ -12034,7 +12035,7 @@ async fn api_persists_approval_before_releasing_destructive_tool() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let output_path = workspace.root.join("approval-commit-order.txt");
-    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
+    let state_store = rove_state::state::store::StateStore::new(&workspace.state_dir);
     let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
@@ -12239,7 +12240,7 @@ async fn api_cancel_clears_pending_destructive_tool_approval() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let output_path = workspace.root.join("cancelled.txt");
-    let run_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir).run_store;
+    let run_store = rove_state::state::store::StateStore::new(&workspace.state_dir).run_store;
     let app = router(ApiState::new(workspace, test_config()).unwrap());
 
     let create = app
@@ -12305,7 +12306,7 @@ async fn api_shutdown_token_cancels_pending_job_and_clears_approval() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let output_path = workspace.root.join("shutdown-cancelled.txt");
-    let run_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir).run_store;
+    let run_store = rove_state::state::store::StateStore::new(&workspace.state_dir).run_store;
     let shutdown = CancellationToken::new();
     let app = router(ApiState::with_shutdown(workspace, test_config(), shutdown.clone()).unwrap());
 
@@ -13640,7 +13641,7 @@ async fn product_long_session_deep_tree_large_dir_and_large_diff_stay_bounded() 
             )),
         });
     }
-    rove_runtime::state::report::write_report(&state_store.run_store.run_dir(&last_run), &report)
+    rove_state::state::report::write_report(&state_store.run_store.run_dir(&last_run), &report)
         .unwrap();
 
     let diff: serde_json::Value = decode_json(
@@ -14736,7 +14737,7 @@ async fn product_diff_returns_canonical_tool_and_git_patches() {
         operation: ToolMutationOperation::Update,
         diff: Some("--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n".to_string()),
     });
-    rove_runtime::state::report::write_report(
+    rove_state::state::report::write_report(
         &state_store.run_store.run_dir(&created.run_id),
         &report,
     )
@@ -14978,7 +14979,7 @@ async fn product_mutation_revert_deletes_a_created_file() {
                 .to_string(),
         ),
     });
-    rove_runtime::state::report::write_report(
+    rove_state::state::report::write_report(
         &state_store.run_store.run_dir(&created.run_id),
         &report,
     )
@@ -15045,7 +15046,7 @@ async fn product_mutation_revert_refuses_a_tampered_created_file() {
                 .to_string(),
         ),
     });
-    rove_runtime::state::report::write_report(
+    rove_state::state::report::write_report(
         &state_store.run_store.run_dir(&created.run_id),
         &report,
     )
@@ -15127,7 +15128,7 @@ async fn product_mutation_revert_reverse_applies_an_update_in_a_repo() {
         operation: ToolMutationOperation::Update,
         diff: Some("--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-before\n+after\n".to_string()),
     });
-    rove_runtime::state::report::write_report(
+    rove_state::state::report::write_report(
         &state_store.run_store.run_dir(&created.run_id),
         &report,
     )
@@ -16825,7 +16826,7 @@ async fn product_session_compaction_reports_a_segment_it_cannot_bound() {
         let checkpoint = seeded.checkpoint.as_mut().expect("checkpoint");
         checkpoint.session = None;
         checkpoint.preserved_tail = vec![Message::assistant(
-            "y".repeat(rove_runtime::compaction::COMPACTION_REQUEST_MAX_BYTES + 1),
+            "y".repeat(rove_engine::context::compaction::COMPACTION_REQUEST_MAX_BYTES + 1),
         )];
     }
     store.write_task_state(&seeded).await.unwrap();
@@ -16838,7 +16839,7 @@ async fn product_session_compaction_reports_a_segment_it_cannot_bound() {
     assert_eq!(facts["triggered"], false, "{facts}");
     assert_eq!(
         facts["failure_code"],
-        rove_runtime::compaction::COMPACTION_REQUEST_UNBOUNDED_CODE,
+        rove_engine::context::compaction::COMPACTION_REQUEST_UNBOUNDED_CODE,
         "a segment that cannot be bounded must not answer as `nothing to compact`: {facts}"
     );
     assert_eq!(

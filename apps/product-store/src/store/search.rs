@@ -100,7 +100,7 @@ pub(super) fn fts_phrase(term: &str) -> String {
 /// unit separator keeps the two fields unambiguous even if a session id or a
 /// term ever contains the other's bytes.
 pub(super) fn cursor_digest(session_id: &ProductSessionId, term: &str) -> String {
-    rove_runtime::context::stable_hash(&format!("{session_id}\u{1f}{term}"))
+    rove_foundation::prompt_metadata::stable_hash(&format!("{session_id}\u{1f}{term}"))
 }
 
 impl super::repository::ProductRepository {
@@ -530,7 +530,7 @@ fn validate_scoped_search_query(
 /// longer in that residual class: the registry pass removes it on read as well
 /// as on write.
 pub fn bounded_snippet(content: &str, term: &str) -> String {
-    let authoritative = rove_runtime::secrets::registry().redact_text(content);
+    let authoritative = rove_foundation::secrets::registry().redact_text(content);
     let (redacted, _) = crate::secret_patterns::redact_secret_patterns(authoritative);
     let characters: Vec<char> = redacted.chars().collect();
     if characters.len() <= MAX_PRODUCT_MESSAGE_SEARCH_SNIPPET_CODEPOINTS {

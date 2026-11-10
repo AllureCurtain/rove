@@ -3,7 +3,7 @@ use std::path::Path;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use reqwest::Url;
-use rove_runtime::{Workspace, WorkspaceKind};
+use rove_foundation::root::{Workspace, WorkspaceKind};
 
 use crate::{
     CreateProductProviderProfileRequest, CreateProductWorkspaceRequest,

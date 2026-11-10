@@ -9,7 +9,7 @@ use crate::terminal::view::{
 };
 use crate::tui::sanitize::{sanitize_display_text, sanitize_tool_text, truncate_display_text};
 use crate::tui::state::{TuiFocus, TuiState};
-use rove_runtime::types::{TerminationReason, Usage};
+use rove_foundation::types::{TerminationReason, Usage};
 
 use super::termination_label;
 
@@ -397,11 +397,11 @@ fn push_timeline_kind(
     }
 }
 
-fn plan_decision_label(kind: rove_runtime::execution::PlanDecisionKind) -> &'static str {
+fn plan_decision_label(kind: rove_foundation::execution::PlanDecisionKind) -> &'static str {
     match kind {
-        rove_runtime::execution::PlanDecisionKind::Continue => "continue",
-        rove_runtime::execution::PlanDecisionKind::ReplaceRemaining => "replace remaining",
-        rove_runtime::execution::PlanDecisionKind::Finish => "finish",
+        rove_foundation::execution::PlanDecisionKind::Continue => "continue",
+        rove_foundation::execution::PlanDecisionKind::ReplaceRemaining => "replace remaining",
+        rove_foundation::execution::PlanDecisionKind::Finish => "finish",
     }
 }
 

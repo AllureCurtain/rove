@@ -136,7 +136,7 @@ mod tests {
     use crate::tui::widgets::modal_area;
     use rove_app_bootstrap::{ModelSelection, ProviderProfileId};
     use rove_core::ToolError;
-    use rove_runtime::types::{
+    use rove_foundation::types::{
         CallId, JobId, PlanStep, RunId, SessionId, TaskPlan, TerminationReason, Usage,
     };
 

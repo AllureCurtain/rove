@@ -7,8 +7,9 @@
 use axum::Json;
 use axum::extract::{Path, State};
 
-use rove_runtime::state::report::RunReport;
-use rove_runtime::types::{PromptCompactionMode, RunId, TaskState};
+use rove_foundation::types::{PromptCompactionMode, RunId};
+use rove_state::state::report::RunReport;
+use rove_state::task_state::TaskState;
 
 use crate::docs;
 use crate::{ApiError, ApiErrorResponse, ApiState};
@@ -390,9 +391,9 @@ fn to_contract_cost(value: &CostBreakdown) -> ProductCostBreakdown {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rove_foundation::root::WorkspaceKind;
+    use rove_foundation::types::{JobId, SessionId, TerminationReason};
     use rove_models::Usage;
-    use rove_runtime::types::{JobId, SessionId, TerminationReason};
-    use rove_runtime::workspace::WorkspaceKind;
     use std::path::PathBuf;
 
     fn make_report(model: &str, prompt: u32, completion: u32, cached: u32) -> RunReport {
@@ -565,7 +566,8 @@ mod tests {
 
     #[test]
     fn context_projects_frozen_window_and_compaction_checkpoint() {
-        use rove_runtime::types::{PromptCheckpoint, PromptCompactionState};
+        use rove_foundation::types::PromptCompactionState;
+        use rove_state::task_state::PromptCheckpoint;
 
         let run_id = RunId::new();
         let report = make_report("claude-sonnet-4-5", 100, 20, 0);

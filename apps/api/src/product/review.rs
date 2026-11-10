@@ -7,8 +7,8 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 
-use rove_runtime::review::{capture_target, resolve_external_state_root};
-use rove_runtime::workspace::Workspace;
+use rove_foundation::root::Workspace;
+use rove_review::{capture_target, resolve_external_state_root};
 
 use super::*;
 use crate::docs;

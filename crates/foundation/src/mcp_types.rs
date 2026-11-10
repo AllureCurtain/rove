@@ -1,5 +1,5 @@
 //! Serialized MCP transport/health records. The proxy/transport behaviour
-//! stays in `rove-runtime::tools::mcp_proxy`.
+//! lives in `rove_tools::mcp_proxy`.
 
 use serde::{Deserialize, Serialize};
 

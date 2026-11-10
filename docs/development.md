@@ -75,7 +75,7 @@ When compiles are slow: use `cargo check -p <crate>` and targeted tests day to d
 ## Test strategy
 
 - Unit tests: `#[cfg(test)]` in each crate's sources, testing per-module invariants.
-- Per-package integration tests: `runtime/tests/` (tools, state, MCP, hooks, memory contracts), `apps/bootstrap/tests/` (state migration, etc.).
+- Per-package integration tests: `crates/engine/tests/` (tools, state, MCP, hooks, memory contracts), `apps/bootstrap/tests/` (state migration, etc.).
 - Cross-package contracts: `tests/` (`rove-integration-tests`). Most modules (`e2e`, `mcp`, `recovery`, `tool_safety`, `event_contract`, `workspace_architecture`, etc.) share a single `it` binary (`tests/it.rs`); shared helpers live in `tests/support/`. Only tests that need exclusive process-global state get their own binary: `api` (mutates env vars) and `secret_authority_unarmed` (requires the secret registry to have never been activated). New test files go into `tests/it.rs`; do not add new `[[test]]` targets.
 - Web: `vitest` unit tests colocated with sources (`*.test.ts(x)`); Playwright in `apps/web/tests/e2e/`, mostly using `product-api-mock.ts` to mock the backend, while `real-api.spec.ts` is the `local-full` scenario against a real API.
 - Gates that must be enabled explicitly — a skipped run only proves the "skipped" path, not interop:

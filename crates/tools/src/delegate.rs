@@ -9,7 +9,7 @@
 //! The spawn surface is a `ToolContext` extension the engine attaches at run
 //! time (it needs the live model client and the event sink, which do not exist
 //! when the tool registry is built). The engine's driver half lives in
-//! `rove-runtime::engine::subrun`; this module holds the request/outcome data,
+//! `rove-engine::engine::subrun`; this module holds the request/outcome data,
 //! the `SubRunSpawn` trait the tool downcasts to, and the `task` tool itself.
 //! An embedding that never attaches a spawner gets a clean
 //! `delegation is not available in this embedding` error rather than a panic.
@@ -182,10 +182,10 @@ pub struct SubRunApprovalParts {
 
 /// The spawn surface `DelegateTool` reads off its `ToolContext`.
 ///
-/// The engine's `SubRunSpawner` (in `rove-runtime`) implements this trait and
+/// The engine's `SubRunSpawner` (in `rove-engine`) implements this trait and
 /// is attached as `Arc<dyn SubRunSpawn>` so this crate never names the
 /// concrete driver — the trait object keeps the dependency arrow pointing
-/// `rove-runtime -> rove-tools` instead of the reverse.
+/// `rove-engine -> rove-tools` instead of the reverse.
 pub trait SubRunSpawn: Send + Sync {
     /// Drive one child kernel to completion under a child token of
     /// `parent_token`.

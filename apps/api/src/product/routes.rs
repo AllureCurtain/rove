@@ -993,11 +993,11 @@ pub(crate) async fn create_product_session_message(
     let live = live_candidate.as_ref().filter(|_| live_is_active);
     let service = super::message_adapter::service(store.clone());
     let content = request.content.clone();
-    let attachments: Vec<rove_runtime::conversation::MessageAttachmentRef> = request
+    let attachments: Vec<rove_engine::conversation::MessageAttachmentRef> = request
         .attachments
         .iter()
         .map(
-            |attachment| rove_runtime::conversation::MessageAttachmentRef {
+            |attachment| rove_engine::conversation::MessageAttachmentRef {
                 attachment_id: attachment.attachment_id.as_str().to_string(),
                 name: attachment.name.clone(),
             },
@@ -1006,12 +1006,12 @@ pub(crate) async fn create_product_session_message(
     let mutation = service
         .send(
             session_id.as_str(),
-            rove_runtime::conversation::SendMessageCommand {
+            rove_engine::conversation::SendMessageCommand {
                 content,
                 idempotency_key: request.idempotency_key.clone(),
                 session_state: match live {
-                    Some(_) => rove_runtime::conversation::SessionDeliveryState::Active,
-                    None => rove_runtime::conversation::SessionDeliveryState::Idle,
+                    Some(_) => rove_engine::conversation::SessionDeliveryState::Active,
+                    None => rove_engine::conversation::SessionDeliveryState::Idle,
                 },
                 target_run_id: live.map(|record| record.run_id),
                 attachments,
@@ -1034,7 +1034,7 @@ pub(crate) async fn create_product_session_message(
         if let Some(record) = live {
             crate::queue_or_publish_product_control_event(
                 record,
-                rove_runtime::events::StreamEvent::MessageQueued {
+                rove_foundation::events::StreamEvent::MessageQueued {
                     id: message.id.to_string(),
                     content: message.content.clone(),
                 },
@@ -1517,7 +1517,7 @@ pub(crate) async fn promote_product_session_message(
     let handle = record.control.lock().await.clone();
     let accepted = handle.is_some_and(|handle| {
         handle.try_send_steer(
-            rove_runtime::engine::SteerMessage::for_message(
+            rove_engine::engine::SteerMessage::for_message(
                 message.id.as_str(),
                 message.content.clone(),
             )
@@ -1626,7 +1626,7 @@ pub(crate) async fn revoke_product_session_message(
     if let Some(record) = live {
         crate::queue_or_publish_product_control_event(
             record,
-            rove_runtime::events::StreamEvent::MessageRevoked {
+            rove_foundation::events::StreamEvent::MessageRevoked {
                 id: message.id.to_string(),
             },
         )
@@ -1672,7 +1672,7 @@ async fn create_control(
                 if let Some(record) = live.as_ref() {
                     crate::queue_or_publish_product_control_event(
                         record,
-                        rove_runtime::events::StreamEvent::FollowupQueued {
+                        rove_foundation::events::StreamEvent::FollowupQueued {
                             id: control.id.to_string(),
                             content: control.content.clone(),
                         },
@@ -1746,7 +1746,7 @@ async fn deliver_steer_to_live_job(
         return Ok(control.clone());
     };
     let msg =
-        rove_runtime::engine::SteerMessage::with_id(control.id.as_str(), control.content.clone());
+        rove_engine::engine::SteerMessage::with_id(control.id.as_str(), control.content.clone());
     if !handle.try_send_steer(msg) {
         drop(handle_guard);
         // A closed or full bounded channel did not accept this message. Mark
@@ -2011,7 +2011,7 @@ fn product_event_frame(event: &ProductEvent) -> Result<Event, serde_json::Error>
 /// what a test can assert on.
 fn product_event_data(event: &ProductEvent) -> Result<String, serde_json::Error> {
     Ok(
-        rove_runtime::secrets::registry().redact_json_text(&serde_json::to_string(
+        rove_foundation::secrets::registry().redact_json_text(&serde_json::to_string(
             &rove_protocol::Versioned::now(event),
         )?),
     )
@@ -2255,7 +2255,7 @@ mod tests {
     #[test]
     fn product_event_frames_never_carry_a_known_credential() {
         let canary = "product-frame-credential-canary-9a02c7";
-        assert!(rove_runtime::secrets::registry().register_value(canary));
+        assert!(rove_foundation::secrets::registry().register_value(canary));
         let event = ProductEvent {
             seq: 7,
             kind: ProductEventKind::SessionUpdated,
@@ -2267,7 +2267,7 @@ mod tests {
         let data = product_event_data(&event).unwrap();
         assert!(!data.contains(canary), "the product frame leaked: {data}");
         assert!(
-            data.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER),
+            data.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER),
             "the frame must show the removal: {data}"
         );
         assert!(data.contains("keep-frame-summary"), "{data}");

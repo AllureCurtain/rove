@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 use std::io::ErrorKind;
 
-use rove_runtime::WorkspaceKind;
-use rove_runtime::state::index::RunIndexRecord;
-use rove_runtime::state::report::RunReport;
-use rove_runtime::types::{RunStatus, TerminationReason};
+use rove_foundation::root::WorkspaceKind;
+use rove_foundation::types::{RunStatus, TerminationReason};
+use rove_state::state::index::RunIndexRecord;
+use rove_state::state::report::RunReport;
 
 use crate::product::{
     ProductErrorCode, ProductRuntimeBinding, ProductSessionId, ProductSessionRunBinding,
@@ -324,7 +324,7 @@ pub(super) fn truncate_utf8(value: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rove_runtime::types::{JobId, RunId, SessionId};
+    use rove_foundation::types::{JobId, RunId, SessionId};
 
     fn binding(
         product_session_id: &ProductSessionId,

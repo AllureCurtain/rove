@@ -1,10 +1,10 @@
 use rove_core::ToolError;
-use rove_runtime::events::StreamEvent;
-use rove_runtime::execution::{
+use rove_foundation::events::StreamEvent;
+use rove_foundation::execution::{
     PlanDecisionKind, PlanDecisionRecord, PlanRevision, StepRecord, StepRecordStatus,
 };
-use rove_runtime::prompt_metadata::PromptBuildMetadata;
-use rove_runtime::types::{
+use rove_foundation::prompt_metadata::PromptBuildMetadata;
+use rove_foundation::types::{
     CallId, JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason, ToolResult,
     Usage,
 };
@@ -100,7 +100,7 @@ pub enum RunTimelineEntryKind {
         reason: Option<String>,
     },
     Compaction {
-        mode: rove_runtime::types::PromptCompactionMode,
+        mode: rove_foundation::types::PromptCompactionMode,
         source_message_count: usize,
         degraded: bool,
         summary_available: bool,
@@ -1424,10 +1424,10 @@ mod tests {
         RunTimelinePlanStepStatus, RunTimelineToolStatus, RunViewUpdate,
     };
     use rove_core::ToolError;
-    use rove_runtime::events::StreamEvent;
-    use rove_runtime::execution::{StepCompletionBasis, StepRecord, StepRecordStatus};
-    use rove_runtime::prompt_metadata::PromptBuildMetadata;
-    use rove_runtime::types::{
+    use rove_foundation::events::StreamEvent;
+    use rove_foundation::execution::{StepCompletionBasis, StepRecord, StepRecordStatus};
+    use rove_foundation::prompt_metadata::PromptBuildMetadata;
+    use rove_foundation::types::{
         CallId, JobId, PlanStep, PromptCompactionMode, PromptCompactionState, RunId, TaskPlan,
         TerminationReason, ToolResult, Usage,
     };

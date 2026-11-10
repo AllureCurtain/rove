@@ -9,10 +9,11 @@ use crate::cli::ui::{
     ReplStatusView, ReplWelcomeView, format_repl_help, format_repl_status, format_repl_welcome,
 };
 use crate::terminal::action::TerminalAction;
-use rove_runtime::context::{COMPACTION_REQUEST_UNBOUNDED_CODE, ManualCompactionOutcome};
-use rove_runtime::state::resume::resolve_resume_state;
-use rove_runtime::types::TerminationReason;
-use rove_runtime::types::{JobId, RunId, SessionId, TaskState};
+use rove_engine::context::{COMPACTION_REQUEST_UNBOUNDED_CODE, ManualCompactionOutcome};
+use rove_foundation::types::TerminationReason;
+use rove_foundation::types::{JobId, RunId, SessionId};
+use rove_state::state::resume::resolve_resume_state;
+use rove_state::task_state::TaskState;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use tokio_util::sync::CancellationToken;
@@ -465,9 +466,10 @@ fn spawn_repl_run_signal_listener(cancel: CancellationToken) -> tokio::task::Joi
 #[cfg(test)]
 mod tests {
     use crate::terminal::action::TerminalAction;
-    use rove_runtime::types::{
-        JobId, PromptCompactionMode, PromptCompactionState, RunId, SessionId, TaskState,
+    use rove_foundation::types::{
+        JobId, PromptCompactionMode, PromptCompactionState, RunId, SessionId,
     };
+    use rove_state::task_state::TaskState;
 
     use super::{ManualCompactionOutcome, ReplState, SlashCommand, manual_compaction_report};
 

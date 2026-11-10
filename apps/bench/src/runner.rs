@@ -3,23 +3,23 @@ use std::path::Path;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
+use rove_agents::validation::OperatorConstraints;
+use rove_agents::{AgentActivationConfig, AgentSelector};
 use rove_app_bootstrap::tool_registry_with_shell_policy;
-use rove_models::fake::{FakeModelClient, FakeTurn};
-use rove_runtime::agents::validation::OperatorConstraints;
-use rove_runtime::agents::{AgentActivationConfig, AgentSelector};
-use rove_runtime::context::ContextManager;
-use rove_runtime::engine::{Engine, EngineConfig};
-use rove_runtime::events::StreamEvent;
-use rove_runtime::execution::ExecutionPolicy;
-use rove_runtime::state::artifacts::RunArtifactRecorder;
-use rove_runtime::state::store::{RunHandle, StateStore};
-use rove_runtime::tools::shell::ShellPolicy;
-use rove_runtime::types::{
-    ApprovalDecision, ApprovalPolicy, JobId, RunId, RunRequest, SessionId, TaskState,
-    TerminationReason,
+use rove_engine::context::ContextManager;
+use rove_engine::engine::{Engine, EngineConfig};
+use rove_foundation::boundary::resolve_workspace_write_path;
+use rove_foundation::events::StreamEvent;
+use rove_foundation::execution::ExecutionPolicy;
+use rove_foundation::root::{Workspace, WorkspaceKind};
+use rove_foundation::types::{
+    ApprovalDecision, ApprovalPolicy, JobId, RunId, SessionId, TerminationReason,
 };
-use rove_runtime::workspace::boundary::resolve_workspace_write_path;
-use rove_runtime::workspace::{Workspace, WorkspaceKind};
+use rove_models::fake::{FakeModelClient, FakeTurn};
+use rove_state::state::artifacts::RunArtifactRecorder;
+use rove_state::state::store::{RunHandle, StateStore};
+use rove_state::task_state::{RunRequest, TaskState};
+use rove_tools::shell::ShellPolicy;
 
 use super::checks::run_check;
 use super::evidence::{render_summary_md, sanitize_path_component};

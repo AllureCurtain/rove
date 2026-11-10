@@ -1,24 +1,24 @@
 use std::sync::Arc;
 
+use rove_agents::{AgentActivationConfig, AgentSelector};
 use rove_core::ToolRegistry;
-use rove_models::ModelClient;
-use rove_runtime::agents::{AgentActivationConfig, AgentSelector};
-use rove_runtime::context::{ContextBudget, ContextManager};
-use rove_runtime::engine::{
+use rove_engine::context::{ContextBudget, ContextManager};
+use rove_engine::engine::{
     Engine, EngineConfig, EngineEnvironmentOptions, ProviderRetryPolicy, SilentTurnRecoveryPolicy,
 };
-use rove_runtime::environment::{
+use rove_foundation::environment::{
     ExecutionEnvironment, LocalExecutionEnvironment, local_environment,
 };
-use rove_runtime::execution::ExecutionPolicy;
-use rove_runtime::review::{ReviewTargetSnapshot, resolve_external_state_root};
-use rove_runtime::runtime_identity::RunModelSnapshot;
-use rove_runtime::tools::hooks::HookRegistry;
-use rove_runtime::tools::review::ReviewSubmissionStore;
-use rove_runtime::types::{
+use rove_foundation::execution::ExecutionPolicy;
+use rove_foundation::root::Workspace;
+use rove_foundation::runtime_identity::RunModelSnapshot;
+use rove_foundation::types::{
     ApprovalDecision, ApprovalPolicy, ToolApprovalProvider, UserInputProvider,
 };
-use rove_runtime::workspace::Workspace;
+use rove_models::ModelClient;
+use rove_review::ReviewSubmissionStore;
+use rove_review::{ReviewTargetSnapshot, resolve_external_state_root};
+use rove_tools::hooks::HookRegistry;
 
 use crate::config::AppConfig;
 use crate::project_trust::CAP_WORKSPACE_INSTRUCTIONS;
@@ -96,13 +96,13 @@ pub fn build_engine_with_registry(
             .project_capability_allowed(CAP_WORKSPACE_INSTRUCTIONS),
         load_workspace_instructions: options.config.runtime.agent.workspace_instructions,
         allow_remediation_procedures: options.config.runtime.agent.allow_remediation_procedures,
-        constraints: rove_runtime::agents::validation::OperatorConstraints {
+        constraints: rove_agents::validation::OperatorConstraints {
             max_steps_cap: Some(options.max_steps),
             max_tool_calls_cap: execution_policy.budgets.max_tool_calls,
             max_procedure_selections_cap: Some(
                 options.config.runtime.agent.max_procedure_selections,
             ),
-            ..rove_runtime::agents::validation::OperatorConstraints::unconstrained()
+            ..rove_agents::validation::OperatorConstraints::unconstrained()
         },
         context_tokens,
     };
@@ -223,24 +223,24 @@ pub fn build_review_engine(
         },
     )
     .with_hooks(HookRegistry::default())
-    .with_memory_paths(rove_runtime::memory::paths::MemoryPaths {
+    .with_memory_paths(rove_state::memory::paths::MemoryPaths {
         session_dir: review_workspace.state_dir.join("memory").join("sessions"),
         durable_dir: review_workspace.state_dir.join("memory"),
         recall_limit: 0,
     })
     .with_model_compaction(false, 1)
     .with_run_model_snapshot(run_model_snapshot)
-    .with_run_mode(rove_runtime::types::RunMode::Review);
+    .with_run_mode(rove_foundation::types::RunMode::Review);
     Ok((engine, submission_store))
 }
 
 #[cfg(test)]
 mod tests {
+    use rove_agents::AgentActivationError;
     use rove_core::ToolRegistry;
+    use rove_foundation::root::Workspace;
+    use rove_foundation::types::ApprovalPolicy;
     use rove_models::fake::FakeModelClient;
-    use rove_runtime::agents::AgentActivationError;
-    use rove_runtime::types::ApprovalPolicy;
-    use rove_runtime::workspace::Workspace;
 
     use crate::{AppConfig, ProjectActivationState};
 

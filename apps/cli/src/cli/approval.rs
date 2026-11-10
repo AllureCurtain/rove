@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use rove_core::ToolError;
-use rove_runtime::types::{
+use rove_foundation::types::{
     ApprovalDecision, PendingToolApproval, ToolApprovalProvider, ToolApprovalRequest,
 };
 
@@ -56,7 +56,7 @@ fn prompt_for_approval<R: BufRead, W: Write>(
 mod tests {
     use std::io::Cursor;
 
-    use rove_runtime::types::CallId;
+    use rove_foundation::types::CallId;
 
     use super::{ApprovalDecision, ToolApprovalRequest, prompt_for_approval};
 

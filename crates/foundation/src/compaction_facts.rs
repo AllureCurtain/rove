@@ -1,7 +1,7 @@
 //! Bounded compaction-request facts — the data record of what one bounded
 //! shrink request elided, plus the pruning policy version string. The
 //! compaction machinery that produces them stays in
-//! `rove-runtime::context::compaction`.
+//! `rove-engine::context::compaction`.
 
 /// Version label recorded on pruning facts so a trace reader can tell two
 /// policies apart.

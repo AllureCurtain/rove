@@ -37,16 +37,17 @@ use rove_app_bootstrap::{
     OnboardingCredential, ProviderOnboardingError, ProviderOnboardingRequest,
     ProviderOnboardingService, ProviderProbeFailureKind, ProviderProfileId,
 };
-use rove_runtime::conversation::{
+use rove_engine::conversation::{
     MessageDomainService, MessagePageQuery, SendMessageCommand, SessionDeliveryState,
 };
-use rove_runtime::engine::RunControlHandle;
-use rove_runtime::events::StreamEvent;
-use rove_runtime::state::index::{ResumeJobClaim, StrandedSuccessorClaim};
-use rove_runtime::state::resume::resolve_resume_state;
-use rove_runtime::types::{
-    ApprovalDecision, CallId, JobId, RunId, SessionId, TaskState, TerminationReason,
+use rove_engine::engine::RunControlHandle;
+use rove_foundation::events::StreamEvent;
+use rove_foundation::types::{
+    ApprovalDecision, CallId, JobId, RunId, SessionId, TerminationReason,
 };
+use rove_state::state::index::{ResumeJobClaim, StrandedSuccessorClaim};
+use rove_state::state::resume::resolve_resume_state;
+use rove_state::task_state::TaskState;
 
 const RUN_UPDATE_CAPACITY: usize = 32;
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
@@ -457,7 +458,7 @@ fn test_message_service() -> &'static MessageDomainService {
     static SERVICE: std::sync::OnceLock<MessageDomainService> = std::sync::OnceLock::new();
     SERVICE.get_or_init(|| {
         MessageDomainService::new(Arc::new(
-            rove_runtime::conversation::SqliteMessageRepository::new(
+            rove_engine::conversation::SqliteMessageRepository::new(
                 std::env::temp_dir().join("rove-tui-test-messages.sqlite"),
                 100,
             ),
@@ -1624,7 +1625,7 @@ fn classify_recoverable_run_start_error(error: &anyhow::Error) -> String {
 
 struct TuiEngineRun<'a> {
     runtime: &'a CliRuntime,
-    engine: &'a rove_runtime::engine::Engine,
+    engine: &'a rove_engine::engine::Engine,
     app: &'a mut TuiApp,
     message: String,
     startup_events: Vec<StreamEvent>,
@@ -1869,7 +1870,7 @@ async fn apply_active_effects(
                         state.upsert_message(message.clone());
                         let message_id = message.id.clone();
                         let _ = control.control.try_send_steer(
-                            rove_runtime::engine::SteerMessage::for_message(
+                            rove_engine::engine::SteerMessage::for_message(
                                 message_id,
                                 message.content,
                             ),
@@ -2257,23 +2258,23 @@ mod tests {
     };
     use rove_app_bootstrap::tool_registry;
     use rove_core::ToolError;
-    use rove_models::ModelError;
-    use rove_models::fake::{FakeModelClient, FakeTurn};
-    use rove_models::{ModelClient, ModelClientId, ModelEvent};
-    use rove_runtime::context::ContextManager;
-    use rove_runtime::conversation::{
+    use rove_engine::context::ContextManager;
+    use rove_engine::conversation::{
         ConversationMessage, MessagePageQuery, MessageStatus, SendMessageCommand,
         SessionDeliveryState,
     };
-    use rove_runtime::engine::{Engine, EngineConfig};
-    use rove_runtime::events::StreamEvent;
-    use rove_runtime::types::{
+    use rove_engine::engine::{Engine, EngineConfig};
+    use rove_foundation::events::StreamEvent;
+    use rove_foundation::root::Workspace;
+    use rove_foundation::types::{
         ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, ModelToolSchema,
-        PendingToolApproval, PlanStep, PromptCheckpoint, RunId, RunRequest, SessionId, TaskPlan,
-        TaskState, TerminationReason, ToolApprovalProvider, ToolApprovalRequest, Usage,
-        UserInputRequest,
+        PendingToolApproval, PlanStep, RunId, SessionId, TaskPlan, TerminationReason,
+        ToolApprovalProvider, ToolApprovalRequest, Usage, UserInputRequest,
     };
-    use rove_runtime::workspace::Workspace;
+    use rove_models::ModelError;
+    use rove_models::fake::{FakeModelClient, FakeTurn};
+    use rove_models::{ModelClient, ModelClientId, ModelEvent};
+    use rove_state::task_state::{PromptCheckpoint, RunRequest, TaskState};
 
     use super::{
         ActiveUiControl, InteractionController, PressedKeys, ShutdownInput, ShutdownSignal, TuiApp,
@@ -4918,7 +4919,7 @@ mod tests {
     /// for the durable fact instead of assuming the run is done, and reports the
     /// status it was left in when the budget runs out.
     async fn await_terminal_run_status(
-        index: &rove_runtime::state::index::StateIndex,
+        index: &rove_state::state::index::StateIndex,
         run_id: RunId,
         budget: Duration,
     ) -> bool {

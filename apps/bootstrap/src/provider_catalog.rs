@@ -274,7 +274,7 @@ pub struct ResolvedRunModel {
     pub safe_config_digest: String,
 }
 
-pub type RunModelSnapshot = rove_runtime::runtime_identity::RunModelSnapshot;
+pub type RunModelSnapshot = rove_foundation::runtime_identity::RunModelSnapshot;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderCatalogError {

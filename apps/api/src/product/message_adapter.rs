@@ -8,12 +8,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use rove_runtime::conversation::{
+use rove_engine::conversation::{
     ConversationMessage, MessageDelivery, MessageDomainError, MessageErrorKind, MessageMutation,
     MessagePage, MessagePageQuery, MessageRepository, MessageStatus, SendMessageCommand,
 };
-use rove_runtime::events::StreamEvent;
-use rove_runtime::types::RunId;
+use rove_foundation::events::StreamEvent;
+use rove_foundation::types::RunId;
 
 use super::{
     CreateProductMessageRequest, ProductControlId, ProductControlStatus, ProductMessage,
@@ -46,8 +46,8 @@ impl ProductMessageRepository {
 
 pub(crate) fn service(
     store: Arc<dyn ProductStore>,
-) -> rove_runtime::conversation::MessageDomainService {
-    rove_runtime::conversation::MessageDomainService::new(Arc::new(ProductMessageRepository::new(
+) -> rove_engine::conversation::MessageDomainService {
+    rove_engine::conversation::MessageDomainService::new(Arc::new(ProductMessageRepository::new(
         store,
     )))
 }

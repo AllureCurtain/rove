@@ -251,7 +251,9 @@ pub(crate) async fn product_session_execution_config(
                 model: model_config.model.clone(),
                 reasoning: model_config.reasoning.as_str().to_string(),
                 catalog_revision: "programmatic".to_string(),
-                safe_config_digest: rove_runtime::context::stable_hash("programmatic-fake"),
+                safe_config_digest: rove_foundation::prompt_metadata::stable_hash(
+                    "programmatic-fake",
+                ),
             };
             return Ok((workspace, config, snapshot));
         }

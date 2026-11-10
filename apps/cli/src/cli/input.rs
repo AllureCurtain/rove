@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use rove_core::ToolError;
-use rove_runtime::types::{CallId, PendingUserInput, UserInputProvider, UserInputRequest};
+use rove_foundation::types::{CallId, PendingUserInput, UserInputProvider, UserInputRequest};
 
 pub struct StdinInputProvider;
 
@@ -49,7 +49,7 @@ fn prompt_for_input<R: BufRead, W: Write>(
 mod tests {
     use std::io::Cursor;
 
-    use rove_runtime::types::UserInputRequest;
+    use rove_foundation::types::UserInputRequest;
 
     use super::prompt_for_input;
 

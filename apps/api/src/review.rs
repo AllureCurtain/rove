@@ -138,7 +138,7 @@ pub(crate) async fn assemble_review_model(
             model: model_config.model.clone(),
             reasoning: model_config.reasoning.as_str().to_string(),
             catalog_revision: "programmatic".to_string(),
-            safe_config_digest: rove_runtime::context::stable_hash("programmatic-fake"),
+            safe_config_digest: rove_foundation::prompt_metadata::stable_hash("programmatic-fake"),
         };
         let model = FakeModelClient::with_turns(
             "Review complete".to_string(),

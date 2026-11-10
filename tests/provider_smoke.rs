@@ -6,12 +6,12 @@ use rove_app_bootstrap::tool_registry;
 use rove_app_bootstrap::{
     AppConfig, AppConfigOverrides, ProviderAuthConfig, ProviderProfileConfig, SecretSource,
 };
+use rove_engine::context::ContextManager;
+use rove_engine::engine::{Engine, EngineConfig};
+use rove_foundation::events::StreamEvent;
+use rove_foundation::root::Workspace;
+use rove_foundation::types::ApprovalPolicy;
 use rove_models::ProviderOptions;
-use rove_runtime::context::ContextManager;
-use rove_runtime::engine::{Engine, EngineConfig};
-use rove_runtime::events::StreamEvent;
-use rove_runtime::types::ApprovalPolicy;
-use rove_runtime::workspace::Workspace;
 
 const SMOKE_PHRASE: &str = "rove provider smoke ok";
 const TOOL_SMOKE_PHRASE: &str = "rove provider tool smoke ok";

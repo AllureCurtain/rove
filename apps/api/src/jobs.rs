@@ -496,7 +496,7 @@ pub(crate) async fn list_runs(
 pub(crate) async fn run_report(
     State(state): State<ApiState>,
     Path(run_id): Path<RunId>,
-) -> Result<Json<rove_runtime::state::report::RunReport>, ApiError> {
+) -> Result<Json<rove_state::state::report::RunReport>, ApiError> {
     let state_store = state_store_for_api(&state);
     let report = state_store
         .load_report(run_id)

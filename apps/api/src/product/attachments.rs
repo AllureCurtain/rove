@@ -46,16 +46,16 @@ use super::files::{
     validate_raster_image,
 };
 use super::secret_patterns::contains_secret_pattern;
+use rove_engine::conversation::{
+    MAX_INLINE_ATTACHMENT_TEXT_BYTES, MessageAttachment, MessageAttachmentContent,
+    MessageAttachmentOmission,
+};
 use rove_product_store::{
     CreateStagedAttachmentRequest, MAX_PRODUCT_ATTACHMENT_DISPLAY_NAME_BYTES,
     MAX_PRODUCT_ATTACHMENT_DOCUMENT_BYTES, MAX_PRODUCT_ATTACHMENT_RASTER_BYTES,
     PRODUCT_ATTACHMENT_UPLOAD_DEADLINE_SECONDS, ProductAttachmentAvailability, ProductAttachmentId,
     ProductAttachmentStatus, ProductErrorCode, ProductMessageAttachmentRef, ProductSessionId,
     ProductStore,
-};
-use rove_runtime::conversation::{
-    MAX_INLINE_ATTACHMENT_TEXT_BYTES, MessageAttachment, MessageAttachmentContent,
-    MessageAttachmentOmission,
 };
 
 /// The transient suffix a payload is written under before it is published by a
@@ -1836,7 +1836,7 @@ pub(crate) fn map_attachments_for_model(
 
 #[cfg(test)]
 mod tests {
-    use rove_runtime::conversation::{
+    use rove_engine::conversation::{
         MessageAttachment, MessageAttachmentContent, MessageAttachmentOmission,
         compose_user_message,
     };

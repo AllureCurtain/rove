@@ -332,7 +332,7 @@ mod tests {
     use crate::terminal::action::TerminalAction;
     use crate::tui::action::TuiAction;
     use crate::tui::state::{HelpState, InteractionKeyMode, InteractionModalView, TuiOverlay};
-    use rove_runtime::types::CallId;
+    use rove_foundation::types::CallId;
 
     use super::{
         key_bindings, map_key_event, map_key_event_with_modal, map_key_event_with_modal_mode,

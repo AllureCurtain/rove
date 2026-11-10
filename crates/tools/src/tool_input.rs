@@ -1,5 +1,4 @@
 //! Registered user-input plumbing lives in `rove-foundation::user_input`;
-//! re-exported here so `rove_tools::tool_input::*` and
-//! `rove_runtime::tools::tool_input::*` resolve unchanged.
+//! re-exported here at the path it held before extraction.
 
 pub use rove_foundation::user_input::*;

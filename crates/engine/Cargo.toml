@@ -1,0 +1,32 @@
+[package]
+name = "rove-engine"
+version.workspace = true
+edition.workspace = true
+description = "Persistent execution contracts and runtime services for Rove"
+
+[dependencies]
+async-stream.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+futures.workspace = true
+rove-agents.workspace = true
+rove-core.workspace = true
+rove-foundation.workspace = true
+rove-models.workspace = true
+rove-protocol.workspace = true
+rove-review.workspace = true
+rove-state.workspace = true
+rove-tools.workspace = true
+rove-tools-text.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+tempfile.workspace = true

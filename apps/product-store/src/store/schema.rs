@@ -808,15 +808,15 @@ fn apply_migrations(
         return Ok(());
     }
 
-    let _barrier = rove_runtime::state::migration_lock::acquire_migration_lock(database_path)
+    let _barrier = rove_state::state::migration_lock::acquire_migration_lock(database_path)
         .map_err(|error| {
             ProductStoreError::new(
                 ProductErrorCode::ProductStoreUnavailable,
                 match error {
-                    rove_runtime::state::migration_lock::MigrationLockError::Timeout { .. } => {
+                    rove_state::state::migration_lock::MigrationLockError::Timeout { .. } => {
                         "another process is migrating the product store"
                     }
-                    rove_runtime::state::migration_lock::MigrationLockError::Io { .. } => {
+                    rove_state::state::migration_lock::MigrationLockError::Io { .. } => {
                         "product store migration lock is unavailable"
                     }
                 },

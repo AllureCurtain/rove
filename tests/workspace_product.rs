@@ -1,4 +1,4 @@
-use rove_runtime::workspace::{Workspace, WorkspaceKind};
+use rove_foundation::root::{Workspace, WorkspaceKind};
 
 #[test]
 fn workspace_kinds_exclude_browser_and_desktop() {

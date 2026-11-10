@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 
 use rove_core::ToolError;
-use rove_runtime::types::{
+use rove_foundation::types::{
     ApprovalDecision, CallId, PendingToolApproval, PendingUserInput, ToolApprovalProvider,
     ToolApprovalRequest, UserInputProvider, UserInputRequest,
 };
@@ -251,7 +251,7 @@ struct ChannelInputProvider {
 impl UserInputProvider for ChannelInputProvider {
     async fn begin_input(
         &self,
-        input_id: rove_runtime::types::CallId,
+        input_id: rove_foundation::types::CallId,
         request: UserInputRequest,
     ) -> Result<PendingUserInput, ToolError> {
         let (respond_to, response) = oneshot::channel();
@@ -297,7 +297,7 @@ mod tests {
     use std::sync::Arc;
 
     use rove_core::ToolError;
-    use rove_runtime::types::{ApprovalDecision, CallId, ToolApprovalRequest, UserInputRequest};
+    use rove_foundation::types::{ApprovalDecision, CallId, ToolApprovalRequest, UserInputRequest};
 
     use super::{TerminalInteractionKind, TerminalInteractionRequest, bounded_interaction_channel};
 

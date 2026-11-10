@@ -4,7 +4,7 @@ use futures::Stream;
 
 use crate::terminal::run::drive_run_events;
 use crate::terminal::view::RunViewUpdate;
-use rove_runtime::events::StreamEvent;
+use rove_foundation::events::StreamEvent;
 
 pub use crate::terminal::run::{
     RunEventContext as TuiRunContext, RunEventOutcome as TuiRunOutcome,
@@ -30,10 +30,10 @@ mod tests {
     use futures::stream;
 
     use crate::terminal::view::RunViewUpdate;
-    use rove_runtime::events::StreamEvent;
-    use rove_runtime::state::store::StateStore;
-    use rove_runtime::types::{JobId, RunId, SessionId, TerminationReason};
-    use rove_runtime::workspace::Workspace;
+    use rove_foundation::events::StreamEvent;
+    use rove_foundation::root::Workspace;
+    use rove_foundation::types::{JobId, RunId, SessionId, TerminationReason};
+    use rove_state::state::store::StateStore;
 
     use super::{TuiRunContext, drive_tui_run_events};
 

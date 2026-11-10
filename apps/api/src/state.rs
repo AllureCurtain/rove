@@ -65,7 +65,7 @@ impl ApiState {
         // means a value that matches no pattern is still removed from a trace,
         // a report, an SSE frame, an error envelope, or a diagnostics response.
         if let Some(token) = config.api.token_auth.as_deref() {
-            rove_runtime::secrets::registry().register_value(token);
+            rove_foundation::secrets::registry().register_value(token);
         }
         let state_store = state_store_for_parts(&workspace, &config, ownership.clone());
         if let Err(err) = state_store.index.initialize() {

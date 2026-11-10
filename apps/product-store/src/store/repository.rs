@@ -3,10 +3,10 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use chrono::{SecondsFormat, Utc};
-use rove_runtime::review::{
+use rove_foundation::types::{JobId, RunId, SessionId};
+use rove_review::{
     ReviewConclusion, ReviewFinding, ReviewResult, ReviewTargetKind, ReviewTargetSummary,
 };
-use rove_runtime::types::{JobId, RunId, SessionId};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::de::DeserializeOwned;
 
@@ -2501,7 +2501,7 @@ impl ProductRepository {
 
         let kind_db = control_kind_to_db(kind);
         let now = now_rfc3339();
-        let digest = rove_runtime::context::stable_hash(content);
+        let digest = rove_foundation::prompt_metadata::stable_hash(content);
 
         if let Some(key) = request.idempotency_key.as_deref()
             && let Some(existing) = transaction
@@ -5639,7 +5639,7 @@ fn insert_session_run_model_snapshot(
     ordinal: u64,
     runtime_run_id: &RunId,
     config: &ProductSessionModelConfig,
-    snapshot: Option<&rove_runtime::runtime_identity::RunModelSnapshot>,
+    snapshot: Option<&rove_foundation::runtime_identity::RunModelSnapshot>,
 ) -> Result<(), ProductStoreError> {
     if config.product_session_id != *session_id {
         return Err(resume_conflict(
@@ -7895,11 +7895,11 @@ fn review_conclusion_from_db(value: &str) -> Result<ReviewConclusion, ProductSto
 
 fn review_finding_sort_key(finding: &ReviewFinding) -> String {
     let severity = match finding.severity {
-        rove_runtime::review::ReviewSeverity::Critical => 0,
-        rove_runtime::review::ReviewSeverity::High => 1,
-        rove_runtime::review::ReviewSeverity::Medium => 2,
-        rove_runtime::review::ReviewSeverity::Low => 3,
-        rove_runtime::review::ReviewSeverity::Info => 4,
+        rove_review::ReviewSeverity::Critical => 0,
+        rove_review::ReviewSeverity::High => 1,
+        rove_review::ReviewSeverity::Medium => 2,
+        rove_review::ReviewSeverity::Low => 3,
+        rove_review::ReviewSeverity::Info => 4,
     };
     format!(
         "{severity:02}:{:08}:{}:{}",
@@ -8083,11 +8083,11 @@ fn row_to_control(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProductControl> {
 /// or re-describe bytes that changed.
 fn message_attachment_refs(
     attachments: &[ProductMessageAttachmentRequest],
-) -> Vec<rove_runtime::conversation::MessageAttachmentRef> {
+) -> Vec<rove_engine::conversation::MessageAttachmentRef> {
     attachments
         .iter()
         .map(
-            |attachment| rove_runtime::conversation::MessageAttachmentRef {
+            |attachment| rove_engine::conversation::MessageAttachmentRef {
                 attachment_id: attachment.attachment_id.as_str().to_string(),
                 name: attachment.name.clone(),
             },
@@ -8104,13 +8104,13 @@ fn message_attachment_refs(
 /// request — which makes a different attachment set a different request.
 fn message_request_digest(
     content: &str,
-    attachments: &[rove_runtime::conversation::MessageAttachmentRef],
+    attachments: &[rove_engine::conversation::MessageAttachmentRef],
 ) -> String {
-    let ids = rove_runtime::conversation::canonical_attachment_ids(attachments);
+    let ids = rove_engine::conversation::canonical_attachment_ids(attachments);
     if ids.is_empty() {
-        return rove_runtime::context::stable_hash(content);
+        return rove_foundation::prompt_metadata::stable_hash(content);
     }
-    rove_runtime::context::stable_hash(&format!("{content}\u{1f}{ids}"))
+    rove_foundation::prompt_metadata::stable_hash(&format!("{content}\u{1f}{ids}"))
 }
 
 fn get_message_in_transaction(
@@ -8425,7 +8425,7 @@ fn fork_request_digest(request: &CreateProductForkRequest) -> String {
         .truncate_after_message_seq
         .map(|seq| seq.to_string())
         .unwrap_or_default();
-    rove_runtime::context::stable_hash(&format!(
+    rove_foundation::prompt_metadata::stable_hash(&format!(
         "run:{}:{}:title:{}:{}:truncate:{}:{}",
         request.fork_at_run_id,
         request.fork_at_run_id.to_string().len(),

@@ -19,19 +19,17 @@ use rove_core::ToolError;
 use rove_core::ToolErrorDomain;
 use rove_core::ToolRegistry;
 use rove_core::ToolResultOutcome;
-use rove_runtime::environment::{ExecutionEnvironment, local_environment};
-use rove_runtime::memory::paths::MemoryPaths;
-use rove_runtime::state::tool_artifacts::ToolArtifactStore;
-use rove_runtime::tools::mcp_proxy::{
+use rove_foundation::environment::{ExecutionEnvironment, local_environment};
+use rove_foundation::root::Workspace;
+use rove_foundation::types::{ApprovalPolicy, ToolContext};
+use rove_state::memory::paths::MemoryPaths;
+use rove_state::state::tool_artifacts::ToolArtifactStore;
+use rove_tools::mcp_proxy::{
     MAX_MCP_RESPONSE_BYTES, McpProbeFailureKind, McpRuntimeState, McpServerConfig,
     McpServerHealthStatus, McpTransport, McpTransportPolicy, probe_mcp_server, register_mcp_tools,
     register_mcp_tools_with_environment, resolve_mcp_server_environment,
 };
-use rove_runtime::tools::runtime_context::{
-    runtime_tool_context, runtime_tool_context_with_artifacts,
-};
-use rove_runtime::types::{ApprovalPolicy, ToolContext};
-use rove_runtime::workspace::Workspace;
+use rove_tools::runtime_context::{runtime_tool_context, runtime_tool_context_with_artifacts};
 use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Arc;
@@ -110,7 +108,7 @@ fn python_command() -> String {
 
 fn mcp_context<'a>(workspace: &'a Workspace) -> ToolContext<'a> {
     runtime_tool_context(
-        rove_runtime::types::CallId::new(),
+        rove_foundation::types::CallId::new(),
         workspace,
         MemoryPaths::from_workspace(workspace, 8),
         ApprovalPolicy::Auto,
@@ -348,7 +346,7 @@ async fn disabled_mcp_servers_are_never_assembled_or_environment_resolved() {
 async fn an_optional_server_failure_degrades_without_removing_local_tools() {
     let _guard = MCP_STDIO_TEST_LOCK.lock().await;
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(rove_runtime::tools::echo::EchoTool));
+    registry.register(Box::new(rove_tools::echo::EchoTool));
 
     let registered = register_mcp_tools(
         &mut registry,
@@ -592,7 +590,7 @@ fn mcp_artifact_context<'a>(
     store: Arc<ToolArtifactStore>,
 ) -> ToolContext<'a> {
     runtime_tool_context_with_artifacts(
-        rove_runtime::types::CallId::new(),
+        rove_foundation::types::CallId::new(),
         workspace,
         MemoryPaths::from_workspace(workspace, 8),
         ApprovalPolicy::Auto,
@@ -1234,12 +1232,10 @@ async fn official_filesystem_catalog_refusal(
     environment: Arc<dyn ExecutionEnvironment>,
     marker: &str,
 ) -> String {
-    let client = rove_runtime::tools::mcp_proxy::StdioMcpClient::connect_with_environment(
-        config,
-        environment,
-    )
-    .await
-    .expect("the official filesystem server must speak MCP over rove's stdio proxy");
+    let client =
+        rove_tools::mcp_proxy::StdioMcpClient::connect_with_environment(config, environment)
+            .await
+            .expect("the official filesystem server must speak MCP over rove's stdio proxy");
     let reason = client
         .list_tools()
         .await

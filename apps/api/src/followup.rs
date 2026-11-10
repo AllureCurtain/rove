@@ -92,7 +92,7 @@ pub(crate) async fn compose_message_for_model(
     let (mapped, blocks) =
         product::attachments::map_attachments_for_model(attachments, images_supported);
     (
-        rove_runtime::conversation::compose_user_message(content, &mapped),
+        rove_engine::conversation::compose_user_message(content, &mapped),
         blocks,
     )
 }
@@ -298,11 +298,11 @@ pub(crate) async fn replay_pending_product_steers(record: &JobRecord) {
         let (attachments, blocks) =
             product::attachments::map_attachments_for_model(attachments, images_supported);
         let steer = if unified.is_some() {
-            rove_runtime::engine::SteerMessage::for_message(control.id.as_str(), control.content)
+            rove_engine::engine::SteerMessage::for_message(control.id.as_str(), control.content)
                 .with_attachments(attachments)
                 .with_content_blocks(blocks)
         } else {
-            rove_runtime::engine::SteerMessage::with_id(control.id.as_str(), control.content)
+            rove_engine::engine::SteerMessage::with_id(control.id.as_str(), control.content)
         };
         if !handle.try_send_steer(steer) {
             tracing::warn!(

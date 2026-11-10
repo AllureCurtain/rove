@@ -1,6 +1,6 @@
 //! Cross-language contract guard for the streaming event surface.
 //!
-//! The runtime defines [`StreamEvent`](rove_runtime::events::StreamEvent) variants that
+//! The runtime defines [`StreamEvent`](rove_foundation::events::StreamEvent) variants that
 //! three consumers depend on: the CLI, the API/SSE layer, and the Web UI. The Rust
 //! compiler already forces `StreamEvent::event_name` to cover every variant
 //! (exhaustive match), so it is the authoritative list of wire event names. The Web
@@ -344,20 +344,20 @@ fn mutation_versions_are_additive_in_the_canonical_completed_event() {
         "result": {"call_id": "01J00000000000000000000001", "output": "done",
             "mutations": [{"path": "a.txt", "operation": "create", "diff": "+a"}]}
     });
-    let mut event: rove_runtime::events::StreamEvent = serde_json::from_value(legacy).unwrap();
+    let mut event: rove_foundation::events::StreamEvent = serde_json::from_value(legacy).unwrap();
     let encoded = serde_json::to_value(&event).unwrap();
     assert!(
         encoded["result"]["mutations"][0]
             .get("after_version")
             .is_none()
     );
-    if let rove_runtime::events::StreamEvent::ToolCallCompleted { result, .. } = &mut event {
+    if let rove_foundation::events::StreamEvent::ToolCallCompleted { result, .. } = &mut event {
         result.mutations[0].after_version = Some(format!("sha256:{}", "a".repeat(64)));
     } else {
         panic!("wrong event");
     }
     let encoded = serde_json::to_value(&event).unwrap();
-    let decoded: rove_runtime::events::StreamEvent =
+    let decoded: rove_foundation::events::StreamEvent =
         serde_json::from_value(encoded.clone()).unwrap();
     assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
 }

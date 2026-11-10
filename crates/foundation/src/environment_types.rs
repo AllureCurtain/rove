@@ -1,6 +1,6 @@
 //! Serialized identity/capability records for the execution environment.
 //! The process/filesystem behaviour (`ExecutionEnvironment`) stays in
-//! `rove-runtime::environment`.
+//! `rove_foundation::environment`.
 
 use serde::{Deserialize, Serialize};
 

@@ -4,7 +4,7 @@ use rove_app_bootstrap::{
     AppConfig, AppConfigOverrides, ProviderAuthConfig, ProviderHeaderValue, ProviderProfileConfig,
     SecretSource,
 };
-use rove_runtime::workspace::Workspace;
+use rove_foundation::root::Workspace;
 
 pub fn run(cwd: Option<PathBuf>, overrides: AppConfigOverrides) -> anyhow::Result<()> {
     let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));

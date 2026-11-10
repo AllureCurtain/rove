@@ -2,11 +2,11 @@ use std::io::ErrorKind;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rove_runtime::events::StreamEvent;
-use rove_runtime::state::index::RunEventSnapshot;
-use rove_runtime::state::report::RunReport;
-use rove_runtime::state::store::StateStore;
-use rove_runtime::types::RunStatus;
+use rove_foundation::events::StreamEvent;
+use rove_foundation::types::RunStatus;
+use rove_state::state::index::RunEventSnapshot;
+use rove_state::state::report::RunReport;
+use rove_state::state::store::StateStore;
 use tokio::io::AsyncReadExt;
 
 use crate::product::{
@@ -1164,7 +1164,7 @@ fn transcript_candidates(
 
 fn inherited_transcript_binding(
     inherited: &ProductForkInheritedRun,
-    resumed_from_run_id: Option<rove_runtime::types::RunId>,
+    resumed_from_run_id: Option<rove_foundation::types::RunId>,
     bound_at: &str,
 ) -> ProductSessionRunBinding {
     ProductSessionRunBinding {
@@ -1396,9 +1396,9 @@ mod tests {
         let binding = ProductSessionRunBinding {
             product_session_id: ProductSessionId::new(),
             ordinal: 1,
-            runtime_session_id: rove_runtime::types::SessionId::new(),
-            runtime_job_id: rove_runtime::types::JobId::new(),
-            runtime_run_id: rove_runtime::types::RunId::new(),
+            runtime_session_id: rove_foundation::types::SessionId::new(),
+            runtime_job_id: rove_foundation::types::JobId::new(),
+            runtime_run_id: rove_foundation::types::RunId::new(),
             resumed_from_run_id: None,
             bound_at: "2026-09-27T00:00:00Z".to_string(),
         };

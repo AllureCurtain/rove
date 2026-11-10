@@ -27,21 +27,20 @@ use futures::stream::BoxStream;
 use tokio::sync::Notify;
 
 use rove_core::ToolRegistry;
+use rove_engine::context::ContextManager;
+use rove_engine::engine::{Engine, EngineConfig};
+use rove_foundation::events::{StreamEvent, TraceEntry};
+use rove_foundation::root::Workspace;
+use rove_foundation::session::SessionEntry;
+use rove_foundation::types::{ApprovalPolicy, JobId, RunId, SessionId, TerminationReason};
 use rove_models::{
     FakeModelClient, FakeTurn, Message, ModelClient, ModelError, ModelEvent, ModelToolSchema, Role,
     StopReason,
 };
-use rove_runtime::Workspace;
-use rove_runtime::context::ContextManager;
-use rove_runtime::engine::{Engine, EngineConfig};
-use rove_runtime::events::{StreamEvent, TraceEntry};
-use rove_runtime::session::SessionEntry;
-use rove_runtime::state::artifacts::RunArtifactRecorder;
-use rove_runtime::state::store::StateStore;
-use rove_runtime::state::trace_reader::read_trace_content;
-use rove_runtime::types::{
-    ApprovalPolicy, JobId, RunId, RunRequest, SessionId, TaskState, TerminationReason,
-};
+use rove_state::state::artifacts::RunArtifactRecorder;
+use rove_state::state::store::StateStore;
+use rove_state::state::trace_reader::read_trace_content;
+use rove_state::task_state::{RunRequest, TaskState};
 
 /// The user message every scripted run answers.
 const GOAL: &str = "answer the request";
@@ -228,7 +227,7 @@ impl Harness {
 
     fn engine(&self, model: Box<dyn ModelClient>) -> Engine {
         let mut registry = ToolRegistry::new();
-        registry.register(Box::new(rove_runtime::tools::echo::EchoTool));
+        registry.register(Box::new(rove_tools::echo::EchoTool));
         Engine::with_workspace(
             model,
             registry,
@@ -1102,7 +1101,7 @@ struct StopMarks {
 /// unbounded.
 ///
 /// This is not the salvage window: the window is the 1500 ms policy constant in
-/// `runtime/src/engine/model_turn.rs`. This is the interval the contract names —
+/// `crates/engine/src/engine/model_turn.rs`. This is the interval the contract names —
 /// from the cancel the test raises to the terminal event the run publishes —
 /// with room for a loaded runner. Measured with 64 CPU burners on a 16-CPU host
 /// it ran 1.7-3.6 s across 42 runs, while the whole test's wall clock, which also

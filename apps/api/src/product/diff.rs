@@ -211,7 +211,7 @@ fn bounded_diff(raw: Option<&str>, remaining_bytes: &mut usize) -> BoundedDiff {
     // otherwise leave its own prefix in the payload with nothing left to match.
     // Measuring the redacted text also keeps `remaining_bytes` an honest count
     // of the bytes sent, and the cut itself never lands inside a marker.
-    let raw = rove_runtime::secrets::registry().redact_text(raw);
+    let raw = rove_foundation::secrets::registry().redact_text(raw);
     let (text, truncated) = truncate_utf8_preserving_markers(&raw, cap);
     *remaining_bytes = remaining_bytes.saturating_sub(text.len());
     BoundedDiff {
@@ -409,12 +409,12 @@ mod tests {
     #[test]
     fn a_known_credential_is_removed_before_the_diff_budget_is_spent() {
         let canary = "diff-credential-canary-4b917e";
-        assert!(rove_runtime::secrets::registry().register_value(canary));
+        assert!(rove_foundation::secrets::registry().register_value(canary));
         let raw = format!("@@ -1 +1 @@\n-old {canary}\n+new keep-diff-tail\n");
         // The budget is exactly what the *redacted* text needs. Redacting first
         // fits, and the whole line survives; windowing first would spend the
         // budget on the credential itself and send it whole.
-        let budget = raw.len() - canary.len() + rove_runtime::secrets::KNOWN_SECRET_MARKER.len();
+        let budget = raw.len() - canary.len() + rove_foundation::secrets::KNOWN_SECRET_MARKER.len();
         let mut remaining = budget;
         let bounded = bounded_diff(Some(&raw), &mut remaining);
         let text = bounded.text.expect("a within-budget diff carries text");
@@ -424,7 +424,7 @@ mod tests {
             "a credential leaked: {text}"
         );
         assert!(
-            text.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER),
+            text.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER),
             "{text}"
         );
         assert!(text.contains("keep-diff-tail"), "{text}");
@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn a_diff_budget_never_cuts_inside_a_marker() {
         let canary = "diff-marker-canary-7f10";
-        assert!(rove_runtime::secrets::registry().register_value(canary));
+        assert!(rove_foundation::secrets::registry().register_value(canary));
         let raw = format!("keep-diff-head {canary} keep-diff-tail");
         // The budget reaches five bytes into the marker the credential redacts
         // into.

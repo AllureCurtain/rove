@@ -1,8 +1,9 @@
 use std::path::Path;
 
 use rove_app_bootstrap::AppConfig;
-use rove_runtime::types::{SessionId, TaskState};
-use rove_runtime::workspace::{Workspace, WorkspaceKind};
+use rove_foundation::root::{Workspace, WorkspaceKind};
+use rove_foundation::types::SessionId;
+use rove_state::task_state::TaskState;
 
 pub struct ReplStatusView<'a> {
     pub workspace: &'a Workspace,
@@ -238,9 +239,9 @@ mod tests {
     use tempfile::TempDir;
 
     use rove_app_bootstrap::AppConfig;
-    use rove_runtime::workspace::Workspace;
+    use rove_foundation::root::Workspace;
 
-    use rove_runtime::types::SessionId;
+    use rove_foundation::types::SessionId;
 
     use super::{
         ReplStatusView, ReplWelcomeView, format_repl_help, format_repl_status, format_repl_welcome,
@@ -362,7 +363,7 @@ mod tests {
     fn repl_status_cleans_windows_verbatim_paths_and_fake_provider() {
         let workspace = Workspace {
             root: std::path::PathBuf::from(r"\\?\C:\Users\demo\repo"),
-            kind: rove_runtime::workspace::WorkspaceKind::Repo,
+            kind: rove_foundation::root::WorkspaceKind::Repo,
             state_dir: std::path::PathBuf::from(r"\\?\C:\Users\demo\repo\.rove"),
         };
         let config = AppConfig::default();

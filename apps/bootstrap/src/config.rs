@@ -7,13 +7,13 @@ use figment::Figment;
 use figment::providers::{Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
 
-use rove_runtime::agents::AgentSelector;
-use rove_runtime::engine::{ProviderRetryPolicy, SilentTurnRecoveryPolicy};
-use rove_runtime::execution::{
+use rove_agents::AgentSelector;
+use rove_engine::engine::{ProviderRetryPolicy, SilentTurnRecoveryPolicy};
+use rove_foundation::execution::{
     EvaluatorMode, ExecutionPolicy, FinalizerPolicy, StrategySelectionSource,
 };
-use rove_runtime::memory::paths::MemoryPaths;
-use rove_runtime::workspace::WorkspaceKind;
+use rove_foundation::root::WorkspaceKind;
+use rove_state::memory::paths::MemoryPaths;
 
 use crate::project_trust::{
     ProjectActivation, ProjectActivationSource, ProjectActivationState, ProjectTrustRepository,
@@ -158,7 +158,7 @@ impl Default for AgentConfig {
 ///
 /// Every field is optional and defaults to "not configured", which preserves the
 /// deterministic `max_steps`-derived policy. This is a bounded projection into
-/// `rove_runtime::execution::ExecutionPolicy`, which remains the sole execution
+/// `rove_foundation::execution::ExecutionPolicy`, which remains the sole execution
 /// config truth at runtime.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -264,8 +264,8 @@ fn overlay<T: Copy>(slot: &mut Option<T>, configured: Option<T>) {
 /// Operator-facing run recovery settings.
 ///
 /// Recovery is a runtime behavior, so the typed
-/// [`rove_runtime::engine::ProviderRetryPolicy`] and
-/// [`rove_runtime::engine::SilentTurnRecoveryPolicy`] stay the single config
+/// [`rove_engine::engine::ProviderRetryPolicy`] and
+/// [`rove_engine::engine::SilentTurnRecoveryPolicy`] stay the single config
 /// truth and every field here only overlays them.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -915,11 +915,11 @@ impl AppConfig {
     pub fn load_planner_prompt(&self) -> String {
         let path = self.resolve_path(&self.runtime.planner_prompt_path);
         std::fs::read_to_string(path)
-            .unwrap_or_else(|_| rove_runtime::planner::DEFAULT_PLANNER_PROMPT.to_string())
+            .unwrap_or_else(|_| rove_engine::planning::planner::DEFAULT_PLANNER_PROMPT.to_string())
     }
 
-    pub fn shell_policy(&self) -> rove_runtime::tools::shell::ShellPolicy {
-        rove_runtime::tools::shell::ShellPolicy {
+    pub fn shell_policy(&self) -> rove_tools::shell::ShellPolicy {
+        rove_tools::shell::ShellPolicy {
             timeout_ms: self.tool.shell.timeout_ms,
             max_output_bytes: self.tool.shell.max_output_bytes,
             inherit_environment: self.tool.shell.inherit_environment,
@@ -2339,8 +2339,7 @@ fn bounded_workspace_config_path(workspace_root: &Path, raw_path: &str) -> Optio
     const MAX_BOOTSTRAP_CONFIG_BYTES: u64 = 256 * 1024;
 
     let path =
-        rove_runtime::workspace::boundary::resolve_workspace_read_path(workspace_root, raw_path)
-            .ok()?;
+        rove_foundation::boundary::resolve_workspace_read_path(workspace_root, raw_path).ok()?;
     (std::fs::metadata(&path).ok()?.len() <= MAX_BOOTSTRAP_CONFIG_BYTES).then_some(path)
 }
 

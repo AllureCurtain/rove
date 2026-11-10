@@ -7,12 +7,13 @@ use serde::Deserialize;
 
 use crate::terminal::run::{RunEventContext, drive_run_events};
 use crate::terminal::view::RunViewUpdate;
-use rove_runtime::agents::AgentRuntimeProfile;
-use rove_runtime::events::StreamEvent;
-use rove_runtime::runtime_identity::RuntimeIdentity;
-use rove_runtime::state::store::{RunHandle, StateStore};
-use rove_runtime::types::{CallId, TaskState, TerminationReason};
-use rove_runtime::workspace::Workspace;
+use rove_agents::AgentRuntimeProfile;
+use rove_foundation::events::StreamEvent;
+use rove_foundation::root::Workspace;
+use rove_foundation::runtime_identity::RuntimeIdentity;
+use rove_foundation::types::{CallId, TerminationReason};
+use rove_state::state::store::{RunHandle, StateStore};
+use rove_state::task_state::TaskState;
 
 pub struct CliRunRenderContext<'a> {
     pub message: String,
@@ -140,7 +141,7 @@ fn repl_tool_start_block(name: &str, args: &serde_json::Value) -> ReplToolStartB
     }
 }
 
-fn run_shell_result_summary(result: &rove_runtime::types::ToolResult) -> Option<Vec<String>> {
+fn run_shell_result_summary(result: &rove_foundation::types::ToolResult) -> Option<Vec<String>> {
     let output: ShellOutputView = serde_json::from_str(&result.output).ok()?;
     let mut lines = Vec::new();
     let exit = output
@@ -415,11 +416,11 @@ fn repl_update_label(update: &RunViewUpdate) -> Option<String> {
     }
 }
 
-fn plan_decision_kind_label(kind: rove_runtime::execution::PlanDecisionKind) -> &'static str {
+fn plan_decision_kind_label(kind: rove_foundation::execution::PlanDecisionKind) -> &'static str {
     match kind {
-        rove_runtime::execution::PlanDecisionKind::Continue => "continue",
-        rove_runtime::execution::PlanDecisionKind::ReplaceRemaining => "replace remaining",
-        rove_runtime::execution::PlanDecisionKind::Finish => "finish",
+        rove_foundation::execution::PlanDecisionKind::Continue => "continue",
+        rove_foundation::execution::PlanDecisionKind::ReplaceRemaining => "replace remaining",
+        rove_foundation::execution::PlanDecisionKind::Finish => "finish",
     }
 }
 
@@ -492,13 +493,13 @@ mod tests {
 
     use crate::terminal::view::RunViewUpdate;
     use rove_core::ToolError;
-    use rove_runtime::events::StreamEvent;
-    use rove_runtime::state::store::StateStore;
-    use rove_runtime::types::{
+    use rove_foundation::events::StreamEvent;
+    use rove_foundation::root::Workspace;
+    use rove_foundation::types::{
         CallId, JobId, PlanStep, PromptCompactionMode, PromptCompactionState, RunId, SessionId,
         TaskPlan, TerminationReason, ToolResult,
     };
-    use rove_runtime::workspace::Workspace;
+    use rove_state::state::store::StateStore;
 
     use super::{CliRunRenderContext, CliRunRenderMode, CliRunRenderOptions, render_run_events};
 

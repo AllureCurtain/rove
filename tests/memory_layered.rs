@@ -1,7 +1,7 @@
-use rove_runtime::memory::durable::recall_durable_memory_sync;
-use rove_runtime::memory::layered::load_prompt_memory_sync;
-use rove_runtime::types::SessionId;
-use rove_runtime::workspace::{Workspace, WorkspaceKind};
+use rove_foundation::root::{Workspace, WorkspaceKind};
+use rove_foundation::types::SessionId;
+use rove_state::memory::durable::recall_durable_memory_sync;
+use rove_state::memory::layered::load_prompt_memory_sync;
 
 fn test_workspace(root: &std::path::Path) -> Workspace {
     Workspace {

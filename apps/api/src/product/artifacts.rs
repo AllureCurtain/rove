@@ -12,10 +12,10 @@ use tokio::io::AsyncReadExt;
 use utoipa::{IntoParams, ToSchema};
 
 use rove_core::ToolArtifactRef;
-use rove_runtime::state::tool_artifacts::{
+use rove_foundation::types::RunId;
+use rove_state::state::tool_artifacts::{
     ARTIFACTS_DIR as TOOL_ARTIFACTS_DIR, is_valid_artifact_id,
 };
-use rove_runtime::types::RunId;
 
 use crate::docs;
 use crate::{ApiError, ApiErrorResponse, ApiState};
@@ -1184,8 +1184,8 @@ mod tests {
         let binding = ProductSessionRunBinding {
             product_session_id: session_id.clone(),
             ordinal: 0,
-            runtime_session_id: rove_runtime::types::SessionId::new(),
-            runtime_job_id: rove_runtime::types::JobId::new(),
+            runtime_session_id: rove_foundation::types::SessionId::new(),
+            runtime_job_id: rove_foundation::types::JobId::new(),
             runtime_run_id: run_id,
             resumed_from_run_id: None,
             bound_at: "2026-08-09T00:00:00Z".to_string(),

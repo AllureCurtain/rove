@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// These are defined in `rove-protocol` — the workspace leaf crate, which
 /// depends on nothing but serde and ulid — and re-exported here so that every
-/// `rove_runtime::types::SessionId` import keeps resolving unchanged.
+/// downstream `SessionId` imports resolve through `rove_foundation::types` unchanged.
 pub use rove_protocol::{
     ApprovalDecision, ApprovalPolicy, JobId, RunId, RunMode, RunStatus, SessionId,
 };

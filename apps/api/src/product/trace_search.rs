@@ -42,8 +42,8 @@
 use std::io::{ErrorKind, SeekFrom};
 use std::path::PathBuf;
 
-use rove_runtime::state::store::StateStore;
-use rove_runtime::types::RunId;
+use rove_foundation::types::RunId;
+use rove_state::state::store::StateStore;
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 
@@ -371,7 +371,7 @@ where
 
 /// The envelope fields a hit needs, decoded on their own.
 ///
-/// `rove_runtime::state::trace::TraceLine` is the canonical envelope and the
+/// `rove_state::state::trace::TraceLine` is the canonical envelope and the
 /// transcript projection decodes it whole. A search must not: requiring the
 /// event payload to parse would report "no sequence, no timestamp" for a record
 /// whose payload this build cannot read, even though it matched the term and is

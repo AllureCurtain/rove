@@ -14,10 +14,11 @@ use std::path::{Path, PathBuf};
 use rove_app_bootstrap::verify_workspace_marker;
 #[cfg(test)]
 use rove_app_bootstrap::{WorkspaceStateLayout, state_dir_for_run_discovery};
-use rove_runtime::state::index::{ExternalJobRunCommitGuard, JobRunInspectionSnapshot, StateIndex};
-use rove_runtime::state::store::{StateStore, validate_task_state_schema};
-use rove_runtime::types::{JobId, RunId, TaskState};
-use rove_runtime::workspace::{Workspace, WorkspaceKind};
+use rove_foundation::root::{Workspace, WorkspaceKind};
+use rove_foundation::types::{JobId, RunId};
+use rove_state::state::index::{ExternalJobRunCommitGuard, JobRunInspectionSnapshot, StateIndex};
+use rove_state::state::store::{StateStore, validate_task_state_schema};
+use rove_state::task_state::TaskState;
 use tokio::io::AsyncReadExt;
 
 use super::{
@@ -964,9 +965,9 @@ mod tests {
     use rusqlite::{Connection, params};
     use tempfile::TempDir;
 
-    use rove_runtime::execution::StepLedgerState;
-    use rove_runtime::runtime_identity::RuntimeIdentity;
-    use rove_runtime::types::{ApprovalPolicy, SessionId};
+    use rove_foundation::execution::StepLedgerState;
+    use rove_foundation::runtime_identity::RuntimeIdentity;
+    use rove_foundation::types::{ApprovalPolicy, SessionId};
 
     use super::super::{M1BrowserMigrationSource, M1SafePreferencesImport, ProductThemePreference};
     use super::*;

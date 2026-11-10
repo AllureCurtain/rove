@@ -87,20 +87,20 @@ Already tried, no effect: switching the linker to `rust-lld` in `.cargo/config.t
 
 | Command | Before | After phase 1 |
 | --- | --- | --- |
-| `touch runtime/src/lib.rs` then `cargo test --workspace --no-run` | 146s (also measured 91s in the same session) | 65–68s |
+| `touch crates/engine/src/lib.rs` then `cargo test --workspace --no-run` | 146s (also measured 91s in the same session) | 65–68s |
 | Same, cumulative CPU on rove units | 656s, 73 units | 364s, 52 units |
 | Rebuild after integration-test-only change | 148s | 40s |
 | `cargo check -p rove-api` after api-only change (warm) | ~9s | ~5s |
 | `rove_api` lib test unit after api-only change | 26s | 10s |
 
-Slowest units after a runtime change now: `rove_api` lib test 23s, two `rove-desktop` units ~38s combined, `rove_runtime` lib test 20s, two integration binaries ~18s each.
+Slowest units after a runtime change now: `rove_api` lib test 23s, two `rove-desktop` units ~38s combined, `rove_engine` lib test 20s, two integration binaries ~18s each.
 
 ## Phase 2: decide after phase 1 lands and is measured
 
 Decision (2026-11-10): split `rove-runtime` is now the committed direction; the blocker documented on 2026-10-01 (module cycles) has been re-measured and is smaller and better understood than first thought. Plan below; superseded 2026-10-01 deferral kept in git history. Items 7–8 remain on-demand.
 
 
-### 6. Split rove-runtime into multiple crates (planned)
+### 6. Split rove-runtime into multiple crates (complete)
 
 - Re-measured module graph (2026-11-10, `crate::X` cross-dir references, test code excluded):
 
@@ -164,7 +164,7 @@ Decision (2026-11-10): split `rove-runtime` is now the committed direction; the 
   2. `rove-agents`: move `agents/` logic (activation/validation/package/procedure/selector leftovers). Deps {foundation, core} only — it is the second-lowest layer. `AgentRuntimeProfile` and the `AgentProfileIdentityExt::identity()` conversion live here.
   3. `rove-state`: move `state/` + `memory/` durable side + `foundation/task_state.rs` (TaskState/RunRequest/etc — they embed `AgentRuntimeProfile`, which is why they could not live in foundation). Deps {foundation, agents, core}.
   4. `rove-tools`: move `tools/`+`mcp/`+`hooks/`. The `delegate`↔engine edge is a **two-way** cycle (`tool_turn.rs` builds `SubRunSpawner`; `delegate.rs` drives `run_model_turn`/`run_tool_turn`), and the turn primitives *cannot* sink below `rove-tools` — `tool_turn.rs` is itself the tool-dispatch behaviour (it builds the `Executor`, drives the `ToolRegistry`, constructs the spawner), so moving it down would invert engine↔tools. Break it instead by **splitting `delegate`**: its *data* half (`SubagentRegistry`, `SubUsageLedger`, `SubRunRequest`/`Outcome`/`Error`, `DelegateTool` + `SubRunSpawner` extension reads) has no engine dep and lands in `rove-tools`; its *driver* half (`SubRunSpawner::spawn`, `SubagentKernelHost`, `SubRunApprovalParts` construction — the code that calls `run_model_turn`/`run_tool_turn`) stays in `rove-engine`, reached by `tool_turn.rs` which lives there too. Deps {foundation, agents, state, review, core}.
-  5. `rove-engine`: what remains (engine/planning/context/review) becomes the orchestrator crate.
+  5. `rove-engine`: what remains (engine/planning/context) becomes the orchestrator crate — `runtime/` moved to `crates/engine`, `rove-runtime` renamed `rove-engine`, and all compat `pub use` shims deleted; every downstream `rove_runtime::*` import repointed to the owning crate (done, `refactor/rove-tools`).
 
 - De-risk: keep `pub use` re-export shims in `rove-runtime` through the whole migration and only delete them in a final cleanup PR, so `rove-api`/`rove-cli`/`rove-bootstrap`/`rove-desktop` never have to change mid-flight. Update `tests/workspace_architecture.rs` allowlists per PR.
 
@@ -186,9 +186,9 @@ Decision (2026-11-10): split `rove-runtime` is now the committed direction; the 
 Before and after each step, run once on the same machine and record results:
 
 ```bash
-touch runtime/src/lib.rs && time cargo check -p rove-api -p rove-cli
+touch crates/engine/src/lib.rs && time cargo check -p rove-api -p rove-cli
 touch apps/api/src/lib.rs && time cargo check -p rove-api
-touch runtime/src/lib.rs && time cargo test --workspace --no-run
+touch crates/engine/src/lib.rs && time cargo test --workspace --no-run
 ls target/debug/deps/*.exe | wc -l
 ```
 

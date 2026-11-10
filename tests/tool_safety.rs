@@ -14,23 +14,23 @@ use rove_cli::cli::oneshot::run_oneshot;
 use rove_core::ToolError;
 use rove_core::ToolRegistry;
 use rove_core::{Tool, ToolOutput};
-use rove_models::ModelError;
-use rove_models::{ModelClient, ModelEvent};
-use rove_runtime::context::ContextManager;
-use rove_runtime::engine::{Engine, EngineConfig};
-use rove_runtime::executor::Executor;
-use rove_runtime::memory::paths::MemoryPaths;
-use rove_runtime::state::store::StateStore;
-use rove_runtime::tools::fs::{FsReadTool, FsWriteTool};
-use rove_runtime::tools::memory::SaveMemoryTool;
-use rove_runtime::tools::runtime_context::runtime_tool_context;
-use rove_runtime::tools::search::{SearchCodePolicy, SearchCodeTool};
-use rove_runtime::tools::shell::{ShellPolicy, ShellTool};
-use rove_runtime::types::{
+use rove_engine::context::ContextManager;
+use rove_engine::engine::{Engine, EngineConfig};
+use rove_foundation::root::Workspace;
+use rove_foundation::types::{
     ApprovalPolicy, CallId, Message, ModelToolSchema, RunId, SessionId, ToolContext,
     ToolDescriptor, Usage,
 };
-use rove_runtime::workspace::Workspace;
+use rove_models::ModelError;
+use rove_models::{ModelClient, ModelEvent};
+use rove_state::memory::paths::MemoryPaths;
+use rove_state::state::store::StateStore;
+use rove_tools::executor::Executor;
+use rove_tools::fs::{FsReadTool, FsWriteTool};
+use rove_tools::memory::SaveMemoryTool;
+use rove_tools::runtime_context::runtime_tool_context;
+use rove_tools::search::{SearchCodePolicy, SearchCodeTool};
+use rove_tools::shell::{ShellPolicy, ShellTool};
 use tokio_util::sync::CancellationToken;
 
 struct FakeModelClient {
@@ -135,7 +135,11 @@ async fn write_file_records_diff_metadata_in_report() {
     let state_store = StateStore::new(&workspace.state_dir);
     let run_id = RunId::new();
     let run = state_store
-        .start_run(SessionId::new(), rove_runtime::types::JobId::new(), run_id)
+        .start_run(
+            SessionId::new(),
+            rove_foundation::types::JobId::new(),
+            run_id,
+        )
         .unwrap();
 
     let mut registry = ToolRegistry::new();

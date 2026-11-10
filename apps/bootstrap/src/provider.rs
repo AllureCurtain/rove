@@ -565,7 +565,7 @@ fn resolve_secret(
     allow_external_paths: bool,
     project_environment: &BTreeMap<String, String>,
 ) -> anyhow::Result<String> {
-    let secrets = rove_runtime::secrets::registry();
+    let secrets = rove_foundation::secrets::registry();
     let value = match source {
         SecretSource::Env { env } => std::env::var(env)
             .ok()
@@ -632,8 +632,8 @@ fn describe_secret_source(source: &SecretSource) -> String {
 /// unrelated evidence, while the credential's *value* is registered either way
 /// by `resolve_secret`.
 fn register_declared_auth_header(name: &HeaderName) {
-    if rove_runtime::secrets::is_credential_bearing_header_name(name.as_str()) {
-        rove_runtime::secrets::registry().register_field_name(name.as_str());
+    if rove_foundation::secrets::is_credential_bearing_header_name(name.as_str()) {
+        rove_foundation::secrets::registry().register_field_name(name.as_str());
     }
 }
 
@@ -982,7 +982,7 @@ mod tests {
 
     #[test]
     fn only_credential_bearing_auth_headers_become_declared_secret_fields() {
-        let secrets = rove_runtime::secrets::registry();
+        let secrets = rove_foundation::secrets::registry();
         let credential_root = tempfile::TempDir::new().unwrap();
 
         // A recognised credential header: its name joins the declared set, so a
@@ -996,7 +996,7 @@ mod tests {
             .resolve_http_headers(credential_root.path(), true, &BTreeMap::new())
             .unwrap();
         assert!(
-            rove_runtime::secrets::is_declared_secret_field_name("x-api-key"),
+            rove_foundation::secrets::is_declared_secret_field_name("x-api-key"),
             "a credential-bearing header name is a declared secret field"
         );
 
@@ -1012,13 +1012,13 @@ mod tests {
             .resolve_http_headers(credential_root.path(), true, &BTreeMap::new())
             .unwrap();
         assert!(
-            !rove_runtime::secrets::is_declared_secret_field_name("x_request_tag"),
+            !rove_foundation::secrets::is_declared_secret_field_name("x_request_tag"),
             "an ordinary header name must not become a declared secret field"
         );
 
         // The unrelated field survives verbatim; only the credential's *value*
         // is removed, and it is removed by value, not by field name.
-        let declared = rove_runtime::secrets::DECLARED_SECRET_FIELD_MARKER;
+        let declared = rove_foundation::secrets::DECLARED_SECRET_FIELD_MARKER;
         let value = serde_json::json!({ "x_request_tag": "an ordinary evidence value" });
         assert!(
             !value.to_string().contains(declared),
@@ -1027,7 +1027,7 @@ mod tests {
         let carried = secrets
             .redact_text("bootstrap-unrecognised-key-canary")
             .to_string();
-        assert_eq!(carried, rove_runtime::secrets::KNOWN_SECRET_MARKER);
+        assert_eq!(carried, rove_foundation::secrets::KNOWN_SECRET_MARKER);
     }
 
     /// A credential the authority refuses fails the profile closed. Activating

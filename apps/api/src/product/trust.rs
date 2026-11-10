@@ -8,7 +8,7 @@ use rove_app_bootstrap::{
     ProviderCatalog, ProviderProfileId, capability_digest_map,
     provider_capability_selector_for_workspace,
 };
-use rove_runtime::workspace::{Workspace, WorkspaceKind};
+use rove_foundation::root::{Workspace, WorkspaceKind};
 
 use super::{
     ProductErrorCode, ProductProviderType, ProductStore, ProductStoreError,
