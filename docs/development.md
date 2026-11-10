@@ -113,12 +113,26 @@ Before committing:
 - Review: small changes may be self-reviewed; safety-related changes, shared runtime boundaries, or cross-package behavior with uncertainty require a blind review by a fresh session — give it the requirements, acceptance criteria, and repo location, but not the implementation approach.
 - Worktree Rust builds share the root `target/` directory instead of growing
   a multi-GB build cache per worktree. The mechanism is an untracked
-  `.cargo/config.toml` at the repository root (`build.target-dir = "target"`,
-  resolved relative to the root): Cargo's ancestor config search reaches it
-  from any directory inside the repository, including `.worktrees/<topic>`.
-  Keep that file untracked — a committed copy inside each worktree would
-  resolve to a per-worktree `target/` and win as the closer config. On a fresh
-  machine, recreate it or set `CARGO_TARGET_DIR` to the root `target/`.
+  `.cargo/config.toml` at the repository root holding an **absolute**
+  `build.target-dir` that names the root `target/`:
+
+  ```toml
+  # .cargo/config.toml (repository root, gitignored, not copied into worktrees)
+  [build]
+  target-dir = "/absolute/path/to/rove/target"
+  ```
+
+  Use an absolute path, not `"target"`: a relative `target-dir` is resolved
+  against the *invoking* directory, so inside a worktree it would collapse to
+  the worktree's own `target/` and silently undo the sharing. Cargo's ancestor
+  config search reaches the root file from any directory inside the
+  repository, including `.worktrees/<topic>`. Keep the file untracked — a
+  committed copy inside each worktree would resolve per-worktree and win as
+  the closer config. On a fresh machine, recreate it or set `CARGO_TARGET_DIR`
+  to the root `target/`. Sharing only stays cheap while every worktree builds
+  the same feature set and profile; a different feature resolution produces a
+  different crate hash, so variant `.rlib`s accumulate and are never cleaned —
+  keep worktrees on one feature set and clean `target/` on the normal cadence.
 
 - Immediately after merging, clean up the branch and worktree:
 

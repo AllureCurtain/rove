@@ -28,6 +28,10 @@ resolver = "3"
 # size. Raise this locally if you need a stepping debugger.
 [profile.dev]
 debug = "line-tables-only"
+# Incremental caching is the largest single driver of target/ growth on this
+# workspace (an extra per-crate layer on every check/test). We clean target/
+# periodically anyway, so its small speed win does not pay for the disk.
+incremental = false
 
 [profile.dev.package."*"]
 debug = false
