@@ -317,7 +317,7 @@ pub(crate) async fn onboard(
     // the keyring. Registering it first means a failure anywhere below — a
     // rejected profile id, a keyring write error, a projection failure —
     // cannot echo the credential into an error envelope or a trace.
-    rove_runtime::secrets::registry().register_value(secret);
+    rove_foundation::secrets::registry().register_value(secret);
     let product_profile_id = request.profile_id.unwrap_or_default();
     let profile_id = ProviderProfileId::new(product_profile_id.to_string()).map_err(|_| {
         ProductProviderOnboardingFailure::new(
@@ -550,7 +550,7 @@ mod tests {
         AppConfig, AppConfigOverrides, ProviderCatalogService, ProviderCredentialStore,
         UserConfigPaths,
     };
-    use rove_runtime::workspace::Workspace;
+    use rove_foundation::root::Workspace;
 
     use super::*;
 

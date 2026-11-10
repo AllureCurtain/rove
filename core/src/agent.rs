@@ -92,7 +92,7 @@ fn lock_queue(queue: &Mutex<VecDeque<Message>>) -> std::sync::MutexGuard<'_, Vec
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// A minimal in-memory Agent. Durable execution belongs to `rove-runtime`.
+/// A minimal in-memory Agent. Durable execution belongs to `rove-engine`.
 pub struct Agent {
     model: Box<dyn ModelClient>,
     tools: ToolRegistry,

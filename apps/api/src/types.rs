@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use rove_runtime::events::StreamEvent;
-use rove_runtime::types::{
+use rove_foundation::events::StreamEvent;
+use rove_foundation::types::{
     ApprovalDecision, ApprovalPolicy, CallId, JobId, RunId, RunStatus, SessionId,
 };
 

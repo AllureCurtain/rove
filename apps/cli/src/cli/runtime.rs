@@ -12,14 +12,15 @@ use rove_app_bootstrap::{
     try_build_model_client_with_health,
 };
 use rove_core::ToolRegistry;
+use rove_engine::conversation::{MessageDomainService, SqliteMessageRepository};
+use rove_engine::engine::Engine;
+use rove_foundation::environment::{ExecutionEnvironment, local_environment};
+use rove_foundation::root::Workspace;
+use rove_foundation::types::{ApprovalPolicy, ToolApprovalProvider, UserInputProvider};
 use rove_models::fake::FakeModelClient;
 use rove_models::health::{HealthConfig, ModelHealthStore};
-use rove_runtime::conversation::{MessageDomainService, SqliteMessageRepository};
-use rove_runtime::engine::Engine;
-use rove_runtime::environment::{ExecutionEnvironment, local_environment};
-use rove_runtime::state::store::StateStore;
-use rove_runtime::types::{ApprovalPolicy, TaskState, ToolApprovalProvider, UserInputProvider};
-use rove_runtime::workspace::Workspace;
+use rove_state::state::store::StateStore;
+use rove_state::task_state::TaskState;
 
 pub struct CliRuntimeOptions {
     pub cwd: Option<PathBuf>,
@@ -120,7 +121,7 @@ impl CliRuntime {
 
     pub fn selection_for_session(
         &self,
-        session_id: rove_runtime::types::SessionId,
+        session_id: rove_foundation::types::SessionId,
     ) -> anyhow::Result<(ModelSelection, u64)> {
         if let Some(persisted) = self.session_selections.load(&session_id.to_string())? {
             return Ok((persisted.selection, persisted.revision));
@@ -130,7 +131,7 @@ impl CliRuntime {
 
     pub fn persist_session_selection(
         &self,
-        session_id: rove_runtime::types::SessionId,
+        session_id: rove_foundation::types::SessionId,
         expected_revision: u64,
         selection: ModelSelection,
     ) -> anyhow::Result<PersistedSessionSelection> {
@@ -257,7 +258,7 @@ impl CliRuntime {
             model: selection.model.clone(),
             reasoning: selection.reasoning.clone(),
             catalog_revision: selection.revision.clone(),
-            safe_config_digest: rove_runtime::context::stable_hash("programmatic-fake"),
+            safe_config_digest: rove_foundation::prompt_metadata::stable_hash("programmatic-fake"),
         };
         validate_resume_model(resume_state, &snapshot, false)?;
         let model = Box::new(FakeModelClient::new(
@@ -491,8 +492,8 @@ fn cli_approval_policy(policy: CliApprovalPolicy) -> ApprovalPolicy {
 #[cfg(test)]
 mod tests {
     use crate::cli::args::CliApprovalPolicy;
-    use rove_runtime::agents::AgentActivationError;
-    use rove_runtime::types::ApprovalPolicy;
+    use rove_agents::AgentActivationError;
+    use rove_foundation::types::ApprovalPolicy;
 
     use super::{
         CliRuntimeInteraction, CliRuntimeOptions, build_cli_runtime, selection_from_config,

@@ -13,17 +13,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rove_core::{ToolRegistry, ToolResultOutcome};
-use rove_runtime::memory::paths::MemoryPaths;
-use rove_runtime::state::tool_artifacts::ToolArtifactStore;
-use rove_runtime::tools::mcp_proxy::{
+use rove_foundation::root::Workspace;
+use rove_foundation::types::{ApprovalPolicy, ToolContext};
+use rove_state::memory::paths::MemoryPaths;
+use rove_state::state::tool_artifacts::ToolArtifactStore;
+use rove_tools::mcp_proxy::{
     McpLifecycleFact, McpProbeFailureKind, McpRuntimeState, McpServerConfig, McpTransport,
     McpTransportPolicy, probe_mcp_server, register_mcp_tools,
 };
-use rove_runtime::tools::runtime_context::{
-    runtime_tool_context, runtime_tool_context_with_artifacts,
-};
-use rove_runtime::types::{ApprovalPolicy, ToolContext};
-use rove_runtime::workspace::Workspace;
+use rove_tools::runtime_context::{runtime_tool_context, runtime_tool_context_with_artifacts};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -269,7 +267,7 @@ fn server_config(url: String) -> McpServerConfig {
 
 fn mcp_context<'a>(workspace: &'a Workspace) -> ToolContext<'a> {
     runtime_tool_context(
-        rove_runtime::types::CallId::new(),
+        rove_foundation::types::CallId::new(),
         workspace,
         MemoryPaths::from_workspace(workspace, 8),
         ApprovalPolicy::Auto,
@@ -284,13 +282,13 @@ fn artifact_context<'a>(
     store: Arc<ToolArtifactStore>,
 ) -> ToolContext<'a> {
     runtime_tool_context_with_artifacts(
-        rove_runtime::types::CallId::new(),
+        rove_foundation::types::CallId::new(),
         workspace,
         MemoryPaths::from_workspace(workspace, 8),
         ApprovalPolicy::Auto,
         None,
         CancellationToken::new(),
-        rove_runtime::environment::local_environment(workspace),
+        rove_foundation::environment::local_environment(workspace),
         Some(store),
     )
 }

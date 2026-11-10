@@ -1,6 +1,6 @@
 //! Rendering unified diffs for tool output.
 //!
-//! Extracted from `rove_runtime::tools::coding` so diff rendering is testable
+//! Extracted from the runtime's `tools::coding` so diff rendering is testable
 //! without a workspace. The output format is unchanged: a `--- / +++` header,
 //! one `@@` hunk narrowed to the changed region plus a few context lines, and a
 //! byte-budget truncation marker.

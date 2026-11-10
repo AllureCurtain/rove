@@ -10,15 +10,15 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use rove_runtime::agents::AgentDefinition;
-use rove_runtime::agents::activation::MAX_WORKSPACE_PROCEDURE_ENTRIES;
-use rove_runtime::agents::instructions::InstructionBundle;
-use rove_runtime::agents::package::MAX_MANIFEST_BYTES;
-use rove_runtime::context::prompt_metadata::stable_hash;
-use rove_runtime::workspace::WorkspaceKind;
-use rove_runtime::workspace::boundary::{
+use rove_agents::AgentDefinition;
+use rove_agents::activation::MAX_WORKSPACE_PROCEDURE_ENTRIES;
+use rove_agents::instructions::InstructionBundle;
+use rove_agents::package::MAX_MANIFEST_BYTES;
+use rove_foundation::boundary::{
     is_symlink_or_reparse, resolve_workspace_read_path, resolve_workspace_read_path_without_links,
 };
+use rove_foundation::prompt_metadata::stable_hash;
+use rove_foundation::root::WorkspaceKind;
 
 use crate::config::ProviderConfig;
 use crate::provider::{ProviderAuthConfig, ProviderHeaderValue, SecretSource};

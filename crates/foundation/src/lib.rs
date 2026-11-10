@@ -6,7 +6,7 @@
 //! prompt metadata, content hashing, agent leaf identities, MCP snapshot
 //! records, environment ports + records, and the planning/execution lifecycle
 //! records. Behaviour (engine loops, planning evaluation, tool execution,
-//! MCP transport) stays in `rove-runtime` — the execution-environment
+//! MCP transport) stays in `rove-engine` — the execution-environment
 //! port (`ExecutionEnvironment`, `WorkspaceFileSystem`, `ProcessHost`, the
 //! `Local*`/`InMemory*` implementations) is a foundation concern because both
 //! the engine and the tool layer dispatch through it.

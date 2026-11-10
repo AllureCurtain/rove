@@ -21,19 +21,18 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 
 use rove_core::ToolRegistry;
+use rove_engine::context::manager::ContextManager;
+use rove_engine::engine::{Engine, EngineConfig};
+use rove_foundation::root::Workspace;
+use rove_foundation::session::Session;
+use rove_foundation::types::{ApprovalPolicy, JobId, RunId, SessionId};
 use rove_models::{
     Message, ModelClient, ModelError, ModelEvent, ModelToolSchema, Role, StopReason,
 };
-use rove_runtime::Workspace;
-use rove_runtime::context::manager::ContextManager;
-use rove_runtime::engine::{Engine, EngineConfig};
-use rove_runtime::session::Session;
-use rove_runtime::state::reconcile::reconcile_task_state_with_trace;
-use rove_runtime::state::trace::TraceWriter;
-use rove_runtime::state::trace_reader::read_trace_content;
-use rove_runtime::types::{
-    ApprovalPolicy, JobId, PromptCheckpoint, RunId, RunRequest, SessionId, TaskState,
-};
+use rove_state::state::reconcile::reconcile_task_state_with_trace;
+use rove_state::state::trace::TraceWriter;
+use rove_state::state::trace_reader::read_trace_content;
+use rove_state::task_state::{PromptCheckpoint, RunRequest, TaskState};
 
 /// Emits one line of text and ends the turn.
 struct SpeakingModel {

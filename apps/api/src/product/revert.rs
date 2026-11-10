@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use utoipa::ToSchema;
 
 use rove_core::ToolMutationOperation;
-use rove_runtime::workspace::is_symlink_or_reparse;
+use rove_foundation::boundary::is_symlink_or_reparse;
 
 use crate::docs;
 use crate::{ApiError, ApiErrorResponse, ApiState};
@@ -177,7 +177,7 @@ fn operation_label(operation: &ToolMutationOperation) -> &'static str {
 /// newest mutation within a report first. When `run_id` is given only that
 /// run's report is searched.
 async fn locate_mutation(
-    state_store: &rove_runtime::state::store::StateStore,
+    state_store: &rove_state::state::store::StateStore,
     bindings: &[rove_product_store::ProductSessionRunBinding],
     path: &str,
     run_id: Option<&str>,
@@ -837,9 +837,9 @@ mod tests {
 
     #[tokio::test]
     async fn unreadable_newest_report_does_not_fall_back_to_older_mutation() {
-        use rove_runtime::state::report::{RunReport, write_report};
-        use rove_runtime::state::store::StateStore;
-        use rove_runtime::types::{JobId, RunId, SessionId, TerminationReason};
+        use rove_foundation::types::{JobId, RunId, SessionId, TerminationReason};
+        use rove_state::state::report::{RunReport, write_report};
+        use rove_state::state::store::StateStore;
         let dir = root();
         let store = StateStore::new(dir.path());
         let session = ProductSessionId::new();
@@ -869,7 +869,7 @@ mod tests {
             first.runtime_job_id,
             first.runtime_run_id,
             dir.path().to_path_buf(),
-            rove_runtime::workspace::WorkspaceKind::Folder,
+            rove_foundation::root::WorkspaceKind::Folder,
             "fake".to_string(),
             TerminationReason::Final,
         );

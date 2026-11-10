@@ -253,7 +253,7 @@ pub(crate) fn truncate_product_fork_state(
     })?;
     let pruned = session.clone();
     checkpoint.preserved_tail = pruned
-        .suffix(rove_runtime::session::CHECKPOINT_SESSION_TAIL_ENTRIES)
+        .suffix(rove_foundation::session::CHECKPOINT_SESSION_TAIL_ENTRIES)
         .messages_for_compatibility_artifact()
         .map_err(|error| {
             fork_source_rejection(format!("the fork truncation left an invalid seed: {error}"))

@@ -1,7 +1,7 @@
 use crate::terminal::action::TerminalAction;
 use rove_app_bootstrap::ModelSelection;
-use rove_runtime::conversation::SessionDeliveryState;
-use rove_runtime::types::RunId;
+use rove_engine::conversation::SessionDeliveryState;
+use rove_foundation::types::RunId;
 
 use super::state::SensitiveInput;
 

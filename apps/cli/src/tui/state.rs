@@ -1,7 +1,8 @@
 use crate::terminal::view::{RunViewState, RunViewUpdate, ToolCallStatus};
 use rove_app_bootstrap::ModelSelection;
-use rove_runtime::conversation::{ConversationMessage, MessageStatus};
-use rove_runtime::types::{CallId, RunId, SessionId, TaskState};
+use rove_engine::conversation::{ConversationMessage, MessageStatus};
+use rove_foundation::types::{CallId, RunId, SessionId};
+use rove_state::task_state::TaskState;
 
 use super::sanitize::{
     sanitize_display_text, sanitize_json_value, sanitize_tool_text, truncate_display_text,
@@ -378,7 +379,7 @@ pub enum InteractionModalView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumeCandidate {
     pub session_id: SessionId,
-    pub job_id: rove_runtime::types::JobId,
+    pub job_id: rove_foundation::types::JobId,
     pub run_id: RunId,
     pub goal: String,
     pub step: u32,
@@ -742,7 +743,7 @@ impl TuiState {
                         .map(|resume| resume.session_id.to_string())
                         .unwrap_or_default(),
                     content: content.clone(),
-                    requested_delivery: rove_runtime::conversation::MessageDelivery::Successor,
+                    requested_delivery: rove_engine::conversation::MessageDelivery::Successor,
                     actual_delivery: None,
                     status: mapped_status,
                     sequence: self.messages.len() as i64 + 1,
@@ -778,7 +779,7 @@ impl TuiState {
         }
     }
 
-    fn begin_run(&mut self, run_id: rove_runtime::types::RunId) {
+    fn begin_run(&mut self, run_id: rove_foundation::types::RunId) {
         self.history_notice = None;
         if self.run.run_id.is_some_and(|current| current != run_id) {
             let completed_run = std::mem::take(&mut self.run);
@@ -893,7 +894,7 @@ mod tests {
         InteractionModalKind, InteractionModalView, RunLifecycle, TuiFocus, TuiOverlay, TuiState,
     };
     use rove_core::ToolError;
-    use rove_runtime::types::{CallId, JobId, RunId, TerminationReason};
+    use rove_foundation::types::{CallId, JobId, RunId, TerminationReason};
 
     #[test]
     fn modal_views_expose_stable_kind_and_request_id_without_live_responders() {

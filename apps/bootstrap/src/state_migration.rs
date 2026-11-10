@@ -24,7 +24,7 @@ use walkdir::WalkDir;
 use crate::user_state::{
     LEGACY_STATE_DIR, UserStateRoots, WorkspaceStateLayout, path_starts_with_platform,
 };
-use rove_runtime::state::index::StateIndex;
+use rove_state::state::index::StateIndex;
 
 pub const STATE_MIGRATION_REPORT_SCHEMA_VERSION: i64 = 1;
 pub const LEGACY_MIGRATION_RECEIPT_FILE: &str = ".rove-migration-receipt.json";
@@ -905,7 +905,7 @@ fn sqlite_schema_risk(path: &Path, class: &MigrationFileClass) -> Option<Migrati
     let current = if matches!(class, MigrationFileClass::ProductSqlite) {
         13
     } else {
-        rove_runtime::state::index::CURRENT_SCHEMA_VERSION
+        rove_state::state::index::CURRENT_SCHEMA_VERSION
     };
     if version > current {
         return Some(MigrationRisk {

@@ -8,7 +8,7 @@ members = [
     "crates/state",
     "crates/review",
     "crates/tools",
-    "runtime",
+    "crates/engine",
     "tools-text",
     "apps/bootstrap",
     "apps/bench",
@@ -65,7 +65,7 @@ rove-review = { path = "crates/review" }
 rove-tools = { path = "crates/tools" }
 rove-models = { path = "models" }
 rove-protocol = { path = "protocol" }
-rove-runtime = { path = "runtime" }
+rove-engine = { path = "crates/engine" }
 rove-tools-text = { path = "tools-text" }
 rove-app-bootstrap = { path = "apps/bootstrap" }
 rove-bench = { path = "apps/bench" }

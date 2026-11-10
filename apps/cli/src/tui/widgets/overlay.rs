@@ -10,7 +10,7 @@ use crate::tui::state::{
     ModelPickerState, ProviderOnboardingState, SILICONFLOW_BASE_URL, SILICONFLOW_MODEL,
     SILICONFLOW_PROFILE_ID, SessionPickerState, ToolDetailEntry, ToolDetailState, TuiOverlay,
 };
-use rove_runtime::conversation::MessageStatus;
+use rove_engine::conversation::MessageStatus;
 
 const MAX_OVERLAY_WIDTH: u16 = 96;
 const MAX_OVERLAY_HEIGHT: u16 = 26;

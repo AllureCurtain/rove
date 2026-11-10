@@ -14,12 +14,12 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
 
-use rove_runtime::events::{STREAM_EVENT_CONTRACT_VERSION, StreamEvent};
-use rove_runtime::review::{
+use rove_foundation::events::{STREAM_EVENT_CONTRACT_VERSION, StreamEvent};
+use rove_foundation::types::{JobId, RunId, RunStatus, SessionId};
+use rove_review::{
     ReviewConclusion, ReviewFinding, ReviewResult, ReviewTargetSpec, ReviewTargetSummary,
 };
-use rove_runtime::state::store::StateStore;
-use rove_runtime::types::{JobId, RunId, RunStatus, SessionId};
+use rove_state::state::store::StateStore;
 
 use crate::cursor::{ProductMessageSearchCursor, ProductSearchCursor, ProductSessionCursor};
 
@@ -440,7 +440,7 @@ impl ProductMessage {
     /// value the runtime already knows is a credential is removed here rather
     /// than only being removed when it is excerpted for search.
     pub fn redact_for_response(&mut self) {
-        let registry = rove_runtime::secrets::registry();
+        let registry = rove_foundation::secrets::registry();
         self.content = registry.redact_text(&self.content);
         if let Some(reason) = self.reason.as_mut() {
             *reason = registry.redact_text(reason);
@@ -773,7 +773,7 @@ impl ProductMessageSearchScope {
 /// two fields unambiguous even if an id or a term ever contains the other's
 /// bytes.
 pub fn product_search_cursor_digest(canonical_scope: &str, term: &str) -> String {
-    rove_runtime::context::stable_hash(&format!("{canonical_scope}\u{1f}{term}"))
+    rove_foundation::prompt_metadata::stable_hash(&format!("{canonical_scope}\u{1f}{term}"))
 }
 
 /// The corpus and the sessions one unified search request covers.
@@ -948,7 +948,7 @@ impl ProductControl {
     /// Same split as [`ProductMessage::redact_for_response`]: the stored row
     /// keeps what the model has to receive, the response does not.
     pub fn redact_for_response(&mut self) {
-        self.content = rove_runtime::secrets::registry().redact_text(&self.content);
+        self.content = rove_foundation::secrets::registry().redact_text(&self.content);
     }
 }
 
@@ -2409,7 +2409,7 @@ pub fn m1_browser_migration_digest(
     request: &M1BrowserMigrationRequest,
 ) -> Result<String, serde_json::Error> {
     let canonical = serde_json::to_string(request)?;
-    Ok(rove_runtime::context::stable_hash(&canonical))
+    Ok(rove_foundation::prompt_metadata::stable_hash(&canonical))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -2503,7 +2503,7 @@ pub struct CommitProductRunBinding {
     /// transaction records it with the run so later edits cannot rewrite the
     /// model used by an already-started run.
     pub model_config: ProductSessionModelConfig,
-    pub run_model_snapshot: Option<rove_runtime::runtime_identity::RunModelSnapshot>,
+    pub run_model_snapshot: Option<rove_foundation::runtime_identity::RunModelSnapshot>,
 }
 
 /// One session's product ownership, reassembled from its runs' on-disk records.
@@ -3514,7 +3514,7 @@ mod tests {
     #[test]
     fn response_redaction_clears_message_and_control_bodies_without_touching_innocent_text() {
         let canary = "message-response-credential-canary-51c3ba";
-        let registry = rove_runtime::secrets::registry();
+        let registry = rove_foundation::secrets::registry();
         assert!(registry.register_value(canary));
 
         let mut message = ProductMessage {
@@ -3538,7 +3538,7 @@ mod tests {
         assert!(
             message
                 .content
-                .contains(rove_runtime::secrets::KNOWN_SECRET_MARKER),
+                .contains(rove_foundation::secrets::KNOWN_SECRET_MARKER),
             "{}",
             message.content
         );

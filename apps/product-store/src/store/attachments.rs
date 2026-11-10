@@ -20,7 +20,7 @@ use crate::{
     ProductAttachmentStatus, ProductErrorCode, ProductMessageAttachmentRef, ProductSessionId,
     ProductSessionStatus, ProductStoreError,
 };
-use rove_runtime::conversation::{
+use rove_engine::conversation::{
     MAX_ATTACHMENT_DISPLAY_NAME_BYTES, MAX_MESSAGE_ATTACHMENTS, MessageAttachmentRef,
 };
 
@@ -1370,7 +1370,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(digest, rove_runtime::context::stable_hash("no attachment"));
+        assert_eq!(
+            digest,
+            rove_foundation::prompt_metadata::stable_hash("no attachment")
+        );
     }
 
     #[test]

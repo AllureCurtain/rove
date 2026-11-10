@@ -8,8 +8,8 @@ use crate::tui::state::{
     ProviderOnboardingState, ProviderStatus, RunLifecycle, SessionPickerError, SessionPickerState,
     TuiFocus, TuiOverlay, TuiState,
 };
-use rove_runtime::conversation::{MessageStatus, SessionDeliveryState};
-use rove_runtime::types::CallId;
+use rove_engine::conversation::{MessageStatus, SessionDeliveryState};
+use rove_foundation::types::CallId;
 
 pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
     if !matches!(
@@ -926,7 +926,7 @@ mod tests {
         SessionPickerError, TuiFocus, TuiOverlay, TuiState,
     };
     use rove_app_bootstrap::{ModelSelection, ProviderProfileId};
-    use rove_runtime::types::{CallId, JobId, RunId, SessionId};
+    use rove_foundation::types::{CallId, JobId, RunId, SessionId};
 
     use super::reduce;
 
@@ -962,7 +962,7 @@ mod tests {
             effects,
             vec![TuiEffect::SendMessage {
                 content: "hello".to_string(),
-                session_state: rove_runtime::conversation::SessionDeliveryState::Idle,
+                session_state: rove_engine::conversation::SessionDeliveryState::Idle,
                 target_run_id: None,
             }]
         );
@@ -1014,7 +1014,7 @@ mod tests {
             reduce(&mut state, TuiAction::SubmitComposer),
             vec![TuiEffect::SendMessage {
                 content: "queued while running".to_string(),
-                session_state: rove_runtime::conversation::SessionDeliveryState::Active,
+                session_state: rove_engine::conversation::SessionDeliveryState::Active,
                 target_run_id: None,
             }]
         );

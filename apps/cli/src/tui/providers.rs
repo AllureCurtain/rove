@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::terminal::interaction::{TerminalInteractionProviders, bounded_interaction_channel};
-use rove_runtime::types::{ToolApprovalProvider, UserInputProvider};
+use rove_foundation::types::{ToolApprovalProvider, UserInputProvider};
 
 pub use crate::terminal::interaction::{
     TerminalInteractionKind as TuiInteractionKind,

@@ -419,7 +419,7 @@ pub(crate) async fn read_bounded_file_content(
     // nearly three times.
     let mut redaction_truncated = false;
     let text = text.map(|text| {
-        let redacted = rove_runtime::secrets::registry().redact_text(&text);
+        let redacted = rove_foundation::secrets::registry().redact_text(&text);
         let (kept, cut) = truncate_utf8_preserving_markers(
             &redacted,
             usize::try_from(MAX_TEXT_CONTENT_BYTES).unwrap_or(usize::MAX),
@@ -619,7 +619,7 @@ async fn redacted_run_state_text(path: &Path, max_bytes: u64) -> Result<String, 
     // failure; neither is honest.
     let text = String::from_utf8(bytes)
         .map_err(|_| ApiError::internal("run state artifact is not valid UTF-8"))?;
-    let redacted = rove_runtime::secrets::registry().redact_text(&text);
+    let redacted = rove_foundation::secrets::registry().redact_text(&text);
     if redacted.len() as u64 > max_bytes {
         return Err(ApiError::payload_too_large_with_code(
             ProductErrorCode::ProductArtifactTooLarge.as_str(),
@@ -1222,13 +1222,13 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join("notes.txt");
         let canary = "file-preview-credential-canary-7c25d1";
-        assert!(rove_runtime::secrets::registry().register_value(canary));
+        assert!(rove_foundation::secrets::registry().register_value(canary));
         let raw = format!("keep-preview-head {canary} keep-preview-tail\n");
         tokio::fs::write(&path, &raw).await.unwrap();
         let content = read_bounded_file_content(&path, None).await.unwrap();
         let text = content.text.expect("a text file has a text preview");
         assert!(!text.contains(canary), "the preview leaked: {text}");
-        assert!(text.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER));
+        assert!(text.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER));
         assert!(text.contains("keep-preview-head") && text.contains("keep-preview-tail"));
         // The metadata still describes the file, not the rewritten text.
         assert_eq!(content.size, raw.len() as u64);
@@ -1243,7 +1243,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join("task_state.json");
         let canary = "run-state-download-canary-5a17c3";
-        assert!(rove_runtime::secrets::registry().register_value(canary));
+        assert!(rove_foundation::secrets::registry().register_value(canary));
         let raw = format!("{{\"history\":\"keep-run-state {canary} keep-run-state-end\"}}");
         tokio::fs::write(&path, &raw).await.unwrap();
 
@@ -1271,7 +1271,7 @@ mod tests {
         );
         let served = String::from_utf8(served.to_vec()).unwrap();
         assert!(!served.contains(canary), "the download leaked: {served}");
-        assert!(served.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER));
+        assert!(served.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER));
         assert!(served.contains("keep-run-state"));
         // Nothing was written back: resume still reads the raw value.
         assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), raw);
@@ -1282,7 +1282,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join("report.json");
         let canary = "run-state-range-canary-2f8e60";
-        assert!(rove_runtime::secrets::registry().register_value(canary));
+        assert!(rove_foundation::secrets::registry().register_value(canary));
         let raw = format!("{{\"output\":\"head {canary} tail\"}}");
         tokio::fs::write(&path, &raw).await.unwrap();
 
@@ -1345,7 +1345,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join("task_state.json");
         let canary = "over-cap-run-state-canary-9c4d21";
-        assert!(rove_runtime::secrets::registry().register_value(canary));
+        assert!(rove_foundation::secrets::registry().register_value(canary));
         tokio::fs::write(&path, format!("{{\"history\":\"{canary}\"}}"))
             .await
             .unwrap();
@@ -1377,7 +1377,7 @@ mod tests {
     /// Register a value without asserting on the global registry's state, which
     /// parallel tests in this binary share.
     fn state_canary_register(canary: &str) -> bool {
-        rove_runtime::secrets::registry().register_value(canary)
+        rove_foundation::secrets::registry().register_value(canary)
     }
 
     /// The cap covers the bytes served, not only the bytes read: a file small
@@ -1429,7 +1429,7 @@ mod tests {
             .unwrap();
         let served = String::from_utf8(served.to_vec()).unwrap();
         assert!(!served.contains(canary), "{served}");
-        assert!(served.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER));
+        assert!(served.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER));
     }
 
     /// The preview budget applies to the bytes actually emitted. Redaction can
@@ -1458,7 +1458,7 @@ mod tests {
         );
         assert!(content.truncated, "the emitted text was cut to fit");
         assert!(!text.contains(canary), "the preview leaked");
-        assert!(text.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER));
+        assert!(text.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER));
         // The metadata still describes the file.
         assert_eq!(content.size, raw.len() as u64);
     }
@@ -1525,7 +1525,7 @@ mod tests {
             !whole_text.contains(canary),
             "the unranged read leaked: {whole_text}"
         );
-        assert!(whole_text.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER));
+        assert!(whole_text.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER));
         assert_eq!(
             whole.size,
             whole_text.len() as u64,
@@ -1616,7 +1616,7 @@ mod tests {
             .unwrap();
         let text = served.text.expect("text");
         assert!(!text.contains(canary));
-        assert!(text.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER));
+        assert!(text.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER));
     }
 
     #[test]

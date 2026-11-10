@@ -6,7 +6,7 @@ fn assistant_tool_round(ids: &[&str]) -> Message {
     Message::assistant_with_tool_calls(
         "tool round",
         ids.iter()
-            .map(|id| rove_runtime::types::ToolCallRef {
+            .map(|id| rove_foundation::types::ToolCallRef {
                 id: (*id).to_string(),
                 name: format!("tool_{id}"),
                 args: serde_json::json!({ "id": id }),
@@ -73,12 +73,12 @@ fn a_terminal_without_a_credential_must_match_exactly() {
 #[test]
 fn a_durable_terminal_must_be_the_redaction_of_the_live_one() {
     let canary = "durable-terminal-credential-canary-1f7c4b";
-    assert!(rove_runtime::secrets::registry().register_value(canary));
+    assert!(rove_foundation::secrets::registry().register_value(canary));
     let live = completed(Some(&format!("keep-terminal-tail {canary}")));
     // The durable row is what the index stored: the same text, redacted.
     let durable = completed(Some(&format!(
         "keep-terminal-tail {}",
-        rove_runtime::secrets::KNOWN_SECRET_MARKER
+        rove_foundation::secrets::KNOWN_SECRET_MARKER
     )));
     assert!(
         terminal_events_match(&durable, &live),
@@ -88,7 +88,7 @@ fn a_durable_terminal_must_be_the_redaction_of_the_live_one() {
     // the fallback cannot absorb unrelated divergence.
     let unrelated = completed(Some(&format!(
         "a different tail {}",
-        rove_runtime::secrets::KNOWN_SECRET_MARKER
+        rove_foundation::secrets::KNOWN_SECRET_MARKER
     )));
     assert!(!terminal_events_match(&unrelated, &live));
     // And a live value with no credential in it cannot be explained by a
@@ -122,11 +122,11 @@ fn a_durable_terminal_must_be_the_redaction_of_the_live_one() {
 /// as subsumed by this one for as long as the value pass writes the marker.
 #[test]
 fn a_terminal_output_cannot_persist_with_only_the_declared_field_marker() {
-    use rove_runtime::state::trace::{TraceLine, TraceWriter};
+    use rove_state::state::trace::{TraceLine, TraceWriter};
 
     // Armed, so the convention field list participates at all.
     let canary = "declared-terminal-arming-canary-6a2e";
-    assert!(rove_runtime::secrets::registry().register_value(canary));
+    assert!(rove_foundation::secrets::registry().register_value(canary));
     // A terminal answer that is itself JSON and names convention secret
     // fields, with one registered credential inside it.
     let live_output = format!(
@@ -139,7 +139,7 @@ fn a_terminal_output_cannot_persist_with_only_the_declared_field_marker() {
     let line = std::fs::read_to_string(writer.path()).unwrap();
     let durable: TraceLine = serde_json::from_str(line.trim_end()).unwrap();
     let durable_event = match durable.event {
-        rove_runtime::events::TraceEntry::Ui(event) => event,
+        rove_foundation::events::TraceEntry::Ui(event) => event,
         other => panic!("the terminal line round-trips as a UI event: {other:?}"),
     };
     let StreamEvent::RunCompleted {
@@ -151,11 +151,11 @@ fn a_terminal_output_cannot_persist_with_only_the_declared_field_marker() {
     };
 
     assert!(
-        !durable_output.contains(rove_runtime::secrets::DECLARED_SECRET_FIELD_MARKER),
+        !durable_output.contains(rove_foundation::secrets::DECLARED_SECRET_FIELD_MARKER),
         "the declared-field pass reached inside the output string: {durable_output}"
     );
     assert!(
-        durable_output.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER),
+        durable_output.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER),
         "{durable_output}"
     );
     // The gate accepts the pair instead of judging the run lost, and it does
@@ -163,7 +163,7 @@ fn a_terminal_output_cannot_persist_with_only_the_declared_field_marker() {
     // for byte — the deciding rule, asserted directly rather than inferred
     // from the acceptance.
     assert_eq!(
-        rove_runtime::secrets::registry().redact_text(&live_output),
+        rove_foundation::secrets::registry().redact_text(&live_output),
         durable_output
     );
     assert!(terminal_events_match(
@@ -176,7 +176,7 @@ fn a_terminal_output_cannot_persist_with_only_the_declared_field_marker() {
     // though it still carries the marker.
     let tampered = durable_output.replace("keep-terminal-tail", "keep-terminal-tai1");
     assert_ne!(tampered, durable_output);
-    assert!(tampered.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER));
+    assert!(tampered.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER));
     assert!(
         !terminal_events_match(&completed(Some(&tampered)), &completed(Some(&live_output))),
         "a durable row the authority does not reproduce must be a mismatch"
@@ -197,7 +197,7 @@ fn a_terminal_output_cannot_persist_with_only_the_declared_field_marker() {
 fn two_terminal_credentials_are_indistinguishable_once_redacted() {
     let first = "first-terminal-credential-canary-2b8d";
     let second = "second-terminal-credential-canary-5c31";
-    let registry = rove_runtime::secrets::registry();
+    let registry = rove_foundation::secrets::registry();
     assert!(registry.register_value(first));
     assert!(registry.register_value(second));
     let live = completed(Some(second));
@@ -353,7 +353,7 @@ fn job_state_marks_only_a_salvaged_partial_answer() {
         (
             "a failed turn",
             vec![StreamEvent::RunCompleted {
-                reason: rove_runtime::types::TerminationReason::Error,
+                reason: rove_foundation::types::TerminationReason::Error,
                 output: None,
             }],
         ),
@@ -506,7 +506,7 @@ async fn terminal_event_updates_live_status_after_finalization_barrier() {
         pending_product_events: Mutex::new(Vec::new()),
         completion,
         cancel_token: CancellationToken::new(),
-        subagents: rove_runtime::tools::delegate::SubagentRegistry::default(),
+        subagents: rove_tools::delegate::SubagentRegistry::default(),
     };
     let finalized = AtomicBool::new(false);
 
@@ -693,7 +693,7 @@ async fn test_job_record(temp_dir: &tempfile::TempDir) -> (ApiState, Arc<JobReco
         pending_product_events: Mutex::new(Vec::new()),
         completion,
         cancel_token: CancellationToken::new(),
-        subagents: rove_runtime::tools::delegate::SubagentRegistry::default(),
+        subagents: rove_tools::delegate::SubagentRegistry::default(),
     });
     let state_store = state_store_for_record(&record);
     let run_dir = state_store.run_store.run_dir(&record.run_id);
@@ -786,7 +786,7 @@ async fn shutdown_drain_waits_for_a_superseded_same_job_supervisor() {
         pending_product_events: Mutex::new(Vec::new()),
         completion,
         cancel_token: state.inner.shutdown_token.child_token(),
-        subagents: rove_runtime::tools::delegate::SubagentRegistry::default(),
+        subagents: rove_tools::delegate::SubagentRegistry::default(),
     });
 
     let (release_first, first_released) = oneshot::channel::<()>();
@@ -1291,13 +1291,13 @@ fn api_state_registers_the_bearer_token_as_a_credential() {
 
     let _state = ApiState::new(workspace, config).unwrap();
 
-    let secrets = rove_runtime::secrets::registry();
+    let secrets = rove_foundation::secrets::registry();
     assert!(secrets.is_known_value(token));
     assert_eq!(
         secrets.redact_text(&format!("Authorization: Bearer {token}")),
         format!(
             "Authorization: Bearer {}",
-            rove_runtime::secrets::KNOWN_SECRET_MARKER
+            rove_foundation::secrets::KNOWN_SECRET_MARKER
         )
     );
 }
@@ -1307,7 +1307,7 @@ async fn the_error_envelope_never_carries_a_known_credential() {
     // Every `ApiError` leaves through this one conversion, including the
     // typed rejections that echo back the value a caller sent.
     let canary = "api-error-envelope-canary-9e30c5";
-    assert!(rove_runtime::secrets::registry().register_value(canary));
+    assert!(rove_foundation::secrets::registry().register_value(canary));
     let response = axum::response::IntoResponse::into_response(ApiError::bad_request(format!(
         "provider rejected credential {canary}"
     )));
@@ -1319,7 +1319,7 @@ async fn the_error_envelope_never_carries_a_known_credential() {
 
     assert!(!text.contains(canary), "{text}");
     assert!(
-        text.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER),
+        text.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER),
         "{text}"
     );
     // The envelope keeps its shape, so a client's error handling is
@@ -1330,7 +1330,7 @@ async fn the_error_envelope_never_carries_a_known_credential() {
         decoded["error"],
         format!(
             "provider rejected credential {}",
-            rove_runtime::secrets::KNOWN_SECRET_MARKER
+            rove_foundation::secrets::KNOWN_SECRET_MARKER
         )
     );
 }

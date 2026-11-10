@@ -16,8 +16,8 @@ use rove_cli::cli::state as cli_state;
 use rove_cli::cli::trust as cli_trust;
 use rove_cli::tui::app as tui_app;
 use rove_cli::tui::providers::TuiInteractionBroker;
-use rove_runtime::state::resume::resolve_resume_state;
-use rove_runtime::types::{RunId, TerminationReason};
+use rove_foundation::types::{RunId, TerminationReason};
+use rove_state::state::resume::resolve_resume_state;
 use tokio_util::sync::CancellationToken;
 
 fn main() -> anyhow::Result<()> {

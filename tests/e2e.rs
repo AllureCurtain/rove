@@ -6,46 +6,47 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+use rove_agents::validation::OperatorConstraints;
+use rove_agents::{AgentActivationConfig, AgentSelector};
 use rove_app_bootstrap::{AppConfig, AppConfigOverrides};
 use rove_cli::cli::oneshot::{run_oneshot, run_oneshot_with_cancel};
 use rove_core::ToolError;
 use rove_core::ToolRegistry;
 use rove_core::{Tool, ToolOutput};
+use rove_engine::context::{ContextBudget, ContextManager};
+use rove_engine::engine::{Engine, EngineConfig, ProviderRetryPolicy};
+use rove_foundation::events::StreamEvent;
+use rove_foundation::execution::{
+    PlanDecisionKind, PlanFinishReason, PlanIdentity, StepAttempt, StepCompletionBasis,
+    StepLedgerState, StepRecord, StepRecordStatus,
+};
+use rove_foundation::root::{Workspace, WorkspaceKind};
+use rove_foundation::session::{Session, SessionEntry};
+use rove_foundation::types::{
+    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, ModelToolSchema, PendingToolApproval,
+    PendingUserInput, PlanStep, Role, RunId, SessionId, TaskPlan, TerminationReason,
+    ToolApprovalProvider, ToolApprovalRequest, ToolContext, ToolDescriptor, Usage,
+    UserInputProvider, UserInputRequest,
+};
 use rove_models::ModelError;
 use rove_models::{
     AssistantTurn, InternalCallId, ModelClient, ModelEvent, ProviderCapabilities, StopReason,
     ToolCall as CanonicalToolCall, ToolResult as CanonicalToolResult, WireCallReference,
 };
-use rove_runtime::agents::validation::OperatorConstraints;
-use rove_runtime::agents::{AgentActivationConfig, AgentSelector};
-use rove_runtime::context::{ContextBudget, ContextManager};
-use rove_runtime::engine::{Engine, EngineConfig, ProviderRetryPolicy};
-use rove_runtime::events::StreamEvent;
-use rove_runtime::execution::{
-    PlanDecisionKind, PlanFinishReason, PlanIdentity, StepAttempt, StepCompletionBasis,
-    StepLedgerState, StepRecord, StepRecordStatus,
-};
-use rove_runtime::hooks::{
+use rove_state::memory::durable::read_memory_index_sync;
+use rove_state::memory::paths::MemoryPaths;
+use rove_state::state::artifacts::RunArtifactRecorder;
+use rove_state::state::report::RunReport;
+use rove_state::state::store::StateStore;
+use rove_state::task_state::{PromptCheckpoint, RunRequest, TaskState};
+use rove_tools::echo::EchoTool;
+use rove_tools::fs::{FsReadTool, FsWriteTool};
+use rove_tools::hooks::{
     HookRegistry, PostRunHook, PostRunHookContext, PostToolHook, PostToolHookContext, PreToolHook,
 };
-use rove_runtime::memory::durable::read_memory_index_sync;
-use rove_runtime::memory::paths::MemoryPaths;
-use rove_runtime::session::{Session, SessionEntry};
-use rove_runtime::state::artifacts::RunArtifactRecorder;
-use rove_runtime::state::report::RunReport;
-use rove_runtime::state::store::StateStore;
-use rove_runtime::tools::echo::EchoTool;
-use rove_runtime::tools::fs::{FsReadTool, FsWriteTool};
-use rove_runtime::tools::request_input::RequestInputTool;
-use rove_runtime::tools::runtime_context::{runtime_tool_context, runtime_tool_services};
-use rove_runtime::tools::shell::ShellTool;
-use rove_runtime::types::{
-    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, ModelToolSchema, PendingToolApproval,
-    PendingUserInput, PlanStep, PromptCheckpoint, Role, RunId, RunRequest, SessionId, TaskPlan,
-    TaskState, TerminationReason, ToolApprovalProvider, ToolApprovalRequest, ToolContext,
-    ToolDescriptor, Usage, UserInputProvider, UserInputRequest,
-};
-use rove_runtime::workspace::{Workspace, WorkspaceKind};
+use rove_tools::request_input::RequestInputTool;
+use rove_tools::runtime_context::{runtime_tool_context, runtime_tool_services};
+use rove_tools::shell::ShellTool;
 
 fn user_message(content: &str) -> Message {
     Message::user(content)
@@ -1431,7 +1432,7 @@ async fn destructive_tool_is_blocked_when_policy_is_never() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(FakeDestructiveTool));
 
-    let executor = rove_runtime::executor::Executor::new(&registry);
+    let executor = rove_tools::executor::Executor::new(&registry);
     let ctx = tool_context(&workspace, ApprovalPolicy::Never);
 
     let err = executor
@@ -1450,7 +1451,7 @@ async fn destructive_tool_requires_explicit_approval_when_policy_is_ask() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(FakeDestructiveTool));
 
-    let executor = rove_runtime::executor::Executor::new(&registry);
+    let executor = rove_tools::executor::Executor::new(&registry);
     let ctx = tool_context(&workspace, ApprovalPolicy::Ask);
 
     let err = executor
@@ -1634,7 +1635,7 @@ async fn executor_rejects_wrong_argument_type_before_tool_runs() {
         calls: calls.clone(),
     }));
 
-    let executor = rove_runtime::executor::Executor::new(&registry);
+    let executor = rove_tools::executor::Executor::new(&registry);
     let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let err = executor
@@ -1662,7 +1663,7 @@ async fn empty_hook_registry_preserves_tool_result() {
         calls: calls.clone(),
     }));
 
-    let executor = rove_runtime::executor::Executor::with_hooks(&registry, HookRegistry::default());
+    let executor = rove_tools::executor::Executor::with_hooks(&registry, HookRegistry::default());
     let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let result = executor
@@ -1690,7 +1691,7 @@ async fn pre_tool_hook_can_block_before_tool_runs() {
         calls: calls.clone(),
     }));
     let hooks = HookRegistry::default().with_pre_tool(Box::new(BlockingPreHook));
-    let executor = rove_runtime::executor::Executor::with_hooks(&registry, hooks);
+    let executor = rove_tools::executor::Executor::with_hooks(&registry, hooks);
     let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let err = executor
@@ -1722,7 +1723,7 @@ async fn pre_tool_hook_receives_cancellation_token_in_context() {
     let hooks = HookRegistry::default().with_pre_tool(Box::new(RecordingCancelTokenHook {
         states: states.clone(),
     }));
-    let executor = rove_runtime::executor::Executor::with_hooks(&registry, hooks);
+    let executor = rove_tools::executor::Executor::with_hooks(&registry, hooks);
     let cancel = CancellationToken::new();
     let ctx = runtime_tool_context(
         CallId::new(),
@@ -1760,7 +1761,7 @@ async fn post_tool_hook_observes_successful_tool_result() {
     let hooks = HookRegistry::default().with_post_tool(Box::new(RecordingPostHook {
         records: records.clone(),
     }));
-    let executor = rove_runtime::executor::Executor::with_hooks(&registry, hooks);
+    let executor = rove_tools::executor::Executor::with_hooks(&registry, hooks);
     let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let result = executor
@@ -1977,7 +1978,7 @@ async fn engine_runs_tool_calls_through_pre_tool_hooks() {
 #[tokio::test]
 async fn latest_task_state_is_loaded_for_resume() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = rove_runtime::state::store::StateStore::new(tmp.path());
+    let store = rove_state::state::store::StateStore::new(tmp.path());
 
     let state = TaskState {
         schema_version: 1,
@@ -2005,7 +2006,7 @@ async fn latest_task_state_is_loaded_for_resume() {
 #[tokio::test]
 async fn latest_task_state_rejects_unsupported_schema_version() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = rove_runtime::state::store::StateStore::new(tmp.path());
+    let store = rove_state::state::store::StateStore::new(tmp.path());
 
     let state = TaskState {
         schema_version: 99,
@@ -2037,7 +2038,7 @@ async fn latest_task_state_rejects_unsupported_schema_version() {
 #[tokio::test]
 async fn list_resumable_task_states_filters_by_session_and_newest_first() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = rove_runtime::state::store::StateStore::new(tmp.path());
+    let store = rove_state::state::store::StateStore::new(tmp.path());
     let target_session = SessionId::new();
     let other_session = SessionId::new();
 
@@ -2114,7 +2115,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
 #[tokio::test]
 async fn list_task_states_returns_all_snapshots_newest_first() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = rove_runtime::state::store::StateStore::new(tmp.path());
+    let store = rove_state::state::store::StateStore::new(tmp.path());
 
     let older = TaskState {
         schema_version: 1,
@@ -2163,7 +2164,7 @@ async fn list_task_states_returns_all_snapshots_newest_first() {
 #[tokio::test]
 async fn load_task_state_reads_exact_run_id() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = rove_runtime::state::store::StateStore::new(tmp.path());
+    let store = rove_state::state::store::StateStore::new(tmp.path());
     let session_id = SessionId::new();
     let target_run_id = RunId::new();
     let other_run_id = RunId::new();
@@ -2215,7 +2216,7 @@ async fn load_task_state_reads_exact_run_id() {
 #[tokio::test]
 async fn load_task_state_returns_not_found_for_missing_run() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = rove_runtime::state::store::StateStore::new(tmp.path());
+    let store = rove_state::state::store::StateStore::new(tmp.path());
 
     let err = store.load_task_state(RunId::new()).await.unwrap_err();
 
@@ -2411,7 +2412,7 @@ async fn repair_index_rebuilds_events_and_report_from_artifacts() {
         TerminationReason::Final,
     );
     report.step_records.push(record);
-    rove_runtime::state::report::write_report(&run.run_dir, &report).unwrap();
+    rove_state::state::report::write_report(&run.run_dir, &report).unwrap();
     std::fs::remove_file(store.index.path()).unwrap();
 
     let repaired = store.repair_index().await.unwrap();
@@ -2831,11 +2832,11 @@ async fn a_scheduled_retry_reaches_the_durable_trace_and_the_event_index() {
     let trace = std::fs::read_to_string(state_store.run_store.run_dir(&run_id).join("trace.jsonl"))
         .unwrap();
     let notices: Vec<(u32, u32, u64, String)> =
-        rove_runtime::state::trace_reader::read_trace_content(&trace)
+        rove_state::state::trace_reader::read_trace_content(&trace)
             .entries
             .into_iter()
             .filter_map(|entry| match entry.entry {
-                rove_runtime::foundation::TraceEntry::Ui(StreamEvent::ProviderRetry {
+                rove_foundation::TraceEntry::Ui(StreamEvent::ProviderRetry {
                     attempt,
                     max_attempts,
                     delay_ms,
@@ -3111,7 +3112,7 @@ async fn engine_honors_configured_session_memory_dir_for_read_and_write() {
         workspace.clone(),
         ApprovalPolicy::Auto,
     )
-    .with_memory_paths(rove_runtime::memory::paths::MemoryPaths {
+    .with_memory_paths(rove_state::memory::paths::MemoryPaths {
         session_dir: session_dir.clone(),
         durable_dir: workspace.state_dir.join("memory"),
         recall_limit: 8,
@@ -3350,7 +3351,7 @@ async fn engine_honors_configured_durable_memory_dir_for_prompt_recall() {
         workspace.clone(),
         ApprovalPolicy::Auto,
     )
-    .with_memory_paths(rove_runtime::memory::paths::MemoryPaths {
+    .with_memory_paths(rove_state::memory::paths::MemoryPaths {
         session_dir: workspace.state_dir.join("memory").join("sessions"),
         durable_dir: durable_dir.clone(),
         recall_limit: 1,
@@ -3426,14 +3427,14 @@ async fn planner_persists_steps_and_resumes_mid_plan() {
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)))
+            .filter(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_foundation::execution::StepRecordStatus::Succeeded | rove_foundation::execution::StepRecordStatus::Skipped)))
             .count(),
         2
     );
     assert!(matches!(
         events.last(),
         Some(StreamEvent::RunCompleted {
-            reason: rove_runtime::types::TerminationReason::Final,
+            reason: rove_foundation::types::TerminationReason::Final,
             ..
         })
     ));
@@ -3469,7 +3470,7 @@ async fn engine_writes_completed_plan_steps_to_session_summary() {
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)))
+            .filter(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_foundation::execution::StepRecordStatus::Succeeded | rove_foundation::execution::StepRecordStatus::Skipped)))
             .count(),
         2
     );
@@ -3503,7 +3504,7 @@ async fn planner_accepts_json_inside_markdown_fence() {
     assert!(events.iter().any(|event| {
         matches!(
             event,
-            StreamEvent::StepResult { record, .. } if record.step_id == "1" && matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)
+            StreamEvent::StepResult { record, .. } if record.step_id == "1" && matches!(record.status, rove_foundation::execution::StepRecordStatus::Succeeded | rove_foundation::execution::StepRecordStatus::Skipped)
         )
     }));
 }
@@ -3558,7 +3559,7 @@ async fn planner_uses_engine_configured_prompt() {
     assert!(events.iter().any(|event| {
         matches!(
             event,
-            StreamEvent::StepResult { record, .. } if record.step_id == "1" && matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)
+            StreamEvent::StepResult { record, .. } if record.step_id == "1" && matches!(record.status, rove_foundation::execution::StepRecordStatus::Succeeded | rove_foundation::execution::StepRecordStatus::Skipped)
         )
     }));
     let captured = captured.lock().unwrap();
@@ -3880,7 +3881,7 @@ async fn planner_resume_applies_terminal_success_without_replaying_the_step() {
 /// work could run.
 #[tokio::test]
 async fn a_new_turn_continuing_a_session_starts_with_a_fresh_execution_budget() {
-    let exhausted_usage = rove_runtime::execution::ExecutionBudgetUsage {
+    let exhausted_usage = rove_foundation::execution::ExecutionBudgetUsage {
         step_attempts: 5,
         model_turns: 40,
         tool_calls: 100,
@@ -3908,7 +3909,7 @@ async fn a_new_turn_continuing_a_session_starts_with_a_fresh_execution_budget() 
             runtime_identity: None,
             agent_profile: None,
             step_ledger: Default::default(),
-            execution_lifecycle: rove_runtime::execution::ExecutionLifecycleState {
+            execution_lifecycle: rove_foundation::execution::ExecutionLifecycleState {
                 budget_usage: exhausted_usage.clone(),
                 ..Default::default()
             },
@@ -3947,7 +3948,7 @@ async fn a_new_turn_continuing_a_session_starts_with_a_fresh_execution_budget() 
         .iter()
         .find_map(|event| match event {
             StreamEvent::ExecutionBudgetUpdated { phase, snapshot }
-                if *phase == rove_runtime::execution::ExecutionPhase::Step =>
+                if *phase == rove_foundation::execution::ExecutionPhase::Step =>
             {
                 Some(snapshot.clone())
             }
@@ -3973,7 +3974,7 @@ async fn a_new_turn_continuing_a_session_starts_with_a_fresh_execution_budget() 
         !events.iter().any(|event| matches!(
             event,
             StreamEvent::FinalizationCompleted { record }
-                if record.finish_reason == rove_runtime::execution::PlanFinishReason::BudgetExhausted
+                if record.finish_reason == rove_foundation::execution::PlanFinishReason::BudgetExhausted
         )),
         "a fresh turn must not finish as budget exhausted"
     );
@@ -4065,7 +4066,7 @@ async fn a_new_turn_plans_only_the_current_goal_but_executes_with_session_histor
 #[tokio::test]
 async fn resuming_the_same_run_restores_its_consumed_execution_budget() {
     let run_id = RunId::new();
-    let consumed = rove_runtime::execution::ExecutionBudgetUsage {
+    let consumed = rove_foundation::execution::ExecutionBudgetUsage {
         step_attempts: 3,
         model_turns: 7,
         tool_calls: 11,
@@ -4092,7 +4093,7 @@ async fn resuming_the_same_run_restores_its_consumed_execution_budget() {
             runtime_identity: None,
             agent_profile: None,
             step_ledger: Default::default(),
-            execution_lifecycle: rove_runtime::execution::ExecutionLifecycleState {
+            execution_lifecycle: rove_foundation::execution::ExecutionLifecycleState {
                 budget_usage: consumed.clone(),
                 ..Default::default()
             },
@@ -4168,7 +4169,7 @@ async fn planned_step_returns_tool_result_to_model_before_completion() {
         .expect("step runner should build another prompt after the tool result");
     let step_completed = events
         .iter()
-        .position(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)))
+        .position(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_foundation::execution::StepRecordStatus::Succeeded | rove_foundation::execution::StepRecordStatus::Skipped)))
         .unwrap();
     assert!(tool_completed < post_tool_prompt);
     assert!(post_tool_prompt < step_completed);
@@ -4200,7 +4201,7 @@ async fn planned_step_emits_complete_step_record_before_compatibility_completion
         .expect("planned step should emit a terminal step_result");
     let completed_index = events
         .iter()
-        .position(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)))
+        .position(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_foundation::execution::StepRecordStatus::Succeeded | rove_foundation::execution::StepRecordStatus::Skipped)))
         .unwrap();
     let (decision_index, decision) = events
         .iter()
@@ -4373,7 +4374,7 @@ async fn planned_step_model_turn_budget_exhaustion_is_explicit() {
     assert!(
         !events
             .iter()
-            .any(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)))
+            .any(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_foundation::execution::StepRecordStatus::Succeeded | rove_foundation::execution::StepRecordStatus::Skipped)))
     );
     // The exhausted dimension is now named explicitly by the typed budget,
     // so the record identifies which per-step ceiling stopped the work.
@@ -4521,12 +4522,12 @@ async fn planner_repairs_recoverable_tool_error_within_the_same_step() {
     assert!(
         !events
             .iter()
-            .any(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_runtime::execution::StepRecordStatus::Failed | rove_runtime::execution::StepRecordStatus::Blocked | rove_runtime::execution::StepRecordStatus::Interrupted)))
+            .any(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_foundation::execution::StepRecordStatus::Failed | rove_foundation::execution::StepRecordStatus::Blocked | rove_foundation::execution::StepRecordStatus::Interrupted)))
     );
     assert!(events.iter().any(|event| {
         matches!(
             event,
-            StreamEvent::StepResult { record, .. } if record.step_id == "1" && matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)
+            StreamEvent::StepResult { record, .. } if record.step_id == "1" && matches!(record.status, rove_foundation::execution::StepRecordStatus::Succeeded | rove_foundation::execution::StepRecordStatus::Skipped)
         )
     }));
 }
@@ -4560,7 +4561,7 @@ async fn planner_replans_after_step_failure() {
     assert!(events.iter().any(|event| {
         matches!(
             event,
-            StreamEvent::StepResult { record, .. } if record.step_id == "2" && matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)
+            StreamEvent::StepResult { record, .. } if record.step_id == "2" && matches!(record.status, rove_foundation::execution::StepRecordStatus::Succeeded | rove_foundation::execution::StepRecordStatus::Skipped)
         )
     }));
 }
@@ -4642,39 +4643,35 @@ async fn oneshot_persists_replanned_task_state() {
     assert_eq!(report.plan_revisions, persisted_revisions);
     let trace = std::fs::read_to_string(state_store.run_store.run_dir(&run_id).join("trace.jsonl"))
         .unwrap();
-    let traced_records: Vec<_> = rove_runtime::state::trace_reader::read_trace_content(&trace)
+    let traced_records: Vec<_> = rove_state::state::trace_reader::read_trace_content(&trace)
         .entries
         .into_iter()
         .filter_map(|entry| match entry.entry {
-            rove_runtime::foundation::TraceEntry::Ui(StreamEvent::StepResult { record }) => {
-                Some(*record)
-            }
+            rove_foundation::TraceEntry::Ui(StreamEvent::StepResult { record }) => Some(*record),
             _ => None,
         })
         .collect();
     assert_eq!(traced_records, persisted_records);
-    let traced_decisions: Vec<_> = rove_runtime::state::trace_reader::read_trace_content(&trace)
+    let traced_decisions: Vec<_> = rove_state::state::trace_reader::read_trace_content(&trace)
         .entries
         .into_iter()
         .filter_map(|entry| match entry.entry {
-            rove_runtime::foundation::TraceEntry::Ui(StreamEvent::PlanDecision { record }) => {
-                Some(*record)
-            }
+            rove_foundation::TraceEntry::Ui(StreamEvent::PlanDecision { record }) => Some(*record),
             _ => None,
         })
         .collect();
     assert_eq!(traced_decisions, persisted_decisions);
-    let traced_revisions: Vec<_> = rove_runtime::state::trace_reader::read_trace_content(&trace)
+    let traced_revisions: Vec<_> = rove_state::state::trace_reader::read_trace_content(&trace)
         .entries
         .into_iter()
         .filter_map(|entry| match entry.entry {
-            rove_runtime::foundation::TraceEntry::Ui(StreamEvent::PlanCreated {
+            rove_foundation::TraceEntry::Ui(StreamEvent::PlanCreated {
                 plan_revision: Some(revision),
                 ..
             })
-            | rove_runtime::foundation::TraceEntry::Ui(StreamEvent::PlanRevised {
-                revision, ..
-            }) => Some(*revision),
+            | rove_foundation::TraceEntry::Ui(StreamEvent::PlanRevised { revision, .. }) => {
+                Some(*revision)
+            }
             _ => None,
         })
         .collect();
@@ -4742,7 +4739,7 @@ async fn resumed_run_uses_persisted_replanned_task_state() {
     assert!(events.iter().any(|event| {
         matches!(
             event,
-            StreamEvent::StepResult { record, .. } if record.step_id == "2" && matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)
+            StreamEvent::StepResult { record, .. } if record.step_id == "2" && matches!(record.status, rove_foundation::execution::StepRecordStatus::Succeeded | rove_foundation::execution::StepRecordStatus::Skipped)
         )
     }));
 }
@@ -4756,7 +4753,7 @@ async fn file_tools_read_and_write_inside_workspace() {
     registry.register(Box::new(FsWriteTool::new(workspace.root.clone())));
     registry.register(Box::new(FsReadTool::new(workspace.root.clone())));
 
-    let executor = rove_runtime::executor::Executor::new(&registry);
+    let executor = rove_tools::executor::Executor::new(&registry);
     let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     executor
@@ -4789,7 +4786,7 @@ async fn run_shell_is_blocked_when_policy_is_never() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
-    let executor = rove_runtime::executor::Executor::new(&registry);
+    let executor = rove_tools::executor::Executor::new(&registry);
     let ctx = tool_context(&workspace, ApprovalPolicy::Never);
 
     let err = executor
@@ -4813,7 +4810,7 @@ async fn run_shell_rejects_empty_command() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
-    let executor = rove_runtime::executor::Executor::new(&registry);
+    let executor = rove_tools::executor::Executor::new(&registry);
     let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let err = executor
@@ -4840,7 +4837,7 @@ async fn run_shell_rejects_nul_byte_command() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
-    let executor = rove_runtime::executor::Executor::new(&registry);
+    let executor = rove_tools::executor::Executor::new(&registry);
     let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let err = executor
@@ -4867,7 +4864,7 @@ async fn run_shell_runs_non_empty_command_when_approved() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
-    let executor = rove_runtime::executor::Executor::new(&registry);
+    let executor = rove_tools::executor::Executor::new(&registry);
     let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let command = if cfg!(windows) {
@@ -4945,7 +4942,7 @@ async fn run_with_cancel_completes_cancelled_while_tool_is_waiting() {
         panic!("expected a terminal run event, got {terminal:?}");
     };
     assert!(
-        matches!(reason, rove_runtime::types::TerminationReason::Cancelled),
+        matches!(reason, rove_foundation::types::TerminationReason::Cancelled),
         "a cancelled run must report cancellation: {reason:?}"
     );
     // The independent finalizer explains every non-success outcome rather than
@@ -5143,7 +5140,7 @@ async fn run_stream_cancel_completes_cancelled_while_tool_is_waiting() {
         panic!("expected a terminal run event, got {terminal:?}");
     };
     assert!(
-        matches!(reason, rove_runtime::types::TerminationReason::Cancelled),
+        matches!(reason, rove_foundation::types::TerminationReason::Cancelled),
         "a cancelled run must report cancellation: {reason:?}"
     );
     // The independent finalizer explains every non-success outcome rather than
@@ -5204,7 +5201,7 @@ fn compaction_policy_requests_auto_compaction_after_soft_limit() {
         hard_limit_tokens: 80,
         reserved_tokens: 5,
     };
-    let build = rove_runtime::context::ContextBuild {
+    let build = rove_engine::context::ContextBuild {
         messages: vec![user_message("large context")],
         token_estimate: 24,
         included_history_messages: 3,
@@ -5214,11 +5211,11 @@ fn compaction_policy_requests_auto_compaction_after_soft_limit() {
         metadata: Default::default(),
     };
 
-    let decision = rove_runtime::context::CompactionPolicy::default().decide(&build, budget);
+    let decision = rove_engine::context::CompactionPolicy::default().decide(&build, budget);
 
     assert_eq!(
         decision.mode,
-        rove_runtime::context::CompactionMode::Automatic
+        rove_engine::context::CompactionMode::Automatic
     );
     assert!(!decision.circuit_open);
 }
@@ -5230,7 +5227,7 @@ fn compaction_policy_opens_circuit_after_repeated_failures() {
         hard_limit_tokens: 80,
         reserved_tokens: 5,
     };
-    let build = rove_runtime::context::ContextBuild {
+    let build = rove_engine::context::ContextBuild {
         messages: vec![user_message("large context")],
         token_estimate: 24,
         included_history_messages: 3,
@@ -5240,7 +5237,7 @@ fn compaction_policy_opens_circuit_after_repeated_failures() {
         metadata: Default::default(),
     };
 
-    let decision = rove_runtime::context::CompactionPolicy {
+    let decision = rove_engine::context::CompactionPolicy {
         consecutive_failures: 3,
         failure_threshold: 3,
     }
@@ -5248,7 +5245,7 @@ fn compaction_policy_opens_circuit_after_repeated_failures() {
 
     assert_eq!(
         decision.mode,
-        rove_runtime::context::CompactionMode::Disabled
+        rove_engine::context::CompactionMode::Disabled
     );
     assert!(decision.circuit_open);
 }
@@ -5315,7 +5312,7 @@ async fn oneshot_persists_prompt_checkpoint() {
     assert!(checkpoint.token_estimate > 0);
     assert_eq!(
         checkpoint.compaction.mode,
-        rove_runtime::types::PromptCompactionMode::Deterministic
+        rove_foundation::types::PromptCompactionMode::Deterministic
     );
     assert!(!checkpoint.compaction.circuit_open);
 }
@@ -5372,7 +5369,7 @@ async fn model_compaction_stores_generated_summary_in_checkpoint() {
     );
     assert_eq!(
         checkpoint.compaction.mode,
-        rove_runtime::types::PromptCompactionMode::ModelGenerated
+        rove_foundation::types::PromptCompactionMode::ModelGenerated
     );
     assert_eq!(checkpoint.compaction.model.as_deref(), Some("fake-model"));
     assert_eq!(checkpoint.compaction.source_message_count, 2);
@@ -5643,13 +5640,13 @@ async fn a_compaction_leaves_the_full_history_exportable_from_the_trace() {
         "manual compaction wrote to the trace; it must only edit caller-owned state"
     );
 
-    let tail = rove_runtime::state::initial_history::read_history_tail(
+    let tail = rove_state::state::initial_history::read_history_tail(
         &trace,
         run_id,
-        rove_runtime::state::initial_history::DEFAULT_HISTORY_TAIL_ITEMS,
+        rove_state::state::initial_history::DEFAULT_HISTORY_TAIL_ITEMS,
     )
     .unwrap();
-    let exported = rove_runtime::state::initial_history::InitialHistory::Resumed(tail)
+    let exported = rove_state::state::initial_history::InitialHistory::Resumed(tail)
         .to_messages()
         .iter()
         .map(|message| message.content.clone())
@@ -5666,7 +5663,7 @@ async fn a_compaction_leaves_the_full_history_exportable_from_the_trace() {
 /// This is the shape pruning targets: a `ToolOutput::text` result with no rich
 /// envelope, from a tool the executor does not retain as a durable artifact.
 /// `read_file`/`search_code`/`list_directory`/`glob_paths` always get one
-/// (`runtime/src/tools/executor.rs::retain_eligible_output`), so their results
+/// (`crates/tools/src/executor.rs::retain_eligible_output`), so their results
 /// keep their `RichReference` precedence and are never elided; shell output has
 /// this shape, which is why the design's own example is bash output.
 struct LargeTextTool;
@@ -5715,7 +5712,7 @@ fn captured_compaction_transcript(prompts: &[Vec<Message>]) -> String {
         .find_map(|message| {
             message
                 .content
-                .strip_prefix(rove_runtime::compaction::COMPACTION_TRANSCRIPT_PREFIX)
+                .strip_prefix(rove_engine::context::compaction::COMPACTION_TRANSCRIPT_PREFIX)
                 .map(str::to_string)
         })
         .expect("no compaction request was captured")
@@ -5730,7 +5727,9 @@ fn captured_elided_excerpt(prompts: &[Vec<Message>]) -> String {
     decoded
         .into_iter()
         .map(|message| message.content)
-        .find(|content| content.contains(rove_runtime::compaction::COMPACTION_ELISION_MARKER))
+        .find(|content| {
+            content.contains(rove_engine::context::compaction::COMPACTION_ELISION_MARKER)
+        })
         .expect("the request carried no elided payload")
 }
 
@@ -5748,19 +5747,19 @@ fn captured_elided_message_bytes(prompts: &[Vec<Message>]) -> usize {
         .find(|message| {
             message
                 .content
-                .contains(rove_runtime::compaction::COMPACTION_ELISION_MARKER)
+                .contains(rove_engine::context::compaction::COMPACTION_ELISION_MARKER)
         })
-        .map(|message| rove_runtime::prompt_metadata::message_bytes(&message))
+        .map(|message| rove_foundation::prompt_metadata::message_bytes(&message))
         .expect("the request carried no elided payload")
 }
 
 /// Every `PromptBuilt` fact a run's trace recorded, in order.
-fn prompt_build_facts(trace: &str) -> Vec<rove_runtime::prompt_metadata::PromptBuildMetadata> {
-    rove_runtime::state::trace_reader::read_trace_content(trace)
+fn prompt_build_facts(trace: &str) -> Vec<rove_foundation::prompt_metadata::PromptBuildMetadata> {
+    rove_state::state::trace_reader::read_trace_content(trace)
         .entries
         .into_iter()
         .filter_map(|record| match record.entry {
-            rove_runtime::foundation::TraceEntry::Ui(StreamEvent::PromptBuilt { metadata }) => {
+            rove_foundation::TraceEntry::Ui(StreamEvent::PromptBuilt { metadata }) => {
                 Some(metadata.as_ref().clone())
             }
             _ => None,
@@ -5829,7 +5828,7 @@ async fn a_pruned_shrink_request_is_bounded_and_the_trace_keeps_the_payload() {
     // 1. The request is bounded and declares its own bound.
     let transcript = captured_compaction_transcript(&prompts);
     assert!(
-        transcript.len() <= rove_runtime::compaction::COMPACTION_REQUEST_MAX_BYTES,
+        transcript.len() <= rove_engine::context::compaction::COMPACTION_REQUEST_MAX_BYTES,
         "the shrink request outgrew its bound: {} bytes",
         transcript.len()
     );
@@ -5843,13 +5842,13 @@ async fn a_pruned_shrink_request_is_bounded_and_the_trace_keeps_the_payload() {
         instruction.contains("Bounded transcript notice"),
         "the request did not declare what it left out: {instruction}"
     );
-    assert!(instruction.contains(rove_runtime::compaction::PRUNING_POLICY_VERSION));
+    assert!(instruction.contains(rove_engine::context::compaction::PRUNING_POLICY_VERSION));
     assert!(
         !transcript.contains(&payload),
         "the bounded request still carried the whole 20 KiB payload"
     );
     let excerpt = captured_elided_excerpt(&prompts);
-    assert!(excerpt.contains(rove_runtime::compaction::COMPACTION_ELISION_MARKER));
+    assert!(excerpt.contains(rove_engine::context::compaction::COMPACTION_ELISION_MARKER));
 
     // 2. The event facts keep the payload: pruning is a prompt-time projection,
     // not a rewrite of `trace.jsonl`.
@@ -5869,7 +5868,7 @@ async fn a_pruned_shrink_request_is_bounded_and_the_trace_keeps_the_payload() {
         .expect("no PromptBuilt recorded the pruning");
     assert_eq!(
         pruned.pruning_policy.as_deref(),
-        Some(rove_runtime::compaction::PRUNING_POLICY_VERSION)
+        Some(rove_engine::context::compaction::PRUNING_POLICY_VERSION)
     );
     assert!(pruned.pruned_payload_bytes >= payload.len());
     let digest = excerpt
@@ -5900,12 +5899,12 @@ async fn a_pruned_shrink_request_is_bounded_and_the_trace_keeps_the_payload() {
     // one: the summary lands through `PromptCompacted`, not through a pruning
     // side channel.
     assert!(
-        rove_runtime::state::trace_reader::read_trace_content(&trace)
+        rove_state::state::trace_reader::read_trace_content(&trace)
             .entries
             .iter()
             .any(|record| matches!(
                 record.entry,
-                rove_runtime::foundation::TraceEntry::Ui(StreamEvent::PromptCompacted { .. })
+                rove_foundation::TraceEntry::Ui(StreamEvent::PromptCompacted { .. })
             )),
         "the run recorded no compacted prompt event"
     );
@@ -6293,7 +6292,7 @@ async fn failing_model_compaction_falls_back_to_deterministic_summary_with_circu
         .expect("task_state should include a prompt checkpoint");
     assert_eq!(
         checkpoint.compaction.mode,
-        rove_runtime::types::PromptCompactionMode::Degraded
+        rove_foundation::types::PromptCompactionMode::Degraded
     );
     // v2 structured fallback: deterministic_structured_summary renders as a
     // non-empty "Compact summary" (Goal/Key results/etc.) rather than the old
@@ -6407,7 +6406,7 @@ async fn a_resumed_breaker_waits_for_its_persisted_cooldown_and_then_probes_once
             .checkpoint
             .as_mut()
             .expect("the first turn writes a prompt checkpoint");
-        checkpoint.compaction.mode = rove_runtime::types::PromptCompactionMode::Degraded;
+        checkpoint.compaction.mode = rove_foundation::types::PromptCompactionMode::Degraded;
         checkpoint.compaction.degraded = true;
         checkpoint.compaction.consecutive_failures = 3;
         checkpoint.compaction.circuit_open = true;
@@ -6628,7 +6627,7 @@ fn report_serializes_workspace_and_identity_metadata() {
         workspace_root.clone(),
         WorkspaceKind::Folder,
         "fake-model".to_string(),
-        rove_runtime::types::TerminationReason::Final,
+        rove_foundation::types::TerminationReason::Final,
     );
 
     let json = serde_json::to_value(&report).unwrap();
@@ -6728,7 +6727,7 @@ async fn engine_produces_final_answer() {
     let last = events.last().unwrap();
     match last {
         StreamEvent::RunCompleted { reason, output } => {
-            assert_eq!(*reason, rove_runtime::types::TerminationReason::Final);
+            assert_eq!(*reason, rove_foundation::types::TerminationReason::Final);
             assert!(output.is_some());
             assert_eq!(output.as_deref().unwrap(), "Hello from the agent!");
         }
@@ -6761,7 +6760,7 @@ async fn engine_handles_tool_call() {
     assert!(matches!(
         last,
         StreamEvent::RunCompleted {
-            reason: rove_runtime::types::TerminationReason::Final,
+            reason: rove_foundation::types::TerminationReason::Final,
             ..
         }
     ));
@@ -6882,7 +6881,7 @@ async fn engine_runs_parallel_safe_tool_batch_concurrently_with_ordered_writebac
     assert!(matches!(
         events.last(),
         Some(StreamEvent::RunCompleted {
-            reason: rove_runtime::types::TerminationReason::Final,
+            reason: rove_foundation::types::TerminationReason::Final,
             output: Some(output),
         }) if output == "done"
     ));
@@ -6929,7 +6928,7 @@ async fn engine_runs_non_parallel_safe_tool_batch_serially() {
     assert!(matches!(
         events.last(),
         Some(StreamEvent::RunCompleted {
-            reason: rove_runtime::types::TerminationReason::Final,
+            reason: rove_foundation::types::TerminationReason::Final,
             output: Some(output),
         }) if output == "done"
     ));
@@ -6963,7 +6962,7 @@ async fn engine_executes_native_model_tool_use() {
     assert!(matches!(
         events.last(),
         Some(StreamEvent::RunCompleted {
-            reason: rove_runtime::types::TerminationReason::Final,
+            reason: rove_foundation::types::TerminationReason::Final,
             output: Some(output),
         }) if output == "done with native tool"
     ));
@@ -7047,7 +7046,7 @@ async fn engine_routes_request_input_tool_to_input_provider() {
     assert!(matches!(
         events.last(),
         Some(StreamEvent::RunCompleted {
-            reason: rove_runtime::types::TerminationReason::Final,
+            reason: rove_foundation::types::TerminationReason::Final,
             output: Some(output),
         }) if output == "I will use main."
     ));
@@ -7179,7 +7178,7 @@ async fn engine_respects_step_limit() {
     assert!(matches!(
         last,
         StreamEvent::RunCompleted {
-            reason: rove_runtime::types::TerminationReason::StepLimit,
+            reason: rove_foundation::types::TerminationReason::StepLimit,
             ..
         }
     ));
@@ -7203,7 +7202,7 @@ async fn engine_handles_unknown_tool() {
 async fn trace_writer_records_events() {
     let tmp = tempfile::TempDir::new().unwrap();
     let trace_path = tmp.path().join("trace.jsonl");
-    let trace_writer = rove_runtime::state::trace::TraceWriter::new(tmp.path()).unwrap();
+    let trace_writer = rove_state::state::trace::TraceWriter::new(tmp.path()).unwrap();
 
     let engine = build_test_engine(vec!["done".to_string()]);
     let stream = engine.ask("test".to_string(), Some(trace_writer));
@@ -7218,25 +7217,25 @@ async fn trace_writer_records_events() {
     // whose entry is either a UI event (`type` tag) or an explicit history
     // item (`kind` tag).
     for line in content.lines() {
-        let parsed: rove_runtime::state::trace::TraceLine = serde_json::from_str(line).unwrap();
+        let parsed: rove_state::state::trace::TraceLine = serde_json::from_str(line).unwrap();
         match &parsed.event {
-            rove_runtime::foundation::TraceEntry::Ui(event) => {
+            rove_foundation::TraceEntry::Ui(event) => {
                 let json = serde_json::to_value(event).unwrap();
                 assert!(json.get("type").is_some());
             }
-            rove_runtime::foundation::TraceEntry::History(item) => {
+            rove_foundation::TraceEntry::History(item) => {
                 let json = serde_json::to_value(item).unwrap();
                 assert!(json.get("kind").is_some());
             }
             // Provenance for a resumed run, tagged by
             // `link` so the three generations stay unambiguous on the wire.
-            rove_runtime::foundation::TraceEntry::Link(link) => {
+            rove_foundation::TraceEntry::Link(link) => {
                 let json = serde_json::to_value(link).unwrap();
                 assert!(json.get("link").is_some());
             }
             // The run's identity header, tagged by
             // `meta` — disjoint from `type`/`kind`/`link`.
-            rove_runtime::foundation::TraceEntry::Meta(meta) => {
+            rove_foundation::TraceEntry::Meta(meta) => {
                 let json = serde_json::to_value(meta).unwrap();
                 assert!(json.get("meta").is_some());
             }
@@ -7245,12 +7244,8 @@ async fn trace_writer_records_events() {
 
     // Model-visible items are persisted explicitly.
     let has_history_stream = content.lines().any(|line| {
-        serde_json::from_str::<rove_runtime::state::trace::TraceLine>(line).is_ok_and(|parsed| {
-            matches!(
-                parsed.event,
-                rove_runtime::foundation::TraceEntry::History(_)
-            )
-        })
+        serde_json::from_str::<rove_state::state::trace::TraceLine>(line)
+            .is_ok_and(|parsed| matches!(parsed.event, rove_foundation::TraceEntry::History(_)))
     });
     assert!(
         has_history_stream,
@@ -7374,13 +7369,13 @@ async fn a_resumed_run_recovers_its_history_from_the_trace_when_the_snapshot_is_
     let successor_trace = std::fs::read_to_string(successor.run_dir.join("trace.jsonl")).unwrap();
     let link = successor_trace
         .lines()
-        .filter_map(|line| serde_json::from_str::<rove_runtime::state::trace::TraceLine>(line).ok())
+        .filter_map(|line| serde_json::from_str::<rove_state::state::trace::TraceLine>(line).ok())
         .find_map(|parsed| match parsed.event {
-            rove_runtime::foundation::TraceEntry::Link(link) => Some(link),
+            rove_foundation::TraceEntry::Link(link) => Some(link),
             _ => None,
         })
         .expect("the resumed run must record a resume link");
-    let rove_runtime::foundation::TraceLink::ResumedFrom {
+    let rove_foundation::TraceLink::ResumedFrom {
         from_run,
         through_seq,
     } = link;
@@ -7392,10 +7387,10 @@ async fn a_resumed_run_recovers_its_history_from_the_trace_when_the_snapshot_is_
 
     // And the chain reader must reassemble both traces into one history.
     let runs_dir = workspace.state_dir.join("runs");
-    let chain = rove_runtime::state::initial_history::read_history_chain(
+    let chain = rove_state::state::initial_history::read_history_chain(
         successor.run_id,
         |run| runs_dir.join(run.to_string()),
-        rove_runtime::state::initial_history::DEFAULT_HISTORY_TAIL_ITEMS,
+        rove_state::state::initial_history::DEFAULT_HISTORY_TAIL_ITEMS,
     )
     .unwrap();
     assert_eq!(chain.segments.len(), 2, "both runs belong to the chain");
@@ -7856,7 +7851,7 @@ async fn engine_resume_projects_only_the_bounded_canonical_suffix_after_compacti
         .suffix(12)
         .messages_for_provider("openai-completions")
         .unwrap();
-    let compaction = rove_runtime::types::PromptCompactionState {
+    let compaction = rove_foundation::types::PromptCompactionState {
         auto_triggered: true,
         source_message_count: full_history.len() - preserved_tail.len(),
         ..Default::default()

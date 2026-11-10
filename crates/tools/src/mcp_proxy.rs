@@ -67,7 +67,7 @@ pub struct McpServerConfig {
 }
 
 /// Serialized MCP transport/health records live in `rove-foundation`;
-/// this keeps the original `rove_runtime::tools::mcp_proxy::*` paths.
+/// this keeps the original module layout from the runtime crate.
 pub use rove_foundation::mcp_types::{
     McpServerHealthStatus, McpServerRuntimeSnapshot, McpTransport, McpTransportPolicy,
 };

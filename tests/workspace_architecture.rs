@@ -143,7 +143,7 @@ fn local_package_dependencies_follow_the_modular_workspace_direction() {
     );
     assert_eq!(
         local_dependencies
-            .get("rove-runtime")
+            .get("rove-engine")
             .cloned()
             .unwrap_or_default(),
         BTreeSet::from([
@@ -157,7 +157,7 @@ fn local_package_dependencies_follow_the_modular_workspace_direction() {
             "rove-tools".to_string(),
             "rove-tools-text".to_string(),
         ]),
-        "rove-runtime must depend only on rove-models, rove-core, rove-foundation, rove-agents, rove-state, rove-review, rove-tools, rove-protocol and rove-tools-text among local packages"
+        "rove-engine must depend only on rove-models, rove-core, rove-foundation, rove-agents, rove-state, rove-review, rove-tools, rove-protocol and rove-tools-text among local packages"
     );
     assert_eq!(
         local_dependencies
@@ -242,7 +242,7 @@ fn local_dependency_is_allowed(package: &str, dependency: &str) -> bool {
         "rove-review" => matches!(dependency, "rove-models" | "rove-core" | "rove-foundation"),
         // Built-in tools, Executor pipeline, hooks, and the MCP client: the
         // extracted crates below runtime plus core/models/protocol, never
-        // runtime itself. The delegate turn-driver stays in rove-runtime so
+        // engine itself. The delegate turn-driver stays in rove-engine so
         // this edge never becomes a cycle.
         "rove-tools" => {
             matches!(
@@ -256,7 +256,7 @@ fn local_dependency_is_allowed(package: &str, dependency: &str) -> bool {
                     | "rove-tools-text"
             )
         }
-        "rove-runtime" => {
+        "rove-engine" => {
             matches!(
                 dependency,
                 "rove-models"
@@ -270,24 +270,54 @@ fn local_dependency_is_allowed(package: &str, dependency: &str) -> bool {
             )
         }
         "rove-app-bootstrap" => {
-            matches!(dependency, "rove-models" | "rove-core" | "rove-runtime")
+            matches!(
+                dependency,
+                "rove-models"
+                    | "rove-core"
+                    | "rove-foundation"
+                    | "rove-agents"
+                    | "rove-state"
+                    | "rove-review"
+                    | "rove-tools"
+                    | "rove-engine"
+            )
         }
         "rove-bench" => matches!(
             dependency,
-            "rove-models" | "rove-core" | "rove-runtime" | "rove-app-bootstrap"
+            "rove-models"
+                | "rove-core"
+                | "rove-foundation"
+                | "rove-agents"
+                | "rove-state"
+                | "rove-review"
+                | "rove-tools"
+                | "rove-engine"
+                | "rove-app-bootstrap"
         ),
         // Product contracts and the SQLite catalog; no HTTP surface.
         "rove-product-store" => {
             matches!(
                 dependency,
-                "rove-models" | "rove-runtime" | "rove-app-bootstrap"
+                "rove-models"
+                    | "rove-foundation"
+                    | "rove-agents"
+                    | "rove-state"
+                    | "rove-review"
+                    | "rove-tools"
+                    | "rove-engine"
+                    | "rove-app-bootstrap"
             )
         }
         "rove-api" => matches!(
             dependency,
             "rove-models"
                 | "rove-core"
-                | "rove-runtime"
+                | "rove-foundation"
+                | "rove-agents"
+                | "rove-state"
+                | "rove-review"
+                | "rove-tools"
+                | "rove-engine"
                 | "rove-app-bootstrap"
                 | "rove-bench"
                 | "rove-product-store"
@@ -295,7 +325,15 @@ fn local_dependency_is_allowed(package: &str, dependency: &str) -> bool {
         "rove-desktop" => dependency == "rove-api",
         "rove-cli" => matches!(
             dependency,
-            "rove-models" | "rove-core" | "rove-runtime" | "rove-app-bootstrap"
+            "rove-models"
+                | "rove-core"
+                | "rove-foundation"
+                | "rove-agents"
+                | "rove-state"
+                | "rove-review"
+                | "rove-tools"
+                | "rove-engine"
+                | "rove-app-bootstrap"
         ),
         "rove-integration-tests" => true,
         _ => false,
@@ -324,7 +362,7 @@ fn first_party_products_do_not_construct_private_agent_loops() {
 
 #[test]
 fn runtime_model_turns_use_the_core_normalization_boundary() {
-    let adapter_path = workspace_root().join("runtime/src/engine/model_turn.rs");
+    let adapter_path = workspace_root().join("crates/engine/src/engine/model_turn.rs");
     let adapter = std::fs::read_to_string(&adapter_path)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", adapter_path.display()));
     assert!(
@@ -332,7 +370,7 @@ fn runtime_model_turns_use_the_core_normalization_boundary() {
         "the durable Runtime model adapter must delegate provider normalization to Core"
     );
 
-    for path in rust_files(&workspace_root().join("runtime/src/engine")) {
+    for path in rust_files(&workspace_root().join("crates/engine/src/engine")) {
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
         assert!(
@@ -348,8 +386,8 @@ fn embedded_and_durable_execution_share_the_core_agent_kernel() {
     let root = workspace_root();
     for relative in [
         "core/src/agent.rs",
-        "runtime/src/engine/run_loop.rs",
-        "runtime/src/engine/step_runner.rs",
+        "crates/engine/src/engine/run_loop.rs",
+        "crates/engine/src/engine/step_runner.rs",
     ] {
         let path = root.join(relative);
         let source = std::fs::read_to_string(&path)

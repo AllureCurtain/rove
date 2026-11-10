@@ -1,15 +1,16 @@
 use rove_core::{CallId, ToolExecutionMetadata, ToolResult as RuntimeToolResult};
+use rove_engine::context::ContextManager;
+use rove_foundation::events::StreamEvent;
+use rove_foundation::session::SessionEntry;
+use rove_foundation::types::{JobId, RunId, SessionId};
 use rove_models::{
     AssistantTurn, InternalCallId, Message, StopReason, ToolCall, ToolCallRef, ToolResultStatus,
     Usage, WireCallReference,
 };
-use rove_runtime::context::ContextManager;
-use rove_runtime::events::StreamEvent;
-use rove_runtime::session::SessionEntry;
-use rove_runtime::state::artifacts::RunArtifactRecorder;
-use rove_runtime::state::report::RunReport;
-use rove_runtime::state::store::StateStore;
-use rove_runtime::types::{JobId, RunId, SessionId, TaskState};
+use rove_state::state::artifacts::RunArtifactRecorder;
+use rove_state::state::report::RunReport;
+use rove_state::state::store::StateStore;
+use rove_state::task_state::TaskState;
 
 #[test]
 fn pre_lifecycle_task_state_fixture_keeps_additive_defaults() {
@@ -35,7 +36,7 @@ fn pre_lifecycle_report_fixture_keeps_additive_defaults() {
 
 #[test]
 fn pre_lifecycle_trace_fixture_remains_readable() {
-    let outcome = rove_runtime::state::trace_reader::read_trace_content(include_str!(
+    let outcome = rove_state::state::trace_reader::read_trace_content(include_str!(
         "fixtures/artifacts/pre-lifecycle-trace.jsonl"
     ));
     assert_eq!(outcome.corrupt_line_count, 0);
@@ -43,7 +44,7 @@ fn pre_lifecycle_trace_fixture_remains_readable() {
         .entries
         .into_iter()
         .map(|entry| match entry.entry {
-            rove_runtime::foundation::TraceEntry::Ui(event) => event,
+            rove_foundation::TraceEntry::Ui(event) => event,
             other => panic!("unexpected non-event trace line: {other:?}"),
         })
         .collect();

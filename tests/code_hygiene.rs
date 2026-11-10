@@ -17,7 +17,7 @@ fn package_libs_do_not_hide_dead_code_globally() {
         "apps/cli/src/lib.rs",
         "apps/api/src/lib.rs",
         "apps/bootstrap/src/lib.rs",
-        "runtime/src/lib.rs",
+        "crates/engine/src/lib.rs",
         "core/src/lib.rs",
         "models/src/lib.rs",
     ] {

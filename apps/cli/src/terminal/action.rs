@@ -1,4 +1,4 @@
-use rove_runtime::types::CallId;
+use rove_foundation::types::CallId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalAction {

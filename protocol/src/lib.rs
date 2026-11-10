@@ -6,8 +6,8 @@
 //! derive. That constraint is the point: a consumer that only needs to read a
 //! run id or match on a run status can link this crate alone.
 //!
-//! Historic paths keep working. `rove-runtime` re-exports the identifiers and
-//! lifecycle enums from `rove_runtime::types`, and `rove-core` re-exports
+//! Historic paths keep working. `rove-foundation` re-exports the identifiers and
+//! lifecycle enums from `rove_foundation::types`, and `rove-core` re-exports
 //! [`CallId`], so existing call sites are unaffected by the move.
 //!
 //! OpenAPI schemas are attached at the point of use in `apps/api` via

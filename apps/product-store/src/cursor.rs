@@ -88,7 +88,7 @@ pub struct ProductMessageSearchCursor {
     #[serde(rename = "s")]
     pub message_seq: i64,
     /// Digest of the session id and the search term, from
-    /// `rove_runtime::context::stable_hash`.
+    /// `rove_foundation::prompt_metadata::stable_hash`.
     #[serde(rename = "h")]
     pub query_digest: String,
 }
@@ -124,7 +124,7 @@ pub struct ProductSearchCursor {
     #[serde(rename = "o", default, skip_serializing_if = "Option::is_none")]
     pub record_offset: Option<u64>,
     /// Digest of the resolved scope and the term, from
-    /// `rove_runtime::context::stable_hash`.
+    /// `rove_foundation::prompt_metadata::stable_hash`.
     #[serde(rename = "h")]
     pub query_digest: String,
 }

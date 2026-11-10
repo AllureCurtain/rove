@@ -40,7 +40,7 @@ use crate::{
     UpdateProductSessionModelConfigRequest, UpdateProductSessionRequest,
     VerifiedProductForkBoundary,
 };
-use rove_runtime::types::RunId;
+use rove_foundation::types::RunId;
 
 use repository::ProductRepository;
 use schema::ProductDatabase;
@@ -254,9 +254,9 @@ impl ProductStore for SqliteProductStore {
     async fn bind_review_runtime(
         &self,
         review_id: &ProductReviewId,
-        runtime_session_id: rove_runtime::types::SessionId,
-        job_id: rove_runtime::types::JobId,
-        run_id: rove_runtime::types::RunId,
+        runtime_session_id: rove_foundation::types::SessionId,
+        job_id: rove_foundation::types::JobId,
+        run_id: rove_foundation::types::RunId,
     ) -> Result<ProductReview, ProductStoreError> {
         let review_id = review_id.clone();
         self.blocking(move |repository| {
@@ -268,7 +268,7 @@ impl ProductStore for SqliteProductStore {
     async fn finalize_review(
         &self,
         review_id: &ProductReviewId,
-        result: rove_runtime::review::ReviewResult,
+        result: rove_review::ReviewResult,
     ) -> Result<ProductReview, ProductStoreError> {
         let review_id = review_id.clone();
         self.blocking(move |repository| repository.finalize_review(&review_id, result))

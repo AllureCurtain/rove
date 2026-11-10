@@ -14,8 +14,9 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use rove_runtime::compaction::ManualCompactionOutcome;
-use rove_runtime::types::{PromptCheckpoint, PromptCompactionMode, RunId};
+use rove_engine::context::compaction::ManualCompactionOutcome;
+use rove_foundation::types::{PromptCompactionMode, RunId};
+use rove_state::task_state::PromptCheckpoint;
 use tokio_util::sync::CancellationToken;
 
 use crate::{ApiError, ApiErrorResponse, ApiState, docs};
@@ -371,7 +372,7 @@ mod tests {
     use crate::product::{
         CreateProductSessionRequest, CreateProductWorkspaceRequest, ProductWorkspaceKind,
     };
-    use rove_runtime::types::PromptCompactionState;
+    use rove_foundation::types::PromptCompactionState;
 
     fn outcome(summary: Option<&str>, breaker_open: bool) -> ManualCompactionOutcome {
         ManualCompactionOutcome {

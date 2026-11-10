@@ -4,8 +4,7 @@
 //! [`rove_agents::AgentRuntimeProfile`] (the immutable compiled run snapshot
 //! including instruction bundles and procedure selections), so they cannot
 //! sink into `rove-foundation` without dragging the whole agents module with
-//! them. Their serialized layout is unchanged — `rove-runtime` re-exports
-//! them at `rove_runtime::types::*` exactly as before.
+//! them. Their serialized layout is unchanged.
 
 pub use rove_core::{
     Action, CallId, ToolCallAction, ToolCapability, ToolContext, ToolDescriptor, ToolError,

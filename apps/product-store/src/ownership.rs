@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rove_runtime::{JobId, RunId, SessionId};
+use rove_foundation::types::{JobId, RunId, SessionId};
 use serde::{Deserialize, Serialize};
 
 use crate::{

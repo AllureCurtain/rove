@@ -4,9 +4,9 @@ use rove_app_bootstrap::state_migration::{
     ConflictPolicy, DEFAULT_MAX_MIGRATION_BYTES, MigrationOptions, run_state_migration,
 };
 use rove_app_bootstrap::{AppConfig, AppConfigOverrides, WorkspaceStateLayout};
-use rove_runtime::state::index::CleanupResult;
-use rove_runtime::state::store::{RepairResult, StateStore};
-use rove_runtime::workspace::Workspace;
+use rove_foundation::root::Workspace;
+use rove_state::state::index::CleanupResult;
+use rove_state::state::store::{RepairResult, StateStore};
 use serde::Serialize;
 
 use crate::cli::args::{CliStateConflictPolicy, StateCommand};
@@ -151,9 +151,9 @@ fn build_state_paths_report(
         workspace: StatePathsWorkspace {
             root: display(&workspace.root),
             kind: match workspace.kind {
-                rove_runtime::workspace::WorkspaceKind::Repo => "repo".to_string(),
-                rove_runtime::workspace::WorkspaceKind::Folder => "folder".to_string(),
-                rove_runtime::workspace::WorkspaceKind::Task => "task".to_string(),
+                rove_foundation::root::WorkspaceKind::Repo => "repo".to_string(),
+                rove_foundation::root::WorkspaceKind::Folder => "folder".to_string(),
+                rove_foundation::root::WorkspaceKind::Task => "task".to_string(),
             },
             storage_key: layout.storage_key.clone(),
         },

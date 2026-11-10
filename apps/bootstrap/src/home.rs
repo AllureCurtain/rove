@@ -358,7 +358,7 @@ fn storage_key_for(workspace_root: &Path) -> String {
         .to_string_lossy()
         .to_lowercase()
         .replace('\\', "/");
-    let digest = rove_runtime::prompt_metadata::stable_hash(&normalized);
+    let digest = rove_foundation::prompt_metadata::stable_hash(&normalized);
     let hash = digest.trim_start_matches("sha256:");
     let mut key = String::with_capacity(16);
     for byte in hash.bytes().take(STORAGE_KEY_BYTES) {

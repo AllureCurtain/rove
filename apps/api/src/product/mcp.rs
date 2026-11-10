@@ -6,12 +6,12 @@ use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use chrono::Utc;
-use rove_runtime::tools::mcp_config::{
+use rove_tools::mcp_config::{
     create_product_mcp_server_sync, delete_product_mcp_server_sync, list_product_mcp_servers_sync,
     promote_product_mcp_catalog_sync, update_product_mcp_server_sync, validate_product_mcp_server,
     validate_product_mcp_server_name,
 };
-use rove_runtime::tools::mcp_proxy::{
+use rove_tools::mcp_proxy::{
     McpProbeFailure, McpProbeFailureKind, McpServerConfig, McpServerHealthStatus,
     McpServerRuntimeSnapshot, McpToolInfo, McpTransport, McpTransportPolicy,
     probe_mcp_server_with_environment,
@@ -337,7 +337,7 @@ async fn product_mcp_activation(
 ) -> Result<
     (
         std::path::PathBuf,
-        std::sync::Arc<dyn rove_runtime::environment::ExecutionEnvironment>,
+        std::sync::Arc<dyn rove_foundation::environment::ExecutionEnvironment>,
     ),
     ApiError,
 > {
@@ -346,7 +346,7 @@ async fn product_mcp_activation(
         .active;
     let product_workspace = state.product_store()?.get_workspace(workspace_id).await?;
     let workspace = crate::open_product_workspace(&product_workspace)?;
-    let environment = rove_runtime::environment::local_environment(&workspace);
+    let environment = rove_foundation::environment::local_environment(&workspace);
     Ok((path, environment))
 }
 
@@ -485,7 +485,7 @@ fn product_mcp_server(server: McpServerConfig) -> ProductMcpServer {
     // command line or a URL query, and a credential the process already
     // resolved must not reappear here through either. Redacting by knowledge at
     // this boundary closes both without narrowing what may be configured.
-    let secrets = rove_runtime::secrets::registry();
+    let secrets = rove_foundation::secrets::registry();
     ProductMcpServer {
         name: server.name,
         enabled: server.enabled,
@@ -669,7 +669,7 @@ mod tests {
         // cannot see a credential: it only inspects `args`. Both are echoed to
         // the Settings screen, so both are redacted by knowledge here.
         let canary = "mcp-config-credential-canary-5a71ef";
-        assert!(rove_runtime::secrets::registry().register_value(canary));
+        assert!(rove_foundation::secrets::registry().register_value(canary));
         let key_argument = format!("--key={canary}");
 
         let stdio = product_mcp_server(config(
@@ -681,7 +681,7 @@ mod tests {
         let rendered = serde_json::to_string(&stdio).unwrap();
         assert!(!rendered.contains(canary), "{rendered}");
         assert!(
-            rendered.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER),
+            rendered.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER),
             "{rendered}"
         );
         // Everything unrelated to the credential survives, so diagnostics stay
@@ -699,7 +699,7 @@ mod tests {
         let rendered = serde_json::to_string(&http).unwrap();
         assert!(!rendered.contains(canary), "{rendered}");
         assert!(
-            rendered.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER),
+            rendered.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER),
             "{rendered}"
         );
         assert!(rendered.contains("https://mcp.invalid/rpc?api_key="));

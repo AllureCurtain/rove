@@ -1,11 +1,11 @@
 //! ULID-backed identifiers shared by every Rove surface.
 //!
-//! These live in the protocol crate rather than in `rove-runtime` because they
+//! These live in the protocol crate rather than in the engine because they
 //! appear in persisted artifacts, HTTP paths, and SSE payloads. A consumer that
 //! only parses a run id should not have to link an async runtime to do it.
 //!
-//! `rove-runtime` and `rove-core` re-export these under their historic paths,
-//! so call sites keep importing `rove_runtime::types::SessionId`.
+//! `rove-foundation` and `rove-core` re-export these under their historic paths,
+//! so call sites keep importing `rove_foundation::types::SessionId`.
 
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;

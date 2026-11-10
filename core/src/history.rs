@@ -7,7 +7,7 @@
 //! The types split along the model-visibility boundary:
 //!
 //! - [`HistoryItem`] — model-visible content
-//! - UI/status notifications stay in `rove_runtime::events::StreamEvent`
+//! - UI/status notifications stay in `rove_foundation::events::StreamEvent`
 //!   and are never projected into a model request
 //!
 //! Rove reuses the normalized protocol types ([`Message`], [`ToolCallRef`],

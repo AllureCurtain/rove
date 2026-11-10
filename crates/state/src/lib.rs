@@ -1,23 +1,18 @@
 //! `rove-state` — durable run state extracted from `rove-runtime`.
 //!
-//! Holds the durable side of `rove-runtime`: `state/` (StateStore, trace,
+//! Holds the durable side of the runtime: `state/` (StateStore, trace,
 //! task_state snapshots, report, SQLite index, repair, reconciliation, Tool
 //! Artifacts), `memory/` durable side (session/durable memory), and the
 //! `TaskState`/`RunRequest`/`PromptCheckpoint`/`MessageDeliveryRecord`
 //! snapshot types that embed `AgentRuntimeProfile`.
-//!
-//! `rove-runtime` re-exports these under the historic `rove_runtime::state::*`,
-//! `rove_runtime::memory::*`, `rove_runtime::foundation::task_state::*`, and
-//! `rove_runtime::types::{TaskState,…}` paths so downstream consumers need no
-//! import rewrite.
 
 pub mod memory;
 pub mod state;
 pub mod task_state;
 
-/// Historic `rove_runtime::types` merged view: foundation's serialized data
-/// types plus this crate's task-snapshot types. `crate::types::*` resolves
-/// exactly as it did when this code lived in `rove-runtime`.
+/// Merged data view: foundation's serialized data types plus this crate's
+/// task-snapshot types, mirroring the layout this code had when it lived in
+/// the runtime crate.
 pub mod types {
     pub use crate::task_state::*;
     pub use rove_foundation::types::*;
@@ -40,7 +35,7 @@ pub mod types {
 ///
 /// This lives in `rove-state` next to `TaskState` — the session-breaker
 /// contract is a property of the persisted snapshot, not of the compaction
-/// behaviour that stays in `rove-runtime::context`.
+/// behaviour that lives in `rove-engine::context`.
 pub fn inherits_session_breaker(
     resume_state: &task_state::TaskState,
     session_id: rove_protocol::SessionId,

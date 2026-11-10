@@ -1221,8 +1221,8 @@ pub(crate) fn terminal_events_match(left: &StreamEvent, right: &StreamEvent) -> 
             // could change a value without writing that marker, for instance if
             // it grew the pattern backstop. The test in this module pins the
             // equality conjunct, which is the one that decides today.
-            durable.contains(rove_runtime::secrets::KNOWN_SECRET_MARKER)
-                && rove_runtime::secrets::registry().redact_text(live) == *durable
+            durable.contains(rove_foundation::secrets::KNOWN_SECRET_MARKER)
+                && rove_foundation::secrets::registry().redact_text(live) == *durable
         }
         _ => false,
     }

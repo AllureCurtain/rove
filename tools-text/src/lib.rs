@@ -11,7 +11,7 @@
 //! (input_files, patch) -> Result<ApplyOutcome, ApplyError>
 //! ```
 //!
-//! Callers in `rove-runtime` are responsible for reading the input files,
+//! Callers in `rove-tools`/`rove-engine` are responsible for reading the input files,
 //! enforcing workspace boundaries and capabilities, and writing results back.
 //! This crate only decides *what the new bytes should be*.
 //!

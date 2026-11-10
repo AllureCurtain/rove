@@ -8,18 +8,19 @@ use rove_app_bootstrap::{
     ProviderProfileId, ReviewEngineOptions, RunModelSnapshot, build_review_engine,
     try_build_model_client,
 };
+use rove_engine::engine::{ProviderRetryPolicy, SilentTurnRecoveryPolicy};
+use rove_foundation::root::Workspace;
+use rove_foundation::runtime_identity::workspace_fingerprint;
+use rove_foundation::types::{JobId, RunId, RunMode, SessionId, TerminationReason};
 use rove_models::fake::{FakeModelClient, FakeTurn};
-use rove_runtime::engine::{ProviderRetryPolicy, SilentTurnRecoveryPolicy};
-use rove_runtime::review::{
+use rove_review::{
     ReviewConclusion, ReviewResult, ReviewRuntimeEvidence, ReviewStats, ReviewTargetSpec,
     ReviewTargetSummary, ReviewUnchecked, apply_runtime_outcome, capture_target,
     finalize_result_with_evidence, resolve_external_state_root,
 };
-use rove_runtime::runtime_identity::workspace_fingerprint;
-use rove_runtime::state::artifacts::RunArtifactRecorder;
-use rove_runtime::state::store::StateStore;
-use rove_runtime::types::{JobId, RunId, RunMode, RunRequest, SessionId, TerminationReason};
-use rove_runtime::workspace::Workspace;
+use rove_state::state::artifacts::RunArtifactRecorder;
+use rove_state::state::store::StateStore;
+use rove_state::task_state::RunRequest;
 use tokio_util::sync::CancellationToken;
 
 use super::args::ReviewFormat;
@@ -167,7 +168,7 @@ pub async fn run(
     }
     let mut termination = TerminationReason::Error;
     while let Some(event) = stream.next().await {
-        if let rove_runtime::events::StreamEvent::RunCompleted { reason, .. } = &event {
+        if let rove_foundation::events::StreamEvent::RunCompleted { reason, .. } = &event {
             termination = reason.clone();
         }
         // The Engine already protects its TraceWriter. Apply the same
@@ -227,11 +228,11 @@ fn unavailable_result(
     review_id: &str,
     run_id: RunId,
     session_id: SessionId,
-    snapshot: rove_runtime::review::ReviewTargetSnapshot,
+    snapshot: rove_review::ReviewTargetSnapshot,
     duration_ms: u64,
     conclusion: ReviewConclusion,
     warning: &str,
-) -> rove_runtime::review::ReviewResult {
+) -> rove_review::ReviewResult {
     let mut result = finalize_result_with_evidence(
         review_id,
         run_id.to_string(),
@@ -259,12 +260,12 @@ fn unavailable_target_result(
     duration_ms: u64,
 ) -> ReviewResult {
     let workspace_digest = workspace_fingerprint(workspace);
-    let digest = rove_runtime::context::stable_hash(&format!(
+    let digest = rove_foundation::prompt_metadata::stable_hash(&format!(
         "review-target-unavailable:{workspace_digest}:{}",
         serde_json::to_string(&spec).unwrap_or_default()
     ));
     ReviewResult {
-        schema_version: rove_runtime::review::REVIEW_RESULT_SCHEMA_VERSION,
+        schema_version: rove_review::REVIEW_RESULT_SCHEMA_VERSION,
         review_id: review_id.to_string(),
         run_id: run_id.to_string(),
         session_id: session_id.to_string(),
@@ -300,7 +301,7 @@ fn unavailable_target_result(
 
 async fn persist_result(
     state_root: &std::path::Path,
-    result: &rove_runtime::review::ReviewResult,
+    result: &rove_review::ReviewResult,
 ) -> anyhow::Result<()> {
     let result_json = serde_json::to_vec_pretty(result)?;
     tokio::fs::write(state_root.join("review.json"), result_json).await?;
@@ -357,7 +358,9 @@ fn assemble_review_model(
                 model: requested_model.unwrap_or("fake").to_string(),
                 reasoning: "default".to_string(),
                 catalog_revision: "programmatic".to_string(),
-                safe_config_digest: rove_runtime::context::stable_hash("programmatic-fake"),
+                safe_config_digest: rove_foundation::prompt_metadata::stable_hash(
+                    "programmatic-fake",
+                ),
             },
             provider_retry,
             silent_turn_recovery,
@@ -426,7 +429,7 @@ fn selection_from_config_for_review(
     catalog.default_selection().map_err(anyhow::Error::from)
 }
 
-fn render(result: &rove_runtime::review::ReviewResult, format: ReviewFormat) -> anyhow::Result<()> {
+fn render(result: &rove_review::ReviewResult, format: ReviewFormat) -> anyhow::Result<()> {
     match format {
         ReviewFormat::Json => println!("{}", serde_json::to_string_pretty(result)?),
         ReviewFormat::Jsonl => {

@@ -2,30 +2,30 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rove_core::{Tool, ToolRegistry};
-use rove_runtime::environment::{ExecutionEnvironment, local_environment};
-use rove_runtime::tools::coding::{
-    DeletePathTool, EditFileTool, GlobPathsTool, ListDirectoryTool, MovePathTool,
-    WorkspaceCheckpointTool, WorkspaceDiffTool, WorkspaceRewindTool,
-};
-use rove_runtime::tools::delegate::DelegateTool;
-use rove_runtime::tools::fs::{FsReadTool, FsWriteTool};
-use rove_runtime::tools::history::ResolveToolArtifactTool;
-use rove_runtime::tools::mcp_proxy::{
-    McpServerConfig, register_mcp_tools_from_file_with_environment,
-    register_mcp_tools_with_environment,
-};
-use rove_runtime::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
-use rove_runtime::tools::repository::RepositoryMapTool;
-use rove_runtime::tools::request_input::RequestInputTool;
-use rove_runtime::tools::review::{
+use rove_foundation::environment::{ExecutionEnvironment, local_environment};
+use rove_foundation::root::Workspace;
+use rove_review::{
     ReviewGlobPathsTool, ReviewListDirectoryTool, ReviewReadFileTool, ReviewRepositoryMapTool,
     ReviewSearchCodeTool, ReviewSubmissionStore, ReviewSubmitFindingsTool, ReviewTargetDiffTool,
 };
-use rove_runtime::tools::search::SearchCodeTool;
-use rove_runtime::tools::shell::{
+use rove_tools::coding::{
+    DeletePathTool, EditFileTool, GlobPathsTool, ListDirectoryTool, MovePathTool,
+    WorkspaceCheckpointTool, WorkspaceDiffTool, WorkspaceRewindTool,
+};
+use rove_tools::delegate::DelegateTool;
+use rove_tools::fs::{FsReadTool, FsWriteTool};
+use rove_tools::history::ResolveToolArtifactTool;
+use rove_tools::mcp_proxy::{
+    McpServerConfig, register_mcp_tools_from_file_with_environment,
+    register_mcp_tools_with_environment,
+};
+use rove_tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
+use rove_tools::repository::RepositoryMapTool;
+use rove_tools::request_input::RequestInputTool;
+use rove_tools::search::SearchCodeTool;
+use rove_tools::shell::{
     ShellOutputTool, ShellPolicy, ShellPtyTool, ShellTerminateTool, ShellTool,
 };
-use rove_runtime::workspace::Workspace;
 
 use crate::config::AppConfig;
 use crate::user_state::McpCatalogAuthority;
@@ -224,7 +224,7 @@ pub fn register_extra_tools(registry: &mut ToolRegistry, tools: Vec<Box<dyn Tool
 
 /// Assemble the exact immutable tool catalog admitted by a Review run.
 pub fn review_tool_registry(
-    snapshot: Arc<rove_runtime::review::ReviewTargetSnapshot>,
+    snapshot: Arc<rove_review::ReviewTargetSnapshot>,
     review_id: impl Into<String>,
 ) -> (ToolRegistry, ReviewSubmissionStore) {
     let store = ReviewSubmissionStore::new(review_id, Arc::clone(&snapshot));
@@ -238,9 +238,7 @@ pub fn review_tool_registry(
     registry.register(Box::new(ReviewRepositoryMapTool::new(Arc::clone(
         &snapshot,
     ))));
-    registry.register(Box::new(
-        rove_runtime::tools::history::ResolveToolArtifactTool,
-    ));
+    registry.register(Box::new(rove_tools::history::ResolveToolArtifactTool));
     registry.register(Box::new(ReviewTargetDiffTool::new(snapshot)));
     registry.register(Box::new(ReviewSubmitFindingsTool::new(store.clone())));
     (registry, store)
@@ -249,7 +247,7 @@ pub fn review_tool_registry(
 #[cfg(test)]
 mod tests {
     use crate::{AppConfig, ProjectActivationState};
-    use rove_runtime::workspace::Workspace;
+    use rove_foundation::root::Workspace;
 
     use super::tool_registry_for_config;
 

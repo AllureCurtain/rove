@@ -29,7 +29,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rove_runtime::context::prompt_metadata::stable_hash;
+use rove_foundation::prompt_metadata::stable_hash;
 use serde::{Deserialize, Serialize};
 
 use crate::project_trust::canonical_root_key;

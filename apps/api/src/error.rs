@@ -262,7 +262,7 @@ impl axum::response::IntoResponse for ApiError {
         // anywhere — an upstream provider message, a store failure, a rejected
         // input echoed back by a typed rejection. Redacting here covers every
         // error path at once, including the ones that never reach the trace.
-        let error = rove_runtime::secrets::registry().redact_text(&self.message);
+        let error = rove_foundation::secrets::registry().redact_text(&self.message);
         (
             self.status,
             Json(ApiErrorResponse {

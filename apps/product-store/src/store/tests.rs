@@ -1,10 +1,10 @@
 use std::{fs, path::PathBuf};
 
 use chrono::{Duration, TimeZone, Utc};
-use rove_runtime::review::{ReviewTargetSpec, ReviewTargetSummary};
-use rove_runtime::runtime_identity::RunModelSnapshot;
-use rove_runtime::types::{JobId, RunId, SessionId};
-use rove_runtime::workspace::WorkspaceKind;
+use rove_foundation::root::WorkspaceKind;
+use rove_foundation::runtime_identity::RunModelSnapshot;
+use rove_foundation::types::{JobId, RunId, SessionId};
+use rove_review::{ReviewTargetSpec, ReviewTargetSummary};
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
 

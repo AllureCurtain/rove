@@ -103,7 +103,7 @@ pub(crate) async fn list_product_session_authorizations(
     let store = state.product_store()?;
     let context = store.get_session_context(&session_id).await?;
     let bindings = store.list_run_bindings(&session_id).await?;
-    let run_ids: Vec<rove_runtime::types::RunId> = bindings
+    let run_ids: Vec<rove_foundation::types::RunId> = bindings
         .iter()
         .map(|binding| binding.runtime_run_id)
         .collect();
@@ -167,18 +167,18 @@ pub(crate) async fn list_product_session_authorizations(
 /// Map `call_id` → terminal tool event. Event JSON that fails to parse is
 /// skipped: a corrupted event must not hide the decision history itself.
 fn correlate_outcomes(
-    outcome_records: Vec<rove_runtime::state::index::EventIndexRecord>,
+    outcome_records: Vec<rove_state::state::index::EventIndexRecord>,
 ) -> HashMap<String, (String, u64)> {
     let mut by_call_id = HashMap::new();
     for record in outcome_records {
         let Ok(event) =
-            serde_json::from_str::<rove_runtime::events::StreamEvent>(&record.event_json)
+            serde_json::from_str::<rove_foundation::events::StreamEvent>(&record.event_json)
         else {
             continue;
         };
         let call_id = match &event {
-            rove_runtime::events::StreamEvent::ToolCallCompleted { call_id, .. }
-            | rove_runtime::events::StreamEvent::ToolCallFailed { call_id, .. } => {
+            rove_foundation::events::StreamEvent::ToolCallCompleted { call_id, .. }
+            | rove_foundation::events::StreamEvent::ToolCallFailed { call_id, .. } => {
                 call_id.to_string()
             }
             _ => continue,

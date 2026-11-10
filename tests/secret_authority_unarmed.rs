@@ -12,14 +12,14 @@
 //! precondition assertions would then fail rather than the contract being
 //! silently untested — which is the point of keeping them.
 
-use rove_runtime::events::{StreamEvent, TraceEntry};
-use rove_runtime::state::trace::{TraceLine, TraceWriter};
-use rove_runtime::types::CallId;
+use rove_foundation::events::{StreamEvent, TraceEntry};
+use rove_foundation::types::CallId;
+use rove_state::state::trace::{TraceLine, TraceWriter};
 
 /// The bytes a real writing boundary produces are unchanged with nothing declared.
 #[test]
 fn an_unarmed_authority_leaves_written_bytes_untouched() {
-    let rendered = format!("{:?}", rove_runtime::secrets::registry());
+    let rendered = format!("{:?}", rove_foundation::secrets::registry());
     assert!(
         rendered.contains("armed: false"),
         "this test binary must not have declared a credential: {rendered}"
@@ -68,6 +68,6 @@ fn an_unarmed_authority_leaves_written_bytes_untouched() {
 
     // The write path did not arm anything either: the authority is still inert
     // for whatever this process does next.
-    let rendered = format!("{:?}", rove_runtime::secrets::registry());
+    let rendered = format!("{:?}", rove_foundation::secrets::registry());
     assert!(rendered.contains("armed: false"), "{rendered}");
 }

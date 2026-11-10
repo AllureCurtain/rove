@@ -4,8 +4,8 @@ use axum::Json;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use rove_runtime::memory::durable::{MemoryScope, MemoryType};
-use rove_runtime::memory::management::{
+use rove_state::memory::durable::{MemoryScope, MemoryType};
+use rove_state::memory::management::{
     ManagedMemorySource, ManagedMemoryTopicInfo, ManagedMemoryTopicWrite, MemoryTopicDeleteOutcome,
     create_memory_topic_for_product_sync, delete_memory_topic_for_product_sync,
     is_valid_memory_topic_slug, list_memory_topics_for_product_sync,
@@ -350,7 +350,7 @@ fn product_memory_not_found() -> ApiError {
 pub(crate) async fn get_product_runtime_info(
     State(state): State<ApiState>,
 ) -> Result<Json<ProductRuntimeInfo>, ApiError> {
-    use rove_runtime::environment::{ExecutionEnvironment, LocalExecutionEnvironment};
+    use rove_foundation::environment::{ExecutionEnvironment, LocalExecutionEnvironment};
 
     let (product_store, resume_health) = match state.inner.product_store.as_ref() {
         Some(store) => (
@@ -369,11 +369,11 @@ pub(crate) async fn get_product_runtime_info(
         execution_environment: ProductExecutionEnvironmentInfo {
             adapter: ProductExecutionAdapter::Local,
             workspace_kind: match identity.workspace_kind {
-                rove_runtime::workspace::WorkspaceKind::Folder => {
+                rove_foundation::root::WorkspaceKind::Folder => {
                     ProductExecutionWorkspaceKind::Folder
                 }
-                rove_runtime::workspace::WorkspaceKind::Repo => ProductExecutionWorkspaceKind::Repo,
-                rove_runtime::workspace::WorkspaceKind::Task => ProductExecutionWorkspaceKind::Task,
+                rove_foundation::root::WorkspaceKind::Repo => ProductExecutionWorkspaceKind::Repo,
+                rove_foundation::root::WorkspaceKind::Task => ProductExecutionWorkspaceKind::Task,
             },
             workspace_digest: identity.workspace_digest.clone(),
             capabilities: ProductExecutionCapabilities {

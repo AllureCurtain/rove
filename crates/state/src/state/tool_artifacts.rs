@@ -1,7 +1,7 @@
 //! Canonical durable Tool Artifact authority.
 //!
 //! This is the single place tool payloads become durable. It is deliberately
-//! separate from [`rove_runtime::environment::TransientArtifactStore`], which holds
+//! separate from `rove_foundation::environment::TransientArtifactStore`, which holds
 //! process-local Coding Tool projections that never survive a restart: mixing
 //! the two would make a transient projection look like durable evidence.
 //!

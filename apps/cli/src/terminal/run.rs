@@ -3,13 +3,14 @@ use std::future::Future;
 use futures::{Stream, StreamExt};
 
 use crate::terminal::view::{RunViewState, RunViewUpdate};
-use rove_runtime::agents::AgentRuntimeProfile;
-use rove_runtime::events::StreamEvent;
-use rove_runtime::runtime_identity::RuntimeIdentity;
-use rove_runtime::state::artifacts::RunArtifactRecorder;
-use rove_runtime::state::store::{RunHandle, StateStore};
-use rove_runtime::types::{TaskState, TerminationReason};
-use rove_runtime::workspace::Workspace;
+use rove_agents::AgentRuntimeProfile;
+use rove_foundation::events::StreamEvent;
+use rove_foundation::root::Workspace;
+use rove_foundation::runtime_identity::RuntimeIdentity;
+use rove_foundation::types::TerminationReason;
+use rove_state::state::artifacts::RunArtifactRecorder;
+use rove_state::state::store::{RunHandle, StateStore};
+use rove_state::task_state::TaskState;
 
 pub struct RunEventContext<'a> {
     pub message: String,
@@ -103,10 +104,10 @@ mod tests {
     use futures::stream;
 
     use crate::terminal::view::RunViewUpdate;
-    use rove_runtime::events::StreamEvent;
-    use rove_runtime::state::store::StateStore;
-    use rove_runtime::types::{JobId, RunId, SessionId, TerminationReason};
-    use rove_runtime::workspace::Workspace;
+    use rove_foundation::events::StreamEvent;
+    use rove_foundation::root::Workspace;
+    use rove_foundation::types::{JobId, RunId, SessionId, TerminationReason};
+    use rove_state::state::store::StateStore;
 
     use super::{RunEventContext, drive_run_events};
 

@@ -3,13 +3,13 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use rove_core::Tool;
 use rove_core::ToolError;
-use rove_runtime::memory::paths::MemoryPaths;
-use rove_runtime::tools::request_input::RequestInputTool;
-use rove_runtime::tools::runtime_context::runtime_tool_context;
-use rove_runtime::types::{
+use rove_foundation::root::Workspace;
+use rove_foundation::types::{
     ApprovalPolicy, CallId, PendingUserInput, ToolContext, UserInputProvider, UserInputRequest,
 };
-use rove_runtime::workspace::Workspace;
+use rove_state::memory::paths::MemoryPaths;
+use rove_tools::request_input::RequestInputTool;
+use rove_tools::runtime_context::runtime_tool_context;
 use tokio_util::sync::CancellationToken;
 
 struct StaticInputProvider {

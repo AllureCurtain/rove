@@ -22,20 +22,21 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use rove_core::{Tool, ToolContext, ToolDescriptor, ToolError, ToolOutput, ToolRegistry};
+use rove_engine::context::ContextManager;
+use rove_engine::engine::{Engine, EngineConfig, ProviderRetryPolicy, SilentTurnRecoveryPolicy};
+use rove_foundation::events::StreamEvent;
+use rove_foundation::execution::{ExecutionBudgetLimits, ExecutionPolicy};
+use rove_foundation::root::Workspace;
+use rove_foundation::types::{
+    ApprovalDecision, ApprovalPolicy, JobId, Role, RunId, SessionId, TerminationReason,
+};
 use rove_models::{
     FakeModelClient, FakeTurn, Message, ModelClient, ModelError, ModelEvent, ModelToolSchema,
     ProviderCapabilities, Usage,
 };
-use rove_runtime::context::ContextManager;
-use rove_runtime::engine::{Engine, EngineConfig, ProviderRetryPolicy, SilentTurnRecoveryPolicy};
-use rove_runtime::events::StreamEvent;
-use rove_runtime::planning::execution::{ExecutionBudgetLimits, ExecutionPolicy};
-use rove_runtime::state::artifacts::RunArtifactRecorder;
-use rove_runtime::state::store::StateStore;
-use rove_runtime::types::{
-    ApprovalDecision, ApprovalPolicy, JobId, Role, RunId, RunRequest, SessionId, TerminationReason,
-};
-use rove_runtime::workspace::Workspace;
+use rove_state::state::artifacts::RunArtifactRecorder;
+use rove_state::state::store::StateStore;
+use rove_state::task_state::RunRequest;
 use tokio_util::sync::CancellationToken;
 
 /// The fixed nudge text the runtime injects before a recovery turn. Pinned as a
@@ -66,7 +67,7 @@ fn engine_with_turns_and_plan(
         turns,
     ));
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(rove_runtime::tools::echo::EchoTool));
+    registry.register(Box::new(rove_tools::echo::EchoTool));
     Engine::new(
         model,
         registry,
@@ -214,7 +215,7 @@ fn engine_with_budget(
         None => ObservableFake::with_turns(turns),
     };
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(rove_runtime::tools::echo::EchoTool));
+    registry.register(Box::new(rove_tools::echo::EchoTool));
     let engine = Engine::new(
         Box::new(model.clone()),
         registry,
@@ -1172,7 +1173,7 @@ async fn a_recovered_run_is_durable_and_resumable() {
         FakeTurn::Text("recovered answer".to_string()),
     ]);
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(rove_runtime::tools::echo::EchoTool));
+    registry.register(Box::new(rove_tools::echo::EchoTool));
     let engine = Engine::new(
         Box::new(model.clone()),
         registry,
@@ -1202,13 +1203,13 @@ async fn a_recovered_run_is_durable_and_resumable() {
 
     let trace = std::fs::read_to_string(run.run_dir.join("trace.jsonl")).unwrap();
     let degradations: Vec<(String, String)> =
-        rove_runtime::state::trace_reader::read_trace_content(&trace)
+        rove_state::state::trace_reader::read_trace_content(&trace)
             .entries
             .into_iter()
             .filter_map(|entry| match entry.entry {
-                rove_runtime::foundation::TraceEntry::Ui(StreamEvent::ExecutionDegraded {
-                    record,
-                }) => Some((record.code, record.safe_summary)),
+                rove_foundation::TraceEntry::Ui(StreamEvent::ExecutionDegraded { record }) => {
+                    Some((record.code, record.safe_summary))
+                }
                 _ => None,
             })
             .collect();
@@ -1280,7 +1281,7 @@ async fn a_recovered_run_is_durable_and_resumable() {
     let resumed_model =
         ObservableFake::with_turns(vec![FakeTurn::Text("resumed after recovery".to_string())]);
     let mut resumed_registry = ToolRegistry::new();
-    resumed_registry.register(Box::new(rove_runtime::tools::echo::EchoTool));
+    resumed_registry.register(Box::new(rove_tools::echo::EchoTool));
     let resumed_engine = Engine::new(
         Box::new(resumed_model.clone()),
         resumed_registry,

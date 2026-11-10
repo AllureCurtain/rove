@@ -13,9 +13,10 @@ use rove_app_bootstrap::state_migration::{
     MIGRATION_LOCK_FILE, MigrationOptions, StateMigrationError, run_state_migration,
 };
 use rove_app_bootstrap::{WorkspaceStateLayout, capability_digest_map};
-use rove_runtime::state::resume::resolve_resume_state;
-use rove_runtime::state::store::{StateStore, TASK_STATE_SCHEMA_VERSION};
-use rove_runtime::types::{JobId, RunId, SessionId, TaskState};
+use rove_foundation::types::{JobId, RunId, SessionId};
+use rove_state::state::resume::resolve_resume_state;
+use rove_state::state::store::{StateStore, TASK_STATE_SCHEMA_VERSION};
+use rove_state::task_state::TaskState;
 use rusqlite::Connection;
 
 fn options(workspace_root: &Path, data_root: &Path) -> MigrationOptions {
@@ -410,7 +411,7 @@ fn sqlite_state_index_migrates_into_a_usable_target() {
     std::fs::create_dir_all(&workspace).unwrap();
     let legacy = workspace.join(".rove");
     std::fs::create_dir_all(&legacy).unwrap();
-    let source_index = rove_runtime::state::index::StateIndex::new(&legacy);
+    let source_index = rove_state::state::index::StateIndex::new(&legacy);
     source_index.initialize().unwrap();
     drop(source_index);
     let data_root = tmp.path().join("data");
@@ -421,7 +422,7 @@ fn sqlite_state_index_migrates_into_a_usable_target() {
     assert!(report.files.iter().any(|file| file.class == "state_sqlite"));
 
     let layout = WorkspaceStateLayout::resolve(&data_root, &workspace);
-    let target_index = rove_runtime::state::index::StateIndex::with_path(
+    let target_index = rove_state::state::index::StateIndex::with_path(
         &layout.workspace_dir,
         layout.state_sqlite.clone(),
         5_000,

@@ -54,7 +54,8 @@ These encode a decision rove made, not a Google item restated.
 
 - **A crate is a unit of compilation, not a folder of code.** rove splits
   along crate boundaries where the dependency graph already runs one way
-  (`rove-protocol` → `rove-models` → `rove-core` → `rove-runtime` →
+  (`rove-protocol` → `rove-models` → `rove-core` → `rove-foundation` →
+  `rove-agents` → `rove-state` → `rove-tools` → `rove-engine` →
   `rove-app-bootstrap` → `rove-cli`/`rove-api`/`rove-bench`;
   `rove-product-store` is the side store `rove-api` owns). We do **not**
   adopt the Chromium "one directory per crate" layout — that `[chrome]` rule
@@ -66,7 +67,7 @@ These encode a decision rove made, not a Google item restated.
   most the small glue that ties children together. Implementation belongs in
   a leaf module. Existing violations are cleaned when a change already
   touches that directory, never in a repo-wide reflow. Known offenders as of
-  2026-11: `runtime/src/review/mod.rs` (~2060 lines), `runtime/src/tools/hooks/mod.rs`,
+  2026-11: `crates/engine/src/review/mod.rs` (now extracted to rove-review), `crates/tools/src/hooks/mod.rs`,
   `apps/product-store/src/store/mod.rs`.
 
 - **Name leaf modules after their primary item.** `index.rs` holds
@@ -175,12 +176,12 @@ Each of these is a place the project looked at the guide and chose otherwise:
 
 - **`[chrome]` small-crates →** adapted. We split along real dependency
   boundaries (done: `rove-product-store` out of `rove-api`, test-binary merge
-  27→3); we do not pursue one-type-per-crate, and the `rove-runtime`
-  multi-module split was explicitly deferred after measurement — see
+  27→3); we do not pursue one-type-per-crate — the `rove-runtime`
+  multi-module split landed as `rove-engine` plus the `crates/` libraries; see
   `docs/refactor-plan.md` item 6.
 
 - **`[chrome]` flat-file layout →** not adopted. Nested `src/` trees under one
-  crate (`runtime/src/tools/mcp/`, `apps/api/src/product/transcript/`) are
+  crate (`crates/tools/src/mcp/`, `apps/api/src/product/transcript/`) are
   normal Cargo and fine.
 
 - **Returning `impl Iterator` everywhere →** application code may return

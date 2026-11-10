@@ -498,7 +498,7 @@ impl Redactor {
         // secret, matches no pattern in the backstop below; without this pass
         // the export could not redact it at all. Every other pass stays exactly
         // where it was.
-        let mut output = rove_runtime::secrets::registry().redact_text(value);
+        let mut output = rove_foundation::secrets::registry().redact_text(value);
         for path in &self.known_paths {
             let variants = path_variants(&path.value);
             for variant in variants {
@@ -585,10 +585,10 @@ fn bounded_with_marker(value: &str, budget: usize, marker: &str) -> String {
 ///
 /// The authoritative list — the long-standing naming convention plus whatever
 /// provider or MCP configuration declared secret in this process — lives in
-/// `rove_runtime::secrets`, so the export and the trace/report/SSE boundaries
+/// `rove_foundation::secrets`, so the export and the trace/report/SSE boundaries
 /// cannot drift on which names are declarations.
 fn is_secret_field(key: &str) -> bool {
-    rove_runtime::secrets::is_declared_secret_field_name(key)
+    rove_foundation::secrets::is_declared_secret_field_name(key)
 }
 
 fn is_hidden_reasoning_field(key: &str) -> bool {
@@ -854,7 +854,7 @@ mod tests {
 
     #[test]
     fn redaction_uses_the_authority_for_unpatterned_values_and_declared_fields() {
-        let secrets = rove_runtime::secrets::registry();
+        let secrets = rove_foundation::secrets::registry();
         // A credential that matches no prefix the pattern pass knows: the whole
         // reason the authority exists.
         let canary = "authority-credential-canary-7a39fe";
@@ -862,7 +862,7 @@ mod tests {
         // A name the convention does not know, declared by configuration.
         let declared = "x_tenant_credential_canary_name";
         secrets.register_field_name(declared);
-        assert!(rove_runtime::secrets::is_declared_secret_field_name(
+        assert!(rove_foundation::secrets::is_declared_secret_field_name(
             declared
         ));
 
@@ -902,7 +902,7 @@ mod tests {
 
     #[test]
     fn the_redactor_never_emits_the_registry_itself() {
-        let secrets = rove_runtime::secrets::registry();
+        let secrets = rove_foundation::secrets::registry();
         let canary = "export-registry-canary-31bd0c";
         assert!(secrets.register_value(canary));
         let redactor = Redactor::for_test(Vec::new(), Vec::new());

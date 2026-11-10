@@ -287,8 +287,8 @@ fn provider_api_key(family: &InventoryFamily, key_env: &str) -> Result<String, A
     // refusal fails closed: the key is not placed into a provider request when
     // the authority cannot redact it. The message names the environment variable
     // and the reason, never the key.
-    if !rove_runtime::secrets::registry().register_value(&key) {
-        let reason = rove_runtime::secrets::registry()
+    if !rove_foundation::secrets::registry().register_value(&key) {
+        let reason = rove_foundation::secrets::registry()
             .last_value_refusal()
             .map(|refusal| refusal.reason.as_str())
             .unwrap_or("refused");

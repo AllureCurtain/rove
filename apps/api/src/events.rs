@@ -401,7 +401,7 @@ pub(crate) fn sse_event(event: JobStreamEvent) -> Result<Event, serde_json::Erro
     // unredacted. A frame that fails to serialize still fails; a credential in
     // one that succeeds never reaches the wire.
     let data =
-        rove_runtime::secrets::registry().redact_json_text(&serde_json::to_string(&versioned)?);
+        rove_foundation::secrets::registry().redact_json_text(&serde_json::to_string(&versioned)?);
     Ok(Event::default()
         .id(event.seq.to_string())
         .event(name)

@@ -1,8 +1,8 @@
-//! Data-leaf types sunk from `rove-runtime`'s `agents` behaviour modules.
+//! Data-leaf types sunk from the runtime crate's `agents` behaviour modules.
 //!
 //! These are serialisable identity/diagnostic records only — the behaviour
 //! that produces or consumes them (activation, selection, hydration,
-//! validation) stays in `rove-runtime::agents`.
+//! validation) lives in `rove-agents`.
 
 use serde::{Deserialize, Serialize};
 

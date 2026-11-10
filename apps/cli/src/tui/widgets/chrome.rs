@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use crate::terminal::view::ToolCallStatus;
 use crate::tui::sanitize::{sanitize_display_text, sanitize_tool_text, truncate_display_text};
 use crate::tui::state::{ProviderStatus, RunLifecycle, TuiFocus, TuiState};
-use rove_runtime::types::TerminationReason;
+use rove_foundation::types::TerminationReason;
 
 use super::termination_label;
 

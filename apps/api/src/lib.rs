@@ -21,6 +21,7 @@ use utoipa::OpenApi;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use utoipa_swagger_ui::SwaggerUi;
 
+use rove_agents::{AgentActivationError, SelectorError};
 use rove_app_bootstrap::{
     AppConfig, AppConfigOverrides, ProjectActivationState, ProjectTrustRepository, ProviderCatalog,
     ProviderCatalogService, UserConfigPaths,
@@ -28,31 +29,31 @@ use rove_app_bootstrap::{
 use rove_app_bootstrap::{EngineOptions, ReviewEngineOptions, build_engine, build_review_engine};
 use rove_app_bootstrap::{build_model_client_with_health, model_supports_images};
 use rove_core::ToolError;
+use rove_engine::engine::{Engine, RunControlHandle};
+use rove_foundation::events::StreamEvent;
+use rove_foundation::root::Workspace;
+use rove_foundation::runtime_identity::RunModelSnapshot;
+use rove_foundation::session::SessionEntry;
+use rove_foundation::types::{
+    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PendingToolApproval,
+    PendingUserInput, Role, RunId, RunMode, RunStatus, SessionId, TerminationReason,
+    ToolApprovalProvider, ToolApprovalRequest, UserInputProvider, UserInputRequest,
+};
 use rove_models::ModelClient;
 use rove_models::fake::{FakeModelClient, FakeTurn};
 use rove_models::health::{HealthConfig, ModelHealthStore};
-use rove_runtime::agents::{AgentActivationError, SelectorError};
-use rove_runtime::engine::{Engine, RunControlHandle};
-use rove_runtime::events::StreamEvent;
-use rove_runtime::review::{
+use rove_review::ReviewSubmissionStore;
+use rove_review::{
     ReviewRuntimeEvidence, ReviewTargetSnapshot, apply_runtime_outcome, capture_target,
     finalize_result_with_evidence,
 };
-use rove_runtime::runtime_identity::RunModelSnapshot;
-use rove_runtime::session::SessionEntry;
-use rove_runtime::state::artifacts::RunArtifactRecorder;
-use rove_runtime::state::index::{ResumeJobClaim, RunIndexRecord, StateIndex};
-use rove_runtime::state::resume::resolve_resume_state;
-use rove_runtime::state::store::{RunHandle, StateStore};
-use rove_runtime::state::trace::TraceWriter;
-use rove_runtime::tools::mcp_proxy::McpServerRuntimeSnapshot;
-use rove_runtime::tools::review::ReviewSubmissionStore;
-use rove_runtime::types::{
-    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PendingToolApproval,
-    PendingUserInput, Role, RunId, RunMode, RunStatus, SessionId, TaskState, TerminationReason,
-    ToolApprovalProvider, ToolApprovalRequest, UserInputProvider, UserInputRequest,
-};
-use rove_runtime::workspace::Workspace;
+use rove_state::state::artifacts::RunArtifactRecorder;
+use rove_state::state::index::{ResumeJobClaim, RunIndexRecord, StateIndex};
+use rove_state::state::resume::resolve_resume_state;
+use rove_state::state::store::{RunHandle, StateStore};
+use rove_state::state::trace::TraceWriter;
+use rove_state::task_state::TaskState;
+use rove_tools::mcp_proxy::McpServerRuntimeSnapshot;
 
 mod benchmark;
 mod debug;
@@ -270,7 +271,7 @@ pub(crate) struct JobRecord {
     /// parent `task` call id. The same map is injected into the job's Engine
     /// (`assemble_job_engine`), so `/jobs/{id}/subagents/{call_id}/stop`
     /// cancels exactly the token the sub-run is polling.
-    pub(crate) subagents: rove_runtime::tools::delegate::SubagentRegistry,
+    pub(crate) subagents: rove_tools::delegate::SubagentRegistry,
 }
 
 struct JobLaunch {

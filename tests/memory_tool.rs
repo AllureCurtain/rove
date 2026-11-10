@@ -2,12 +2,12 @@ use std::path::Path;
 
 use rove_core::ToolError;
 use rove_core::ToolRegistry;
-use rove_runtime::executor::Executor;
-use rove_runtime::memory::paths::MemoryPaths;
-use rove_runtime::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
-use rove_runtime::tools::runtime_context::runtime_tool_context;
-use rove_runtime::types::{ApprovalPolicy, CallId, ToolContext};
-use rove_runtime::workspace::Workspace;
+use rove_foundation::root::Workspace;
+use rove_foundation::types::{ApprovalPolicy, CallId, ToolContext};
+use rove_state::memory::paths::MemoryPaths;
+use rove_tools::executor::Executor;
+use rove_tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
+use rove_tools::runtime_context::runtime_tool_context;
 use tokio_util::sync::CancellationToken;
 
 fn tool_context(workspace: &Workspace) -> ToolContext<'_> {

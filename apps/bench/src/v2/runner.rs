@@ -13,9 +13,9 @@ use super::schema::{
 use crate::evidence::sanitize_path_component;
 use crate::runner::{BenchmarkRunOptions, run_benchmark_task_with_options};
 use crate::schema::{BenchmarkFile, BenchmarkOutcome};
-use rove_runtime::agents::AgentSelector;
-use rove_runtime::execution::{ExecutionPolicy, ExecutionStrategy, StrategySelectionSource};
-use rove_runtime::types::{ApprovalDecision, ApprovalPolicy};
+use rove_agents::AgentSelector;
+use rove_foundation::execution::{ExecutionPolicy, ExecutionStrategy, StrategySelectionSource};
+use rove_foundation::types::{ApprovalDecision, ApprovalPolicy};
 
 pub async fn load_benchmark_suite_v2(path: impl AsRef<Path>) -> std::io::Result<BenchmarkSuiteV2> {
     let path = path.as_ref();
@@ -102,7 +102,7 @@ pub async fn run_benchmark_suite_v2(
         "network_mode": "disabled",
         "redaction": "fixture_and_runtime_scan",
     });
-    let package_hash = rove_runtime::prompt_metadata::stable_hash(
+    let package_hash = rove_foundation::prompt_metadata::stable_hash(
         &serde_json::to_string(&raw_manifest).unwrap_or_default(),
     );
     let finished_at = chrono::Utc::now().to_rfc3339();
@@ -165,7 +165,7 @@ async fn run_case(
     evidence_root: &Path,
 ) -> std::io::Result<V2CaseReport> {
     let case_id = format!("{}@{}@{}@{}", scenario.id, profile, provider, seed);
-    let case_path_hash = rove_runtime::prompt_metadata::stable_hash(&case_id);
+    let case_path_hash = rove_foundation::prompt_metadata::stable_hash(&case_id);
     let case_path_hash = case_path_hash
         .strip_prefix("sha256:")
         .unwrap_or(&case_path_hash);
@@ -176,7 +176,7 @@ async fn run_case(
     let fixture_path = bounded_fixture_path(suite_root, &scenario.fixture)?;
     let fixture_bytes = tokio::fs::read(&fixture_path).await?;
     let fixture_hash =
-        rove_runtime::prompt_metadata::stable_hash(&String::from_utf8_lossy(&fixture_bytes));
+        rove_foundation::prompt_metadata::stable_hash(&String::from_utf8_lossy(&fixture_bytes));
     let truth: FixtureTruth =
         serde_json::from_slice(&fixture_bytes).map_err(std::io::Error::other)?;
     truth.validate(&scenario.id, seed).map_err(|errors| {

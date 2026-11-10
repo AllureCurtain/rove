@@ -1,7 +1,7 @@
 use crate::terminal::view::{MAX_RUN_TIMELINE_ENTRIES, RunViewState, ToolCallStatus};
-use rove_runtime::events::StreamEvent;
-use rove_runtime::state::index::StateIndex;
-use rove_runtime::types::{RunId, SessionId, TerminationReason};
+use rove_foundation::events::StreamEvent;
+use rove_foundation::types::{RunId, SessionId, TerminationReason};
+use rove_state::state::index::StateIndex;
 
 const MAX_HISTORY_EVENTS: usize = 2_048;
 const MAX_HISTORY_BYTES: usize = 4 * 1024 * 1024;
@@ -193,8 +193,8 @@ impl SavedRun {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rove_runtime::state::store::StateStore;
-    use rove_runtime::types::{CallId, JobId, TerminationReason};
+    use rove_foundation::types::{CallId, JobId, TerminationReason};
+    use rove_state::state::store::StateStore;
 
     #[tokio::test]
     async fn resume_links_do_not_make_complete_ui_history_partial() {
