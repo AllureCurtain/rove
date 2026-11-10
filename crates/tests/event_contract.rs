@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 fn workspace_root() -> PathBuf {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     root.pop();
+    root.pop();
     root
 }
 

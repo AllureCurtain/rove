@@ -27,7 +27,7 @@ Already tried, no effect: switching the linker to `rust-lld` in `.cargo/config.t
 
 - Each step is an independent PR: separately verifiable, separately revertible, and behavior-preserving (API, events, and storage formats unchanged).
 - Each step measures incremental compile time before and after (fixed commands, see "Verification"), recorded in the PR description. Steps with no clear benefit stop — do not force them through.
-- Extracted crates must also respect one-way dependencies, and `tests/workspace_architecture.rs` allowlists get updated.
+- Extracted crates must also respect one-way dependencies, and `crates/tests/workspace_architecture.rs` allowlists get updated.
 - Moving code means moving only; renames and logic refactors go in separate PRs.
 
 ## Phase 1: do now
@@ -75,7 +75,7 @@ Already tried, no effect: switching the linker to `rust-lld` in `.cargo/config.t
 - Before: 7420 lines containing route assembly, job create/events/cancel/approve/input, product turn orchestration, fork, follow-up recovery, project-trust monitoring, attachment cleanup, SSE, and ~1400 lines of tests.
 - Approach: split into `jobs.rs`, `turns.rs`, `events.rs` (SSE), `fork.rs`, `monitors.rs` (trust monitoring, attachment cleanup, follow-up recovery), `error.rs` (`ApiError`); `lib.rs` keeps only `router`, `serve*`, and state assembly. Tests follow their modules.
 - Mainly for readability and review; limited compile-time benefit, so scheduled last.
-- Done criteria: `lib.rs` under 800 lines; move only, no behavior change; `tests/api.rs` all green.
+- Done criteria: `lib.rs` under 800 lines; move only, no behavior change; `crates/tests/api.rs` all green.
 
 ### 5. Daily build habits (no code change)
 
@@ -157,7 +157,7 @@ Decision (2026-11-10): split `rove-runtime` is now the committed direction; the 
   ```
 
 - Naming settled against open-source convention (researched 2026-11-10): `project_component` is the dominant pattern for publishable workspaces (helix `helix-*`, zellij `zellij-*`, goose `goose-*`, bevy `bevy_*`); bare names (`zed`'s `agent`/`editor`, TiKV's `raftstore`) only work when crates are never published. `rove-*` already matches — keep it. `rove-engine` for the orchestrator follows goose's precedent where the core lib wraps its agent loop (agent-inside); the alternative `rove` bare-name core collides with the `rove` CLI binary, so `rove-engine` is the clearer pick.
-- Directory convention: once a workspace exceeds ~15 crates the open-source norm is a `crates/` dir (zed, goose, bevy). After the split rove has ~18. Adopt `crates/` for the **library** crates and keep `apps/` for deliverable shells — the same `components/`+`cmd/` split TiKV uses. Move `models`, `core`, `protocol`, `tools-text`, `tests` under `crates/` in the same migration series (each move is its own path-only PR so `git log --follow` history is preserved).
+- Directory convention: once a workspace exceeds ~15 crates the open-source norm is a `crates/` dir (zed, goose, bevy). After the split rove has ~18. Adopt `crates/` for the **library** crates and keep `apps/` for deliverable shells — the same `components/`+`cmd/` split TiKV uses. Move `models`, `core`, `protocol`, `tools-text`, `tests` under `crates/` in the same migration series (each move is its own path-only PR so `git log --follow` history is preserved). **DONE** (`refactor/crates-dir`): all five now live under `crates/`; the workspace is fully `crates/` (libraries) + `apps/` (shells) symmetric.
 
 - Migration order — bottom-up, each an independent measured PR (order corrected 2026-11-10: `state/artifacts.rs::AgentRuntimeArtifacts.agent_profile` embeds `AgentRuntimeProfile`, so `state` depends on `agents` — **agents comes before state**):
   1. `rove-foundation`: move `workspace/`, `foundation/`, `prompt_metadata.rs`; sink the identity/lifecycle data types listed above (pure moves, `pub use` shims left in `rove-runtime` so downstream keeps compiling). Verify `rove-foundation` has zero back-edges. **(PR #65)**
@@ -166,7 +166,7 @@ Decision (2026-11-10): split `rove-runtime` is now the committed direction; the 
   4. `rove-tools`: move `tools/`+`mcp/`+`hooks/`. The `delegate`↔engine edge is a **two-way** cycle (`tool_turn.rs` builds `SubRunSpawner`; `delegate.rs` drives `run_model_turn`/`run_tool_turn`), and the turn primitives *cannot* sink below `rove-tools` — `tool_turn.rs` is itself the tool-dispatch behaviour (it builds the `Executor`, drives the `ToolRegistry`, constructs the spawner), so moving it down would invert engine↔tools. Break it instead by **splitting `delegate`**: its *data* half (`SubagentRegistry`, `SubUsageLedger`, `SubRunRequest`/`Outcome`/`Error`, `DelegateTool` + `SubRunSpawner` extension reads) has no engine dep and lands in `rove-tools`; its *driver* half (`SubRunSpawner::spawn`, `SubagentKernelHost`, `SubRunApprovalParts` construction — the code that calls `run_model_turn`/`run_tool_turn`) stays in `rove-engine`, reached by `tool_turn.rs` which lives there too. Deps {foundation, agents, state, review, core}.
   5. `rove-engine`: what remains (engine/planning/context) becomes the orchestrator crate — `runtime/` moved to `crates/engine`, `rove-runtime` renamed `rove-engine`, and all compat `pub use` shims deleted; every downstream `rove_runtime::*` import repointed to the owning crate (done, `refactor/rove-tools`).
 
-- De-risk: keep `pub use` re-export shims in `rove-runtime` through the whole migration and only delete them in a final cleanup PR, so `rove-api`/`rove-cli`/`rove-bootstrap`/`rove-desktop` never have to change mid-flight. Update `tests/workspace_architecture.rs` allowlists per PR.
+- De-risk: keep `pub use` re-export shims in `rove-runtime` through the whole migration and only delete them in a final cleanup PR, so `rove-api`/`rove-cli`/`rove-bootstrap`/`rove-desktop` never have to change mid-flight. Update `crates/tests/workspace_architecture.rs` allowlists per PR.
 
 - **Sink only data leaves, never behaviour-bearing types.** `AgentRuntimeProfile` (agents/profile.rs) is a behaviour-bearing aggregate — it embeds `InstructionBundle`, `ProcedureSelection`, `HydratedProcedure`, `ValidationReport` and exposes `allows_capability`/`prompt_slot`/`from_profile`. It stays in `rove-agents`; foundation only needs its *identity projection* `AgentProfileIdentity`. So the conversion direction flips: instead of `AgentProfileIdentity::from_profile(profile)` living on the data type, `rove-agents` gives `AgentRuntimeProfile` an `identity() -> AgentProfileIdentity` method — agents depends on foundation for the leaf type, foundation never hears of the aggregate. Same rule for any other type that pulls a whole cluster: sink the leaf, keep the constructor on the behaviour side.
 
@@ -179,7 +179,7 @@ Decision (2026-11-10): split `rove-runtime` is now the committed direction; the 
 
 ### 8. Splitting oversized test files
 
-- `tests/api.rs` (20k lines), `tests/e2e.rs` (8000 lines), `apps/api/src/product/store/tests.rs` (4300 lines) — split into submodules by tested domain. Can be done alongside step 1's test-binary merge.
+- `crates/tests/api.rs` (20k lines), `crates/tests/e2e.rs` (8000 lines), `apps/api/src/product/store/tests.rs` (4300 lines) — split into submodules by tested domain. Can be done alongside step 1's test-binary merge.
 
 ## Verification
 

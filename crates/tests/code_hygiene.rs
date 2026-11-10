@@ -4,6 +4,7 @@ fn workspace_root() -> PathBuf {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // tests package lives at <workspace>/tests
     root.pop();
+    root.pop();
     root
 }
 
@@ -18,8 +19,8 @@ fn package_libs_do_not_hide_dead_code_globally() {
         "apps/api/src/lib.rs",
         "apps/bootstrap/src/lib.rs",
         "crates/engine/src/lib.rs",
-        "core/src/lib.rs",
-        "models/src/lib.rs",
+        "crates/core/src/lib.rs",
+        "crates/models/src/lib.rs",
     ] {
         let lib = std::fs::read_to_string(workspace_path(rel)).unwrap();
         assert!(
