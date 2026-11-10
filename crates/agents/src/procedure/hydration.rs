@@ -14,10 +14,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::catalog::CatalogEntry;
-use super::document::{ProcedureDocument, ProcedureReference};
-use super::metadata::{ProcedureMode, RiskLevel, SideEffect};
-use super::selection::SelectedProcedure;
+use crate::procedure::catalog::CatalogEntry;
+use crate::procedure::document::{ProcedureDocument, ProcedureReference};
+use crate::procedure::metadata::{ProcedureMode, RiskLevel, SideEffect};
+use crate::procedure::selection::SelectedProcedure;
 
 /// Largest hydrated body admitted into a prompt.
 ///
@@ -322,7 +322,7 @@ fn hydrate_document(document: &ProcedureDocument) -> HydratedProcedure {
         side_effects: metadata.side_effects.iter().copied().collect(),
         required_capabilities: metadata.required_capabilities.iter().cloned().collect(),
         optional_capabilities: metadata.optional_capabilities.iter().cloned().collect(),
-        body_hash: crate::agents::hashing::content_hash("hydrated-procedure-body", &body),
+        body_hash: crate::hashing::content_hash("hydrated-procedure-body", &body),
         body,
         truncated,
         dropped_bytes,
@@ -337,10 +337,10 @@ pub fn audit_reference(document: &ProcedureDocument) -> ProcedureReference {
 
 #[cfg(test)]
 mod tests {
-    use super::super::catalog::{EligibilityContext, ProcedureCatalog};
-    use super::super::selection::{SelectionRequest, select_procedures};
-    use super::super::trust::ProcedureOrigin;
     use super::*;
+    use crate::procedure::catalog::{EligibilityContext, ProcedureCatalog};
+    use crate::procedure::selection::{SelectionRequest, select_procedures};
+    use crate::procedure::trust::ProcedureOrigin;
 
     fn document(id: &str, extra: &str, body: &str, origin: ProcedureOrigin) -> ProcedureDocument {
         let text = format!(

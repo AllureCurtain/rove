@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::authority::{AuthorityClass, ContentClass};
-use super::hashing::{composite_hash, content_hash};
+use crate::authority::{AuthorityClass, ContentClass};
+use crate::hashing::{composite_hash, content_hash};
 
 /// Largest single instruction file admitted.
 pub const MAX_INSTRUCTION_BYTES: usize = 64 * 1024;
@@ -226,7 +226,7 @@ impl InstructionBundle {
                 reason: bounded_discovery_message(&error.to_string()),
             }
         })?;
-        if !metadata.is_dir() || crate::workspace::boundary::is_symlink_or_reparse(&metadata) {
+        if !metadata.is_dir() || rove_foundation::boundary::is_symlink_or_reparse(&metadata) {
             return Err(InstructionDiscoveryError::RootNotDirectory {
                 path: workspace_root.display().to_string(),
             });
@@ -280,7 +280,7 @@ impl InstructionBundle {
                     }
                 };
 
-                if crate::workspace::boundary::is_symlink_or_reparse(&metadata) {
+                if rove_foundation::boundary::is_symlink_or_reparse(&metadata) {
                     if file_name == Some(INSTRUCTION_FILE_NAME) {
                         push_discovery_rejection(
                             &mut rejected,

@@ -18,8 +18,8 @@ use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 
-use super::definition::{AGENT_DEFINITION_SCHEMA_VERSION, AgentDefinition, FeatureRequirement};
-use super::selector::{AgentSelector, validate_agent_id};
+use crate::definition::{AGENT_DEFINITION_SCHEMA_VERSION, AgentDefinition, FeatureRequirement};
+use crate::selector::{AgentSelector, validate_agent_id};
 
 /// Largest instruction or prompt-slot file that may be injected.
 pub const MAX_INSTRUCTION_FILE_BYTES: usize = 64 * 1024;
@@ -880,7 +880,7 @@ pub fn resolve_effective_capabilities(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::definition::legacy_definition;
+    use crate::definition::legacy_definition;
 
     fn set(values: &[&str]) -> BTreeSet<String> {
         values.iter().map(|value| value.to_string()).collect()

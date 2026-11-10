@@ -21,7 +21,38 @@
 //! remain available as crate-root re-exports so apps and integration tests do
 //! not need a mass import rewrite in this PR.
 
-pub mod agents;
+/// Agent definitions, run profiles, instruction bundles, and the procedure
+/// catalog live in `rove-agents` (crates/agents); `rove_runtime::agents::*`
+/// resolves exactly as before via these re-exports.
+pub mod agents {
+    pub use rove_agents::activation;
+    pub use rove_agents::authority;
+    pub use rove_agents::definition;
+    pub use rove_agents::hashing;
+    pub use rove_agents::instructions;
+    pub use rove_agents::package;
+    pub use rove_agents::procedure;
+    pub use rove_agents::profile;
+    pub use rove_agents::selector;
+    pub use rove_agents::validation;
+
+    pub use rove_agents::activation::{
+        AgentActivationConfig, AgentActivationError, AgentDiagnostic, AgentProfileIdentity,
+        AgentProfileIdentityExt, AgentPromptAssembly, AgentRuntime, ProcedurePromptAssembly,
+        ResolvedAgentRun, ScopedInstructionApplication, ScopedInstructionPrompt,
+        procedure_prompt_for_target, scoped_instruction_path_hints, scoped_instruction_prompt,
+    };
+    pub use rove_agents::authority::{AuthorityClass, ContentClass};
+    pub use rove_agents::definition::{AgentDefinition, legacy_definition};
+    pub use rove_agents::instructions::{InstructionBundle, InstructionOverlay};
+    pub use rove_agents::package::{AgentPackage, PackageLoadError, load_agent_package};
+    pub use rove_agents::profile::{
+        AgentRuntimeProfile, ProfileBuildError, ProfileInputs, ResolvedBound, ResolvedRuntimeFacts,
+        attach_hydrated_procedures, attach_instruction_bundle, build_runtime_profile,
+        legacy_profile,
+    };
+    pub use rove_agents::selector::{AgentSelector, AgentSource, SelectorError};
+}
 pub mod context;
 pub mod conversation;
 pub mod engine;

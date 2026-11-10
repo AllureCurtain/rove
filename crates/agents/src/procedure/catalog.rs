@@ -10,9 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::document::ProcedureDocument;
-use super::metadata::ProcedureMode;
-use super::trust::ProcedureTrust;
+use crate::procedure::document::ProcedureDocument;
+use crate::procedure::metadata::ProcedureMode;
+use crate::procedure::trust::ProcedureTrust;
 
 /// Largest catalog retained in memory.
 ///
@@ -418,8 +418,8 @@ fn evaluate_eligibility(
 
 #[cfg(test)]
 mod tests {
-    use super::super::trust::ProcedureOrigin;
     use super::*;
+    use crate::procedure::trust::ProcedureOrigin;
 
     struct DocumentSpec {
         id: &'static str,

@@ -1,0 +1,20 @@
+[package]
+name = "rove-agents"
+version.workspace = true
+edition.workspace = true
+description = "Agent definitions, run profiles, instruction bundles, and procedure catalog for Rove"
+
+[dependencies]
+chrono.workspace = true
+rove-core.workspace = true
+rove-foundation.workspace = true
+rove-models.workspace = true
+rove-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

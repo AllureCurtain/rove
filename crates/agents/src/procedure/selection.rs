@@ -13,10 +13,10 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::catalog::ProcedureCatalog;
-use super::document::{ProcedureDocument, ProcedureReference};
-use super::metadata::RiskLevel;
-use super::trust::ProcedureTrust;
+use crate::procedure::catalog::ProcedureCatalog;
+use crate::procedure::document::{ProcedureDocument, ProcedureReference};
+use crate::procedure::metadata::RiskLevel;
+use crate::procedure::trust::ProcedureTrust;
 
 /// Hard ceiling on selections, independent of any package request.
 ///
@@ -304,9 +304,9 @@ pub fn select_procedures(
 
 #[cfg(test)]
 mod tests {
-    use super::super::catalog::EligibilityContext;
-    use super::super::trust::ProcedureOrigin;
     use super::*;
+    use crate::procedure::catalog::EligibilityContext;
+    use crate::procedure::trust::ProcedureOrigin;
 
     fn document(id: &str, extra: &str, origin: ProcedureOrigin) -> ProcedureDocument {
         let text = format!(

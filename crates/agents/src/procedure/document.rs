@@ -8,10 +8,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::frontmatter::{FrontmatterError, split_document};
-use super::metadata::{MetadataIssue, ProcedureMetadata, parse_metadata};
-use super::trust::{ProcedureOrigin, ProcedureProvenance, ProcedureTrust};
-use crate::agents::hashing::{composite_hash, content_hash};
+use crate::hashing::{composite_hash, content_hash};
+use crate::procedure::frontmatter::{FrontmatterError, split_document};
+use crate::procedure::metadata::{MetadataIssue, ProcedureMetadata, parse_metadata};
+use crate::procedure::trust::{ProcedureOrigin, ProcedureProvenance, ProcedureTrust};
 
 /// Largest procedure document accepted from disk.
 ///
@@ -102,7 +102,7 @@ impl ProcedureDocument {
         let document_hash = composite_hash(
             "procedure",
             &[
-                &crate::agents::hashing::structured_hash("procedure-metadata", &metadata),
+                &crate::hashing::structured_hash("procedure-metadata", &metadata),
                 &content_hash("procedure-body", &body),
             ],
         );

@@ -14,26 +14,26 @@ use std::path::Path;
 use rove_models::Message;
 use serde::{Deserialize, Serialize};
 
-use super::instructions::{InstructionBundle, InstructionDiscoveryError};
-use super::package::{AgentPackage, PackageLoadError, load_agent_package};
-use super::procedure::catalog::{EligibilityContext, ProcedureCatalog};
-use super::procedure::document::{DocumentError, ProcedureDocument};
-use super::procedure::hydration::{HydratedProcedure, hydrate};
-use super::procedure::metadata::ProcedureMode;
-use super::procedure::selection::{ProcedureSelection, SelectionRequest, select_procedures};
-use super::procedure::trust::{ProcedureOrigin, ProcedureTrust};
-use super::profile::{
+use crate::instructions::{InstructionBundle, InstructionDiscoveryError};
+use crate::package::{AgentPackage, PackageLoadError, load_agent_package};
+use crate::procedure::catalog::{EligibilityContext, ProcedureCatalog};
+use crate::procedure::document::{DocumentError, ProcedureDocument};
+use crate::procedure::hydration::{HydratedProcedure, hydrate};
+use crate::procedure::metadata::ProcedureMode;
+use crate::procedure::selection::{ProcedureSelection, SelectionRequest, select_procedures};
+use crate::procedure::trust::{ProcedureOrigin, ProcedureTrust};
+use crate::profile::{
     AGENT_PROFILE_SCHEMA_VERSION, AgentRuntimeProfile, ProfileBuildError, ProfileInputs,
     ResolvedRuntimeFacts, attach_hydrated_procedures, attach_instruction_bundle,
     build_runtime_profile, legacy_profile,
 };
-use super::selector::{AgentSelector, AgentSource};
-use super::validation::OperatorConstraints;
-use crate::capability::CapabilitySnapshot;
-use crate::context::prompt_metadata::stable_hash;
-use crate::execution::{ProcedureApplication, ProcedureCapabilityBinding};
-use crate::workspace::boundary::resolve_workspace_read_path_without_links;
-use crate::workspace::{Workspace, WorkspaceKind};
+use crate::selector::{AgentSelector, AgentSource};
+use crate::validation::OperatorConstraints;
+use rove_foundation::boundary::resolve_workspace_read_path_without_links;
+use rove_foundation::capability::CapabilitySnapshot;
+use rove_foundation::execution::{ProcedureApplication, ProcedureCapabilityBinding};
+use rove_foundation::prompt_metadata::stable_hash;
+use rove_foundation::{Workspace, WorkspaceKind};
 
 /// Maximum bytes of Agent-owned material injected into one prompt prefix.
 /// The full source snapshot may be larger, but prompt assembly is a separate,
@@ -1189,7 +1189,7 @@ fn load_procedure_directory(
                 continue;
             }
         };
-        if crate::workspace::boundary::is_symlink_or_reparse(&metadata) {
+        if rove_foundation::boundary::is_symlink_or_reparse(&metadata) {
             if path.extension().and_then(|extension| extension.to_str()) == Some("md") {
                 diagnostics.push(agent_diagnostic(
                     "linked_procedure_refused",
