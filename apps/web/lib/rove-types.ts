@@ -536,7 +536,7 @@ export type StreamEventName = (typeof STREAM_EVENT_NAMES)[number];
  * Canonical-event contract version this client can decode.
  *
  * The version is the newest `STREAM_EVENT_KINDS` entry version in
- * `runtime/src/foundation/events.rs` that this bundle understands: version 1 is
+ * `crates/foundation/src/events.rs` that this bundle understands: version 1 is
  * every kind before `provider_retry`, version 2 is `provider_retry`, version 3
  * is `thinking_delta`, and version 4 is `subagent_event`. The transcript request declares it as
  * `event_contract`, so a newer server withholds the rows this bundle cannot
@@ -603,7 +603,7 @@ type PruningCountMember = {
 /**
  * The wire keys the runtime writes only while they carry something.
  *
- * `runtime/src/context/prompt_metadata.rs` marks all five counts and the policy
+ * `crates/foundation/src/prompt_metadata.rs` marks all five counts and the policy
  * with `skip_serializing_if`, and the digest list with `Vec::is_empty`, so the
  * metadata a frame carries is a subset of the seven facts rather than seven
  * values. They sit flat on the metadata — the nesting below is this shell's own

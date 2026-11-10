@@ -46,7 +46,7 @@ export interface PromptPruningSummary {
  *
  * Kept as a list so a second known rule is one entry, not a new branch: the
  * version string is the server's own identifier and is never translated. The one
- * entry mirrors `PRUNING_POLICY_VERSION` in `runtime/src/context/compaction.rs`;
+ * entry mirrors `PRUNING_POLICY_VERSION` in `crates/foundation/src/compaction_facts.rs`;
  * a rename there would show up as "unknown rule" here rather than as a wrong
  * name, which is the safe direction for a display that must not vouch for a rule
  * it does not know.
@@ -69,7 +69,7 @@ export const formatPruningBytes = formatAttachmentBytes;
  * `product/product-api-types.ts`, a live turn through
  * `lib/rove-state.ts::readPromptBuildMetadata` — so a member is absent only when
  * the server reported nothing for it: the runtime omits every member that is
- * zero or empty (`runtime/src/context/prompt_metadata.rs` uses
+ * zero or empty (`crates/foundation/src/prompt_metadata.rs` uses
  * `skip_serializing_if` on all seven), and a probe that only dropped older
  * messages therefore carries three of them.
  *

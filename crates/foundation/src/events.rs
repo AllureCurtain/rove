@@ -483,7 +483,7 @@ pub enum TraceLink {
 /// a version at or above the row's kind.
 ///
 /// Version 1 is the set of kinds a client bundle predating `provider_retry`
-/// already knew — every kind in `runtime/src/foundation/events.rs` except that
+/// already knew — every kind in `crates/foundation/src/events.rs` except that
 /// one. A kind added later gets its own version here and must bump
 /// [`STREAM_EVENT_CONTRACT_VERSION`]: version 2 is `provider_retry`, and
 /// version 3 is `thinking_delta`.

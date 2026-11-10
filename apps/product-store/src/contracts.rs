@@ -2217,7 +2217,7 @@ pub const MAX_TRANSCRIPT_EVENT_CONTRACT_BYTES: usize = 10;
 /// The canonical-event contract one transcript request declares.
 ///
 /// A client states the newest contract version whose kinds it can decode
-/// (`runtime/src/foundation/events.rs::STREAM_EVENT_KINDS`), and the projection
+/// (`crates/foundation/src/events.rs::STREAM_EVENT_KINDS`), and the projection
 /// may then only deliver durable rows whose kind entered the contract at or
 /// below that version. The declaration is explicit and per request: the API
 /// never infers a client's capability from a user agent, from the request's
