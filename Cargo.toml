@@ -6,6 +6,7 @@ members = [
     "crates/foundation",
     "crates/agents",
     "crates/state",
+    "crates/review",
     "runtime",
     "tools-text",
     "apps/bootstrap",
@@ -59,6 +60,7 @@ rove-core = { path = "core" }
 rove-foundation = { path = "crates/foundation" }
 rove-agents = { path = "crates/agents" }
 rove-state = { path = "crates/state" }
+rove-review = { path = "crates/review" }
 rove-models = { path = "models" }
 rove-protocol = { path = "protocol" }
 rove-runtime = { path = "runtime" }

@@ -18,6 +18,7 @@ core/            rove-core: in-memory Agent kernel, Tool contract and registry
 crates/foundation/  rove-foundation: serialized identity/lifecycle data, workspace boundary types
 crates/agents/   rove-agents: AgentDefinition, run profiles, instructions, procedure catalog
 crates/state/    rove-state: durable run state, trace, SQLite index, durable memory
+crates/review/   rove-review: read-only Review contracts, target snapshots, submission tools
 runtime/         rove-runtime: Engine, planning, tools/MCP, memory, context; conventions in runtime/AGENTS.md
 protocol/        rove-protocol: lowest-level shared types
 tools-text/      rove-tools-text: text tool helpers
@@ -34,7 +35,7 @@ scripts/         development, integration, and acceptance scripts
 docs/            project documentation
 ```
 
-Dependencies flow one way only: `rove-models <- rove-core <- rove-foundation <- rove-agents <- rove-state <- rove-runtime <- rove-app-bootstrap <- {rove-cli, rove-api, rove-bench}`; `rove-product-store <- rove-api <- rove-desktop`; `rove-protocol` is the lowest-level type shared by core/runtime; `rove-models` has no local dependencies. Guarded by `tests/workspace_architecture.rs`.
+Dependencies flow one way only: `rove-models <- rove-core <- rove-foundation <- rove-agents <- rove-state <- rove-runtime <- rove-app-bootstrap <- {rove-cli, rove-api, rove-bench}`, with `rove-review` also depending on `{rove-foundation, rove-core}` alone and feeding `rove-runtime`; `rove-product-store <- rove-api <- rove-desktop`; `rove-protocol` is the lowest-level type shared by core/runtime; `rove-models` has no local dependencies. Guarded by `tests/workspace_architecture.rs`.
 
 ## Common commands
 
