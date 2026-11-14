@@ -4,7 +4,7 @@ Updated: 2026-11-14
 
 ## In progress
 
-- **Desktop pilot** (deferred per owner): Desktop (Tauri 2) still has unfinished surfaces — signed/clean-machine packaging, native folder selection on all OSes, Linux/Windows packaging, Windows ConPTY automation, code signing. Deferred to a later pass; the Web console pilot covers the runtime contract Desktop shares.
+- **Desktop pilot** (deferred per owner): Desktop (Tauri 2) still has unfinished surfaces — signed/clean-machine packaging, native folder selection on all OSes, Linux/Windows packaging, Windows ConPTY automation, code signing. Deferred to a later pass; the Web console pilot covers the runtime contract Desktop shares. The universality plan (capability parity, three-OS CI build matrix, per-OS acceptance matrix, suggested order) is in `docs/desktop-plan.md`.
 - ~~**Second real-project pilot**~~ done: scratch-repo matrix all PASS (evidence `evidence/pilot/2026-11-14-pilot2-*`, summary `evidence/pilot/PILOT2_REPORT.md`). Follow-up candidate surfaced: fork at a mid-history `done` run is refused with `product_fork_source_invalid` (binding-identity mismatch) — needs a repro test to decide defect vs correct strictness.
 
 ## Next up
