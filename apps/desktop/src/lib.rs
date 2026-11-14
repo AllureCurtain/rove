@@ -3,6 +3,7 @@ pub mod commands;
 pub mod config;
 mod lifecycle;
 mod menu;
+pub mod notifications;
 mod tray;
 mod window_state;
 

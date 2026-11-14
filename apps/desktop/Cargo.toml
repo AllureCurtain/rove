@@ -8,6 +8,10 @@ license = "MIT"
 
 [dependencies]
 tauri = { version = "2.1", features = ["tray-icon"] }
+# Pinned to 2.4.x: 2.5+ requires tauri >= 2.12, which would force a workspace
+# lockfile bump beyond the locked 2.11.x. The NotificationExt API used here is
+# identical across those versions.
+tauri-plugin-notification = "=2.4.0"
 rove-api = { path = "../api" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
