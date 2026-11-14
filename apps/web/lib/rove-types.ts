@@ -470,6 +470,8 @@ export interface RunReport {
 
 export type PendingApproval = Schema<"PendingApprovalResponse">;
 
+export type PendingPlanApproval = Schema<"PendingPlanApprovalResponse">;
+
 export type PendingInput = Schema<"PendingInputResponse">;
 
 export type ApprovalDecision = "approve" | "reject";

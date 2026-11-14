@@ -176,6 +176,12 @@ const enUS: CopyDictionary = {
     todoDockLabel: "Run plan",
     todoDockProgress: "{{done}}/{{total}} done",
     todoDockAllDone: "All steps done",
+    planApprovalTitle: "Plan awaiting approval",
+    planApprovalSteps: "{{count}} steps",
+    planApprovalApproveAsk: "Approve · ask per tool",
+    planApprovalApproveAuto: "Approve · auto",
+    planApprovalPersistHint:
+      "The mode you approve with becomes your default approval policy.",
     stop: "Stop",
     placeholder: "Type a message",
     loadOlder: "Load {{n}} earlier turns",

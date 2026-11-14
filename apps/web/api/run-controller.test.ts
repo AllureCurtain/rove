@@ -8,6 +8,7 @@ const client = vi.hoisted(() => ({
   openJobStream: vi.fn(),
   submitApproval: vi.fn(),
   submitInput: vi.fn(),
+  submitPlanApproval: vi.fn(),
   stopSubagent: vi.fn(),
   testProvider: vi.fn(),
 }));
@@ -303,6 +304,62 @@ describe("approval authority", () => {
     pending.resolve(snapshot());
     await expect(request).rejects.toBeInstanceOf(RunControllerInactiveError);
     expect(dispatch).not.toHaveBeenCalled();
+  });
+});
+
+describe("plan approval authority", () => {
+  const snapshot = (status = "running", event_count = 1) => ({
+    job_id: "job-1", run_id: "run-1", status, event_count,
+    events: [], pending_approvals: [], pending_inputs: [],
+  });
+  async function observed() {
+    const source = new FakeEventSource();
+    client.openJobStream.mockReturnValue(source);
+    client.fetchJobState.mockResolvedValue(snapshot());
+    const dispatch = vi.fn();
+    const controller = createRunController(dispatch);
+    await controller.attach("job-1", "run-1");
+    dispatch.mockClear();
+    return { controller, dispatch, source };
+  }
+
+  it("projects the decision only from the server snapshot and deduplicates", async () => {
+    const { controller, dispatch } = await observed();
+    const pending = deferred<ReturnType<typeof snapshot>>();
+    client.submitPlanApproval.mockReturnValue(pending.promise);
+    const first = controller.approvePlan("job-1", "approval-1", "auto", "run-1");
+    await controller.approvePlan("job-1", "approval-1", "auto", "run-1");
+    expect(client.submitPlanApproval).toHaveBeenCalledTimes(1);
+    expect(client.submitPlanApproval).toHaveBeenCalledWith("job-1", "approval-1", "auto");
+    expect(dispatch).not.toHaveBeenCalled();
+    pending.resolve(snapshot("running", 2));
+    await first;
+    expect(dispatch.mock.calls.map(([action]) => action.type)).toEqual(["job_state_synced"]);
+  });
+
+  it("rejects a stale run before POST and drops a late response after close", async () => {
+    const { controller, dispatch } = await observed();
+    await expect(
+      controller.approvePlan("job-1", "approval-1", "reject", "run-other"),
+    ).rejects.toThrow("no longer current");
+    expect(client.submitPlanApproval).not.toHaveBeenCalled();
+    const pending = deferred<ReturnType<typeof snapshot>>();
+    client.submitPlanApproval.mockReturnValue(pending.promise);
+    const request = controller.approvePlan("job-1", "approval-1", "ask");
+    controller.close();
+    pending.resolve(snapshot());
+    await expect(request).rejects.toBeInstanceOf(RunControllerInactiveError);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("re-reads after a failed POST without resending", async () => {
+    const { controller, dispatch } = await observed();
+    client.submitPlanApproval.mockRejectedValue(new Error("409"));
+    await expect(
+      controller.approvePlan("job-1", "approval-1", "auto"),
+    ).rejects.toThrow("not confirmed");
+    expect(client.submitPlanApproval).toHaveBeenCalledTimes(1);
+    expect(dispatch.mock.calls.map(([action]) => action.type)).toEqual(["job_state_synced"]);
   });
 });
 

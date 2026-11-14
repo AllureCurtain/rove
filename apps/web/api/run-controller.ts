@@ -8,6 +8,7 @@ import {
   stopSubagent as postSubagentStop,
   submitApproval,
   submitInput,
+  submitPlanApproval,
   testProvider,
 } from "../lib/rove-client";
 import { STREAM_EVENT_NAMES, type StreamEvent } from "../lib/rove-types";
@@ -57,6 +58,7 @@ export interface RunController {
   attach(jobId: string, expectedRunId?: string | null): Promise<JobStateResponse>;
   cancel(jobId: string): Promise<void>;
   approve(jobId: string, callId: string, decision: "approve" | "reject", expectedRunId?: string): Promise<void>;
+  approvePlan(jobId: string, approvalId: string, mode: string, expectedRunId?: string): Promise<void>;
   answer(jobId: string, inputId: string, answer: string): Promise<void>;
   /** Stop one delegated child under a parent `task` call id. */
   stopSubagent(jobId: string, callId: string): Promise<void>;
@@ -292,6 +294,47 @@ export function createRunController(
         assertCurrent(expectedGeneration);
         throw new Error(`Approval outcome not confirmed: ${describeError(error)}. ${
           reconciled ? "Server state refreshed; the request may have been resolved elsewhere." :
+            "Could not refresh authoritative state. Reload before deciding again."
+        } No automatic resend.`);
+      } finally {
+        approvalRequests.delete(key);
+      }
+    },
+
+    async approvePlan(jobId, approvalId, mode, expectedRunId) {
+      const expectedGeneration = generation;
+      assertCurrent(expectedGeneration);
+      if (!binding || binding.jobId !== jobId || !binding.runId ||
+          (expectedRunId && binding.runId !== expectedRunId) || terminal) {
+        throw new Error("Plan approval is no longer current. Reload its session.");
+      }
+      const key = JSON.stringify(["plan", jobId, binding.runId, approvalId]);
+      if (approvalRequests.has(key)) return;
+      approvalRequests.add(key);
+      try {
+        const jobState = await approvalDeadline(submitPlanApproval(jobId, approvalId, mode));
+        assertCurrent(expectedGeneration);
+        // The POST response is a snapshot, not evidence that this window's
+        // mode is the one that resolved the gate. No optimistic dispatch.
+        syncSnapshot(jobState);
+      } catch (error) {
+        assertCurrent(expectedGeneration);
+        let reconciled = false;
+        for (const delay of [0, 100, 300]) {
+          if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+          assertCurrent(expectedGeneration);
+          try {
+            const state = await approvalDeadline(fetchJobState(jobId));
+            assertCurrent(expectedGeneration);
+            reconciled = syncSnapshot(state);
+            if (reconciled || terminal) break;
+          } catch (readError) {
+            if (isRunControllerInactive(readError)) throw readError;
+          }
+        }
+        assertCurrent(expectedGeneration);
+        throw new Error(`Plan approval outcome not confirmed: ${describeError(error)}. ${
+          reconciled ? "Server state refreshed; the gate may have been resolved elsewhere." :
             "Could not refresh authoritative state. Reload before deciding again."
         } No automatic resend.`);
       } finally {

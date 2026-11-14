@@ -206,6 +206,12 @@ export interface WorkbenchState {
   promptBuild: PromptBuildMetadata | null;
   promptCompaction: PromptCompactionState | null;
   plan: TaskPlan | null;
+  /** A plan gate awaiting an approve/reject decision on this run, or null. */
+  pendingPlanApproval: {
+    approvalId: string;
+    plan: TaskPlan;
+    offeredModes: string[];
+  } | null;
   planDecisions: PlanDecisionRecord[];
   planRevisions: PlanRevision[];
   stepRecords: StepRecord[];
@@ -269,6 +275,7 @@ export function createWorkbenchState(): WorkbenchState {
     promptBuild: null,
     promptCompaction: null,
     plan: null,
+    pendingPlanApproval: null,
     planDecisions: [],
     planRevisions: [],
     stepRecords: [],
@@ -632,6 +639,7 @@ function prepareRunScopedState(
     promptBuild: null,
     promptCompaction: null,
     plan: null,
+    pendingPlanApproval: null,
     planDecisions: [],
     planRevisions: [],
     stepRecords: [],
@@ -799,6 +807,16 @@ function applyJobState(
     jobState.pending_inputs,
     jobScopedState,
   );
+  // The server's pending-plan snapshot is authoritative: a live gate
+  // restores after refresh/reconnect the same way pending tool approvals
+  // do, and a resolved/absent gate clears whatever the stream projected.
+  const pendingPlanApproval = jobState.pending_plan_approvals?.[0]
+    ? {
+        approvalId: jobState.pending_plan_approvals[0].approval_id,
+        plan: jobState.pending_plan_approvals[0].plan,
+        offeredModes: jobState.pending_plan_approvals[0].offered_modes,
+      }
+    : null;
   let timeline = hydrated.timeline;
   for (const tool of tools) {
     if (!tool.timelineId) {
@@ -828,6 +846,7 @@ function applyJobState(
     lastSignal: "Job state synced",
     pendingInputs,
     transcriptInputs,
+    pendingPlanApproval,
     tools,
     timeline,
   };
@@ -1472,6 +1491,32 @@ function applyStreamEvent(
         trace: prependTrace(state.trace, event.type, event.prompt),
       };
     }
+    case "plan_approval_needed":
+      return {
+        ...next,
+        pendingPlanApproval: {
+          approvalId: event.approval_id,
+          plan: event.plan,
+          offeredModes: event.offered_modes,
+        },
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.plan.steps.length} step(s) awaiting approval`,
+        ),
+      };
+    case "plan_approval_resolved":
+      return {
+        ...next,
+        pendingPlanApproval: state.pendingPlanApproval?.approvalId === event.approval_id
+          ? null
+          : state.pendingPlanApproval,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          event.approved_policy ? `approved (${event.approved_policy})` : "rejected",
+        ),
+      };
     case "plan_created":
       return {
         ...next,
