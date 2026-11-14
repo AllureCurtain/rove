@@ -69,6 +69,8 @@ By default, closing the Desktop window hides it to the system tray: the app, its
 
 A real quit — the setting above set to **Quit**, the tray Quit item, or the application-menu Quit — cancels active tasks and waits up to five seconds for the local API to save their terminal state. Repeated quit requests share that wait. Unapproved tool calls remain unexecuted. On reopening, cancelled tasks stay cancelled; a forced termination or shutdown timeout may instead leave interrupted work that requires explicit recovery.
 
+While the window is in the tray or simply unfocused, the OS shows a native notification when a turn finishes, needs attention, or parks on an approval (a tool call, a plan, or a mid-run question). No banner appears while you are already looking at the console, and the text is a fixed wording — model output, file paths, and secrets never reach a notification. The OS may ask for notification permission the first time; denying it only silences the banners, the app works the same.
+
 If another Rove window or API host already uses the same data directory, a second start is refused. Return to the running app, or close it before reopening. Changing the API port does not permit sharing an active data directory. A process crash releases ownership automatically; do not delete `.rove-api.lock` to clear it. Separate data roots can run independently.
 
 ## Trusting a project

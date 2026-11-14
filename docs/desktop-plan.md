@@ -30,6 +30,11 @@ Already implemented and tested:
 - System tray with Show/Quit menu; a window close defaults to hiding to
   the tray and Settings → General can switch it to Quit — the choice lives
   in `desktop.json` (`close_action`) and stays a host-local concern.
+- Native notifications (`tauri-plugin-notification`): a background pump
+  subscribes to `/product/events` for finish / needs-attention facts and
+  follows each running session's `/jobs/{id}/events` for approval and
+  input gates. Banners fire only while no Rove window is focused, and the
+  wording comes from a fixed vocabulary, never from model output.
 - CI: `.github/workflows/desktop.yml` runs clippy+test on Ubuntu when the
   crate or workspace manifest changes.
 
@@ -49,8 +54,8 @@ Grouped by who can do it.
 | --- | --- | --- |
 | ~~Window-state persistence~~ done in-house (PR #100; the plugin hardcodes `app_config_dir` and would bypass `ROVE_DESKTOP_ROOT`) | window resets to 1400×900 every launch | hours |
 | ~~App menu (Edit/View/Window + About)~~ done (PR #100) | Tauri default menu is bare | hours |
-| Tray icon / minimize-to-tray (tauri core `tray` module, `tray-icon` feature) | long-running agent should not die on window close | 1–2 d |
-| Notifications (`tauri-plugin-notification`) | surface run-done / needs_attention when unfocused | 1–2 d |
+| ~~Tray icon / minimize-to-tray~~ done (PR #101: tauri core `tray` module + `desktop.json` close_action) | long-running agent should not die on window close | 1–2 d |
+| ~~Notifications~~ done (`tauri-plugin-notification` 2.4; SSE-driven, fires only when unfocused) | surface run-done / needs_attention when unfocused | 1–2 d |
 | Drag-drop workspace folders onto window | nicer than picker only | hours |
 | Better packaging metadata | `copyright: ""`, generic description, `DeveloperTool` category | minutes |
 | Auto-update (`tauri-plugin-updater`) | needs signed release channel first | later |
@@ -92,7 +97,7 @@ feature lands everywhere or is explicitly platform-gated:
 | Reveal in file manager | `explorer /select` | `open -R` | `xdg-open` |
 | External link | `open` crate | `open` crate | `open` crate |
 | Tray | Show/Quit menu, template icon | Show/Quit menu, template icon | Show/Quit menu |
-| Notifications | not built | not built | not built |
+| Notifications | finish / needs-attention / approval via `tauri-plugin-notification` | same | same |
 
 Rule: when adding a host command, implement all three OS arms or document
 the gap in `docs/user-guide.md` the same day.
@@ -149,9 +154,8 @@ recording (see PILOT.md), filed as a follow-up, not blocking.
    cells; evidence in `evidence/desktop/`.
 4. ~~**Window-state + app menu**~~ done (PR #100): in-house tracker under
    `config/` + platform menu bar.
-5. **Tray + notifications** (normal PRs, split): tray close-action first
-   (this change), then notifications — biggest UX gap for an agent that
-   runs long tasks.
+5. ~~**Tray + notifications**~~ done (PR #101 tray; notifications this
+   change): biggest UX gap for an agent that runs long tasks.
 6. **Windows/Linux acceptance** when a machine is available; signing/notary
    last, gated on certs.
 
