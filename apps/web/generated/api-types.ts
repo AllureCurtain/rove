@@ -212,6 +212,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/jobs/{job_id}/plan-approvals/{approval_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["submit_plan_approval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/jobs/{job_id}/state": {
         parameters: {
             query?: never;
@@ -1918,6 +1934,12 @@ export interface components {
             job_id: string;
             pending_approvals: components["schemas"]["PendingApprovalResponse"][];
             pending_inputs: components["schemas"]["PendingInputResponse"][];
+            /**
+             * @description Plans awaiting an approve/reject decision on the plan gate. Kept
+             *     separate from `pending_approvals` (tool calls) because a plan decision
+             *     carries an approval-mode choice, not just approve/reject.
+             */
+            pending_plan_approvals?: components["schemas"]["PendingPlanApprovalResponse"][];
             /** Format: ulid */
             resumed_from_run_id?: string | null;
             /** Format: ulid */
@@ -2076,6 +2098,19 @@ export interface components {
             /** Format: ulid */
             input_id: string;
             prompt: string;
+        };
+        /** @description A pending plan gate projected to the interface. */
+        PendingPlanApprovalResponse: {
+            /**
+             * Format: ulid
+             * @description Pending-approval id the `/jobs/{job_id}/plan-approvals/{approval_id}`
+             *     route resolves against. Minted per gate, not the plan ULID.
+             */
+            approval_id: string;
+            /** @description Approval modes the interface may offer (`ask`, `auto`). */
+            offered_modes: string[];
+            /** @description The drafted plan under review. */
+            plan: components["schemas"]["TaskPlan"];
         };
         PlanAmbiguity: {
             evidence_refs?: string[];
@@ -4050,6 +4085,21 @@ export interface components {
             /** @enum {string} */
             type: "input_needed";
         } | (components["schemas"]["PlanIdentity"] & {
+            /** Format: ulid */
+            approval_id: string;
+            offered_modes: string[];
+            plan: components["schemas"]["TaskPlan"];
+        } & {
+            /** @enum {string} */
+            type: "plan_approval_needed";
+        }) | {
+            /** Format: ulid */
+            approval_id: string;
+            /** @description The approval mode the run continues under, or `null` on reject. */
+            approved_policy?: string | null;
+            /** @enum {string} */
+            type: "plan_approval_resolved";
+        } | (components["schemas"]["PlanIdentity"] & {
             plan: components["schemas"]["TaskPlan"];
             plan_revision?: null | components["schemas"]["PlanRevision"];
         } & {
@@ -4181,6 +4231,16 @@ export interface components {
         };
         SubmitInputRequest: {
             answer: string;
+        };
+        /** @description Decision submitted to a pending plan gate. */
+        SubmitPlanApprovalRequest: {
+            /**
+             * @description `"reject"` refuses the plan outright. Any of the offered modes
+             *     (`"ask"`, `"auto"`) approves it and sets the run's approval policy for
+             *     the plan's steps — the approve-mode split.
+             * @example auto
+             */
+            mode: string;
         };
         TaskPlan: {
             current_step: number;
@@ -5065,6 +5125,71 @@ export interface operations {
                 };
             };
             /** @description Input responder is no longer live */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Internal runtime error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    submit_plan_approval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Job ULID */
+                job_id: string;
+                /** @description Pending plan-approval ULID */
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubmitPlanApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description Job state after resolving the plan gate */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobStateResponse"];
+                };
+            };
+            /** @description Unknown plan-approval mode */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Job or pending plan approval not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Plan-approval responder is no longer live */
             409: {
                 headers: {
                     [name: string]: unknown;
