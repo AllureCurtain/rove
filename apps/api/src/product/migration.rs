@@ -616,7 +616,7 @@ fn migration_import_root_is_local(path: &Path) -> bool {
     }
     #[cfg(not(windows))]
     {
-        true
+        path.is_absolute()
     }
 }
 
