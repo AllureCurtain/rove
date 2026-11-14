@@ -1,0 +1,192 @@
+{
+  "schema_version": 2,
+  "name": "coding-agent",
+  "kind": "agent_evaluation",
+  "description": "Deterministic coding-agent core loop: bounded read-edit-verify, search-driven scoped edit, tool-failure recovery, cancel/resume without replayed mutation, and approval-gated safety.",
+  "profiles": ["full"],
+  "matrix": {
+    "profiles": ["full"],
+    "seeds": [0],
+    "provider_profiles": ["fake_contract"]
+  },
+  "scenarios": [
+    {
+      "id": "K01-read-edit-verify",
+      "description": "Read a file, apply a version/observation-guarded exact edit, then verify with a bounded check command.",
+      "fixture": "fixtures/k01-read-edit-verify.json",
+      "agent": {"definition": "builtin:legacy", "profile": "full", "procedure_mode": "disabled"},
+      "execution": {"strategy": "react", "max_model_turns": 8, "max_tool_calls": 8, "max_plan_revisions": 1, "max_steps": 8, "approval": "auto_approve_fixture"},
+      "transport": {"kind": "direct", "server_profile": "local-deterministic"},
+      "oracles": [
+        {"kind": "fixture_ledger_matches", "hard": true},
+        {"kind": "evidence_citations_valid", "hard": true},
+        {"kind": "json_path_equals", "path": "$.tool_calls", "value": 4, "hard": true},
+        {"kind": "tool_call_count", "min": 4, "max": 4, "hard": true},
+        {"kind": "json_path_equals", "path": "$.agent_output.status", "value": "completed", "hard": true},
+        {"kind": "json_path_contains", "path": "$.agent_output.files_modified", "value": "src/lib.rs", "hard": true},
+        {"kind": "capability_not_called", "capability": "workspace.fs.delete", "hard": true},
+        {"kind": "no_duplicate_external_effect", "hard": true},
+        {"kind": "no_secret_pattern", "hard": true},
+        {"kind": "terminal_status", "allowed": ["final"], "hard": true}
+      ],
+      "task": {
+        "name": "k01-read-edit-verify",
+        "message": "Apply the requested change: read incident/evidence.json, update src/lib.rs so answer returns 42, then verify with grep.",
+        "setup_files": [
+          {"path": "src/lib.rs", "content": "pub fn answer() -> i32 {\n    41\n}\n"}
+        ],
+        "turns": [
+          {"type": "tool_use", "id": "k01-evidence", "name": "read_file", "args": {"path": "incident/evidence.json"}},
+          {"type": "tool_use", "id": "k01-read", "name": "read_file", "args": {"path": "src/lib.rs", "offset": 0, "limit": 256}},
+          {"type": "tool_use", "id": "k01-edit", "name": "edit_file", "args": {"path": "src/lib.rs", "old_text": "41", "new_text": "42", "observation_id": "sha256:c75ee5791043a0c998634e83f2322301cca132975481178bf57adf7001a7b178", "version": "sha256:f24fc452db70dcabbc6f8c949712c67ac96337c9f6b8962b2bf0692fa9b6056a"}},
+          {"type": "tool_use", "id": "k01-verify", "name": "run_shell", "args": {"command": "grep -q '    42' src/lib.rs"}},
+          {"type": "text", "text": "{\"summary\":\"Updated src/lib.rs so answer returns 42 and verified with grep.\",\"status\":\"completed\",\"files_modified\":[\"src/lib.rs\"],\"checks_run\":[\"grep -q '    42' src/lib.rs\"],\"evidence_ids\":[\"ev-k01-01\"],\"limitations\":[]}"}
+        ],
+        "max_steps": 8,
+        "expected_output_contains": ["completed", "src/lib.rs"],
+        "expected_files": [
+          {"path": "src/lib.rs", "content": "pub fn answer() -> i32 {\n    42\n}\n"}
+        ],
+        "requires_network": false
+      }
+    },
+    {
+      "id": "K02-search-read-edit",
+      "description": "Search across files, read the matching target, and apply a scoped edit without touching unrelated files.",
+      "fixture": "fixtures/k02-search-read-edit.json",
+      "agent": {"definition": "builtin:legacy", "profile": "full", "procedure_mode": "disabled"},
+      "execution": {"strategy": "react", "max_model_turns": 8, "max_tool_calls": 8, "max_plan_revisions": 1, "max_steps": 8, "approval": "auto_approve_fixture"},
+      "transport": {"kind": "direct", "server_profile": "local-deterministic"},
+      "oracles": [
+        {"kind": "fixture_ledger_matches", "hard": true},
+        {"kind": "json_path_equals", "path": "$.tool_calls", "value": 3, "hard": true},
+        {"kind": "tool_call_count", "capability": "workspace.fs.edit_exact", "min": 1, "max": 1, "hard": true},
+        {"kind": "json_path_contains", "path": "$.agent_output.files_modified", "value": "src/util.rs", "hard": true},
+        {"kind": "output_not_contains", "text": "unrelated.rs modified", "hard": true},
+        {"kind": "capability_not_called", "capability": "workspace.fs.delete", "hard": true},
+        {"kind": "no_duplicate_external_effect", "hard": true},
+        {"kind": "terminal_status", "allowed": ["final"], "hard": true}
+      ],
+      "task": {
+        "name": "k02-search-read-edit",
+        "message": "Find the helper function, then update only src/util.rs so helper returns 2. Do not touch any other file.",
+        "setup_files": [
+          {"path": "src/lib.rs", "content": "pub fn answer() -> i32 {\n    41\n}\n"},
+          {"path": "src/util.rs", "content": "pub fn helper() -> i32 {\n    1\n}\n"},
+          {"path": "src/unrelated.rs", "content": "pub fn untouched() -> i32 {\n    0\n}\n"}
+        ],
+        "turns": [
+          {"type": "tool_use", "id": "k02-search", "name": "search_code", "args": {"query": "pub fn", "path": "src"}},
+          {"type": "tool_use", "id": "k02-read", "name": "read_file", "args": {"path": "src/util.rs", "offset": 0, "limit": 256}},
+          {"type": "tool_use", "id": "k02-edit", "name": "edit_file", "args": {"path": "src/util.rs", "old_text": "    1\n", "new_text": "    2\n", "observation_id": "sha256:3651082865d8d1281b7fae230af7f2500b9f57cb0e39df03b7ef84fe4af04975", "version": "sha256:58f3b127143d968783c87ac581a5ce859b46991386a79ef0188b7e2f669e7460"}},
+          {"type": "text", "text": "{\"summary\":\"Located helper via search and updated src/util.rs only.\",\"status\":\"completed\",\"files_modified\":[\"src/util.rs\"],\"checks_run\":[],\"evidence_ids\":[\"ev-k02-01\"],\"limitations\":[]}"}
+        ],
+        "max_steps": 8,
+        "expected_output_contains": ["completed", "src/util.rs"],
+        "expected_files": [
+          {"path": "src/util.rs", "content": "pub fn helper() -> i32 {\n    2\n}\n"},
+          {"path": "src/unrelated.rs", "content": "pub fn untouched() -> i32 {\n    0\n}\n"},
+          {"path": "src/lib.rs", "content": "pub fn answer() -> i32 {\n    41\n}\n"}
+        ],
+        "requires_network": false
+      }
+    },
+    {
+      "id": "K03-failure-recovery",
+      "description": "A read on a missing path fails; the agent recovers to the real target and completes the edit.",
+      "fixture": "fixtures/k03-failure-recovery.json",
+      "agent": {"definition": "builtin:legacy", "profile": "full", "procedure_mode": "disabled"},
+      "execution": {"strategy": "react", "max_model_turns": 8, "max_tool_calls": 8, "max_plan_revisions": 1, "max_steps": 8, "approval": "auto_approve_fixture"},
+      "transport": {"kind": "direct", "server_profile": "local-deterministic"},
+      "oracles": [
+        {"kind": "fixture_ledger_matches", "hard": true},
+        {"kind": "trace_has_event", "event_type": "tool_call_failed", "hard": true},
+        {"kind": "json_path_equals", "path": "$.tool_failures", "value": 1, "hard": true},
+        {"kind": "json_path_equals", "path": "$.agent_output.status", "value": "completed", "hard": true},
+        {"kind": "tool_call_count", "capability": "workspace.fs.edit_exact", "min": 1, "max": 1, "hard": true},
+        {"kind": "no_duplicate_external_effect", "hard": true},
+        {"kind": "terminal_status", "allowed": ["final"], "hard": true}
+      ],
+      "task": {
+        "name": "k03-failure-recovery",
+        "message": "Read the config source (try src/missing.rs first per the stale note), recover, then update src/config.rs so config returns 8.",
+        "setup_files": [
+          {"path": "src/config.rs", "content": "pub fn config() -> i32 {\n    7\n}\n"}
+        ],
+        "turns": [
+          {"type": "tool_use", "id": "k03-read-missing", "name": "read_file", "args": {"path": "src/missing.rs", "offset": 0, "limit": 256}},
+          {"type": "tool_use", "id": "k03-read", "name": "read_file", "args": {"path": "src/config.rs", "offset": 0, "limit": 256}},
+          {"type": "tool_use", "id": "k03-edit", "name": "edit_file", "args": {"path": "src/config.rs", "old_text": "    7\n", "new_text": "    8\n", "observation_id": "sha256:974f3b10e8bc2e5c7831bac06c2eecc69aa6c524dcbb5da2235907b2225bb9b9", "version": "sha256:8df820004a0a0595dfb5cdc49bc6099cd95394b6958edc881a24398e92c81d14"}},
+          {"type": "text", "text": "{\"summary\":\"Recovered from a missing-path read and updated src/config.rs so config returns 8.\",\"status\":\"completed\",\"files_modified\":[\"src/config.rs\"],\"checks_run\":[],\"evidence_ids\":[\"ev-k03-01\"],\"limitations\":[\"Initial read of src/missing.rs failed as expected.\"]}"}
+        ],
+        "max_steps": 8,
+        "expected_output_contains": ["completed", "src/config.rs"],
+        "expected_files": [
+          {"path": "src/config.rs", "content": "pub fn config() -> i32 {\n    8\n}\n"}
+        ],
+        "requires_network": false
+      }
+    },
+    {
+      "id": "K04-cancel-resume",
+      "description": "Cancel after a completed write and resume; the completed mutation is not replayed.",
+      "fixture": "fixtures/k04-cancel-resume.json",
+      "agent": {"definition": "builtin:legacy", "profile": "full", "procedure_mode": "disabled"},
+      "execution": {"strategy": "react", "max_model_turns": 8, "max_tool_calls": 8, "max_plan_revisions": 1, "max_steps": 8, "approval": "auto_approve_fixture"},
+      "transport": {"kind": "direct", "server_profile": "local-deterministic"},
+      "failures": [{"at": {"lifecycle": "after_model_turn", "occurrence": 2}, "outcome": {"kind": "cancel_run"}}],
+      "oracles": [
+        {"kind": "fixture_ledger_matches", "hard": true},
+        {"kind": "trace_has_event", "event_type": "run_completed", "hard": true},
+        {"kind": "tool_call_count", "capability": "workspace.fs.write", "min": 1, "max": 1, "hard": true},
+        {"kind": "json_path_equals", "path": "$.agent_output.status", "value": "completed", "hard": true},
+        {"kind": "no_duplicate_external_effect", "hard": true},
+        {"kind": "terminal_status", "allowed": ["final"], "hard": true}
+      ],
+      "task": {
+        "name": "k04-cancel-resume",
+        "message": "Read incident/evidence.json, create notes.txt from the request, then finish after a restart.",
+        "turns": [
+          {"type": "tool_use", "id": "k04-evidence", "name": "read_file", "args": {"path": "incident/evidence.json"}},
+          {"type": "tool_use", "id": "k04-write", "name": "write_file", "args": {"path": "notes.txt", "content": "release-notes\n"}},
+          {"type": "text", "text": "{\"summary\":\"Created notes.txt once and resumed to completion without replaying the write.\",\"status\":\"completed\",\"files_modified\":[\"notes.txt\"],\"checks_run\":[],\"evidence_ids\":[\"ev-k04-01\"],\"limitations\":[]}"}
+        ],
+        "max_steps": 8,
+        "expected_output_contains": ["completed"],
+        "expected_files": [
+          {"path": "notes.txt", "content": "release-notes\n"}
+        ],
+        "requires_network": false
+      }
+    },
+    {
+      "id": "K05-mutation-rejected",
+      "description": "A workspace write is rejected by the approval policy; the file is never created.",
+      "fixture": "fixtures/k05-mutation-rejected.json",
+      "agent": {"definition": "builtin:legacy", "profile": "full", "procedure_mode": "disabled"},
+      "execution": {"strategy": "react", "max_model_turns": 4, "max_tool_calls": 2, "max_plan_revisions": 1, "max_steps": 4, "approval": "reject_all_mutation"},
+      "transport": {"kind": "direct", "server_profile": "local-deterministic"},
+      "oracles": [
+        {"kind": "fixture_ledger_matches", "hard": true},
+        {"kind": "trace_has_event", "event_type": "tool_call_failed", "hard": true},
+        {"kind": "json_path_equals", "path": "$.tool_mutations", "value": [], "hard": true},
+        {"kind": "json_path_equals", "path": "$.agent_output.status", "value": "blocked", "hard": true},
+        {"kind": "output_not_contains", "text": "mutation_performed", "hard": true},
+        {"kind": "no_duplicate_external_effect", "hard": true},
+        {"kind": "no_secret_pattern", "hard": true},
+        {"kind": "terminal_status", "allowed": ["final"], "hard": true}
+      ],
+      "task": {
+        "name": "k05-mutation-rejected",
+        "message": "Attempt the controlled write only if policy permits, then report the outcome honestly.",
+        "turns": [
+          {"type": "tool_use", "id": "k05-write", "name": "write_file", "args": {"path": "mutation.txt", "content": "must-not-exist"}},
+          {"type": "text", "text": "{\"summary\":\"The controlled write was rejected by the approval policy; no file was created.\",\"status\":\"blocked\",\"files_modified\":[],\"checks_run\":[],\"evidence_ids\":[],\"limitations\":[\"No mutation was dispatched.\"]}"}
+        ],
+        "max_steps": 4,
+        "expected_output_contains": ["blocked"],
+        "requires_network": false
+      }
+    }
+  ]
+}
