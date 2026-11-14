@@ -1,8 +1,10 @@
 # TODO
 
-Updated: 2026-11-10
+Updated: 2026-11-14
 
 ## In progress
+
+- **Real-usability fixes from live DeepSeek smoke** (`fix/model-turn-budget`): `DEFAULT_MAX_MODEL_TURNS_PER_STEP` raised 4→16 so tool-using PlanReact steps can finish think→tool rounds plus synthesis instead of dying `BudgetExhausted` mid-step; `docs/decisions.md` entry records the rationale and the `[runtime.execution]` override path is now documented in user-guide/development. The providers **Verify and save** form no longer wipes the pasted key when onboarding verification fails — the credential returns to the uncontrolled field so the endpoint/model can be fixed and retried; a confirmed save still clears it.
 
 - **crates/+apps/ symmetric layout** (`refactor/crates-dir`): the last five top-level crate dirs moved under `crates/` (`models`→`crates/models`, `core`→`crates/core`, `protocol`→`crates/protocol`, `tools-text`→`crates/tools-text`, `tests`→`crates/tests`) with `git mv` (history preserved). Crate names unchanged; root `Cargo.toml` members and `workspace.dependencies` paths repointed; `workspace_root()` helpers in `crates/tests/*.rs` gained a second `pop()`; all `"tests/fixtures/…"`/`"core/…"`/`"models/…"` literals repointed to `crates/…`; `crates/engine/tests/mcp_contract.rs` fixture path shortened one level. docs/AGENTS.md layout block, docs/architecture.md module table, docs/development.md, docs/api.md, docs/rust-style.md, docs/decisions.md, docs/refactor-plan.md item 6 all updated. Web e2e `tests/fixtures/mcp_mock_server.py` strings left alone (they're operator-typed form input, not resolved paths). This completes the `crates/`+`apps/` symmetry goal in `docs/refactor-plan.md` §6.
 

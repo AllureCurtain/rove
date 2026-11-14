@@ -60,7 +60,7 @@ Note: installers are not yet signed, and the installed end-to-end flow has not b
 
 ## Desktop source build (macOS)
 
-A local Apple Silicon `.app` can be built from `apps/desktop` with `pnpm dlx @tauri-apps/cli@2 build --bundles app --ci`. The result is `target/release/bundle/macos/Rove.app` (or the configured Cargo target directory). Folder selection, offline tasks and session continuation after restart have been checked locally. Signed distribution and clean-machine installation remain unverified. In Settings → Providers, macOS/Linux use the shared **Verify and save** password form. The input clears at submission and the local host saves the verified key in the OS credential store. Windows retains its native credential window. Linux needs an available OS keyring service.
+A local Apple Silicon `.app` can be built from `apps/desktop` with `pnpm dlx @tauri-apps/cli@2 build --bundles app --ci`. The result is `target/release/bundle/macos/Rove.app` (or the configured Cargo target directory). Folder selection, offline tasks and session continuation after restart have been checked locally. Signed distribution and clean-machine installation remain unverified. In Settings → Providers, macOS/Linux use the shared **Verify and save** password form. The input clears at submission and the local host saves the verified key in the OS credential store; when verification fails the key stays in the field so the endpoint or model can be corrected before retrying. Windows retains its native credential window. Linux needs an available OS keyring service.
 
 ## Closing Desktop
 
@@ -78,6 +78,21 @@ Steps:
 2. Run `rove trust` in the terminal, or use the Project Trust settings in Web to grant capabilities item by item.
 
 Note: the grant binds to the exact directory and a config digest; any config change requires re-confirmation.
+
+## Execution budgets
+
+Purpose: bound how much work a run and each plan step may do.
+
+Defaults: `max_steps` (default 20) caps planned step attempts. Each plan step additionally gets its own model-turn ceiling, `max_model_turns_per_step` (default 16), so one step can alternate thinking with tool calls and still synthesize a conclusion without draining the whole run.
+
+Override: once the `project_configuration` trust capability is granted, a workspace `.rove/config.toml` may set any `[runtime.execution]` field — `max_plan_steps`, `max_step_attempts`, `max_model_turns`, `max_model_turns_per_step`, `max_tool_calls`, `max_tool_calls_per_step`, `max_plan_revisions`, `max_model_repairs`, `max_finalization_turns`, `max_wall_time_ms`, `max_total_tokens`, `max_cost_microunits`. Example:
+
+```toml
+[runtime.execution]
+max_model_turns_per_step = 24
+```
+
+Zero is rejected at load; a per-step limit may not exceed its matching global limit.
 
 ## Reviewing changes (Review)
 

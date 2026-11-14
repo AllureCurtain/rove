@@ -118,7 +118,7 @@ describe("browser provider setup", () => {
     expect(mocks.listSaved).not.toHaveBeenCalled(); expect(mocks.test).not.toHaveBeenCalled();
   });
 
-  it("directs a draft key only to onboarding and clears it even on failure", async () => {
+  it("directs a draft key only to onboarding and keeps it on verification failure", async () => {
     const input = container.querySelector<HTMLInputElement>('#profile-api-key')!;
     expect(input.disabled).toBe(false);
     await fill("profile-api-key", "fixture-credential");
@@ -127,8 +127,36 @@ describe("browser provider setup", () => {
     await click("Verify and save");
     expect(mocks.onboard).toHaveBeenCalledWith(expect.objectContaining({ credential: "fixture-credential" }));
     expect(mocks.test).not.toHaveBeenCalled(); expect(mocks.listDraft).not.toHaveBeenCalled();
-    expect(input.value).toBe(""); expect(container.textContent).not.toContain("fixture-credential");
+    // A failed verification must not wipe the pasted key: the user has to fix
+    // the cause and retry, which requires the credential to stay in the field.
+    expect(input.value).toBe("fixture-credential");
+    expect(container.textContent).not.toContain("fixture-credential");
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("authentication failed");
+    expect(button("Verify and save")).toBeDefined();
+    expect(props.onCreateProfile).not.toHaveBeenCalled();
+    expect(props.onUpdateProfile).not.toHaveBeenCalled();
+  });
+
+  it("keeps the credential on an unreachable endpoint so the base URL can be fixed", async () => {
+    const input = container.querySelector<HTMLInputElement>('#profile-api-key')!;
+    await fill("profile-api-key", "fixture-credential");
+    mocks.onboard.mockRejectedValue({ code: "provider_transport", message: "unreachable" });
+    await click("Verify and save");
+    expect(input.value).toBe("fixture-credential");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("could not be reached");
+    // Correcting the endpoint and retrying reuses the retained key.
+    mocks.onboard.mockResolvedValue({
+      profile_id: "new-profile", label: "Example", provider_type: "openai",
+      api_base: "https://example.test/v1", model: "model-a", catalog_revision: "revision-2",
+      credential_source: "keyring",
+      probe: { inventory_count: 1, streaming_supported: true, native_tool_calls_supported: true, usage_supported: true },
+      selected: true,
+    });
+    await fill("profile-base", "https://fixed.test/v1");
+    await click("Verify and save");
+    expect(mocks.onboard).toHaveBeenLastCalledWith(expect.objectContaining({ credential: "fixture-credential", api_base: "https://fixed.test/v1" }));
+    expect(input.value).toBe("");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Key verified");
   });
 
   it("clears the uncontrolled credential immediately while verification is pending", async () => {
@@ -141,7 +169,8 @@ describe("browser provider setup", () => {
     expect(input.disabled).toBe(true);
     expect(mocks.onboard).toHaveBeenCalledOnce();
     await act(async () => reject({ code: "provider_authentication" }));
-    expect(input.value).toBe("");
+    // On failure the credential is restored so the user can retry.
+    expect(input.value).toBe("fixture-pending-key");
     expect(input.disabled).toBe(false);
   });
 

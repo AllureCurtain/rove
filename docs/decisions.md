@@ -293,3 +293,11 @@ Decisions before 2026-10-01 were distilled from the design documents of that per
 - Decision: attach optional before/after SHA-256 versions to built-in file mutations. Create rollback requires the postimage; update rollback requires the postimage and a reverse-patched candidate matching the preimage. Parse only a bounded complete single-file patch in memory, hold the existing session maintenance claim, reject symlink paths, and refuse legacy/incomplete evidence while preserving read compatibility.
 - Why: display diffs may be truncated, redacted or previously normalized; reconstructing created content from them could reject unchanged files or accept later edits. Sending an unrestricted recorded patch to Git could affect a different path.
 - Rejected: normalizing newlines, trusting a display diff without digests, guessing missing legacy bytes, or claiming session serialization provides cross-process filesystem atomicity.
+
+## 2026-11-14 Default per-step model-turn budget raised to 16
+
+- Status: active
+- Decision: `DEFAULT_MAX_MODEL_TURNS_PER_STEP` is now 16 (was 4). The constant remains the fallback ceiling for `max_model_turns_per_step` under PlanReact when no `[runtime.execution]` override resolves; `max_steps` still maps to step attempts only, and the per-step ceiling stays finite so one step cannot spend the whole run budget.
+- Why: a real tool-using step alternates model thinking with tool batches and still needs a synthesis turn — six to twelve model turns is normal. Four stopped every tool-using step with `BudgetExhausted` before it could conclude, which is what the live-provider smoke run hit. Sixteen covers several think→tool rounds plus synthesis while staying bounded.
+- Rejected: removing the per-step ceiling — a stuck step would drain the run-level budget silently; a smaller raise such as 8 — still tight for steps that inspect, revise, and re-inspect; deriving it from `max_steps` — step attempts and model turns per step are independent dimensions.
+- Override: operators set `runtime.execution.max_model_turns_per_step` (and the sibling budget fields) in a trusted workspace `.rove/config.toml`; the `ExecutionConfig` overlay remains the single override path.
