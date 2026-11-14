@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::config::ExecutionConfig;
 use crate::provider::{ProviderAuthConfig, ProviderHeaderValue, ProviderProfileConfig};
 
 pub const USER_CONFIG_SCHEMA_VERSION: u16 = 1;
@@ -15,6 +16,27 @@ pub struct UserConfigDocument {
     pub schema_version: u16,
     pub model: ModelDefaults,
     pub provider: UserProviderConfig,
+    #[serde(default, skip_serializing_if = "UserRuntimeConfig::is_empty")]
+    pub runtime: UserRuntimeConfig,
+}
+
+/// Operator-owned runtime settings kept beside the provider catalog.
+///
+/// Only execution budgets are admitted: they bound how much work a run may do
+/// and cannot grant capabilities, select workspace instructions, or reach
+/// outside the workspace. Workspace-owned values (paths, agent selection,
+/// prompts) stay project-config-trust territory and are rejected here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct UserRuntimeConfig {
+    #[serde(default, skip_serializing_if = "ExecutionConfig::is_empty")]
+    pub execution: ExecutionConfig,
+}
+
+impl UserRuntimeConfig {
+    pub fn is_empty(&self) -> bool {
+        self.execution.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -38,6 +60,7 @@ impl Default for UserConfigDocument {
             schema_version: USER_CONFIG_SCHEMA_VERSION,
             model: ModelDefaults::default(),
             provider: UserProviderConfig::default(),
+            runtime: UserRuntimeConfig::default(),
         }
     }
 }

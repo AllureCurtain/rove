@@ -69,9 +69,9 @@ pub const COMPACTION_REQUEST_MAX_MESSAGES: usize = 64;
 /// dropped prefix, so a long session produced "a summary request larger than the
 /// window it exists to shrink". The bound is therefore that window, taken from
 /// the budget this repository ships rather than from convenience: the design
-/// audit names the defaults `soft 24_000`, `reserved 4_000`
+/// audit names the defaults `soft 96_000`, `reserved 16_000`
 /// (`apps/bootstrap/src/config.rs`), so the shrink target is `soft - reserved` =
-/// 20_000 tokens, and token estimation in this repository is
+/// 80_000 tokens, and token estimation in this repository is
 /// `CHARS_PER_TOKEN` = 4 bytes per token (`prompt_metadata.rs`). The request is
 /// never larger than the window it exists to shrink.
 ///
@@ -85,7 +85,7 @@ pub const COMPACTION_REQUEST_MAX_MESSAGES: usize = 64;
 /// budget through `maybe_compact_history` is deliberately *not* done in this
 /// change, because it would have to reach the manual `/compact` path too, which
 /// starts no run and holds no context manager.
-pub const COMPACTION_REQUEST_MAX_BYTES: usize = (24_000 - 4_000) * 4;
+pub const COMPACTION_REQUEST_MAX_BYTES: usize = (96_000 - 16_000) * 4;
 
 /// The typed code a refused unbounded shrink request reports.
 ///
@@ -2302,13 +2302,15 @@ Risks:
     /// The request is bounded by its byte budget, and its bytes are pinned so a
     /// change in either the budget or the selection is visible here.
     ///
-    /// 200 assistant messages of 2 000 bytes serialize to 2 033 bytes each; with
-    /// the shared comma and the two array brackets that is `2034n + 1` bytes, so
-    /// the budget of 80 000 holds 39 messages and no more.
+    /// 200 assistant messages of 8 000 bytes serialize to 8 033 bytes each; with
+    /// the shared comma and the two array brackets that is `8034n + 1` bytes, so
+    /// the budget of 320 000 holds 39 messages and no more. (Message payloads of
+    /// 8 KiB keep the byte bound — not the 64-message count bound — the first
+    /// limit this test trips.)
     #[test]
     fn the_shrink_request_never_exceeds_its_byte_budget_and_its_bytes_are_pinned() {
         let history: Vec<Message> = (0..200)
-            .map(|_| Message::assistant("b".repeat(2_000)))
+            .map(|_| Message::assistant("b".repeat(8_000)))
             .collect();
 
         let request = compaction_prompt_messages(&history).unwrap();
@@ -2319,16 +2321,16 @@ Risks:
             request.transcript_bytes,
             COMPACTION_REQUEST_MAX_BYTES
         );
-        assert_eq!(request.transcript_bytes, 79_327);
+        assert_eq!(request.transcript_bytes, 313_327);
         assert_eq!(request.transcript_messages, 39);
-        assert!(request.pruning.pruned_tool_results == 0, "2 KiB is under B");
+        assert!(request.pruning.pruned_tool_results == 0, "8 KiB is under B");
         assert_eq!(
             request.pruning.omitted_older_messages, 161,
             "the request keeps the newest messages that fit and declares the rest"
         );
         assert_eq!(
             request.pruning.omitted_older_bytes,
-            161 * 2_033,
+            161 * 8_033,
             "the omitted byte total is the omitted messages' payload bytes"
         );
 
@@ -2336,7 +2338,7 @@ Risks:
         assert_eq!(decoded.len(), 39);
         assert_eq!(
             decoded.last().unwrap().content,
-            "b".repeat(2_000),
+            "b".repeat(8_000),
             "the request keeps the newest messages, nearest the live window"
         );
         assert!(
@@ -2701,7 +2703,10 @@ Risks:
     /// dropped prefix still produces a request inside the byte budget.
     #[tokio::test]
     async fn a_multi_megabyte_prefix_still_produces_a_bounded_request() {
-        let history: Vec<Message> = (0..20)
+        // 40 pairs = 80 messages > the 64-message count bound, so a newest
+        // suffix is kept and the older edge is declared omitted regardless of
+        // how large the byte budget grows.
+        let history: Vec<Message> = (0..40)
             .flat_map(|index| {
                 [
                     Message::assistant_with_tool_calls(
@@ -2741,7 +2746,7 @@ Risks:
         assert_eq!(update.pruning.pruned_payload_bytes, expected);
         assert!(
             update.pruning.omitted_older_messages > 0,
-            "a 2 MiB prefix cannot fit the byte budget"
+            "a multi MiB prefix cannot fit the request bounds"
         );
         assert!(
             update.pruning.pruned_excerpt_bytes < payload_bytes / 10,

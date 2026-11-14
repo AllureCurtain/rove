@@ -38,8 +38,9 @@ Config options are authoritative in the environment layer of `apps/bootstrap/src
 | `ROVE_MCP_CONFIG` | Explicit MCP catalog file |
 | `ROVE_DISABLE_NATIVE_FOLDER_PICKER` | Disable the native folder picker, for headless environments |
 | `ROVE_STATE_*` / `ROVE_MEMORY_*` / `ROVE_CONTEXT_*` / `ROVE_SHELL_*` / `ROVE_ROUTING_*` | Overrides for the corresponding config sections; semantics in `config.rs` |
+| `ROVE_EXECUTION_*` | Execution budget overrides: `ROVE_EXECUTION_MAX_PLAN_STEPS`, `ROVE_EXECUTION_MAX_STEP_ATTEMPTS`, `ROVE_EXECUTION_MAX_MODEL_TURNS`, `ROVE_EXECUTION_MAX_MODEL_TURNS_PER_STEP`, `ROVE_EXECUTION_MAX_TOOL_CALLS`, `ROVE_EXECUTION_MAX_TOOL_CALLS_PER_STEP`, `ROVE_EXECUTION_MAX_PLAN_REVISIONS`, `ROVE_EXECUTION_MAX_MODEL_REPAIRS`, `ROVE_EXECUTION_MAX_FINALIZATION_TURNS`, `ROVE_EXECUTION_MAX_WALL_TIME_MS`, `ROVE_EXECUTION_MAX_TOTAL_TOKENS`, `ROVE_EXECUTION_MAX_COST_MICROUNITS` |
 
-Execution budgets (`[runtime.execution]` in `.rove/config.toml`) have no `ROVE_*` env mapping; they are TOML-only and apply in a trusted workspace once `project_configuration` is granted. Fields: `max_plan_steps`, `max_step_attempts`, `max_model_turns`, `max_model_turns_per_step` (default 16), `max_tool_calls`, `max_tool_calls_per_step`, `max_plan_revisions`, `max_model_repairs`, `max_finalization_turns`, `max_wall_time_ms`, `max_total_tokens`, `max_cost_microunits`. Semantics live in `ExecutionConfig`/`ExecutionPolicy`.
+Execution budgets (`[runtime.execution]`) are settable in the user config (`~/.rove/config.toml`), a trusted workspace `.rove/config.toml`, or through the `ROVE_EXECUTION_*` env vars above; precedence is user < project < env. Fields: `max_plan_steps`, `max_step_attempts`, `max_model_turns`, `max_model_turns_per_step` (default 16), `max_tool_calls`, `max_tool_calls_per_step`, `max_plan_revisions`, `max_model_repairs`, `max_finalization_turns`, `max_wall_time_ms`, `max_total_tokens`, `max_cost_microunits`. `evaluator_mode`/`finalizer_policy` are config-file-only (no env mapping). Semantics live in `ExecutionConfig`/`ExecutionPolicy`.
 
 ## Commands
 
