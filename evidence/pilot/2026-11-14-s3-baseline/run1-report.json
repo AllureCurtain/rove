@@ -1,0 +1,1240 @@
+{
+  "session_id": "01M7C72X74MNKPQE0H6PN04C36",
+  "job_id": "01M7C72X74WKQRBYSD0AM81163",
+  "run_id": "01M7C72X74V5QFDW4565CVXX12",
+  "workspace_root": "/Users/yao/dev/projects/rove",
+  "workspace_kind": "repo",
+  "model_id": "deepseek-v4-pro",
+  "status": "success",
+  "termination_reason": "final",
+  "steps": 16,
+  "total_usage": {
+    "prompt_tokens": 684913,
+    "completion_tokens": 9845,
+    "total_tokens": 694758,
+    "cached_tokens": 0
+  },
+  "tool_calls": 36,
+  "tool_failures": 1,
+  "tool_mutations": [],
+  "tool_execution_metadata": [
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "error",
+      "error_code": "invalid_args",
+      "risk_level": "high",
+      "read_only": false,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    },
+    {
+      "status": "ok",
+      "risk_level": "low",
+      "read_only": true,
+      "workspace_changed": false
+    }
+  ],
+  "prompt_builds": [
+    {
+      "prompt_hash": "sha256:9ee678cdb5405565062b8cace9f742e26ddc16ec786dfeeb71292107dbf1ccba",
+      "stable_prefix_hash": "sha256:ae81492e663815d1b0797eadb0d83fb63c2c13db12966385601896f2c93a0d7f",
+      "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+      "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+      "token_estimate": 662,
+      "included_history_messages": 0,
+      "dropped_history_messages": 0,
+      "system_prompt_bytes": 798,
+      "stable_prefix_bytes": 2024,
+      "history_bytes": 0,
+      "total_bytes": 2695,
+      "referenced_tool_results": 0,
+      "prompt_cache_key": "sha256:3c6257bcccceebf5a55e63025d7900c3d90b9ebd6cf79db9b1c1cfe2eb05f1ee"
+    },
+    {
+      "prompt_hash": "sha256:bc588b23746ff76c005b18537256eaa9dbddaf350d3401cca0da77a7e65fe5e9",
+      "stable_prefix_hash": "sha256:ae81492e663815d1b0797eadb0d83fb63c2c13db12966385601896f2c93a0d7f",
+      "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+      "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+      "token_estimate": 4319,
+      "included_history_messages": 3,
+      "dropped_history_messages": 0,
+      "system_prompt_bytes": 798,
+      "stable_prefix_bytes": 2024,
+      "history_bytes": 32197,
+      "total_bytes": 34892,
+      "referenced_tool_results": 0,
+      "prompt_cache_key": "sha256:3c6257bcccceebf5a55e63025d7900c3d90b9ebd6cf79db9b1c1cfe2eb05f1ee"
+    },
+    {
+      "prompt_hash": "sha256:ddb536435dec9dd4d230c5d3b2df494885c0478ec450797a464fa8ab00707f70",
+      "stable_prefix_hash": "sha256:ae81492e663815d1b0797eadb0d83fb63c2c13db12966385601896f2c93a0d7f",
+      "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+      "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+      "token_estimate": 12337,
+      "included_history_messages": 9,
+      "dropped_history_messages": 0,
+      "system_prompt_bytes": 798,
+      "stable_prefix_bytes": 2024,
+      "history_bytes": 96654,
+      "total_bytes": 99349,
+      "referenced_tool_results": 0,
+      "prompt_cache_key": "sha256:3c6257bcccceebf5a55e63025d7900c3d90b9ebd6cf79db9b1c1cfe2eb05f1ee"
+    },
+    {
+      "prompt_hash": "sha256:34256913813a34a561a69ff961b2d0edd6ecf078d0f2e5f06cfc2277394995a2",
+      "stable_prefix_hash": "sha256:ae81492e663815d1b0797eadb0d83fb63c2c13db12966385601896f2c93a0d7f",
+      "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+      "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+      "token_estimate": 17904,
+      "included_history_messages": 12,
+      "dropped_history_messages": 0,
+      "system_prompt_bytes": 798,
+      "stable_prefix_bytes": 2024,
+      "history_bytes": 151918,
+      "total_bytes": 154613,
+      "referenced_tool_results": 0,
+      "prompt_cache_key": "sha256:3c6257bcccceebf5a55e63025d7900c3d90b9ebd6cf79db9b1c1cfe2eb05f1ee"
+    },
+    {
+      "prompt_hash": "sha256:067e40754f0df22d3de1bc9281ba798dd4115ffcfcab88cc574fba0c155be3e8",
+      "stable_prefix_hash": "sha256:ae81492e663815d1b0797eadb0d83fb63c2c13db12966385601896f2c93a0d7f",
+      "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+      "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+      "token_estimate": 22494,
+      "included_history_messages": 14,
+      "dropped_history_messages": 0,
+      "system_prompt_bytes": 798,
+      "stable_prefix_bytes": 2024,
+      "history_bytes": 170990,
+      "total_bytes": 173685,
+      "referenced_tool_results": 0,
+      "prompt_cache_key": "sha256:3c6257bcccceebf5a55e63025d7900c3d90b9ebd6cf79db9b1c1cfe2eb05f1ee"
+    },
+    {
+      "prompt_hash": "sha256:ee1cb00aac9395a7c4fbba497ac550f364a174f898dce085ee45246cb7d552da",
+      "stable_prefix_hash": "sha256:ae81492e663815d1b0797eadb0d83fb63c2c13db12966385601896f2c93a0d7f",
+      "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+      "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+      "token_estimate": 26927,
+      "included_history_messages": 18,
+      "dropped_history_messages": 0,
+      "system_prompt_bytes": 798,
+      "stable_prefix_bytes": 2024,
+      "history_bytes": 210439,
+      "total_bytes": 213134,
+      "referenced_tool_results": 0,
+      "prompt_cache_key": "sha256:3c6257bcccceebf5a55e63025d7900c3d90b9ebd6cf79db9b1c1cfe2eb05f1ee"
+    },
+    {
+      "prompt_hash": "sha256:11a8d81aa23fc7cbba9145715611537d8724dafd898c3d84c9af9151053e22cd",
+      "stable_prefix_hash": "sha256:ae81492e663815d1b0797eadb0d83fb63c2c13db12966385601896f2c93a0d7f",
+      "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+      "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+      "token_estimate": 41042,
+      "included_history_messages": 21,
+      "dropped_history_messages": 0,
+      "system_prompt_bytes": 798,
+      "stable_prefix_bytes": 2024,
+      "history_bytes": 327929,
+      "total_bytes": 330624,
+      "referenced_tool_results": 0,
+      "prompt_cache_key": "sha256:3c6257bcccceebf5a55e63025d7900c3d90b9ebd6cf79db9b1c1cfe2eb05f1ee"
+    },
+    {
+      "prompt_hash": "sha256:b7bbfd9961953c74d85a51c727bc11af01813944a1629f02ea75ffebe5bc8aa3",
+      "stable_prefix_hash": "sha256:ae81492e663815d1b0797eadb0d83fb63c2c13db12966385601896f2c93a0d7f",
+      "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+      "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+      "token_estimate": 47543,
+      "included_history_messages": 24,
+      "dropped_history_messages": 0,
+      "system_prompt_bytes": 798,
+      "stable_prefix_bytes": 2024,
+      "history_bytes": 356387,
+      "total_bytes": 359082,
+      "referenced_tool_results": 0,
+      "prompt_cache_key": "sha256:3c6257bcccceebf5a55e63025d7900c3d90b9ebd6cf79db9b1c1cfe2eb05f1ee"
+    },
+    {
+      "prompt_hash": "sha256:7f2360983bbafa2b6ef7947b49a607616120cee0d5ef67dbbdbde5c40ec4aeda",
+      "stable_prefix_hash": "sha256:ae81492e663815d1b0797eadb0d83fb63c2c13db12966385601896f2c93a0d7f",
+      "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+      "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+      "token_estimate": 48518,
+      "included_history_messages": 27,
+      "dropped_history_messages": 0,
+      "system_prompt_bytes": 798,
+      "stable_prefix_bytes": 2024,
+      "history_bytes": 365197,
+      "total_bytes": 367892,
+      "referenced_tool_results": 0,
+      "prompt_cache_key": "sha256:3c6257bcccceebf5a55e63025d7900c3d90b9ebd6cf79db9b1c1cfe2eb05f1ee"
+    },
+    {
+      "prompt_hash": "sha256:5032b599bdc3b2c9f1a15d05efa43ea2fb4d9f8c4e7d486f1b7c7cca1961a272",
+      "stable_prefix_hash": "sha256:ae81492e663815d1b0797eadb0d83fb63c2c13db12966385601896f2c93a0d7f",
+      "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+      "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+      "token_estimate": 49223,
+      "included_history_messages": 32,
+      "dropped_history_messages": 0,
+      "system_prompt_bytes": 798,
+      "stable_prefix_bytes": 2024,
+      "history_bytes": 372378,
+      "total_bytes": 375073,
+      "referenced_tool_results": 0,
+      "prompt_cache_key": "sha256:3c6257bcccceebf5a55e63025d7900c3d90b9ebd6cf79db9b1c1cfe2eb05f1ee"
+    },
+    {
+      "prompt_hash": "sha256:32bea9f487d4c2accc874a176235405a260582c3e047ef8c8db65d777f467424",
+      "stable_prefix_hash": "sha256:ae81492e663815d1b0797eadb0d83fb63c2c13db12966385601896f2c93a0d7f",
+      "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+      "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+      "token_estimate": 50317,
+      "included_history_messages": 37,
+      "dropped_history_messages": 0,
+      "system_prompt_bytes": 798,
+      "stable_prefix_bytes": 2024,
+      "history_bytes": 382960,
+      "total_bytes": 385655,
+      "referenced_tool_results": 0,
+      "prompt_cache_key": "sha256:3c6257bcccceebf5a55e63025d7900c3d90b9ebd6cf79db9b1c1cfe2eb05f1ee"
+    },
+    {
+      "prompt_hash": "sha256:177fc1907f00c18ebb115acac896904fa1957fc021aef9341a6b1d679dfb7f3c",
+      "stable_prefix_hash": "sha256:ae81492e663815d1b0797eadb0d83fb63c2c13db12966385601896f2c93a0d7f",
+      "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+      "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+      "token_estimate": 50672,
+      "included_history_messages": 40,
+      "dropped_history_messages": 0,
+      "system_prompt_bytes": 798,
+      "stable_prefix_bytes": 2024,
+      "history_bytes": 386489,
+      "total_bytes": 389184,
+      "referenced_tool_results": 0,
+      "prompt_cache_key": "sha256:3c6257bcccceebf5a55e63025d7900c3d90b9ebd6cf79db9b1c1cfe2eb05f1ee"
+    },
+    {
+      "prompt_hash": "sha256:e3dd08595ef540cbdf1c5300385f64b680a9bd4dfd084eb20cbe7413da9e8dee",
+      "stable_prefix_hash": "sha256:ae81492e663815d1b0797eadb0d83fb63c2c13db12966385601896f2c93a0d7f",
+      "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+      "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+      "token_estimate": 51354,
+      "included_history_messages": 41,
+      "dropped_history_messages": 0,
+      "system_prompt_bytes": 798,
+      "stable_prefix_bytes": 2024,
+      "history_bytes": 389311,
+      "total_bytes": 391996,
+      "referenced_tool_results": 0,
+      "prompt_cache_key": "sha256:3c6257bcccceebf5a55e63025d7900c3d90b9ebd6cf79db9b1c1cfe2eb05f1ee"
+    },
+    {
+      "prompt_hash": "sha256:9d5d150c4298ef8527b27ae057c0d74dbaf2120e36f32afda7997ea496bc5694",
+      "stable_prefix_hash": "sha256:ae81492e663815d1b0797eadb0d83fb63c2c13db12966385601896f2c93a0d7f",
+      "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+      "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+      "token_estimate": 51875,
+      "included_history_messages": 45,
+      "dropped_history_messages": 0,
+      "system_prompt_bytes": 798,
+      "stable_prefix_bytes": 2024,
+      "history_bytes": 394515,
+      "total_bytes": 397200,
+      "referenced_tool_results": 0,
+      "prompt_cache_key": "sha256:3c6257bcccceebf5a55e63025d7900c3d90b9ebd6cf79db9b1c1cfe2eb05f1ee"
+    },
+    {
+      "prompt_hash": "sha256:d377ec804d861bef059cd532fa4dc0f0826eff67fcf4be1ebfd3570d87363e19",
+      "stable_prefix_hash": "sha256:ae81492e663815d1b0797eadb0d83fb63c2c13db12966385601896f2c93a0d7f",
+      "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+      "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+      "token_estimate": 51946,
+      "included_history_messages": 47,
+      "dropped_history_messages": 0,
+      "system_prompt_bytes": 798,
+      "stable_prefix_bytes": 2024,
+      "history_bytes": 394991,
+      "total_bytes": 397676,
+      "referenced_tool_results": 0,
+      "prompt_cache_key": "sha256:3c6257bcccceebf5a55e63025d7900c3d90b9ebd6cf79db9b1c1cfe2eb05f1ee"
+    },
+    {
+      "prompt_hash": "sha256:4e300aab4bafd4729e1d1febdff72564c445df7a4ea82d04827130ed7168ac25",
+      "stable_prefix_hash": "sha256:ae81492e663815d1b0797eadb0d83fb63c2c13db12966385601896f2c93a0d7f",
+      "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+      "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+      "token_estimate": 53315,
+      "included_history_messages": 51,
+      "dropped_history_messages": 0,
+      "system_prompt_bytes": 798,
+      "stable_prefix_bytes": 2024,
+      "history_bytes": 405374,
+      "total_bytes": 408059,
+      "referenced_tool_results": 0,
+      "prompt_cache_key": "sha256:3c6257bcccceebf5a55e63025d7900c3d90b9ebd6cf79db9b1c1cfe2eb05f1ee"
+    }
+  ],
+  "runtime_identity": {
+    "cwd": "/Users/yao/dev/projects/rove",
+    "workspace_kind": "repo",
+    "model_id": "deepseek-v4-pro",
+    "provider_target": "openai:https://api.deepseek.com:deepseek-v4-pro",
+    "run_model": {
+      "profile_id": "01M7C725CVSQGPDK5YNN0S8XW2",
+      "provider_type": "openai",
+      "wire_protocol": "openai-completions",
+      "endpoint": "https://api.deepseek.com",
+      "model": "deepseek-v4-pro",
+      "reasoning": "default",
+      "catalog_revision": "sha256:df5539f63d3fa45a8b52fa3610b272575c2f414e501254898eeff100c8a88c58",
+      "safe_config_digest": "sha256:e93aa4d51d85c70409fe4f34ec87bbe78c1e642bf31cdb2f92c7c5db72c67860"
+    },
+    "approval_policy": "ask",
+    "max_steps": 8,
+    "plan_enabled": true,
+    "system_prompt_hash": "sha256:6d091bc98e334d08e1ec0f8203a4e9cbffdc922cb3eead8f9ff985cf6ec825bd",
+    "planner_prompt_hash": "sha256:0c51989e7abbfa672875b8d58167bb385b611db609371cbdc0b91bcc6d6cc368",
+    "evaluator_prompt_hash": "sha256:e3e7aaa1f689ca9c12ed90e2acb1c69e7651d6497d4f2bab36012bc9fd9e64ba",
+    "finalizer_prompt_hash": "sha256:c24371505ace65f533147a6e4b11d70d4bb4fbe0a2b00380faabefd335b9ad7a",
+    "workspace_fingerprint": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f",
+    "tool_signature": "sha256:2b1a6dc59bcbd560dc95c91bdba5addafdea144e5be93d119060d575d034a902",
+    "execution_policy": {
+      "version": 1,
+      "strategy": "plan_react",
+      "selection_source": "max_steps_and_plan_flag",
+      "budgets": {
+        "max_plan_steps": null,
+        "max_step_attempts": 8,
+        "max_model_turns": null,
+        "max_model_turns_per_step": 16,
+        "max_tool_calls": null,
+        "max_tool_calls_per_step": null,
+        "max_plan_revisions": null,
+        "max_model_repairs": null,
+        "max_finalization_turns": null,
+        "max_wall_time_ms": null,
+        "max_total_tokens": null,
+        "max_cost_microunits": null
+      },
+      "evaluator_mode": "rule_only",
+      "finalizer_policy": "deterministic"
+    },
+    "capability_snapshot_id": "sha256:063ecc02ee6bccccbe9f6fbf1e54f0888d092ddcab52d605d155a41bc4ff46b2",
+    "execution_environment": {
+      "adapter": "local",
+      "workspace_kind": "repo",
+      "workspace_digest": "sha256:975da2be8b2c1d40257d542afe1d16ceaaf7bc040c9e79b2e4243f55fd37305f"
+    },
+    "execution_capabilities": {
+      "filesystem_read": true,
+      "filesystem_write": true,
+      "process_run": true,
+      "process_stdio": true,
+      "observations": true,
+      "process_background": true,
+      "process_pty": false,
+      "workspace_checkpoints": true,
+      "artifact_projection": true
+    },
+    "agent": {
+      "selector": {
+        "source": "builtin",
+        "agent_id": "legacy"
+      },
+      "agent_id": "legacy",
+      "display_name": "Legacy",
+      "definition_version": "1.0.0",
+      "manifest_hash": "sha256:c6efae2a99e5c3d1206e510a72c6b3ca8e7f2eed481e2599ca1ccbd9c100c27f",
+      "package_hash": "sha256:8c2130b858722efac3e1cf821e17bf8f65f145f494176b106a2b2859c6a3d5d2",
+      "profile_hash": "sha256:9037b06a037dd4e3f8d35d04c0e79bda5c1da3163606c1261890442d8203ef83"
+    }
+  },
+  "step_records": [
+    {
+      "record_id": "01M7C761C3X9GGR2QDKQ2TZHX5",
+      "plan_id": "01M7C738BKBCN486G2NFQWBBSY",
+      "plan_revision_id": "01M7C738BKG64M6XZRNGFJX7TF",
+      "step_id": "1",
+      "attempt": 1,
+      "status": "succeeded",
+      "started_at": "2026-11-14T05:04:48.009954+00:00",
+      "finished_at": "2026-11-14T05:06:19.139089+00:00",
+      "summary": "Based on my investigation, I have located the tool-call loop and its dispatch chain.\n\n## Step 1 conclusion: candidate files and symbols\n\n**Primary loop + dispatch point**\n\n- **File:** `crates/core/src/kernel.rs`\n- **Function:** `run_agent_kernel` (defined at line 203)\n- **Key dispatch site:** line 435 — inside the reason→act→observe `loop`, the kernel routes a tool action to the host-provided handler:\n  ```rust\n  let mut tool_stream = host.tool_turn(tool_action, cancel_token.clone());\n  ```\n  This is where the kernel's tool-call loop hands a `KernelToolAction::Call`/`Batch` off to the host's `AgentKernelHost::tool_turn` implementation. The action originates from `turn.action` matching on `Action::ToolCall` / `Action::ToolBatch` (lines ~400–430).\n\n**Handler dispatch (registry → tool implementation)**\n\n- **File:** `crates/core/src/tools.rs`\n- **Function:** `ToolRegistry::execute` (impl starting around line 300)\n- **Key dispatch site:** line 314 — the registry resolves the tool and invoke...",
+      "completion_basis": "model_conclusion",
+      "evidence_refs": [
+        "tool_call:01M7C73A9KGWQ6C835S80Y0DEE",
+        "tool_call:01M7C73A9K0Y6SW15KC9JY38QE",
+        "tool_call:01M7C73E7RF1XK9YKETSJAK0BD",
+        "tool_call:01M7C73E7RKDD804R17CHMW7DM",
+        "tool_call:01M7C73E7R5X8TVSF8FJ4GDYD0",
+        "tool_call:01M7C73E7RCQKVKKF4QX7VW4DJ",
+        "tool_call:01M7C73E7RWV53NPYD0KB3GVF3",
+        "tool_call:01M7C73KFWTKAM653YS5QV2HG9",
+        "tool_call:01M7C73KFW25YDK1VNT7M0AYSW",
+        "tool_call:01M7C73QB3HX89WRRTZW7KSCMA",
+        "tool_call:01M7C73WKXA83Q65CA9XVBPHK7",
+        "tool_call:01M7C73WKXJAE9VD3XKTPG2CD4",
+        "tool_call:01M7C73WKX92NZAWFRPD5NZZNX",
+        "tool_call:01M7C7417BYVKNZWTTAD2D5HMA",
+        "tool_call:01M7C7417BSVS3Z0NXH0ZYFYDM",
+        "tool_call:01M7C74AMDGS3TRZJ6VX1YDEAT",
+        "tool_call:01M7C74AMDX5C9NW0R65V5CMG4",
+        "tool_call:01M7C74MM6KZFBF1AFY05NDTZY",
+        "tool_call:01M7C74MM6FA4KWP10N6AYFD3E",
+        "tool_call:01M7C74YQ9M9CC41MG0AGVDGGD",
+        "tool_call:01M7C74YQ9JV6TZXTB17W5XXEF",
+        "tool_call:01M7C74YQ94WH0N696J14XS1G8",
+        "tool_call:01M7C74YQ9K43VB6PR1DJZ3K3N",
+        "tool_call:01M7C75ACHT76AJRHSW4AFNFQM",
+        "tool_call:01M7C75ACHNQETVZ836P3T1XE0",
+        "tool_call:01M7C75ACH3D2S2X360XR4HADW",
+        "tool_call:01M7C75ACHP62Z7HCJVQA1B7P2",
+        "tool_call:01M7C75NA0MNDQ29TNNBPZVYN8",
+        "tool_call:01M7C75NA066B47S18KZ0X3CAM"
+      ],
+      "tool_call_ids": [
+        "01M7C73A9KGWQ6C835S80Y0DEE",
+        "01M7C73A9K0Y6SW15KC9JY38QE",
+        "01M7C73E7RF1XK9YKETSJAK0BD",
+        "01M7C73E7RKDD804R17CHMW7DM",
+        "01M7C73E7R5X8TVSF8FJ4GDYD0",
+        "01M7C73E7RCQKVKKF4QX7VW4DJ",
+        "01M7C73E7RWV53NPYD0KB3GVF3",
+        "01M7C73KFWTKAM653YS5QV2HG9",
+        "01M7C73KFW25YDK1VNT7M0AYSW",
+        "01M7C73QB3HX89WRRTZW7KSCMA",
+        "01M7C73WKXA83Q65CA9XVBPHK7",
+        "01M7C73WKXJAE9VD3XKTPG2CD4",
+        "01M7C73WKX92NZAWFRPD5NZZNX",
+        "01M7C7417BYVKNZWTTAD2D5HMA",
+        "01M7C7417BSVS3Z0NXH0ZYFYDM",
+        "01M7C74AMDGS3TRZJ6VX1YDEAT",
+        "01M7C74AMDX5C9NW0R65V5CMG4",
+        "01M7C74MM6KZFBF1AFY05NDTZY",
+        "01M7C74MM6FA4KWP10N6AYFD3E",
+        "01M7C74YQ9M9CC41MG0AGVDGGD",
+        "01M7C74YQ9JV6TZXTB17W5XXEF",
+        "01M7C74YQ94WH0N696J14XS1G8",
+        "01M7C74YQ9K43VB6PR1DJZ3K3N",
+        "01M7C75ACHT76AJRHSW4AFNFQM",
+        "01M7C75ACHNQETVZ836P3T1XE0",
+        "01M7C75ACH3D2S2X360XR4HADW",
+        "01M7C75ACHP62Z7HCJVQA1B7P2",
+        "01M7C75NA0MNDQ29TNNBPZVYN8",
+        "01M7C75NA066B47S18KZ0X3CAM"
+      ],
+      "model_turns_used": 12,
+      "tool_calls_used": 29,
+      "token_usage": {
+        "prompt_tokens": 445124,
+        "completion_tokens": 6802,
+        "total_tokens": 451926,
+        "cached_tokens": 0
+      }
+    },
+    {
+      "record_id": "01M7C773J1FMJHJV8939CB1RHZ",
+      "plan_id": "01M7C738BKBCN486G2NFQWBBSY",
+      "plan_revision_id": "01M7C738BKG64M6XZRNGFJX7TF",
+      "step_id": "2",
+      "attempt": 1,
+      "status": "succeeded",
+      "started_at": "2026-11-14T05:06:19.278643+00:00",
+      "finished_at": "2026-11-14T05:06:54.145821+00:00",
+      "summary": "## Step 2 conclusion: confirmed\n\n**Confirmed file + key dispatch function**\n\n- **File:** `crates/core/src/kernel.rs`\n- **Function:** `run_agent_kernel` (line 203)\n- **Dispatch call (the answer):** line 435\n\nContext verified from structured search:\n\n```rust\n// crates/core/src/kernel.rs (lines 425–445)\n// Reserve an entire batch before dispatch so a limit can never\n// leave half of a model-requested batch executed.\nstate.tool_calls = state.tool_calls.saturating_add(call_count);\n\nlet outcome = {\n    let mut tool_stream = host.tool_turn(tool_action, cancel_token.clone());\n    loop {\n        match tool_stream.next().await {\n            Some(KernelToolTurnItem::Event(event)) => {\n                // Approval and input events must be forwarded while\n                // execution is waiting so an interface can resolve\n                // the corresponding live channel.\n                yield KernelItem::Event(event);\n            }\n            Some(KernelToolTurnItem::Finished(outcome)) => break ou...",
+      "completion_basis": "model_conclusion",
+      "evidence_refs": [
+        "tool_call:01M7C7664JDHT9SE4SNECVNGKG",
+        "tool_call:01M7C7664JEDT34DA9EF1DQPT5",
+        "tool_call:01M7C7664JQ92FV9DZ5VX9MXCK",
+        "tool_call:01M7C76KZJ2QTYWPY4C9G5951A",
+        "tool_call:01M7C76QNAHQ03RZ049KBPBZAG",
+        "tool_call:01M7C76QNACGMPH4E9NRP85T0M",
+        "tool_call:01M7C76QNA8ETYDDZYJRCWETP0"
+      ],
+      "tool_call_ids": [
+        "01M7C7664JDHT9SE4SNECVNGKG",
+        "01M7C7664JEDT34DA9EF1DQPT5",
+        "01M7C7664JQ92FV9DZ5VX9MXCK",
+        "01M7C76KZJ2QTYWPY4C9G5951A",
+        "01M7C76QNAHQ03RZ049KBPBZAG",
+        "01M7C76QNACGMPH4E9NRP85T0M",
+        "01M7C76QNA8ETYDDZYJRCWETP0"
+      ],
+      "model_turns_used": 4,
+      "tool_calls_used": 7,
+      "token_usage": {
+        "prompt_tokens": 239789,
+        "completion_tokens": 3043,
+        "total_tokens": 242832,
+        "cached_tokens": 0
+      }
+    }
+  ],
+  "plan_decisions": [
+    {
+      "trigger_step_record_id": "01M7C761C3X9GGR2QDKQ2TZHX5",
+      "decided_at": "2026-11-14T05:06:19.232001+00:00",
+      "decision": {
+        "decision_id": "01M7C761EZ133RAPC2NRJFEAQ8",
+        "kind": "continue",
+        "safe_reason_codes": [
+          "step_terminal_success",
+          "remaining_work_available"
+        ],
+        "safe_summary": "The step succeeded and the remaining plan can continue."
+      },
+      "source": "rule",
+      "model_turns_used": 0,
+      "repairs_used": 0
+    },
+    {
+      "trigger_step_record_id": "01M7C773J1FMJHJV8939CB1RHZ",
+      "decided_at": "2026-11-14T05:06:54.487113+00:00",
+      "decision": {
+        "decision_id": "01M7C773WQMATF4M2MR8AZGRHJ",
+        "kind": "finish",
+        "safe_reason_codes": [
+          "all_planned_work_terminal"
+        ],
+        "safe_summary": "All planned work reached a terminal success.",
+        "finish_reason": "completed"
+      },
+      "source": "rule",
+      "model_turns_used": 0,
+      "repairs_used": 0
+    }
+  ],
+  "plan_revisions": [
+    {
+      "plan_id": "01M7C738BKBCN486G2NFQWBBSY",
+      "revision_id": "01M7C738BKG64M6XZRNGFJX7TF",
+      "revision": 0,
+      "created_at": "2026-11-14T05:04:47.987599+00:00",
+      "decision_id": "01M7C738BKRHHPSZ5X7PAHFQ0E",
+      "safe_reason_codes": [
+        "planner_draft"
+      ],
+      "remaining_steps": [
+        {
+          "id": "1",
+          "title": "Search the repository for tool-call loop and dispatch terms to produce candidate files and symbols",
+          "done": false
+        },
+        {
+          "id": "2",
+          "title": "Inspect the candidate match contexts to confirm the exact file and key dispatch function",
+          "done": false
+        }
+      ],
+      "capability_snapshot_id": "sha256:063ecc02ee6bccccbe9f6fbf1e54f0888d092ddcab52d605d155a41bc4ff46b2",
+      "budget_snapshot": {
+        "plan_steps": 2,
+        "step_attempts": 0,
+        "model_turns": 1,
+        "tool_calls": 0,
+        "plan_revisions": 0,
+        "model_repairs": 0,
+        "planner_turns": 1,
+        "evaluator_turns": 0,
+        "replanner_turns": 0,
+        "finalization_turns": 0,
+        "wall_time_ms": 2,
+        "total_tokens": 5031,
+        "cost_microunits": 0
+      }
+    }
+  ],
+  "execution_lifecycle": {
+    "policy": {
+      "version": 1,
+      "strategy": "plan_react",
+      "selection_source": "max_steps_and_plan_flag",
+      "budgets": {
+        "max_plan_steps": null,
+        "max_step_attempts": 8,
+        "max_model_turns": null,
+        "max_model_turns_per_step": 16,
+        "max_tool_calls": null,
+        "max_tool_calls_per_step": null,
+        "max_plan_revisions": null,
+        "max_model_repairs": null,
+        "max_finalization_turns": null,
+        "max_wall_time_ms": null,
+        "max_total_tokens": null,
+        "max_cost_microunits": null
+      },
+      "evaluator_mode": "rule_only",
+      "finalizer_policy": "deterministic"
+    },
+    "budget_usage": {
+      "plan_steps": 2,
+      "step_attempts": 2,
+      "model_turns": 17,
+      "tool_calls": 36,
+      "plan_revisions": 0,
+      "model_repairs": 0,
+      "planner_turns": 1,
+      "evaluator_turns": 0,
+      "replanner_turns": 0,
+      "finalization_turns": 0,
+      "wall_time_ms": 102657,
+      "total_tokens": 699789,
+      "cost_microunits": 0
+    },
+    "finalization": {
+      "finalization_id": "01M7C7741ZVPGXQGBHV2CMZAQD",
+      "phase": "completed",
+      "finish_reason": "completed",
+      "outcome": "success",
+      "mode": "deterministic",
+      "started_at": "2026-11-14T05:06:54.655959+00:00",
+      "completed_at": "2026-11-14T05:06:54.656030+00:00",
+      "output": "Goal: In this repo, find where the agent kernel's tool-call loop dispatches a tool call to its handler. Tell me the file and the key function.\noutcome: success\nCompleted work:\n- 1: Based on my investigation, I have located the tool-call loop and its dispatch chain.\n\n## Step 1 conclusion: candidate files and symbols\n\n**Primary loop + dispatch point**\n\n- **File:** `crates/core/src/kernel.rs`\n- **Function:** `run_agent_kernel` (defined at line 203)\n- **Key dispatch site:** line 435 — inside the reason→act→observe `loop`, the kernel routes a tool action to the host-provided handler:\n  ```rust\n  let mut tool_stream = host.tool_turn(tool_action, cancel_token.clone());\n  ```\n  This is where the kernel's tool-call loop hands a `KernelToolAction::Call`/`Batch` off to the host's `AgentKernelHost::tool_turn` implementation. The action originates from `turn.action` matching on `Action::ToolCall` / `Action::ToolBatch` (lines ~400–430).\n\n**Handler dispatch (registry → tool implementation)**\n\n- **File:** `crates/core/src/tools.rs`\n- **Function:** `ToolRegistry::execute` (impl starting around line 300)\n- **Key dispatch site:** line 314 — the registry resolves the tool and invoke\n- 2: ## Step 2 conclusion: confirmed\n\n**Confirmed file + key dispatch function**\n\n- **File:** `crates/core/src/kernel.rs`\n- **Function:** `run_agent_kernel` (line 203)\n- **Dispatch call (the answer):** line 435\n\nContext verified from structured search:\n\n```rust\n// crates/core/src/kernel.rs (lines 425–445)\n// Reserve an entire batch before dispatch so a limit can never\n// leave half of a model-requested batch executed.\nstate.tool_calls = state.tool_calls.saturating_add(call_count);\n\nlet outcome = {\n    let mut tool_stream = host.tool_turn(tool_action, cancel_token.clone());\n    loop {\n        match tool_stream.next().await {\n            Some(KernelToolTurnItem::Event(event)) => {\n                // Approval and input events must be forwarded while\n                // execution is waiting so an interface can resolve\n                // the corresponding live channel.\n                yield KernelItem::Event(event);\n            }\n            Some(KernelToolTurnItem::Finished(outcome)) => break ou\nEvidence: tool_call:01M7C73A9K0Y6SW15KC9JY38QE, tool_call:01M7C73A9KGWQ6C835S80Y0DEE, tool_call:01M7C73E7R5X8TVSF8FJ4GDYD0, tool_call:01M7C73E7RCQKVKKF4QX7VW4DJ, tool_call:01M7C73E7RF1XK9YKETSJAK0BD, tool_call:01M7C73E7RKDD804R17CHMW7DM, tool_call:01M7C73E7RWV53NPYD0KB3GVF3, tool_call:01M7C73KFW25YDK1VNT7M0AYSW, tool_call:01M7C73KFWTKAM653YS5QV2HG9, tool_call:01M7C73QB3HX89WRRTZW7KSCMA, tool_call:01M7C73WKX92NZAWFRPD5NZZNX, tool_call:01M7C73WKXA83Q65CA9XVBPHK7, tool_call:01M7C73WKXJAE9VD3XKTPG2CD4, tool_call:01M7C7417BSVS3Z0NXH0ZYFYDM, tool_call:01M7C7417BYVKNZWTTAD2D5HMA, tool_call:01M7C74AMDGS3TRZJ6VX1YDEAT, tool_call:01M7C74AMDX5C9NW0R65V5CMG4, tool_call:01M7C74MM6FA4KWP10N6AYFD3E, tool_call:01M7C74MM6KZFBF1AFY05NDTZY, tool_call:01M7C74YQ94WH0N696J14XS1G8, tool_call:01M7C74YQ9JV6TZXTB17W5XXEF, tool_call:01M7C74YQ9K43VB6PR1DJZ3K3N, tool_call:01M7C74YQ9M9CC41MG0AGVDGGD, tool_call:01M7C75ACH3D2S2X360XR4HADW, tool_call:01M7C75ACHNQETVZ836P3T1XE0, tool_call:01M7C75ACHP62Z7HCJVQA1B7P2, tool_call:01M7C75ACHT76AJRHSW4AFNFQM, tool_call:01M7C75NA066B47S18KZ0X3CAM, tool_call:01M7C75NA0MNDQ29TNNBPZVYN8, tool_call:01M7C7664JDHT9SE4SNECVNGKG, tool_call:01M7C7664JEDT34DA9EF1DQPT5, tool_call:01M7C7664JQ92FV9DZ5VX9MXCK, tool_call:01M7C76KZJ2QTYWPY4C9G5951A, tool_call:01M7C76QNA8ETYDDZYJRCWETP0, tool_call:01M7C76QNACGMPH4E9NRP85T0M, tool_call:01M7C76QNAHQ03RZ049KBPBZAG",
+      "evidence_refs": [
+        "tool_call:01M7C73A9K0Y6SW15KC9JY38QE",
+        "tool_call:01M7C73A9KGWQ6C835S80Y0DEE",
+        "tool_call:01M7C73E7R5X8TVSF8FJ4GDYD0",
+        "tool_call:01M7C73E7RCQKVKKF4QX7VW4DJ",
+        "tool_call:01M7C73E7RF1XK9YKETSJAK0BD",
+        "tool_call:01M7C73E7RKDD804R17CHMW7DM",
+        "tool_call:01M7C73E7RWV53NPYD0KB3GVF3",
+        "tool_call:01M7C73KFW25YDK1VNT7M0AYSW",
+        "tool_call:01M7C73KFWTKAM653YS5QV2HG9",
+        "tool_call:01M7C73QB3HX89WRRTZW7KSCMA",
+        "tool_call:01M7C73WKX92NZAWFRPD5NZZNX",
+        "tool_call:01M7C73WKXA83Q65CA9XVBPHK7",
+        "tool_call:01M7C73WKXJAE9VD3XKTPG2CD4",
+        "tool_call:01M7C7417BSVS3Z0NXH0ZYFYDM",
+        "tool_call:01M7C7417BYVKNZWTTAD2D5HMA",
+        "tool_call:01M7C74AMDGS3TRZJ6VX1YDEAT",
+        "tool_call:01M7C74AMDX5C9NW0R65V5CMG4",
+        "tool_call:01M7C74MM6FA4KWP10N6AYFD3E",
+        "tool_call:01M7C74MM6KZFBF1AFY05NDTZY",
+        "tool_call:01M7C74YQ94WH0N696J14XS1G8",
+        "tool_call:01M7C74YQ9JV6TZXTB17W5XXEF",
+        "tool_call:01M7C74YQ9K43VB6PR1DJZ3K3N",
+        "tool_call:01M7C74YQ9M9CC41MG0AGVDGGD",
+        "tool_call:01M7C75ACH3D2S2X360XR4HADW",
+        "tool_call:01M7C75ACHNQETVZ836P3T1XE0",
+        "tool_call:01M7C75ACHP62Z7HCJVQA1B7P2",
+        "tool_call:01M7C75ACHT76AJRHSW4AFNFQM",
+        "tool_call:01M7C75NA066B47S18KZ0X3CAM",
+        "tool_call:01M7C75NA0MNDQ29TNNBPZVYN8",
+        "tool_call:01M7C7664JDHT9SE4SNECVNGKG",
+        "tool_call:01M7C7664JEDT34DA9EF1DQPT5",
+        "tool_call:01M7C7664JQ92FV9DZ5VX9MXCK",
+        "tool_call:01M7C76KZJ2QTYWPY4C9G5951A",
+        "tool_call:01M7C76QNA8ETYDDZYJRCWETP0",
+        "tool_call:01M7C76QNACGMPH4E9NRP85T0M",
+        "tool_call:01M7C76QNAHQ03RZ049KBPBZAG"
+      ],
+      "budget_before": {
+        "plan_steps": 2,
+        "step_attempts": 2,
+        "model_turns": 17,
+        "tool_calls": 36,
+        "plan_revisions": 0,
+        "model_repairs": 0,
+        "planner_turns": 1,
+        "evaluator_turns": 0,
+        "replanner_turns": 0,
+        "finalization_turns": 0,
+        "wall_time_ms": 102657,
+        "total_tokens": 699789,
+        "cost_microunits": 0
+      },
+      "budget_after": {
+        "plan_steps": 2,
+        "step_attempts": 2,
+        "model_turns": 17,
+        "tool_calls": 36,
+        "plan_revisions": 0,
+        "model_repairs": 0,
+        "planner_turns": 1,
+        "evaluator_turns": 0,
+        "replanner_turns": 0,
+        "finalization_turns": 0,
+        "wall_time_ms": 102657,
+        "total_tokens": 699789,
+        "cost_microunits": 0
+      }
+    }
+  },
+  "final_outcome": "success",
+  "tool_artifacts": [
+    {
+      "artifact_id": "art_0c9eeb1586bf8cd6a7eed96298122c87",
+      "call_id": "01M7C73A9K0Y6SW15KC9JY38QE",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 13903,
+      "sha256": "0c9eeb1586bf8cd6a7eed96298122c87fe157ee541df21ae2e339b2d18a9047f",
+      "storage_ref": "tool_artifacts/art_0c9eeb1586bf8cd6a7eed96298122c87/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_2a35eb69e1913589ca1406cc5a62bdd0",
+      "call_id": "01M7C73E7RF1XK9YKETSJAK0BD",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 14259,
+      "sha256": "2a35eb69e1913589ca1406cc5a62bdd0266ef1de867110e872692d10ff5498c2",
+      "storage_ref": "tool_artifacts/art_2a35eb69e1913589ca1406cc5a62bdd0/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_ddc3fa3206487c61c5d132fc93c6f4da",
+      "call_id": "01M7C73E7RKDD804R17CHMW7DM",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 8203,
+      "sha256": "ddc3fa3206487c61c5d132fc93c6f4daf119fffb130ed71fe1b48c8983e30941",
+      "storage_ref": "tool_artifacts/art_ddc3fa3206487c61c5d132fc93c6f4da/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_dc043b5eaa3cdd78098065b353a06c0b",
+      "call_id": "01M7C73E7RCQKVKKF4QX7VW4DJ",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 596,
+      "sha256": "dc043b5eaa3cdd78098065b353a06c0b2ea6033463ee3747791dc9f82a8ca6ad",
+      "storage_ref": "tool_artifacts/art_dc043b5eaa3cdd78098065b353a06c0b/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_985d74a93cff4b04f9f41e00fe160cdd",
+      "call_id": "01M7C73E7RWV53NPYD0KB3GVF3",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 789,
+      "sha256": "985d74a93cff4b04f9f41e00fe160cddc0c217775d556afe0cdce94ae6a3d2a3",
+      "storage_ref": "tool_artifacts/art_985d74a93cff4b04f9f41e00fe160cdd/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_b3f64901bad20395358d34e390bacd6f",
+      "call_id": "01M7C73KFWTKAM653YS5QV2HG9",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 1356,
+      "sha256": "b3f64901bad20395358d34e390bacd6f1901bd5c11082bcfac3067d90deb2efc",
+      "storage_ref": "tool_artifacts/art_b3f64901bad20395358d34e390bacd6f/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_98b70b0711afea200cc6ddd711e6cfaa",
+      "call_id": "01M7C73KFW25YDK1VNT7M0AYSW",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 20694,
+      "sha256": "98b70b0711afea200cc6ddd711e6cfaa50a8ba2bd6c223982844a404bde04919",
+      "storage_ref": "tool_artifacts/art_98b70b0711afea200cc6ddd711e6cfaa/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_95480b87f0dec9c19716db32d2272e50",
+      "call_id": "01M7C73WKXA83Q65CA9XVBPHK7",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 2869,
+      "sha256": "95480b87f0dec9c19716db32d2272e50e24bde8d78c572d6ca2da7f6b7266c84",
+      "storage_ref": "tool_artifacts/art_95480b87f0dec9c19716db32d2272e50/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_8a8d2f0a8b0cfbcf1827022b2d0be40f",
+      "call_id": "01M7C73WKXJAE9VD3XKTPG2CD4",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 1356,
+      "sha256": "8a8d2f0a8b0cfbcf1827022b2d0be40fbaf04d1addb5ebd870db6375d5f3cb3e",
+      "storage_ref": "tool_artifacts/art_8a8d2f0a8b0cfbcf1827022b2d0be40f/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_50f59d8dd284c45acee8c48a8fbc2928",
+      "call_id": "01M7C73WKX92NZAWFRPD5NZZNX",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 12999,
+      "sha256": "50f59d8dd284c45acee8c48a8fbc29280bf47cb7876af103e184629c800926f2",
+      "storage_ref": "tool_artifacts/art_50f59d8dd284c45acee8c48a8fbc2928/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_1e9dd604757a420d84f6a57b14a5283f",
+      "call_id": "01M7C7417BYVKNZWTTAD2D5HMA",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 25442,
+      "sha256": "1e9dd604757a420d84f6a57b14a5283fd7caf64d5576405dbdafd7f4e0b6f059",
+      "storage_ref": "tool_artifacts/art_1e9dd604757a420d84f6a57b14a5283f/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_588e78dcf286b76032eaf4963eb93408",
+      "call_id": "01M7C7417BSVS3Z0NXH0ZYFYDM",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 30737,
+      "sha256": "588e78dcf286b76032eaf4963eb9340804a037a94fa3d94a6bd679df43d2e8a3",
+      "storage_ref": "tool_artifacts/art_588e78dcf286b76032eaf4963eb93408/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_308dc9444d58d345c7999be2833575ab",
+      "call_id": "01M7C74AMDX5C9NW0R65V5CMG4",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 696,
+      "sha256": "308dc9444d58d345c7999be2833575ab6de6394a3fb6817a384b6047114a408a",
+      "storage_ref": "tool_artifacts/art_308dc9444d58d345c7999be2833575ab/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_6596c68440554f0980b0b284eea5206d",
+      "call_id": "01M7C74MM6KZFBF1AFY05NDTZY",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 716,
+      "sha256": "6596c68440554f0980b0b284eea5206dc482b7fcb2bd9db497ec43fdfacd79c7",
+      "storage_ref": "tool_artifacts/art_6596c68440554f0980b0b284eea5206d/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_0820abcacdb7bc4cf517f1d154335995",
+      "call_id": "01M7C74MM6FA4KWP10N6AYFD3E",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 2755,
+      "sha256": "0820abcacdb7bc4cf517f1d1543359957697f6b158df71568bba245f105cd9a5",
+      "storage_ref": "tool_artifacts/art_0820abcacdb7bc4cf517f1d154335995/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_e5cc0086b056f1f2881f214ee747e60c",
+      "call_id": "01M7C74YQ9M9CC41MG0AGVDGGD",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 536,
+      "sha256": "e5cc0086b056f1f2881f214ee747e60c77f577d3521af8ff7cbc14673e0136b4",
+      "storage_ref": "tool_artifacts/art_e5cc0086b056f1f2881f214ee747e60c/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_e5a337b287186755235836eaf5ea13ef",
+      "call_id": "01M7C74YQ9JV6TZXTB17W5XXEF",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 541,
+      "sha256": "e5a337b287186755235836eaf5ea13ef35eb67ee1a11dcf6683c6c12fdc5fef6",
+      "storage_ref": "tool_artifacts/art_e5a337b287186755235836eaf5ea13ef/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_cfefc92347bd1da1090f26757554a0e7",
+      "call_id": "01M7C74YQ94WH0N696J14XS1G8",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 558,
+      "sha256": "cfefc92347bd1da1090f26757554a0e7db24403b17997644ebeedb5bd894ee06",
+      "storage_ref": "tool_artifacts/art_cfefc92347bd1da1090f26757554a0e7/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_098b726292a58dbd7a3b8a3122b11e04",
+      "call_id": "01M7C74YQ9K43VB6PR1DJZ3K3N",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 540,
+      "sha256": "098b726292a58dbd7a3b8a3122b11e04389d11a2d991dabc4ea79591cbc3221f",
+      "storage_ref": "tool_artifacts/art_098b726292a58dbd7a3b8a3122b11e04/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_62461e8fd94d5ecf4599a9e89a4124fd",
+      "call_id": "01M7C75ACHT76AJRHSW4AFNFQM",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 837,
+      "sha256": "62461e8fd94d5ecf4599a9e89a4124fdfc8385e538b626576d2b1f61d0699e07",
+      "storage_ref": "tool_artifacts/art_62461e8fd94d5ecf4599a9e89a4124fd/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_672e9256a7150b94799f65d3401925a3",
+      "call_id": "01M7C75ACHNQETVZ836P3T1XE0",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 753,
+      "sha256": "672e9256a7150b94799f65d3401925a3b0c40704fbd11ae4cc1f8e752e96d4c1",
+      "storage_ref": "tool_artifacts/art_672e9256a7150b94799f65d3401925a3/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_32e05bfbdeebdd3c0aaa6210bc502de4",
+      "call_id": "01M7C75ACH3D2S2X360XR4HADW",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 1139,
+      "sha256": "32e05bfbdeebdd3c0aaa6210bc502de4c6787569e6bd9ca4695c3a8ab4eb8494",
+      "storage_ref": "tool_artifacts/art_32e05bfbdeebdd3c0aaa6210bc502de4/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_cc5ec913e10b0c47cb5e2760631abe45",
+      "call_id": "01M7C75ACHP62Z7HCJVQA1B7P2",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 1079,
+      "sha256": "cc5ec913e10b0c47cb5e2760631abe45cc20e91befd02925523af01311cace2f",
+      "storage_ref": "tool_artifacts/art_cc5ec913e10b0c47cb5e2760631abe45/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_823883bf4f4e9ae440eefaedfb924b0d",
+      "call_id": "01M7C75NA0MNDQ29TNNBPZVYN8",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 573,
+      "sha256": "823883bf4f4e9ae440eefaedfb924b0d76a6d9abbe9c8398c1914362fd6b2822",
+      "storage_ref": "tool_artifacts/art_823883bf4f4e9ae440eefaedfb924b0d/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_8bf9bc91444472917a9773690b65ffb6",
+      "call_id": "01M7C75NA066B47S18KZ0X3CAM",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 508,
+      "sha256": "8bf9bc91444472917a9773690b65ffb6cf160b4dda130e91f5406d7960cf3e8c",
+      "storage_ref": "tool_artifacts/art_8bf9bc91444472917a9773690b65ffb6/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_1001f3433eac640cd38f3021e6e8c542",
+      "call_id": "01M7C7664JDHT9SE4SNECVNGKG",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 541,
+      "sha256": "1001f3433eac640cd38f3021e6e8c542be96035370ba96121c35a606fbe2a6eb",
+      "storage_ref": "tool_artifacts/art_1001f3433eac640cd38f3021e6e8c542/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_52cef881c5a7ae212059b4d81872ed02",
+      "call_id": "01M7C7664JEDT34DA9EF1DQPT5",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 508,
+      "sha256": "52cef881c5a7ae212059b4d81872ed02832b83374a9a8c26699daeaa908af678",
+      "storage_ref": "tool_artifacts/art_52cef881c5a7ae212059b4d81872ed02/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_98aea56c3d8999159be912625923a36f",
+      "call_id": "01M7C7664JQ92FV9DZ5VX9MXCK",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 542,
+      "sha256": "98aea56c3d8999159be912625923a36f3959e173540ea8b3701c32080f53309d",
+      "storage_ref": "tool_artifacts/art_98aea56c3d8999159be912625923a36f/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_abbd7ae27b17803ad3f781955d1ec23e",
+      "call_id": "01M7C76QNACGMPH4E9NRP85T0M",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 1977,
+      "sha256": "abbd7ae27b17803ad3f781955d1ec23e38bdbb7a26d623ac5df6b6d91ca5ee0f",
+      "storage_ref": "tool_artifacts/art_abbd7ae27b17803ad3f781955d1ec23e/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    },
+    {
+      "artifact_id": "art_f9ca7426964c2bc0a75f91c9a62a045b",
+      "call_id": "01M7C76QNA8ETYDDZYJRCWETP0",
+      "kind": "text",
+      "mime_type": "text/plain; charset=utf-8",
+      "byte_length": 1325,
+      "sha256": "f9ca7426964c2bc0a75f91c9a62a045ba5ca210df7d6b1973ab22e849dd9323c",
+      "storage_ref": "tool_artifacts/art_f9ca7426964c2bc0a75f91c9a62a045b/payload",
+      "payload_available": true,
+      "sensitivity": "normal",
+      "validation": "validated"
+    }
+  ],
+  "message_deliveries": [
+    {
+      "id": "01M7C72X56W56SA0VDBW0H9PXJ",
+      "status": "claimed_successor",
+      "target_run_id": "01M7C72X74V5QFDW4565CVXX12"
+    }
+  ],
+  "output": "Goal: In this repo, find where the agent kernel's tool-call loop dispatches a tool call to its handler. Tell me the file and the key function.\noutcome: success\nCompleted work:\n- 1: Based on my investigation, I have located the tool-call loop and its dispatch chain.\n\n## Step 1 conclusion: candidate files and symbols\n\n**Primary loop + dispatch point**\n\n- **File:** `crates/core/src/kernel.rs`\n- **Function:** `run_agent_kernel` (defined at line 203)\n- **Key dispatch site:** line 435 — inside the reason→act→observe `loop`, the kernel routes a tool action to the host-provided handler:\n  ```rust\n  let mut tool_stream = host.tool_turn(tool_action, cancel_token.clone());\n  ```\n  This is where the kernel's tool-call loop hands a `KernelToolAction::Call`/`Batch` off to the host's `AgentKernelHost::tool_turn` implementation. The action originates from `turn.action` matching on `Action::ToolCall` / `Action::ToolBatch` (lines ~400–430).\n\n**Handler dispatch (registry → tool implementation)**\n\n- **File:** `crates/core/src/tools.rs`\n- **Function:** `ToolRegistry::execute` (impl starting around line 300)\n- **Key dispatch site:** line 314 — the registry resolves the tool and invoke\n- 2: ## Step 2 conclusion: confirmed\n\n**Confirmed file + key dispatch function**\n\n- **File:** `crates/core/src/kernel.rs`\n- **Function:** `run_agent_kernel` (line 203)\n- **Dispatch call (the answer):** line 435\n\nContext verified from structured search:\n\n```rust\n// crates/core/src/kernel.rs (lines 425–445)\n// Reserve an entire batch before dispatch so a limit can never\n// leave half of a model-requested batch executed.\nstate.tool_calls = state.tool_calls.saturating_add(call_count);\n\nlet outcome = {\n    let mut tool_stream = host.tool_turn(tool_action, cancel_token.clone());\n    loop {\n        match tool_stream.next().await {\n            Some(KernelToolTurnItem::Event(event)) => {\n                // Approval and input events must be forwarded while\n                // execution is waiting so an interface can resolve\n                // the corresponding live channel.\n                yield KernelItem::Event(event);\n            }\n            Some(KernelToolTurnItem::Finished(outcome)) => break ou\nEvidence: tool_call:01M7C73A9K0Y6SW15KC9JY38QE, tool_call:01M7C73A9KGWQ6C835S80Y0DEE, tool_call:01M7C73E7R5X8TVSF8FJ4GDYD0, tool_call:01M7C73E7RCQKVKKF4QX7VW4DJ, tool_call:01M7C73E7RF1XK9YKETSJAK0BD, tool_call:01M7C73E7RKDD804R17CHMW7DM, tool_call:01M7C73E7RWV53NPYD0KB3GVF3, tool_call:01M7C73KFW25YDK1VNT7M0AYSW, tool_call:01M7C73KFWTKAM653YS5QV2HG9, tool_call:01M7C73QB3HX89WRRTZW7KSCMA, tool_call:01M7C73WKX92NZAWFRPD5NZZNX, tool_call:01M7C73WKXA83Q65CA9XVBPHK7, tool_call:01M7C73WKXJAE9VD3XKTPG2CD4, tool_call:01M7C7417BSVS3Z0NXH0ZYFYDM, tool_call:01M7C7417BYVKNZWTTAD2D5HMA, tool_call:01M7C74AMDGS3TRZJ6VX1YDEAT, tool_call:01M7C74AMDX5C9NW0R65V5CMG4, tool_call:01M7C74MM6FA4KWP10N6AYFD3E, tool_call:01M7C74MM6KZFBF1AFY05NDTZY, tool_call:01M7C74YQ94WH0N696J14XS1G8, tool_call:01M7C74YQ9JV6TZXTB17W5XXEF, tool_call:01M7C74YQ9K43VB6PR1DJZ3K3N, tool_call:01M7C74YQ9M9CC41MG0AGVDGGD, tool_call:01M7C75ACH3D2S2X360XR4HADW, tool_call:01M7C75ACHNQETVZ836P3T1XE0, tool_call:01M7C75ACHP62Z7HCJVQA1B7P2, tool_call:01M7C75ACHT76AJRHSW4AFNFQM, tool_call:01M7C75NA066B47S18KZ0X3CAM, tool_call:01M7C75NA0MNDQ29TNNBPZVYN8, tool_call:01M7C7664JDHT9SE4SNECVNGKG, tool_call:01M7C7664JEDT34DA9EF1DQPT5, tool_call:01M7C7664JQ92FV9DZ5VX9MXCK, tool_call:01M7C76KZJ2QTYWPY4C9G5951A, tool_call:01M7C76QNA8ETYDDZYJRCWETP0, tool_call:01M7C76QNACGMPH4E9NRP85T0M, tool_call:01M7C76QNAHQ03RZ049KBPBZAG",
+  "timestamp": "2026-11-14T05:06:55.288577+00:00"
+}
