@@ -549,6 +549,8 @@ pub const STREAM_EVENT_KINDS: &[(&str, u32)] = &[
     ("mcp_server_degraded", 1),
     ("mcp_capabilities_refreshed", 1),
     ("input_needed", 1),
+    ("plan_approval_needed", 1),
+    ("plan_approval_resolved", 1),
     ("plan_created", 1),
     ("plan_step_started", 1),
     ("step_result", 1),

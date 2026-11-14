@@ -504,6 +504,8 @@ export const STREAM_EVENT_NAMES = [
   "mcp_server_degraded",
   "mcp_capabilities_refreshed",
   "input_needed",
+  "plan_approval_needed",
+  "plan_approval_resolved",
   "plan_created",
   "plan_step_started",
   "step_result",
