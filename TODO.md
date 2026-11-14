@@ -14,7 +14,7 @@ Ordered by priority.
 1. **Stranded-queue auto-recovery design** — `needs_attention` is now a ~30s window before escalation (PR #83); the remaining question is whether/when a *failed-but-drainable* turn should auto-confirm rather than require the Recover click. Deliberate-consent trade-offs in `docs/decisions.md`.
 2. ~~**Issue #30 — plan approval bar**~~ done (PRs #87 + #88 merged). `PlanApprovalProvider` gate emits `plan_approval_needed`/`plan_approval_resolved` on the first draft of each product-session turn under `Ask` (follow-ups re-draft and re-gate); `POST /jobs/{id}/plan-approvals/{id}` resolves with an approve-mode (which becomes the run's tool-approval policy) or reject; `pending_plan_approvals` on job state; `PlanApprovalBar` above the composer splits approve-mode + reject and persists the mode to `default_approval_policy`.
 3. **TUI history follow-up** — browse beyond a single run's display budget and show nested subagent details; the current run browser marks these limits explicitly.
-4. **F.5 TUI part** — queued successor messages resume delivery after a TUI restart (CLI).
+4. ~~**F.5 TUI part**~~ done (PR #90 merged). TUI launch now drains a queued successor the same way the boundary does: after the stranded-claim redrive, it claims the oldest `queued` message and starts the reserved run. `claim_next_tui_successor` shares the stranded path's provider gate so a queue survives onboarding. `needs_attention` stays explicit — queued delivery ≠ auto-recovery.
 
 ## Known local-machine issues (not CI)
 
