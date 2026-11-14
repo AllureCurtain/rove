@@ -5,7 +5,7 @@ Updated: 2026-11-14
 ## In progress
 
 - **Desktop pilot** (deferred per owner): Desktop (Tauri 2) still has unfinished surfaces — signed/clean-machine packaging, native folder selection on all OSes, Linux/Windows packaging, Windows ConPTY automation, code signing. Deferred to a later pass; the Web console pilot covers the runtime contract Desktop shares.
-- **Second real-project pilot**: the supervised pilot so far is all on rove's own repo. A second independent project would strengthen the "validated in actual engineering practice" criterion — same matrix shape, disposable repo.
+- ~~**Second real-project pilot**~~ done: scratch-repo matrix all PASS (evidence `evidence/pilot/2026-11-14-pilot2-*`, summary `evidence/pilot/PILOT2_REPORT.md`). Follow-up candidate surfaced: fork at a mid-history `done` run is refused with `product_fork_source_invalid` (binding-identity mismatch) — needs a repro test to decide defect vs correct strictness.
 
 ## Next up
 
