@@ -266,6 +266,24 @@ const streamEventFixtures: StreamEvent[] = [
     prompt: "Which branch?",
   },
   {
+    type: "plan_approval_needed",
+    approval_id: "approval-1",
+    plan: {
+      goal: "test",
+      current_step: 0,
+      steps: [{ id: "1", title: "Inspect", done: false }],
+    },
+    plan_id: "plan-1",
+    plan_revision_id: "revision-0",
+    revision: 0,
+    offered_modes: ["ask", "auto"],
+  },
+  {
+    type: "plan_approval_resolved",
+    approval_id: "approval-1",
+    approved_policy: "ask",
+  },
+  {
     type: "plan_created",
     plan: {
       goal: "test",
