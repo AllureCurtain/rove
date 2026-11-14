@@ -18,6 +18,7 @@ import {
 } from "react";
 
 import { Composer } from "../chat/Composer";
+import { PlanApprovalBar } from "../chat/PlanApprovalBar";
 import { QueuedPromptStack } from "../chat/QueuedPromptStack";
 import { TodoDock } from "../chat/TodoDock";
 import type {
@@ -2121,6 +2122,18 @@ function ServerProductApp({ draftStore }: {
                   {/* §6: the plan fold leads the stack — progress the run is
                       making belongs above the prompts still waiting for it. */}
                   <TodoDock plan={continuity.runState.plan} />
+                  {/* issue #30: a gated plan blocks the run's first step, so
+                      its bar leads the stack — above even the progress fold. */}
+                  <PlanApprovalBar
+                    gate={continuity.runState.pendingPlanApproval}
+                    busy={continuity.planApprovalBusy}
+                    onDecision={(approvalId, mode) => {
+                      void continuity.approvePlan(approvalId, mode);
+                      if (mode !== "reject") {
+                        void server.changeDefaultApprovalPolicy(mode);
+                      }
+                    }}
+                  />
                   <QueuedPromptStack
                     messages={activeMessages}
                     busy={continuity.controlBusy}

@@ -1387,6 +1387,48 @@ export function useSessionContinuity({
     [],
   );
 
+  /**
+   * Resolve the pending plan-approval gate. `mode` is `"reject"` or one of the
+   * advertised offered modes; the server refuses unadvertised modes and keeps
+   * the gate, so a stale bar cannot widen permissions. Mirrors `approve`'s
+   * session/job/run currency guard and in-flight dedup.
+   */
+  const approvePlan = useCallback(
+    async (approvalId: string, mode: string) => {
+      const { activeSession: session, runState: state } = approvalContextRef.current;
+      const controller = controllerRef.current;
+      if (!session || focusedSessionRef.current !== session.id || !controller ||
+          !state.activeJobId || !state.activeRunId ||
+          state.pendingPlanApproval?.approvalId !== approvalId) return;
+      const key = JSON.stringify(["plan", session.workspaceId, session.id,
+        state.activeJobId, state.activeRunId, approvalId]);
+      if (approvalRequestsRef.current.has(key)) return;
+      approvalRequestsRef.current.add(key);
+      setApprovalBusyKey(key);
+      setApprovalError(null);
+      const isCurrent = () => {
+        const current = approvalContextRef.current;
+        return controllerRef.current === controller && focusedSessionRef.current === session.id &&
+          current.activeSession?.id === session.id &&
+          current.activeSession.workspaceId === session.workspaceId &&
+          current.runState.activeJobId === state.activeJobId &&
+          current.runState.activeRunId === state.activeRunId;
+      };
+      try {
+        await controller.approvePlan(state.activeJobId, approvalId, mode, state.activeRunId);
+        if (isCurrent()) void refreshStatusesRef.current();
+      } catch (error) {
+        if (isCurrent() && !isRunControllerInactive(error)) {
+          setApprovalError(describeError(error));
+        }
+      } finally {
+        approvalRequestsRef.current.delete(key);
+        if (isCurrent()) setApprovalBusyKey((current) => current === key ? null : current);
+      }
+    },
+    [],
+  );
+
   const answer = useCallback(
     async (inputId: string, value: string) => {
       if (!runState.activeJobId) {
@@ -1505,6 +1547,11 @@ export function useSessionContinuity({
       activeSession?.workspaceId, activeSession?.id, runState.activeJobId,
       runState.activeRunId, tool.id,
     ]))?.id ?? null,
+    planApprovalBusy: approvalBusyKey === JSON.stringify([
+      "plan", activeSession?.workspaceId, activeSession?.id,
+      runState.activeJobId, runState.activeRunId,
+      runState.pendingPlanApproval?.approvalId,
+    ]),
     approvalError,
     inputBusy,
     controls,
@@ -1529,6 +1576,7 @@ export function useSessionContinuity({
     revokeMessage,
     cancel,
     approve,
+    approvePlan,
     answer,
     stopSubagent,
     revertMutation,

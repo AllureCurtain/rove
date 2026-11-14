@@ -170,6 +170,32 @@ export async function submitApproval(
   return parseJson<JobStateResponse>(response);
 }
 
+/**
+ * Resolve a pending plan-approval gate. `mode` is either `"reject"` or one of
+ * the advertised `offered_modes` (`"ask"` / `"auto"`); the server refuses any
+ * mode it did not advertise. A 404 `plan_approval_not_found` means the gate
+ * already resolved elsewhere.
+ */
+export async function submitPlanApproval(
+  jobId: string,
+  approvalId: string,
+  mode: string,
+): Promise<JobStateResponse> {
+  const response = await apiFetch(
+    apiUrl(
+      `/jobs/${encodeURIComponent(jobId)}/plan-approvals/${encodeURIComponent(approvalId)}`,
+    ),
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ mode }),
+    },
+  );
+  return parseJson<JobStateResponse>(response);
+}
+
 export async function submitInput(
   jobId: string,
   inputId: string,

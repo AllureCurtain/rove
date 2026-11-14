@@ -2973,6 +2973,105 @@ html[data-reading-resizing="true"] * {
   font-size: 12px;
 }
 
+/* issue #30: the plan-approval bar sits at the head of the composer stack on
+   the same sunken band as the todo fold, but it carries the warning accent —
+   a gated plan blocks the run's first step until the user decides. */
+.product-app-frame[data-ui-version="v2"] .plan-approval-bar {
+  display: grid;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-surface-sunken);
+}
+
+.product-app-frame[data-ui-version="v2"] .plan-approval-bar__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--v2-ink-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.product-app-frame[data-ui-version="v2"] .plan-approval-bar__header > svg:first-child {
+  flex: none;
+  color: var(--v2-warning);
+}
+
+.product-app-frame[data-ui-version="v2"] .plan-approval-bar__header:focus-visible {
+  outline: 2px solid var(--v2-signal);
+  outline-offset: -2px;
+}
+
+.product-app-frame[data-ui-version="v2"] .plan-approval-bar__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--v2-ink);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .plan-approval-bar__count {
+  flex: none;
+  color: var(--v2-ink-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.product-app-frame[data-ui-version="v2"] .plan-approval-bar__chevron {
+  flex: none;
+  color: var(--v2-ink-3);
+  transition: transform var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.product-app-frame[data-ui-version="v2"] .plan-approval-bar[aria-expanded="true"] .plan-approval-bar__chevron,
+.product-app-frame[data-ui-version="v2"] .plan-approval-bar__header[aria-expanded="true"] .plan-approval-bar__chevron {
+  transform: rotate(180deg);
+}
+
+.product-app-frame[data-ui-version="v2"] .plan-approval-bar__body {
+  display: grid;
+  gap: 6px;
+}
+
+.product-app-frame[data-ui-version="v2"] .plan-approval-bar__goal {
+  margin: 0;
+  color: var(--v2-ink-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.product-app-frame[data-ui-version="v2"] .plan-approval-bar__steps {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding-left: 4px;
+  color: var(--v2-ink-2);
+  font-size: 12px;
+  list-style: none;
+}
+
+.product-app-frame[data-ui-version="v2"] .plan-approval-bar__hint {
+  margin: 0;
+  color: var(--v2-ink-3);
+  font-size: 11px;
+}
+
+.product-app-frame[data-ui-version="v2"] .plan-approval-bar__actions {
+  justify-content: flex-start;
+}
+
 .product-app-frame[data-ui-version="v2"] .todo-dock__mark {
   display: inline-flex;
   flex: none;

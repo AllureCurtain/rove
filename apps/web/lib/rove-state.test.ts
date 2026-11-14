@@ -687,6 +687,91 @@ describe("workbenchReducer", () => {
     expect(synced.busy).toBe(false);
   });
 
+  it("projects the plan-approval gate from stream and snapshot, clearing on resolve", () => {
+    const plan = {
+      goal: "inspect",
+      current_step: 0,
+      steps: [
+        { id: "1", title: "Check", done: false },
+        { id: "2", title: "Edit", done: false },
+      ],
+    };
+    const gated = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      event: {
+        type: "plan_approval_needed",
+        plan_id: "plan-1",
+        plan_revision_id: "rev-1",
+        revision: 1,
+        approval_id: "approval-1",
+        plan,
+        offered_modes: ["ask", "auto"],
+      } as StreamEvent,
+    });
+    expect(gated.pendingPlanApproval).toEqual({
+      approvalId: "approval-1",
+      plan,
+      offeredModes: ["ask", "auto"],
+    });
+
+    // A resolution for a different approval id must not clear the live gate.
+    const mismatched = workbenchReducer(gated, {
+      type: "stream_event",
+      event: {
+        type: "plan_approval_resolved",
+        approval_id: "approval-other",
+        approved_policy: "auto",
+      } as StreamEvent,
+    });
+    expect(mismatched.pendingPlanApproval?.approvalId).toBe("approval-1");
+
+    const resolved = workbenchReducer(gated, {
+      type: "stream_event",
+      event: {
+        type: "plan_approval_resolved",
+        approval_id: "approval-1",
+        approved_policy: null,
+      } as StreamEvent,
+    });
+    expect(resolved.pendingPlanApproval).toBeNull();
+
+    // The server snapshot is authoritative: it restores a live gate after a
+    // reload and clears a stale projection once the gate resolved elsewhere.
+    const restored = workbenchReducer(createWorkbenchState(), {
+      type: "job_state_synced",
+      state: {
+        job_id: "job-1",
+        run_id: "run-1",
+        status: "running",
+        event_count: 3,
+        events: [],
+        pending_approvals: [],
+        pending_inputs: [],
+        pending_plan_approvals: [
+          { approval_id: "approval-2", plan, offered_modes: ["ask"] },
+        ],
+      },
+    });
+    expect(restored.pendingPlanApproval).toEqual({
+      approvalId: "approval-2",
+      plan,
+      offeredModes: ["ask"],
+    });
+    const cleared = workbenchReducer(restored, {
+      type: "job_state_synced",
+      state: {
+        job_id: "job-1",
+        run_id: "run-1",
+        status: "running",
+        event_count: 4,
+        events: [],
+        pending_approvals: [],
+        pending_inputs: [],
+      },
+    });
+    expect(cleared.pendingPlanApproval).toBeNull();
+  });
+
   it("clears resumed source identity on reset and fresh jobs", () => {
     const resumed = workbenchReducer(createWorkbenchState(), {
       type: "job_created",

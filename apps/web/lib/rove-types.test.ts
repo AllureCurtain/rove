@@ -267,21 +267,21 @@ const streamEventFixtures: StreamEvent[] = [
   },
   {
     type: "plan_approval_needed",
-    approval_id: "approval-1",
+    plan_id: "plan-1",
+    plan_revision_id: "revision-0",
+    revision: 0,
+    approval_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
     plan: {
       goal: "test",
       current_step: 0,
       steps: [{ id: "1", title: "Inspect", done: false }],
     },
-    plan_id: "plan-1",
-    plan_revision_id: "revision-0",
-    revision: 0,
     offered_modes: ["ask", "auto"],
   },
   {
     type: "plan_approval_resolved",
-    approval_id: "approval-1",
-    approved_policy: "ask",
+    approval_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    approved_policy: "auto",
   },
   {
     type: "plan_created",
