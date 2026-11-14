@@ -31,6 +31,20 @@ const CONTEXT_TOKEN_LIMIT_CODE: &str = "context_token_limit";
 
 const MAX_STEP_RECORD_SUMMARY_CHARS: usize = 1_000;
 
+/// Approval modes the plan gate offers the interface. `Ask` keeps per-tool
+/// approval for the plan's mutating steps (the conservative default);
+/// `Auto` lets the whole plan run without further prompts. `Never` is not
+/// offered — a read-only plan is expressed by rejecting the plan, not by
+/// approving it into a policy that then refuses every step.
+fn offered_plan_modes(
+    _current: rove_foundation::types::ApprovalPolicy,
+) -> Vec<rove_foundation::types::ApprovalPolicy> {
+    vec![
+        rove_foundation::types::ApprovalPolicy::Ask,
+        rove_foundation::types::ApprovalPolicy::Auto,
+    ]
+}
+
 pub(crate) struct PlanLoopState {
     pub user_message: String,
     pub content_blocks: Vec<rove_models::ContentBlock>,
@@ -43,7 +57,7 @@ pub(crate) struct PlanLoopState {
 }
 
 pub(crate) fn run_planned_loop<'a>(
-    ctx: LoopContext<'a>,
+    mut ctx: LoopContext<'a>,
     planner: &'a Planner,
     evaluator: &'a PlanEvaluator,
     finalizer: &'a Finalizer,
@@ -185,6 +199,66 @@ pub(crate) fn run_planned_loop<'a>(
                         phase: ExecutionPhase::Planner,
                         snapshot: Box::new(budget.snapshot()),
                     });
+
+                    // Plan-approval gate: when a provider is attached, the
+                    // drafted plan is held until the interface approves it
+                    // with an approval mode (which then governs every step's
+                    // tool approvals) or rejects it outright. Resumed runs
+                    // already carry `state.plan` and skip this whole branch,
+                    // so a plan is only ever gated on its first draft. A
+                    // provider failure is fail-closed — treated like a reject
+                    // rather than silently bypassing the gate.
+                    if let Some(provider) = ctx.plan_approval_provider.clone() {
+                        let approval_id = rove_core::CallId::new();
+                        let offered_modes = offered_plan_modes(ctx.approval_policy);
+                        yield LoopItem::Event(StreamEvent::PlanApprovalNeeded {
+                            approval_id,
+                            plan: drafted.clone(),
+                            identity: plan_identity.clone(),
+                            offered_modes: offered_modes.clone(),
+                        });
+                        let request = rove_foundation::types::PlanApprovalRequest {
+                            approval_id,
+                            plan: drafted.clone(),
+                            offered_modes,
+                        };
+                        let decision = tokio::select! {
+                            biased;
+                            _ = cancel_token.cancelled() => {
+                                yield LoopItem::Event(StreamEvent::PlanApprovalResolved {
+                                    approval_id,
+                                    approved_policy: None,
+                                });
+                                finish_planned!(PlanFinishReason::Cancelled, None);
+                            }
+                            pending = provider.begin_plan_approval(request) => {
+                                match pending {
+                                    Ok(pending) => pending.resolve().await,
+                                    Err(_) => rove_foundation::types::PlanApprovalDecision::Reject,
+                                }
+                            }
+                        };
+                        match decision {
+                            rove_foundation::types::PlanApprovalDecision::Approve(policy) => {
+                                ctx.approval_policy = policy;
+                                yield LoopItem::Event(StreamEvent::PlanApprovalResolved {
+                                    approval_id,
+                                    approved_policy: Some(policy),
+                                });
+                            }
+                            rove_foundation::types::PlanApprovalDecision::Reject => {
+                                yield LoopItem::Event(StreamEvent::PlanApprovalResolved {
+                                    approval_id,
+                                    approved_policy: None,
+                                });
+                                finish_planned!(
+                                    PlanFinishReason::Rejected,
+                                    Some("plan rejected".to_string())
+                                );
+                            }
+                        }
+                    }
+
                     state.plan = Some(drafted);
                 }
                 Err(err) => {

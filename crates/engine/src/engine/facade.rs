@@ -38,8 +38,8 @@ use rove_foundation::runtime_identity::{
     build_runtime_identity,
 };
 use rove_foundation::types::{
-    ApprovalDecision, ApprovalPolicy, JobId, Message, RunId, RunMode, SessionId, TerminationReason,
-    ToolApprovalProvider, ToolDescriptor, UserInputProvider,
+    ApprovalDecision, ApprovalPolicy, JobId, Message, PlanApprovalProvider, RunId, RunMode,
+    SessionId, TerminationReason, ToolApprovalProvider, ToolDescriptor, UserInputProvider,
 };
 use rove_models::ModelClient;
 use rove_state::memory::layered::load_prompt_memory_from_paths_sync;
@@ -225,6 +225,7 @@ pub struct Engine {
     approval_policy: ApprovalPolicy,
     approval_decision: ApprovalDecision,
     approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
+    plan_approval_provider: Option<Arc<dyn PlanApprovalProvider>>,
     input_provider: Option<Arc<dyn UserInputProvider>>,
     hooks: HookRegistry,
     memory_paths: MemoryPaths,
@@ -340,6 +341,7 @@ impl Engine {
             approval_policy: options.approval_policy,
             approval_decision: options.approval_decision,
             approval_provider: None,
+            plan_approval_provider: None,
             input_provider: None,
             hooks: HookRegistry::with_default_post_run_hooks(),
             memory_paths,
@@ -388,6 +390,18 @@ impl Engine {
         approval_provider: Arc<dyn ToolApprovalProvider>,
     ) -> Self {
         self.approval_provider = Some(approval_provider);
+        self
+    }
+
+    /// Attaches the plan-approval gate. When set, a drafted plan yields
+    /// `PlanApprovalNeeded` and the run waits for the interface's decision
+    /// before the first step; without it, a drafted plan runs immediately
+    /// under the configured policy — the historical behavior.
+    pub fn with_plan_approval_provider(
+        mut self,
+        plan_approval_provider: Arc<dyn PlanApprovalProvider>,
+    ) -> Self {
+        self.plan_approval_provider = Some(plan_approval_provider);
         self
     }
 
@@ -1196,6 +1210,7 @@ impl Engine {
                     approval_policy: self.approval_policy,
                     approval_decision: self.approval_decision,
                     approval_provider: self.approval_provider.clone(),
+                    plan_approval_provider: self.plan_approval_provider.clone(),
                     input_provider: self.input_provider.clone(),
                     hooks: self.hooks.clone(),
                     compaction,

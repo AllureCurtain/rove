@@ -1613,6 +1613,13 @@
             },
             "type": "array"
           },
+          "pending_plan_approvals": {
+            "description": "Plans awaiting an approve/reject decision on the plan gate. Kept\nseparate from `pending_approvals` (tool calls) because a plan decision\ncarries an approval-mode choice, not just approve/reject.",
+            "items": {
+              "$ref": "#/components/schemas/PendingPlanApprovalResponse"
+            },
+            "type": "array"
+          },
           "resumed_from_run_id": {
             "format": "ulid",
             "type": [
@@ -2255,6 +2262,33 @@
         "required": [
           "input_id",
           "prompt"
+        ],
+        "type": "object"
+      },
+      "PendingPlanApprovalResponse": {
+        "description": "A pending plan gate projected to the interface.",
+        "properties": {
+          "approval_id": {
+            "description": "Pending-approval id the `/jobs/{job_id}/plan-approvals/{approval_id}`\nroute resolves against. Minted per gate, not the plan ULID.",
+            "format": "ulid",
+            "type": "string"
+          },
+          "offered_modes": {
+            "description": "Approval modes the interface may offer (`ask`, `auto`).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/TaskPlan",
+            "description": "The drafted plan under review."
+          }
+        },
+        "required": [
+          "approval_id",
+          "plan",
+          "offered_modes"
         ],
         "type": "object"
       },
@@ -8661,6 +8695,80 @@
             "allOf": [
               {
                 "$ref": "#/components/schemas/PlanIdentity",
+                "description": "Stable identity of the plan being gated, flattened for the same\nreason as `PlanCreated`."
+              },
+              {
+                "properties": {
+                  "approval_id": {
+                    "format": "ulid",
+                    "type": "string"
+                  },
+                  "offered_modes": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "plan": {
+                    "$ref": "#/components/schemas/TaskPlan"
+                  }
+                },
+                "required": [
+                  "approval_id",
+                  "plan",
+                  "offered_modes"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A drafted plan is waiting for interface approval before its first\nstep runs.\n\nCarries the plan again (the projection should not have to correlate\nback to `PlanCreated`) plus the pending-approval id the interface\nanswers against, and the approval modes it may offer. Only emitted\nwhen a `PlanApprovalProvider` is attached to the engine; a run\nwithout the provider never produces this event.",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "plan_approval_needed"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "A drafted plan is waiting for interface approval before its first\nstep runs.\n\nCarries the plan again (the projection should not have to correlate\nback to `PlanCreated`) plus the pending-approval id the interface\nanswers against, and the approval modes it may offer. Only emitted\nwhen a `PlanApprovalProvider` is attached to the engine; a run\nwithout the provider never produces this event."
+          },
+          {
+            "description": "The interface answered a `PlanApprovalNeeded`. Recorded so the trace\ncarries the chosen approval mode, not just the fact the run\nproceeded; a rejection is followed by `RunCompleted`.",
+            "properties": {
+              "approval_id": {
+                "format": "ulid",
+                "type": "string"
+              },
+              "approved_policy": {
+                "description": "The approval mode the run continues under, or `null` on reject.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "plan_approval_resolved"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "approval_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PlanIdentity",
                 "description": "Stable identity for the logical plan/revision. Flattening keeps\nthe wire shape readable and lets older events deserialize with\ndefault metadata."
               },
               {
@@ -9260,6 +9368,21 @@
         },
         "required": [
           "answer"
+        ],
+        "type": "object"
+      },
+      "SubmitPlanApprovalRequest": {
+        "additionalProperties": false,
+        "description": "Decision submitted to a pending plan gate.",
+        "properties": {
+          "mode": {
+            "description": "`\"reject\"` refuses the plan outright. Any of the offered modes\n(`\"ask\"`, `\"auto\"`) approves it and sets the run's approval policy for\nthe plan's steps — the approve-mode split.",
+            "example": "auto",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
         ],
         "type": "object"
       },
@@ -11173,6 +11296,93 @@
               }
             },
             "description": "Input responder is no longer live"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Internal runtime error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "tags": [
+          "Approvals"
+        ]
+      }
+    },
+    "/jobs/{job_id}/plan-approvals/{approval_id}": {
+      "post": {
+        "operationId": "submit_plan_approval",
+        "parameters": [
+          {
+            "description": "Job ULID",
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Pending plan-approval ULID",
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitPlanApprovalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStateResponse"
+                }
+              }
+            },
+            "description": "Job state after resolving the plan gate"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Unknown plan-approval mode"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Job or pending plan approval not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Plan-approval responder is no longer live"
           },
           "500": {
             "content": {

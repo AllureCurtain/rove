@@ -47,8 +47,8 @@ use rove_foundation::prompt_metadata::{
 };
 use rove_foundation::root::Workspace;
 use rove_foundation::types::{
-    ApprovalDecision, ApprovalPolicy, Message, RunMode, SessionId, TerminationReason,
-    ToolApprovalProvider, ToolDescriptor, UserInputProvider,
+    ApprovalDecision, ApprovalPolicy, Message, PlanApprovalProvider, RunMode, SessionId,
+    TerminationReason, ToolApprovalProvider, ToolDescriptor, UserInputProvider,
 };
 use rove_models::{ModelClient, ModelError, ModelToolSchema};
 use rove_state::memory::paths::MemoryPaths;
@@ -87,6 +87,10 @@ pub(crate) struct LoopContext<'a> {
     pub approval_policy: ApprovalPolicy,
     pub approval_decision: ApprovalDecision,
     pub approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
+    /// Optional plan-approval gate. When set, a drafted plan yields
+    /// `PlanApprovalNeeded` and the run waits on the interface's decision
+    /// before the first step; `None` keeps plan execution unconditional.
+    pub plan_approval_provider: Option<Arc<dyn PlanApprovalProvider>>,
     pub input_provider: Option<Arc<dyn UserInputProvider>>,
     pub hooks: HookRegistry,
     pub compaction: CompactionRuntime,

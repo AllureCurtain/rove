@@ -112,6 +112,41 @@ impl ToolApprovalProvider for ApiApprovalProvider {
     }
 }
 
+/// Plan-approval provider attached to a job's Engine.
+///
+/// Unlike tool approvals there is no durable pending-approval index table for
+/// plans — the gate's durable state is the run's `task_state` (the plan is
+/// only gated on its first draft, so a recovered run never re-asks) and the
+/// `plan_approval_*` events in the trace. The pending entry is in-memory on
+/// the `JobRecord` and resolved by the `/jobs/{id}/plan-approvals` route.
+pub(crate) struct ApiPlanApprovalProvider {
+    pub(crate) record: Arc<JobRecord>,
+}
+
+#[async_trait]
+impl PlanApprovalProvider for ApiPlanApprovalProvider {
+    async fn begin_plan_approval(
+        &self,
+        request: PlanApprovalRequest,
+    ) -> Result<FoundationPendingPlanApproval, ToolError> {
+        let (tx, rx) = oneshot::channel();
+        let approval_id = request.approval_id;
+        if self.record.cancel_token.is_cancelled() {
+            return Err(ToolError::ExecutionFailed {
+                reason: "plan approval request arrived after cancellation".to_string(),
+            });
+        }
+        self.record
+            .pending_plan_approvals
+            .lock()
+            .await
+            .insert(approval_id, PendingPlanApproval { request, tx });
+        Ok(FoundationPendingPlanApproval::new(async move {
+            rx.await.unwrap_or(PlanApprovalDecision::Reject)
+        }))
+    }
+}
+
 pub(crate) struct ApiInputProvider {
     pub(crate) record: Arc<JobRecord>,
     pub(crate) index: StateIndex,
@@ -183,14 +218,23 @@ impl UserInputProvider for ApiInputProvider {
 /// separate read of the run index. `JobStateResponse::answer_aborted` documents
 /// when an absent marker is conclusive: only for a settled listing, which needs
 /// a terminal `status` and a contiguous `events` list.
+/// The three pending-response lists a job state carries. Grouped so
+/// `job_state_from_events` stays within the argument limit and a persisted
+/// (post-restart, no live gate) response passes one empty bundle.
+#[derive(Default)]
+pub(crate) struct PendingResponses {
+    pub approvals: Vec<PendingApprovalResponse>,
+    pub plan_approvals: Vec<PendingPlanApprovalResponse>,
+    pub inputs: Vec<PendingInputResponse>,
+}
+
 pub(crate) fn job_state_from_events(
     job_id: JobId,
     run_id: RunId,
     resumed_from_run_id: Option<RunId>,
     status: RunStatus,
     events: Vec<JobStreamEvent>,
-    pending_approvals: Vec<PendingApprovalResponse>,
-    pending_inputs: Vec<PendingInputResponse>,
+    pending: PendingResponses,
 ) -> JobStateResponse {
     JobStateResponse {
         job_id,
@@ -200,8 +244,9 @@ pub(crate) fn job_state_from_events(
         event_count: events.len(),
         answer_aborted: crate::types::answer_aborted(&events),
         events,
-        pending_approvals,
-        pending_inputs,
+        pending_approvals: pending.approvals,
+        pending_plan_approvals: pending.plan_approvals,
+        pending_inputs: pending.inputs,
     }
 }
 
@@ -213,8 +258,11 @@ pub(crate) async fn job_state_response(record: &JobRecord) -> JobStateResponse {
         record.resumed_from_run_id,
         record.status.lock().await.clone(),
         events,
-        pending_approvals_response(record).await,
-        pending_inputs_response(record).await,
+        PendingResponses {
+            approvals: pending_approvals_response(record).await,
+            plan_approvals: pending_plan_approvals_response(record).await,
+            inputs: pending_inputs_response(record).await,
+        },
     )
 }
 
@@ -239,8 +287,7 @@ pub(crate) async fn persisted_job_state_response(
         None,
         run_status_from_index(&job.status),
         events,
-        Vec::new(),
-        Vec::new(),
+        PendingResponses::default(),
     ))
 }
 
@@ -367,6 +414,33 @@ pub(crate) async fn reject_pending_approvals(record: &JobRecord, index: &StateIn
             tracing::warn!(job_id = %record.job_id, call_id = %call_id, "failed to mark pending approval cancelled: {err}");
         }
         let _ = approval.tx.send(ApprovalDecision::Reject);
+    }
+}
+
+/// Reject every plan gate still waiting on a decision. Plan approvals have
+/// no durable index row to mark — the gate's durable fact is the
+/// `plan_approval_resolved` event the engine emits when it takes the
+/// rejection — so cancellation only needs to release the waiter.
+pub(crate) async fn pending_plan_approvals_response(
+    record: &JobRecord,
+) -> Vec<PendingPlanApprovalResponse> {
+    record
+        .pending_plan_approvals
+        .lock()
+        .await
+        .iter()
+        .map(|(approval_id, pending)| PendingPlanApprovalResponse {
+            approval_id: *approval_id,
+            plan: pending.request.plan.clone(),
+            offered_modes: pending.request.offered_modes.clone(),
+        })
+        .collect()
+}
+
+pub(crate) async fn reject_pending_plan_approvals(record: &JobRecord) {
+    let pending = std::mem::take(&mut *record.pending_plan_approvals.lock().await);
+    for (_, approval) in pending {
+        let _ = approval.tx.send(PlanApprovalDecision::Reject);
     }
 }
 

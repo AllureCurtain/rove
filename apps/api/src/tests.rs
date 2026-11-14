@@ -407,8 +407,7 @@ fn job_state_with(events: Vec<StreamEvent>) -> JobStateResponse {
         None,
         RunStatus::Cancelled,
         events,
-        Vec::new(),
-        Vec::new(),
+        PendingResponses::default(),
     )
 }
 
@@ -498,6 +497,7 @@ async fn terminal_event_updates_live_status_after_finalization_barrier() {
         status: Mutex::new(RunStatus::Running),
         events: Mutex::new(Vec::new()),
         pending_approvals: Mutex::new(HashMap::new()),
+        pending_plan_approvals: Mutex::new(HashMap::new()),
         pending_inputs: Mutex::new(HashMap::new()),
         tx,
         handle: Mutex::new(None),
@@ -685,6 +685,7 @@ async fn test_job_record(temp_dir: &tempfile::TempDir) -> (ApiState, Arc<JobReco
         status: Mutex::new(RunStatus::Running),
         events: Mutex::new(Vec::new()),
         pending_approvals: Mutex::new(HashMap::new()),
+        pending_plan_approvals: Mutex::new(HashMap::new()),
         pending_inputs: Mutex::new(HashMap::new()),
         tx,
         handle: Mutex::new(None),
@@ -778,6 +779,7 @@ async fn shutdown_drain_waits_for_a_superseded_same_job_supervisor() {
         status: Mutex::new(RunStatus::Running),
         events: Mutex::new(Vec::new()),
         pending_approvals: Mutex::new(HashMap::new()),
+        pending_plan_approvals: Mutex::new(HashMap::new()),
         pending_inputs: Mutex::new(HashMap::new()),
         tx,
         handle: Mutex::new(None),
@@ -1134,6 +1136,122 @@ async fn submit_approval_conflicts_when_responder_was_dropped() {
         index.pending_approval_status(call_id).unwrap().as_deref(),
         Some("cancelled")
     );
+}
+
+#[tokio::test]
+async fn submit_plan_approval_approves_with_offered_mode() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let (state, record, _index) = test_job_record(&temp_dir).await;
+    let approval_id = CallId::new();
+    let (tx, rx) = oneshot::channel();
+    record.pending_plan_approvals.lock().await.insert(
+        approval_id,
+        PendingPlanApproval {
+            request: PlanApprovalRequest {
+                approval_id,
+                plan: rove_foundation::types::TaskPlan {
+                    goal: "fix docs".to_string(),
+                    steps: vec![rove_foundation::types::PlanStep {
+                        id: "1".to_string(),
+                        title: "inspect".to_string(),
+                        done: false,
+                    }],
+                    current_step: 0,
+                },
+                offered_modes: vec![ApprovalPolicy::Ask, ApprovalPolicy::Auto],
+            },
+            tx,
+        },
+    );
+
+    let response = submit_plan_approval(
+        State(state),
+        Path((record.job_id, approval_id)),
+        Ok(Json(SubmitPlanApprovalRequest {
+            mode: "auto".to_string(),
+        })),
+    )
+    .await
+    .expect("plan approval accepted");
+
+    assert!(matches!(
+        rx.await,
+        Ok(PlanApprovalDecision::Approve(ApprovalPolicy::Auto))
+    ));
+    assert!(response.pending_plan_approvals.is_empty());
+}
+
+#[tokio::test]
+async fn submit_plan_approval_rejects_unoffered_mode_and_keeps_gate() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let (state, record, _index) = test_job_record(&temp_dir).await;
+    let approval_id = CallId::new();
+    let (tx, _rx) = oneshot::channel();
+    record.pending_plan_approvals.lock().await.insert(
+        approval_id,
+        PendingPlanApproval {
+            request: PlanApprovalRequest {
+                approval_id,
+                plan: rove_foundation::types::TaskPlan {
+                    goal: "fix docs".to_string(),
+                    steps: Vec::new(),
+                    current_step: 0,
+                },
+                offered_modes: vec![ApprovalPolicy::Ask],
+            },
+            tx,
+        },
+    );
+
+    // "auto" was never offered — a caller cannot approve the plan into a
+    // policy the gate did not advertise.
+    let error = submit_plan_approval(
+        State(state),
+        Path((record.job_id, approval_id)),
+        Ok(Json(SubmitPlanApprovalRequest {
+            mode: "auto".to_string(),
+        })),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.status, StatusCode::NOT_FOUND);
+    // The gate survives a malformed answer so the caller can retry.
+    assert_eq!(record.pending_plan_approvals.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn submit_plan_approval_reject_releases_gate() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let (state, record, _index) = test_job_record(&temp_dir).await;
+    let approval_id = CallId::new();
+    let (tx, rx) = oneshot::channel();
+    record.pending_plan_approvals.lock().await.insert(
+        approval_id,
+        PendingPlanApproval {
+            request: PlanApprovalRequest {
+                approval_id,
+                plan: rove_foundation::types::TaskPlan {
+                    goal: "fix docs".to_string(),
+                    steps: Vec::new(),
+                    current_step: 0,
+                },
+                offered_modes: vec![ApprovalPolicy::Ask, ApprovalPolicy::Auto],
+            },
+            tx,
+        },
+    );
+
+    let _ = submit_plan_approval(
+        State(state),
+        Path((record.job_id, approval_id)),
+        Ok(Json(SubmitPlanApprovalRequest {
+            mode: "reject".to_string(),
+        })),
+    )
+    .await
+    .expect("reject accepted");
+
+    assert!(matches!(rx.await, Ok(PlanApprovalDecision::Reject)));
 }
 
 #[tokio::test]

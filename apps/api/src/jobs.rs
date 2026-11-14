@@ -299,6 +299,7 @@ pub(crate) async fn cancel_job(
     record.cancel_token.cancel();
     let state_store = state_store_for_record(&record);
     reject_pending_approvals(&record, &state_store.index).await;
+    reject_pending_plan_approvals(&record).await;
     reject_pending_inputs(&record, &state_store.index).await;
     wait_for_job_completion(&record).await;
 
@@ -392,6 +393,87 @@ pub(crate) async fn submit_approval(
         ));
     }
     Ok(Json(job_state_response(&record).await))
+}
+
+#[utoipa::path(
+    post,
+    path = "/jobs/{job_id}/plan-approvals/{approval_id}",
+    tag = docs::APPROVALS_TAG,
+    security(("BearerAuth" = [])),
+    params(
+        ("job_id" = String, Path, description = "Job ULID"),
+        ("approval_id" = String, Path, description = "Pending plan-approval ULID")
+    ),
+    request_body = SubmitPlanApprovalRequest,
+    responses(
+        (status = 200, description = "Job state after resolving the plan gate", body = JobStateResponse, content_type = "application/json"),
+        (status = 400, description = "Unknown plan-approval mode", body = serde_json::Value, content_type = "application/json"),
+        (status = 404, description = "Job or pending plan approval not found", body = serde_json::Value, content_type = "application/json"),
+        (status = 409, description = "Plan-approval responder is no longer live", body = serde_json::Value, content_type = "application/json"),
+        (status = 500, description = "Internal runtime error", body = serde_json::Value, content_type = "application/json")
+    )
+)]
+pub(crate) async fn submit_plan_approval(
+    State(state): State<ApiState>,
+    Path((job_id, approval_id)): Path<(JobId, CallId)>,
+    body: Result<Json<SubmitPlanApprovalRequest>, JsonRejection>,
+) -> Result<Json<JobStateResponse>, ApiError> {
+    let req = json_body(body, "bad_request", INVALID_APPROVAL_BODY_MESSAGE)?;
+    let record = find_job(&state, job_id).await?;
+    let pending = record
+        .pending_plan_approvals
+        .lock()
+        .await
+        .remove(&approval_id)
+        .ok_or_else(|| ApiError::not_found("pending plan approval not found"))?;
+    let mode = req.mode.trim().to_ascii_lowercase();
+    // A mode that was not offered would let a caller approve a plan into a
+    // policy the gate never advertised — reject it rather than silently
+    // widening the run's permissions.
+    let offered = pending
+        .request
+        .offered_modes
+        .iter()
+        .any(|policy| approval_policy_name(*policy) == mode);
+    let decision = match mode.as_str() {
+        "reject" => PlanApprovalDecision::Reject,
+        m if offered => PlanApprovalDecision::Approve(
+            pending
+                .request
+                .offered_modes
+                .iter()
+                .copied()
+                .find(|policy| approval_policy_name(*policy) == m)
+                .expect("mode checked against offered_modes above"),
+        ),
+        _ => {
+            // Restore the pending entry so the caller can answer with a valid
+            // mode rather than losing the gate to a typo.
+            record
+                .pending_plan_approvals
+                .lock()
+                .await
+                .insert(approval_id, pending);
+            return Err(ApiError::not_found_with_code(
+                "unknown_plan_approval_mode",
+                "mode must be 'reject' or one of the offered modes",
+            ));
+        }
+    };
+    if pending.tx.send(decision).is_err() {
+        return Err(ApiError::conflict(
+            "plan approval is no longer awaiting a response",
+        ));
+    }
+    Ok(Json(job_state_response(&record).await))
+}
+
+fn approval_policy_name(policy: ApprovalPolicy) -> &'static str {
+    match policy {
+        ApprovalPolicy::Ask => "ask",
+        ApprovalPolicy::Auto => "auto",
+        ApprovalPolicy::Never => "never",
+    }
 }
 
 #[utoipa::path(

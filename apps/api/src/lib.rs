@@ -35,9 +35,11 @@ use rove_foundation::root::Workspace;
 use rove_foundation::runtime_identity::RunModelSnapshot;
 use rove_foundation::session::SessionEntry;
 use rove_foundation::types::{
-    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PendingToolApproval,
-    PendingUserInput, Role, RunId, RunMode, RunStatus, SessionId, TerminationReason,
-    ToolApprovalProvider, ToolApprovalRequest, UserInputProvider, UserInputRequest,
+    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message,
+    PendingPlanApproval as FoundationPendingPlanApproval, PendingToolApproval, PendingUserInput,
+    PlanApprovalDecision, PlanApprovalProvider, PlanApprovalRequest, Role, RunId, RunMode,
+    RunStatus, SessionId, TerminationReason, ToolApprovalProvider, ToolApprovalRequest,
+    UserInputProvider, UserInputRequest,
 };
 use rove_models::ModelClient;
 use rove_models::fake::{FakeModelClient, FakeTurn};
@@ -249,6 +251,11 @@ pub(crate) struct JobRecord {
     status: Mutex<RunStatus>,
     events: Mutex<Vec<JobStreamEvent>>,
     pending_approvals: Mutex<HashMap<CallId, PendingApproval>>,
+    /// Plan-approval gates share the pending-approval id space (a fresh
+    /// `CallId` is minted per gate) but resolve to a `PlanApprovalDecision`,
+    /// so they live in their own map; `pending_approvals` stays tool-call
+    /// shaped for the existing `/jobs/{id}/approvals` surface.
+    pending_plan_approvals: Mutex<HashMap<CallId, PendingPlanApproval>>,
     pending_inputs: Mutex<HashMap<CallId, PendingInput>>,
     tx: broadcast::Sender<JobStreamEvent>,
     handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -321,6 +328,11 @@ impl Drop for JobCompletionGuard {
 struct PendingApproval {
     request: ToolApprovalRequest,
     tx: oneshot::Sender<ApprovalDecision>,
+}
+
+struct PendingPlanApproval {
+    request: PlanApprovalRequest,
+    tx: oneshot::Sender<PlanApprovalDecision>,
 }
 
 struct PendingInput {
@@ -479,6 +491,7 @@ fn router_composed(state: ApiState) -> Router {
         .routes(routes!(cancel_job))
         .routes(routes!(stop_subagent))
         .routes(routes!(submit_approval))
+        .routes(routes!(submit_plan_approval))
         .routes(routes!(submit_input))
         .routes(routes!(list_runs))
         .routes(routes!(run_report))

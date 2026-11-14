@@ -8164,3 +8164,122 @@ async fn malformed_truncated_oversized_and_unsupported_parallel_turns_execute_ze
         ));
     }
 }
+
+/// Test plan-approval provider that records the request and resolves with a
+/// canned decision after the engine yields `PlanApprovalNeeded`.
+struct TestPlanApprovalProvider {
+    decision: rove_foundation::types::PlanApprovalDecision,
+    seen: Arc<Mutex<Option<rove_foundation::types::PlanApprovalRequest>>>,
+}
+
+#[async_trait]
+impl rove_foundation::types::PlanApprovalProvider for TestPlanApprovalProvider {
+    async fn begin_plan_approval(
+        &self,
+        request: rove_foundation::types::PlanApprovalRequest,
+    ) -> Result<rove_foundation::types::PendingPlanApproval, ToolError> {
+        *self.seen.lock().unwrap() = Some(request);
+        let decision = self.decision;
+        Ok(rove_foundation::types::PendingPlanApproval::new(
+            async move { decision },
+        ))
+    }
+}
+
+#[tokio::test]
+async fn plan_gate_approves_with_mode_and_runs_plan() {
+    let seen = Arc::new(Mutex::new(None));
+    let engine = build_planner_test_engine(vec![
+        r#"{"goal":"fix docs","steps":[{"id":"1","title":"inspect docs"}]}"#.to_string(),
+        "step 1 done".to_string(),
+    ])
+    .with_plan_approval_provider(Arc::new(TestPlanApprovalProvider {
+        decision: rove_foundation::types::PlanApprovalDecision::Approve(ApprovalPolicy::Auto),
+        seen: seen.clone(),
+    }));
+
+    let events = collect_events(&engine, "fix the docs").await;
+
+    let request = seen.lock().unwrap().clone().expect("gate was asked");
+    assert_eq!(request.plan.goal, "fix docs");
+    assert!(request.offered_modes.contains(&ApprovalPolicy::Ask));
+    assert!(request.offered_modes.contains(&ApprovalPolicy::Auto));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::PlanApprovalNeeded { .. }))
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::PlanApprovalResolved {
+            approved_policy: Some(ApprovalPolicy::Auto),
+            ..
+        }
+    )));
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::Final,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn plan_gate_rejects_plan_and_runs_no_steps() {
+    let engine = build_planner_test_engine(vec![
+        r#"{"goal":"fix docs","steps":[{"id":"1","title":"inspect docs"}]}"#.to_string(),
+        "unreachable".to_string(),
+    ])
+    .with_plan_approval_provider(Arc::new(TestPlanApprovalProvider {
+        decision: rove_foundation::types::PlanApprovalDecision::Reject,
+        seen: Arc::new(Mutex::new(None)),
+    }));
+
+    let events = collect_events(&engine, "fix the docs").await;
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::PlanApprovalResolved {
+            approved_policy: None,
+            ..
+        }
+    )));
+    // Rejection ends the run before any step executes: no step start or
+    // result events, and the scripted second model turn is never consumed.
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, StreamEvent::PlanStepStarted { .. })),
+        "a rejected plan still ran a step"
+    );
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted { .. })
+    ));
+}
+
+#[tokio::test]
+async fn plan_gate_absent_runs_plan_immediately() {
+    // No provider attached — the historical unconditional execution.
+    let engine = build_planner_test_engine(vec![
+        r#"{"goal":"fix docs","steps":[{"id":"1","title":"inspect docs"}]}"#.to_string(),
+        "step 1 done".to_string(),
+    ]);
+
+    let events = collect_events(&engine, "fix the docs").await;
+
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, StreamEvent::PlanApprovalNeeded { .. })),
+        "plan gate fired without a provider"
+    );
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::Final,
+            ..
+        })
+    ));
+}
