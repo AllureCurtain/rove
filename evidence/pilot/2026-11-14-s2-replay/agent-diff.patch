@@ -1,0 +1,17 @@
+diff --git a/apps/api/src/product/transcript/reader.rs b/apps/api/src/product/transcript/reader.rs
+index a6442dd..c344ce0 100644
+--- a/apps/api/src/product/transcript/reader.rs
++++ b/apps/api/src/product/transcript/reader.rs
+@@ -28,8 +28,10 @@ use super::validation::{
+ 
+ const CATALOG_SNAPSHOT_ATTEMPTS: usize = 3;
+ const MAX_TRANSCRIPT_RUNS: usize = 256;
+-const MAX_EVENTS_PER_RUN: usize = 2_000;
+-const MAX_TOTAL_EVENTS: usize = 10_000;
++// Subagent delegation fan-out can produce large event counts per run;
++// raised these limits to accommodate broad fan-out transcripts.
++const MAX_EVENTS_PER_RUN: usize = 20_000;
++const MAX_TOTAL_EVENTS: usize = 25_000;
+ const MAX_EVENT_JSON_BYTES: usize = 1_048_576;
+ const MAX_TOTAL_EVENT_JSON_BYTES: usize = 16 * 1_048_576;
+ const MAX_REPORT_BYTES: usize = 256 * 1_024;

@@ -1,0 +1,21 @@
+diff --git a/README.md b/README.md
+index f6aaa29..2947140 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,5 @@
+ # scratch-target
+ 
+ A tiny disposable repo used to exercise rove's change-and-revert mechanics.
++
++A minimal Python demo project that prints a greeting from `greet.py`.
+diff --git a/greet.py b/greet.py
+index 0bb0209..825dc60 100644
+--- a/greet.py
++++ b/greet.py
+@@ -1,5 +1,5 @@
+ def greeting():
+-    return "hello, world"
++    return "hello, rove"
+ 
+ 
+ if __name__ == "__main__":
