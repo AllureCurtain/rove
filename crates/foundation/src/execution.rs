@@ -21,7 +21,14 @@ pub const EXECUTION_POLICY_VERSION: u32 = 1;
 /// plus a final synthesis turn typically needs six to twelve turns, so the
 /// default sits above that range instead of the earlier compatibility value of
 /// four, which stopped tool-using steps before they could conclude.
-pub const DEFAULT_MAX_MODEL_TURNS_PER_STEP: u32 = 16;
+///
+/// Exploratory real models go further: a step that reads broadly before acting
+/// can interleave one model turn per think→tool round and spend dozens of tool
+/// calls without converging, so even 16 starved a real read/explain step (a
+/// 48-tool-call exploration died at turn 16 on `deepseek-v4-pro`). 48 leaves
+/// headroom for an exploratory step to converge while `max_steps`,
+/// `max_total_tokens`, and `max_wall_time_ms` still bound the whole run.
+pub const DEFAULT_MAX_MODEL_TURNS_PER_STEP: u32 = 48;
 
 /// Default repair ceiling for malformed structured lifecycle model output.
 pub const DEFAULT_MAX_MODEL_REPAIRS: u32 = 1;
