@@ -590,10 +590,17 @@ where
 
     // A successor claimed at a previous final turn is durable before the run it
     // reserved exists, so this launch point is where an interrupted start is
-    // completed instead of leaving the claim stranded. A queued message stays
-    // queued here: this completes work the TUI already promised, it does not
-    // start new work.
-    if let Some(successor) = redrive_stranded_tui_successor(runtime, &mut app).await {
+    // completed instead of leaving the claim stranded. When nothing is stranded
+    // but queued messages wait (the previous process ended between runs rather
+    // than at a final boundary that would already have claimed one), the same
+    // drain delivers the oldest queued successor — restart keeps the queue
+    // delivery order the product surface promises instead of silently
+    // stranding it until the next send.
+    let startup_successor = match redrive_stranded_tui_successor(runtime, &mut app).await {
+        Some(successor) => Some(successor),
+        None => claim_next_tui_successor(runtime, &mut app).await,
+    };
+    if let Some(successor) = startup_successor {
         let exit_requested = drive_tui_prompt_chain(
             terminal,
             events,
@@ -919,6 +926,12 @@ async fn claim_next_tui_successor(
     runtime: &CliRuntime,
     app: &mut TuiApp,
 ) -> Option<(String, Vec<StreamEvent>, Option<RunId>)> {
+    // Same provider gate the stranded path uses: claiming a message without a
+    // model selection the engine can be assembled from only spends the claim
+    // on a start that is guaranteed to fail.
+    if app.state.provider_status != ProviderStatus::Ready {
+        return None;
+    }
     let session_id = current_tui_session_id(app);
     let run_id = RunId::new();
     match runtime
@@ -5411,5 +5424,143 @@ mod tests {
             .unwrap();
         assert_eq!(claimed.status, MessageStatus::ClaimedSuccessor);
         assert_eq!(claimed.target_run_id, Some(reserved));
+    }
+
+    /// F.5: when the previous process ended at a Final boundary without
+    /// claiming the queued successor (the send raced an exit, or the process
+    /// was killed after the last run finalized but before the boundary drain
+    /// ran), the claim is durable but the run it reserved never started.
+    /// Launching the TUI on that session must claim the oldest queued message
+    /// and start it — the surface owes the queue the same delivery the API
+    /// boot path performs for product sessions.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tui_launch_drains_a_queued_successor_left_by_a_prior_final_turn() {
+        let (_tmp, _data_root, runtime) = successor_runtime().await;
+        let session_id = SessionId::new();
+        let job_id = JobId::new();
+        let previous_run_id = RunId::new();
+        let previous = seeded_task_state(session_id, job_id, previous_run_id);
+        runtime
+            .state_store
+            .write_task_state(&previous)
+            .await
+            .unwrap();
+
+        let session = session_id.to_string();
+        // Only a queued message — no prior claim, no reserved run.
+        let queued = queue_successor_message(&runtime, &session, "resume delivery").await;
+        let runs_before = indexed_run_ids(&runtime);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let (event_tx, event_rx) = mpsc::channel(2);
+        let mut events = ReceiverStream::new(event_rx);
+        let event_keepalive = event_tx.clone();
+        let (_shutdown_tx, mut shutdown) = mpsc::channel(1);
+        let (_interaction_providers, mut interactions) = bounded_interaction_channel(8);
+        let index = runtime.state_store.index.clone();
+        let message_service = runtime.message_service.clone();
+        let session_for_quit = session.clone();
+        let queued_id = queued.id.clone();
+        let quit = tokio::spawn(async move {
+            // Wait until the claimed successor's run records a terminal status
+            // before asking the loop to leave — same keepalive shape the
+            // stranded-redrive test uses. The queued row carries the reserved
+            // run id once the drain claims it.
+            let deadline = Instant::now() + SUCCESSOR_TERMINAL_BUDGET;
+            loop {
+                let terminal = match message_service
+                    .list(&session_for_quit, MessagePageQuery::latest(8))
+                    .await
+                {
+                    Ok(page) => page
+                        .messages
+                        .iter()
+                        .find(|message| message.id == queued_id)
+                        .and_then(|message| message.target_run_id)
+                        .is_some_and(|run_id| {
+                            index
+                                .run_record(run_id)
+                                .ok()
+                                .flatten()
+                                .is_some_and(|record| record.status == "done")
+                        }),
+                    Err(_) => false,
+                };
+                if terminal {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            let _ = event_tx.send(exit_key()).await;
+            tokio::time::sleep(EXIT_KEY_RETRY).await;
+            let _ = event_tx.send(exit_key()).await;
+        });
+
+        let outcome = tokio::time::timeout(
+            SUCCESSOR_TERMINAL_BUDGET,
+            Box::pin(run_loop(
+                &mut terminal,
+                &mut events,
+                &mut shutdown,
+                &runtime,
+                Some(previous),
+                &mut interactions,
+                InteractionKeyMode::Direct,
+            )),
+        )
+        .await;
+        let app = match outcome {
+            Ok(result) => result.unwrap(),
+            Err(_) => panic!("the launch drain never left the TUI loop"),
+        };
+        quit.await.unwrap();
+        drop(event_keepalive);
+
+        let started = indexed_run_ids(&runtime)
+            .difference(&runs_before)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            started.len(),
+            1,
+            "one launch must start exactly the one queued successor"
+        );
+        let record = runtime
+            .state_store
+            .index
+            .run_record(started[0].parse::<RunId>().unwrap())
+            .unwrap()
+            .expect("the launch drain must start the run the queued successor reserved");
+        assert_eq!(record.session_id, session_id);
+        assert_eq!(record.status, "done");
+        let trace = std::fs::read_to_string(&record.trace_path).unwrap();
+        assert!(
+            trace.contains("resume delivery"),
+            "the drained run must carry the queued prompt: {trace}"
+        );
+        let page = runtime
+            .message_service
+            .list(&session, MessagePageQuery::latest(8))
+            .await
+            .unwrap();
+        let delivered = page
+            .messages
+            .iter()
+            .find(|message| message.id == queued.id)
+            .unwrap();
+        assert_eq!(delivered.status, MessageStatus::ClaimedSuccessor);
+        assert_eq!(
+            delivered.target_run_id.map(|id| id.to_string()),
+            Some(started[0].clone())
+        );
+        assert!(
+            app.state.message_error.is_none(),
+            "{:?}",
+            app.state.message_error
+        );
     }
 }
