@@ -1,0 +1,13 @@
+{
+  "schema_version": 2,
+  "suite": "coding-agent-live",
+  "case_count": 5,
+  "started_at": "2026-11-14T08:44:14.130500+00:00",
+  "finished_at": "2026-11-14T08:45:31.690103+00:00",
+  "git_commit": "398a57db615fdfe5e86abd9d15812c6d34e280ce",
+  "git_dirty": true,
+  "provider_profile": "deepseek_flash",
+  "network_mode": "provider-egress",
+  "redaction": "fixture_and_runtime_scan",
+  "package_hash": "sha256:80845669e8b4b61999cf95dbd0f670039827a9508bf2a9a581fbb370a4a21868"
+}
