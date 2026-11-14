@@ -52,10 +52,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "copyright": "",
+    "copyright": "Copyright (c) 2026 AllureCurtain",
     "category": "DeveloperTool",
-    "shortDescription": "AI agent for software development",
-    "longDescription": "Rove is an AI-powered agent that helps with software development tasks, code generation, and project management.",
+    "shortDescription": "Local-first coding agent",
+    "longDescription": "Rove is a local-first coding agent. One persistent Rust runtime drives real tasks inside your workspace while you watch every step, approve sensitive operations, and review files, diffs, and usage. Sessions resume across restarts, and all state stays on your machine.",
     "windows": {
       "nsis": {
         "installMode": "perMachine",
