@@ -1333,16 +1333,14 @@ fn acquire_named_migration_lock(
 }
 
 fn is_lock_contention(error: &std::io::Error) -> bool {
-    if error.kind() == std::io::ErrorKind::WouldBlock {
-        return true;
-    }
     #[cfg(windows)]
     {
-        matches!(error.raw_os_error(), Some(32 | 33))
+        error.kind() == std::io::ErrorKind::WouldBlock
+            || matches!(error.raw_os_error(), Some(32 | 33))
     }
     #[cfg(not(windows))]
     {
-        false
+        error.kind() == std::io::ErrorKind::WouldBlock
     }
 }
 

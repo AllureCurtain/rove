@@ -182,16 +182,14 @@ pub fn acquire_migration_lock_with_timeout(
 /// Windows reports contention as `ERROR_SHARING_VIOLATION` (32) or
 /// `ERROR_LOCK_VIOLATION` (33) rather than `WouldBlock`.
 fn is_lock_contention(error: &std::io::Error) -> bool {
-    if error.kind() == std::io::ErrorKind::WouldBlock {
-        return true;
-    }
     #[cfg(windows)]
     {
-        matches!(error.raw_os_error(), Some(32 | 33))
+        error.kind() == std::io::ErrorKind::WouldBlock
+            || matches!(error.raw_os_error(), Some(32 | 33))
     }
     #[cfg(not(windows))]
     {
-        false
+        error.kind() == std::io::ErrorKind::WouldBlock
     }
 }
 
