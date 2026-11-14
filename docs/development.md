@@ -39,6 +39,8 @@ Config options are authoritative in the environment layer of `apps/bootstrap/src
 | `ROVE_DISABLE_NATIVE_FOLDER_PICKER` | Disable the native folder picker, for headless environments |
 | `ROVE_STATE_*` / `ROVE_MEMORY_*` / `ROVE_CONTEXT_*` / `ROVE_SHELL_*` / `ROVE_ROUTING_*` | Overrides for the corresponding config sections; semantics in `config.rs` |
 
+Execution budgets (`[runtime.execution]` in `.rove/config.toml`) have no `ROVE_*` env mapping; they are TOML-only and apply in a trusted workspace once `project_configuration` is granted. Fields: `max_plan_steps`, `max_step_attempts`, `max_model_turns`, `max_model_turns_per_step` (default 16), `max_tool_calls`, `max_tool_calls_per_step`, `max_plan_revisions`, `max_model_repairs`, `max_finalization_turns`, `max_wall_time_ms`, `max_total_tokens`, `max_cost_microunits`. Semantics live in `ExecutionConfig`/`ExecutionPolicy`.
+
 ## Commands
 
 | Purpose | Command |

@@ -4346,13 +4346,26 @@ async fn replanning_retains_failed_record_and_advances_revision_identity() {
 #[tokio::test]
 async fn planned_step_model_turn_budget_exhaustion_is_explicit() {
     let repeated_tool_call = r#"{"tool":"echo","args":{"message":"keep going"}}"#.to_string();
-    let engine = build_planner_test_engine(vec![
+    // The default per-step ceiling now exceeds the four scripted calls, so pin
+    // an explicit small limit to exercise the exhaustion boundary itself.
+    let mut policy =
+        rove_foundation::execution::ExecutionPolicy::from_max_steps_and_plan_flag(5, true);
+    policy.budgets.max_model_turns_per_step = Some(4);
+    let model = Box::new(FakeModelClient::new(vec![
         r#"{"goal":"bounded step","steps":[{"id":"1","title":"keep calling"}]}"#.to_string(),
         repeated_tool_call.clone(),
         repeated_tool_call.clone(),
         repeated_tool_call.clone(),
         repeated_tool_call,
-    ]);
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::new(
+        model,
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig::new(5, true).with_execution_policy(policy),
+    );
 
     let events = collect_events(&engine, "run a bounded step").await;
     for e in &events {
@@ -4409,6 +4422,53 @@ async fn planned_step_model_turn_budget_exhaustion_is_explicit() {
             reason: TerminationReason::StepLimit,
             output: Some(output),
         }) if output.contains("max_model_turns_per_step=4")
+    ));
+}
+
+#[tokio::test]
+async fn planned_step_survives_more_than_four_model_turns_by_default() {
+    // A real step alternates thinking with tool batches before synthesizing;
+    // the default per-step ceiling must leave room for that instead of
+    // stopping the step at the old compatibility value of four.
+    let tool_call = r#"{"tool":"echo","args":{"message":"keep going"}}"#.to_string();
+    let engine = build_planner_test_engine(vec![
+        r#"{"goal":"bounded step","steps":[{"id":"1","title":"inspect then conclude"}]}"#
+            .to_string(),
+        tool_call.clone(),
+        tool_call.clone(),
+        tool_call.clone(),
+        tool_call.clone(),
+        tool_call.clone(),
+        tool_call,
+        "inspection complete".to_string(),
+    ]);
+
+    let events = collect_events(&engine, "inspect then conclude").await;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::ToolCallStarted { .. }))
+            .count(),
+        6,
+        "the step should have spent six tool-bearing model turns"
+    );
+    assert!(
+        events.iter().any(|event| {
+            matches!(
+                event,
+                StreamEvent::StepResult { record }
+                    if record.status == StepRecordStatus::Succeeded
+                        && record.model_turns_used > 4
+            )
+        }),
+        "the step record must show more than four model turns under the default policy"
+    );
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::Final,
+            ..
+        })
     ));
 }
 

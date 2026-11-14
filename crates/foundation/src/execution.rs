@@ -12,13 +12,16 @@ use rove_models::Usage;
 /// foundation. It is an in-memory policy version until persistence is added.
 pub const EXECUTION_POLICY_VERSION: u32 = 1;
 
-/// Compatibility ceiling for the first bounded planned-step runner.
+/// Per-step model-turn ceiling applied when no explicit limit is configured.
 ///
 /// The public surface still exposes sugar `max_steps`, which maps to the number
 /// of planned step attempts under PlanReact. A separate, named ceiling keeps a
-/// single step from consuming that entire run budget while the multidimensional
-/// config is still being introduced.
-pub const DEFAULT_MAX_MODEL_TURNS_PER_STEP: u32 = 4;
+/// single step from consuming that entire run budget while still leaving room
+/// for real tool use: a step that alternates model thinking with tool batches
+/// plus a final synthesis turn typically needs six to twelve turns, so the
+/// default sits above that range instead of the earlier compatibility value of
+/// four, which stopped tool-using steps before they could conclude.
+pub const DEFAULT_MAX_MODEL_TURNS_PER_STEP: u32 = 16;
 
 /// Default repair ceiling for malformed structured lifecycle model output.
 pub const DEFAULT_MAX_MODEL_REPAIRS: u32 = 1;

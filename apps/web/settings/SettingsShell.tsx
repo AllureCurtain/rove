@@ -765,10 +765,15 @@ function BrowserProvidersSettings({
     setSaveBusy(true);
     setError(null);
     setStatus(null);
-    // Read the secret once, then clear the field regardless of outcome.
+    // Read the secret once and clear the field while the request is in
+    // flight. The credential goes back into the (still uncontrolled) input
+    // only when verification itself fails, so a rejected key, unreachable
+    // endpoint, or unknown model never silently wipes what the user pasted;
+    // a confirmed save leaves the field empty.
     const credential = apiKeyInputRef.current?.value.trim() ?? "";
     if (apiKeyInputRef.current) apiKeyInputRef.current.value = "";
     setHasDraftKey(false);
+    let credentialRejected = false;
     try {
       if (credential) {
         const editing = editingProfileId
@@ -783,6 +788,9 @@ function BrowserProvidersSettings({
           make_default: true,
           expected_revision: editing?.catalogRevision,
           credential,
+        }).catch((onboardError: unknown) => {
+          credentialRejected = true;
+          throw onboardError;
         });
         const refreshed = await onRefreshProviderProfiles();
         const saved = refreshed.find((profile) => profile.id === receipt.profile_id);
@@ -803,10 +811,15 @@ function BrowserProvidersSettings({
     } catch (saveError) {
       setError(describeProviderProbeFailure(saveError, t));
     } finally {
-      if (apiKeyInputRef.current) {
-        apiKeyInputRef.current.value = "";
+      if (credentialRejected && apiKeyInputRef.current) {
+        apiKeyInputRef.current.value = credential;
+        setHasDraftKey(true);
+      } else {
+        if (apiKeyInputRef.current) {
+          apiKeyInputRef.current.value = "";
+        }
+        setHasDraftKey(false);
       }
-      setHasDraftKey(false);
       actionBusyRef.current = false;
       setSaveBusy(false);
     }
