@@ -12,10 +12,14 @@ import type {
   ProviderType,
 } from "../lib/rove-types";
 import {
+  desktopCloseActionAvailable,
   desktopProviderCredentialPromptAvailable,
+  getDesktopCloseAction,
   probeDesktopProvider,
   promptDesktopProviderCredential,
+  setDesktopCloseAction,
   useDesktopProvider,
+  type DesktopCloseAction,
   type DesktopProviderProbe,
 } from "../platform/desktop-commands";
 import { providerCredentialEntryAvailable } from "../platform/desktop-transport";
@@ -286,6 +290,73 @@ export function SettingsShell(props: SettingsShellProps) {
   );
 }
 
+/**
+ * Desktop-only close-behavior card. Hidden outside the host; the host itself
+ * persists the choice in `desktop.json`, so this stays mount-only state.
+ */
+function DesktopCloseActionSettings() {
+  const { t } = useCopy();
+  const [action, setAction] = useState<DesktopCloseAction | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getDesktopCloseAction()
+      .then((value) => {
+        if (!cancelled) setAction(value);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function select(next: DesktopCloseAction) {
+    try {
+      await setDesktopCloseAction(next);
+      setAction(next);
+      setFailed(false);
+    } catch {
+      setFailed(true);
+    }
+  }
+
+  if (!desktopCloseActionAvailable() || failed) {
+    return null;
+  }
+
+  return (
+    <div className="settings-card">
+      <h2>{t("settings.general.closeAction")}</h2>
+      <p className="settings-inline-note">{t("settings.general.closeActionDesc")}</p>
+      <div
+        className="settings-segmented"
+        role="group"
+        aria-label={t("settings.general.closeAction")}
+      >
+        <button
+          type="button"
+          aria-pressed={action === "hide_to_tray"}
+          data-active={action === "hide_to_tray"}
+          onClick={() => void select("hide_to_tray")}
+        >
+          {t("settings.general.closeActionTray")}
+        </button>
+        <button
+          type="button"
+          aria-pressed={action === "quit"}
+          data-active={action === "quit"}
+          onClick={() => void select("quit")}
+        >
+          {t("settings.general.closeActionQuit")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function GeneralSettings({
   theme,
   onThemeChange,
@@ -398,6 +469,7 @@ function GeneralSettings({
           </button>
         </div>
       </div>
+      <DesktopCloseActionSettings />
     </section>
   );
 }

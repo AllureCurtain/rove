@@ -707,6 +707,11 @@ const enUS: CopyDictionary = {
       fontScaleSmaller: "Smaller text",
       fontScaleLarger: "Larger text",
       fontScaleReset: "Reset font size",
+      closeAction: "Closing the window",
+      closeActionDesc:
+        "Choose what happens when you close the Rove window. Quitting stops the app through the normal shutdown.",
+      closeActionTray: "Keep running in the tray",
+      closeActionQuit: "Quit",
     },
     providers: {
       title: "Model providers",

@@ -239,6 +239,43 @@ export async function revealDesktopPath(
   await invokeImpl<unknown>("show_in_folder", { path });
 }
 
+/**
+ * What the Desktop host does on a window close request. `hide_to_tray` keeps
+ * the app alive in the system tray; `quit` exits through the normal drain.
+ */
+export type DesktopCloseAction = "hide_to_tray" | "quit";
+
+export function desktopCloseActionAvailable(): boolean {
+  return desktopTransport() !== null;
+}
+
+function parseCloseAction(value: unknown): DesktopCloseAction {
+  if (value !== "hide_to_tray" && value !== "quit") {
+    throw new Error("Desktop returned an invalid close action.");
+  }
+  return value;
+}
+
+export async function getDesktopCloseAction(
+  invokeImpl: DesktopInvoke = invoke,
+): Promise<DesktopCloseAction> {
+  if (!desktopCloseActionAvailable()) {
+    throw new Error("Close behavior requires the Rove Desktop host.");
+  }
+  return parseCloseAction(await invokeImpl<unknown>("get_close_action"));
+}
+
+export async function setDesktopCloseAction(
+  action: DesktopCloseAction,
+  invokeImpl: DesktopInvoke = invoke,
+): Promise<void> {
+  if (!desktopCloseActionAvailable()) {
+    throw new Error("Close behavior requires the Rove Desktop host.");
+  }
+  parseCloseAction(action);
+  await invokeImpl<unknown>("set_close_action", { action });
+}
+
 export function desktopProviderCredentialPromptAvailable(): boolean {
   return desktopCredentialEntry() === "native";
 }

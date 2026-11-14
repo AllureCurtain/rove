@@ -681,6 +681,10 @@ const zhCN = {
       fontScaleSmaller: "缩小字号",
       fontScaleLarger: "放大字号",
       fontScaleReset: "重置字号",
+      closeAction: "关闭窗口时",
+      closeActionDesc: "选择关闭 Rove 窗口时的行为。「退出」会走正常的关闭流程停止应用。",
+      closeActionTray: "保留在系统托盘中运行",
+      closeActionQuit: "退出",
     },
     providers: {
       title: "模型服务",
