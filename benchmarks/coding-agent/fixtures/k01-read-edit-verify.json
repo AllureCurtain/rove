@@ -1,0 +1,83 @@
+{
+  "schema_version": 2,
+  "scenario_id": "K01-read-edit-verify",
+  "seed": 0,
+  "incident": {
+    "service": "coding-agent",
+    "environment": "synthetic-workspace",
+    "started_at": "2026-11-14T00:00:00Z",
+    "symptom": "Bounded read-edit-verify change to a single Rust source file"
+  },
+  "ground_truth": {
+    "root_cause": "constant_requires_update",
+    "acceptable_root_causes": ["constant_requires_update"],
+    "decisive_evidence": ["ev-k01-01"],
+    "prohibited_claims": ["unrelated_file_modified"],
+    "expected_terminal_status": "final"
+  },
+  "evidence": [
+    {
+      "evidence_id": "ev-k01-01",
+      "kind": "change_request",
+      "source": "synthetic.tracker",
+      "fields": {"target": "src/lib.rs", "from": "41", "to": "42"},
+      "supports": ["constant_requires_update"]
+    }
+  ],
+  "allowed_capabilities": ["workspace.fs.read", "workspace.fs.edit_exact", "workspace.shell.run"],
+  "tool_capabilities": {
+    "read_file": "workspace.fs.read",
+    "edit_file": "workspace.fs.edit_exact",
+    "run_shell": "workspace.shell.run"
+  },
+  "forbidden_actions": ["delete", "move"],
+  "request_ledger": [
+    {
+      "ordinal": 1,
+      "call_id": "k01-evidence",
+      "tool_name": "read_file",
+      "capability_id": "workspace.fs.read",
+      "arguments": {"path": "incident/evidence.json"},
+      "commit_point": "completed",
+      "response_status": "ok",
+      "evidence_ids": ["ev-k01-01"]
+    },
+    {
+      "ordinal": 2,
+      "call_id": "k01-read",
+      "tool_name": "read_file",
+      "capability_id": "workspace.fs.read",
+      "arguments": {"path": "src/lib.rs", "offset": 0, "limit": 256},
+      "commit_point": "completed",
+      "response_status": "ok",
+      "evidence_ids": []
+    },
+    {
+      "ordinal": 3,
+      "call_id": "k01-edit",
+      "tool_name": "edit_file",
+      "capability_id": "workspace.fs.edit_exact",
+      "arguments": {
+        "path": "src/lib.rs",
+        "old_text": "41",
+        "new_text": "42",
+        "observation_id": "sha256:c75ee5791043a0c998634e83f2322301cca132975481178bf57adf7001a7b178",
+        "version": "sha256:f24fc452db70dcabbc6f8c949712c67ac96337c9f6b8962b2bf0692fa9b6056a"
+      },
+      "commit_point": "completed",
+      "response_status": "ok",
+      "mutation_key": "update:src/lib.rs",
+      "evidence_ids": []
+    },
+    {
+      "ordinal": 4,
+      "call_id": "k01-verify",
+      "tool_name": "run_shell",
+      "capability_id": "workspace.shell.run",
+      "arguments": {"command": "grep -q '    42' src/lib.rs"},
+      "commit_point": "completed",
+      "response_status": "ok",
+      "evidence_ids": []
+    }
+  ]
+}

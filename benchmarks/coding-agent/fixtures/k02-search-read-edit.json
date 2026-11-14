@@ -1,0 +1,73 @@
+{
+  "schema_version": 2,
+  "scenario_id": "K02-search-read-edit",
+  "seed": 0,
+  "incident": {
+    "service": "coding-agent",
+    "environment": "synthetic-workspace",
+    "started_at": "2026-11-14T00:05:00Z",
+    "symptom": "Search-driven multi-file edit that must touch only the correct target"
+  },
+  "ground_truth": {
+    "root_cause": "helper_constant_requires_update",
+    "acceptable_root_causes": ["helper_constant_requires_update"],
+    "decisive_evidence": ["ev-k02-01"],
+    "prohibited_claims": ["unrelated_file_modified"],
+    "expected_terminal_status": "final"
+  },
+  "evidence": [
+    {
+      "evidence_id": "ev-k02-01",
+      "kind": "change_request",
+      "source": "synthetic.tracker",
+      "fields": {"target": "src/util.rs", "symbol": "helper", "from": "1", "to": "2"},
+      "supports": ["helper_constant_requires_update"]
+    }
+  ],
+  "allowed_capabilities": ["workspace.fs.read", "workspace.search.text", "workspace.fs.edit_exact"],
+  "tool_capabilities": {
+    "read_file": "workspace.fs.read",
+    "search_code": "workspace.search.text",
+    "edit_file": "workspace.fs.edit_exact"
+  },
+  "forbidden_actions": ["delete", "move"],
+  "request_ledger": [
+    {
+      "ordinal": 1,
+      "call_id": "k02-search",
+      "tool_name": "search_code",
+      "capability_id": "workspace.search.text",
+      "arguments": {"query": "pub fn", "path": "src"},
+      "commit_point": "completed",
+      "response_status": "ok",
+      "evidence_ids": []
+    },
+    {
+      "ordinal": 2,
+      "call_id": "k02-read",
+      "tool_name": "read_file",
+      "capability_id": "workspace.fs.read",
+      "arguments": {"path": "src/util.rs", "offset": 0, "limit": 256},
+      "commit_point": "completed",
+      "response_status": "ok",
+      "evidence_ids": []
+    },
+    {
+      "ordinal": 3,
+      "call_id": "k02-edit",
+      "tool_name": "edit_file",
+      "capability_id": "workspace.fs.edit_exact",
+      "arguments": {
+        "path": "src/util.rs",
+        "old_text": "    1\n",
+        "new_text": "    2\n",
+        "observation_id": "sha256:3651082865d8d1281b7fae230af7f2500b9f57cb0e39df03b7ef84fe4af04975",
+        "version": "sha256:58f3b127143d968783c87ac581a5ce859b46991386a79ef0188b7e2f669e7460"
+      },
+      "commit_point": "completed",
+      "response_status": "ok",
+      "mutation_key": "update:src/util.rs",
+      "evidence_ids": []
+    }
+  ]
+}

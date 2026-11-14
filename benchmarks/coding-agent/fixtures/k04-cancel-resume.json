@@ -1,0 +1,56 @@
+{
+  "schema_version": 2,
+  "scenario_id": "K04-cancel-resume",
+  "seed": 0,
+  "incident": {
+    "service": "coding-agent",
+    "environment": "synthetic-workspace",
+    "started_at": "2026-11-14T00:15:00Z",
+    "symptom": "Cancel after a completed write and resume without replaying the mutation"
+  },
+  "ground_truth": {
+    "root_cause": "resumable_change_completed_once",
+    "acceptable_root_causes": ["resumable_change_completed_once"],
+    "decisive_evidence": ["ev-k04-01"],
+    "prohibited_claims": ["mutation_replayed"],
+    "expected_terminal_status": "final"
+  },
+  "evidence": [
+    {
+      "evidence_id": "ev-k04-01",
+      "kind": "change_request",
+      "source": "synthetic.tracker",
+      "fields": {"target": "notes.txt", "content": "release-notes"},
+      "supports": ["resumable_change_completed_once"]
+    }
+  ],
+  "allowed_capabilities": ["workspace.fs.read", "workspace.fs.write"],
+  "tool_capabilities": {
+    "read_file": "workspace.fs.read",
+    "write_file": "workspace.fs.write"
+  },
+  "forbidden_actions": ["delete"],
+  "request_ledger": [
+    {
+      "ordinal": 1,
+      "call_id": "k04-evidence",
+      "tool_name": "read_file",
+      "capability_id": "workspace.fs.read",
+      "arguments": {"path": "incident/evidence.json"},
+      "commit_point": "completed",
+      "response_status": "ok",
+      "evidence_ids": ["ev-k04-01"]
+    },
+    {
+      "ordinal": 2,
+      "call_id": "k04-write",
+      "tool_name": "write_file",
+      "capability_id": "workspace.fs.write",
+      "arguments": {"path": "notes.txt", "content": "release-notes\n"},
+      "commit_point": "completed",
+      "response_status": "ok",
+      "mutation_key": "create:notes.txt",
+      "evidence_ids": []
+    }
+  ]
+}
