@@ -17,31 +17,65 @@ pub fn rove_bin() -> PathBuf {
             if let Ok(path) = std::env::var("CARGO_BIN_EXE_rove") {
                 return PathBuf::from(path);
             }
-            let status = Command::new(env!("CARGO"))
-                .args(["build", "-p", "rove-cli", "--bin", "rove"])
+            // Ask cargo for the binary path rather than deriving it from the
+            // test executable's location. Deriving `target/<profile>` from
+            // `current_exe` breaks when the runner places test binaries under
+            // `target/<profile>/build/<pkg>/<hash>/` (shared/scratch target
+            // layouts), because the deps parent is no longer the profile dir.
+            let output = Command::new(env!("CARGO"))
+                .args([
+                    "build",
+                    "-p",
+                    "rove-cli",
+                    "--bin",
+                    "rove",
+                    "--message-format=json-render-diagnostics",
+                ])
                 .current_dir(workspace_root())
-                .status()
+                .output()
                 .expect("failed to spawn cargo build for rove-cli");
             assert!(
-                status.success(),
-                "cargo build -p rove-cli --bin rove failed"
+                output.status.success(),
+                "cargo build -p rove-cli --bin rove failed:\n{}",
+                String::from_utf8_lossy(&output.stderr)
             );
-            let profile_dir = std::env::current_exe()
-                .expect("test executable path")
-                .parent()
-                .and_then(|deps| deps.parent())
-                .expect("test executable lives in <target>/<profile>/deps")
-                .to_path_buf();
-            let exe = if cfg!(windows) { "rove.exe" } else { "rove" };
-            let candidate = profile_dir.join(exe);
+            let exe = stdout_bin(&output.stdout).unwrap_or_else(|| {
+                panic!(
+                    "cargo build produced no `rove` executable artifact:\n{}",
+                    String::from_utf8_lossy(&output.stdout)
+                )
+            });
             assert!(
-                candidate.exists(),
+                exe.exists(),
                 "expected built CLI binary at {}",
-                candidate.display()
+                exe.display()
             );
-            candidate
+            exe
         })
         .clone()
+}
+
+/// Pull the `rove` executable path out of `cargo build --message-format=json`.
+fn stdout_bin(stdout: &[u8]) -> Option<PathBuf> {
+    for line in String::from_utf8_lossy(stdout).lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
+        if value.get("reason").and_then(|r| r.as_str()) != Some("compiler-artifact") {
+            continue;
+        }
+        let matches_rove = value
+            .get("target")
+            .and_then(|t| t.get("name"))
+            .and_then(|n| n.as_str())
+            == Some("rove");
+        if matches_rove {
+            if let Some(exe) = value.get("executable").and_then(|e| e.as_str()) {
+                return Some(PathBuf::from(exe));
+            }
+        }
+    }
+    None
 }
 
 pub fn workspace_root() -> PathBuf {
