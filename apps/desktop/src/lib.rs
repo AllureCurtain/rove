@@ -2,6 +2,8 @@ pub mod api_server;
 pub mod commands;
 pub mod config;
 mod lifecycle;
+mod menu;
+mod window_state;
 
 use anyhow::Result;
 use lifecycle::{ExitAction, ExitGate};
@@ -53,13 +55,27 @@ pub fn run() -> Result<()> {
 
             app.manage(server_state);
             app.manage(commands::WorkspaceRoots::for_process());
-            WebviewWindowBuilder::from_config(app, &window_config)?
+            let window = WebviewWindowBuilder::from_config(app, &window_config)?
                 .initialization_script(init_script)
                 .build()?;
+
+            let tracker = window_state::Tracker::for_window(&window);
+            if let Some(saved) = window_state::load() {
+                tracker.apply_saved(&window, saved);
+            }
+            app.manage(tracker);
+            menu::install(app.handle())?;
 
             Ok(())
         })
         .on_window_event(|window, event| {
+            let app = window.app_handle();
+            if let (Some(tracker), Some(webview_window)) = (
+                app.try_state::<window_state::Tracker>(),
+                app.get_webview_window(window.label()),
+            ) {
+                tracker.on_event(&webview_window, event);
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 window.app_handle().exit(0);
@@ -96,6 +112,12 @@ pub fn run() -> Result<()> {
                 }
             }
             RunEvent::Exit => {
+                // Last reliable point to flush window geometry before the
+                // process is gone; CloseRequested/Destroyed may not fire on a
+                // native Quit.
+                if let Some(tracker) = app.try_state::<window_state::Tracker>() {
+                    tracker.save();
+                }
                 // Native macOS Quit can skip ExitRequested. Tauri calls this
                 // before cleanup; join any existing drain before returning.
                 if let Some(state) = app.try_state::<ApiServerState>() {
