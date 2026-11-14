@@ -23,6 +23,7 @@ Steps:
 4. In the TUI:
    - `/model` switches the model, affecting only the next turn.
    - `Ctrl+R` selects a resumable session. Switching to another session loads its model selection, queued messages and selected run's saved transcript. A failed session switch keeps the current session; unavailable history has its own notice. Merely selecting a session does not execute its queue. An unsent composer draft stays available.
+   - Restarting the TUI on a session continues delivery of a queued follow-up: a claim the previous turn already reserved is completed first, then the oldest still-queued message is claimed and run. An `needs_attention` queue is not auto-confirmed — it still needs the same explicit recovery as the Web Recover button.
    - `F2` opens saved history while idle. Left/Right browse earlier/later runs in the current session; Up/Down and PageUp/PageDown scroll; Esc returns to the conversation. Browsing does not change the run you will continue or reactivate old approvals. Missing, corrupt, incomplete or display-limited records are marked explicitly, and you can browse past an unreadable run. Large runs have a bounded display, and nested subagent details are currently omitted with a partial-history notice.
    - Sensitive operations prompt for approval; approve or reject in the dialog.
 
