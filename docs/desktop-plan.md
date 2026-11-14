@@ -117,26 +117,30 @@ Mirror the pilot matrix shape but per-OS:
 
 | Scenario | macOS | Windows | Linux |
 | --- | --- | --- | --- |
-| Install → first launch → onboard provider | ◻ | ◻ | ◻ |
-| Workspace pick + trust + run a turn | ◻ | ◻ | ◻ |
-| Approve/deny tool call | ◻ | ◻ | ◻ |
-| Close window mid-run → reopen → state intact | ◻ | ◻ | ◻ |
-| Second instance refused | ◻ | ◻ | ◻ |
-| Uninstall → data dir preserved | ◻ | ◻ | ◻ |
+| Install → first launch → onboard provider | ✅ | ◻ | ◻ |
+| Workspace pick + trust + run a turn | ✅ | ◻ | ◻ |
+| Approve/deny tool call | ✅ | ◻ | ◻ |
+| Close window mid-run → reopen → state intact | ✅ | ◻ | ◻ |
+| Second instance refused | ✅ | ◻ | ◻ |
+| Uninstall → data dir preserved | ✅ | ◻ | ◻ |
 
 Each cell gets `evidence/desktop/<date>-<os>-<task>/PILOT.md` in the same
 pre-registered format as the web pilot. Unsigned builds are acceptable for
 the matrix; signing is a separate gate.
 
+macOS column: **PASS 2026-11-14** — `evidence/desktop/2026-11-14-macos-acceptance/PILOT.md`.
+Adhoc-signed `.app` from `~/Applications`, isolated `ROVE_DESKTOP_ROOT`,
+live DeepSeek `deepseek-flash`. All six cells green plus the
+stranded-queue Recover path. One open finding on `approved_policy`
+recording (see PILOT.md), filed as a follow-up, not blocking.
+
 ## Suggested order for the next session
 
-1. **Packaging metadata cleanup** (30 min): real description, copyright,
-   confirm icons, fix `category` if needed.
-2. **CI build matrix** (small): extend `desktop.yml` to the three-OS
-   `cargo tauri build` matrix — makes "does it bundle" a standing answer
-   instead of a manual check.
-3. **macOS acceptance run** (owner's machine, ~1 h): build `.app`, install,
-   run the acceptance matrix column; file `evidence/desktop/`.
+1. ~~**Packaging metadata cleanup**~~ done (PR #97).
+2. ~~**CI build matrix**~~ done (PR #98) — ubuntu/windows/macos
+   `cargo tauri build` produce unsigned bundles as workflow artifacts.
+3. ~~**macOS acceptance run**~~ done (2026-11-14) — `.app` PASS on all six
+   cells; evidence in `evidence/desktop/`.
 4. **Window-state + app menu** (normal PR): cheapest visible polish.
 5. **Tray + notifications** (normal PR): biggest UX gap for an agent that
    runs long tasks.
