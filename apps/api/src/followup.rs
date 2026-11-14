@@ -204,7 +204,9 @@ pub(crate) async fn requeue_failed_followup_start(
 /// The delay before the re-drain that follows failed attempt `failed_attempt`:
 /// exponential from `FOLLOWUP_REDRIVE_INITIAL_BACKOFF`, capped.
 pub(crate) fn followup_redrive_backoff(failed_attempt: u32) -> Duration {
-    let doublings = failed_attempt.saturating_sub(1).min(3);
+    // Saturating the doubling count keeps `1 << doublings` from overflowing on
+    // an absurd attempt number; `MAX_BACKOFF` is the real schedule ceiling.
+    let doublings = failed_attempt.saturating_sub(1).min(4);
     FOLLOWUP_REDRIVE_INITIAL_BACKOFF
         .saturating_mul(1 << doublings)
         .min(FOLLOWUP_REDRIVE_MAX_BACKOFF)

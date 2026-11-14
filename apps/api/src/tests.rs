@@ -35,11 +35,13 @@ fn the_successor_start_budget_backs_off_exponentially_and_stays_bounded() {
         FOLLOWUP_REDRIVE_MAX_BACKOFF
     );
     assert_eq!(followup_redrive_backoff(32), FOLLOWUP_REDRIVE_MAX_BACKOFF);
+    // 1s + 2s + 4s + 8s + 15s — the ~30s window a transient failure has to
+    // clear before the successor escalates to needs_attention.
     assert_eq!(
         (1..FOLLOWUP_START_MAX_ATTEMPTS)
             .map(followup_redrive_backoff)
             .sum::<Duration>(),
-        Duration::from_millis(7_000)
+        Duration::from_millis(30_000)
     );
 }
 
