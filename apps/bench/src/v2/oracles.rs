@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use serde_json::Value;
 
@@ -13,6 +14,9 @@ pub struct OracleInput<'a> {
     pub trace: &'a [Value],
     pub truth: &'a FixtureTruth,
     pub ledger: &'a [FixtureLedgerEntry],
+    /// The case workspace after the run — capability oracles assert the file
+    /// change a real agent made actually landed here.
+    pub workspace: &'a Path,
 }
 
 pub fn evaluate_oracles(
@@ -283,6 +287,17 @@ fn evaluate_one(oracle: &BenchmarkOracle, input: &OracleInput<'_>) -> V2OracleRe
                 Vec::new(),
             )
         }
+        BenchmarkOracle::WorkspaceFileContains { path, text, hard } => {
+            let file_path = input.workspace.join(path);
+            let (passed, detail) = match std::fs::read_to_string(&file_path) {
+                Ok(content) if content.contains(text) => {
+                    (true, format!("{path} contains {text:?}"))
+                }
+                Ok(_) => (false, format!("{path} does not contain {text:?}")),
+                Err(error) => (false, format!("{path} is unreadable: {error}")),
+            };
+            ("workspace_file_contains", *hard, passed, detail, Vec::new())
+        }
     };
     V2OracleResult {
         kind: kind.to_string(),
@@ -424,6 +439,7 @@ mod tests {
                 trace: &[],
                 truth: &truth,
                 ledger: &[],
+                workspace: std::path::Path::new("."),
             },
         );
 

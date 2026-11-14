@@ -7,15 +7,20 @@ use serde_json::Value;
 use super::evidence::{V2CaseReport, V2EvidenceManifest, V2Metrics, V2OracleResult};
 use super::oracles::{OracleInput, evaluate_oracles, hard_gate_aggregate};
 use super::schema::{
-    BENCHMARK_V2_SCHEMA_VERSION, BenchmarkScenarioV2, BenchmarkSuiteV2, FailureOutcome,
-    FixtureLedgerEntry, FixtureTruth,
+    BENCHMARK_V2_SCHEMA_VERSION, BenchmarkOracle, BenchmarkProviderProfile, BenchmarkScenarioV2,
+    BenchmarkSuiteV2, FailureOutcome, FixtureLedgerEntry, FixtureTruth, OracleMode,
 };
 use crate::evidence::sanitize_path_component;
 use crate::runner::{BenchmarkRunOptions, run_benchmark_task_with_options};
 use crate::schema::{BenchmarkFile, BenchmarkOutcome};
 use rove_agents::AgentSelector;
+use rove_app_bootstrap::provider::{
+    default_wire_protocol_registry, protocol_client_namespace, wire_protocol_for_provider_type,
+};
 use rove_foundation::execution::{ExecutionPolicy, ExecutionStrategy, StrategySelectionSource};
 use rove_foundation::types::{ApprovalDecision, ApprovalPolicy};
+use rove_models::ModelClient;
+use rove_models::provider::{ProviderClient, ResolvedAuth, Transport, TransportConfig};
 
 pub async fn load_benchmark_suite_v2(path: impl AsRef<Path>) -> std::io::Result<BenchmarkSuiteV2> {
     let path = path.as_ref();
@@ -69,6 +74,12 @@ pub async fn run_benchmark_suite_v2(
     } else {
         suite.matrix.provider_profiles.clone()
     };
+    let real_provider = providers.iter().any(|provider| provider != "fake_contract");
+    let network_mode = if real_provider {
+        "provider-egress"
+    } else {
+        "disabled"
+    };
 
     let mut cases = Vec::new();
     for scenario in &suite.scenarios {
@@ -80,6 +91,7 @@ pub async fn run_benchmark_suite_v2(
                             scenario,
                             profile,
                             provider,
+                            suite,
                             *seed,
                             suite_root,
                             &evidence_root,
@@ -99,7 +111,7 @@ pub async fn run_benchmark_suite_v2(
         "cases": cases,
         "git_commit": git_commit,
         "git_dirty": git_dirty,
-        "network_mode": "disabled",
+        "network_mode": network_mode,
         "redaction": "fixture_and_runtime_scan",
     });
     let package_hash = rove_foundation::prompt_metadata::stable_hash(
@@ -118,7 +130,7 @@ pub async fn run_benchmark_suite_v2(
             .to_string(),
         git_dirty,
         provider_profile: providers.join(","),
-        network_mode: "disabled".to_string(),
+        network_mode: network_mode.to_string(),
         redaction: "fixture_and_runtime_scan".to_string(),
         package_hash,
     };
@@ -135,8 +147,8 @@ pub async fn run_benchmark_suite_v2(
     tokio::fs::write(
         evidence_root.join("DATA_PROVENANCE.md"),
         format!(
-            "# Benchmark V2 Data Provenance\n\nSuite: `{}`\nSchema: `{}`\nNetwork: disabled\nProvider profiles: `{}`\nFixture truth is loaded independently from runtime trace and report output. Hard safety gates are never averaged into quality.\n",
-            suite.name, BENCHMARK_V2_SCHEMA_VERSION, providers.join(", ")
+            "# Benchmark V2 Data Provenance\n\nSuite: `{}`\nSchema: `{}`\nNetwork: `{}`\nProvider profiles: `{}`\nFixture truth is loaded independently from runtime trace and report output. Hard safety gates are never averaged into quality.\n",
+            suite.name, BENCHMARK_V2_SCHEMA_VERSION, network_mode, providers.join(", ")
         ),
     )
     .await?;
@@ -160,6 +172,7 @@ async fn run_case(
     scenario: &BenchmarkScenarioV2,
     profile: &str,
     provider: &str,
+    suite: &BenchmarkSuiteV2,
     seed: u64,
     suite_root: &Path,
     evidence_root: &Path,
@@ -195,7 +208,28 @@ async fn run_case(
     task.name = "case".to_string();
     materialize_fixture_inputs(suite_root, scenario, &truth, &mut task)?;
     apply_failure_schedule(scenario, &mut task)?;
-    let options = benchmark_options(scenario, profile, task.max_steps)?;
+    let mut options = benchmark_options(scenario, profile, task.max_steps)?;
+    if provider != "fake_contract" {
+        if scenario.oracles_mode != OracleMode::Capability {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "scenario {} runs against real provider '{provider}' but oracles_mode is not 'capability'; scripted oracles cannot hold for a non-scripted model",
+                    scenario.id
+                ),
+            ));
+        }
+        let definition = suite.providers.get(provider).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("provider '{provider}' has no entry in suite.providers"),
+            )
+        })?;
+        options.model_client_factory = Some(provider_client_factory(provider, definition)?);
+        // A real model cannot satisfy exact scripted assertions; the oracle
+        // layer scores capability behaviour on the real trace instead.
+        options.capability_oracle_mode = true;
+    }
     let raw_root = case_dir.join("raw");
     let task_report = run_benchmark_task_with_options(&task, &raw_root, &options).await?;
     let runtime_dir = case_dir.join("runtime");
@@ -249,13 +283,15 @@ async fn run_case(
     )
     .await?;
 
+    let case_workspace = raw_root.join("tasks").join("case").join("workspace");
     let oracle_results = evaluate_oracles(
-        &scenario.oracles,
+        &effective_oracles(scenario, provider != "fake_contract"),
         OracleInput {
             report: &oracle_report,
             trace: &trace,
             truth: &truth,
             ledger: &ledger,
+            workspace: &case_workspace,
         },
     );
     let (hard_gate_passed, _) = hard_gate_aggregate(&oracle_results);
@@ -270,6 +306,9 @@ async fn run_case(
         task_report.resumed,
         &oracle_results,
     );
+    // In capability mode the V1 exact-assertion failures are suppressed
+    // inside run_benchmark_task_with_options, so a real-model run's outcome
+    // reflects only artifact presence; the oracle layer is the real score.
     let passed =
         hard_gate_passed && quality_passed && task_report.outcome == BenchmarkOutcome::Passed;
     tokio::fs::write(
@@ -298,6 +337,109 @@ async fn run_case(
         oracle_results,
         metrics,
     })
+}
+
+/// Build a `ModelClient` factory for a suite-declared real provider.
+///
+/// The client is constructed through the same wire-protocol registry and
+/// shared transport the product surfaces use, so a benchmark case exercises
+/// the real provider path rather than a bench-only shim. The credential is
+/// resolved per-call from `auth_env` at engine-build time (a cancel-resume
+/// case builds two engines), so the secret itself is never stored in the
+/// options struct, evidence, or trace.
+fn provider_client_factory(
+    provider_id: &str,
+    definition: &BenchmarkProviderProfile,
+) -> std::io::Result<crate::runner::ModelClientFactory> {
+    let protocol_id = wire_protocol_for_provider_type(&definition.provider_type)
+        .map_err(std::io::Error::other)?;
+    let registry = default_wire_protocol_registry();
+    let protocol = registry
+        .get(&protocol_id)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    let namespace = protocol_client_namespace(&protocol_id);
+    let transport = std::sync::Arc::new(
+        Transport::new(TransportConfig::default())
+            .map_err(|error| std::io::Error::other(error.to_string()))?,
+    );
+    let base_url = definition.base_url.trim().trim_end_matches('/').to_string();
+    let model = definition.model.trim().to_string();
+    let auth_env = definition.auth_env.clone();
+    let options = definition.options;
+    let provider_id = provider_id.to_string();
+    Ok(Box::new(move || {
+        let auth = match &auth_env {
+            Some(env) => {
+                let secret = std::env::var(env).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!(
+                            "provider '{provider_id}' requires env var '{env}' holding the API credential"
+                        ),
+                    )
+                })?;
+                ResolvedAuth::bearer(secret)
+                    .map_err(|error| std::io::Error::other(error.to_string()))?
+            }
+            None => ResolvedAuth::none(),
+        };
+        let config = rove_models::provider::ProviderClientConfig {
+            client_namespace: namespace.clone(),
+            base_url: base_url.clone(),
+            model: model.clone(),
+            auth,
+            headers: Vec::new(),
+            options,
+            protocol_options: serde_json::json!({}),
+        };
+        ProviderClient::new(
+            config,
+            std::sync::Arc::clone(&protocol),
+            std::sync::Arc::clone(&transport),
+        )
+        .map(|client| Box::new(client) as Box<dyn ModelClient>)
+        .map_err(|error| std::io::Error::other(error.to_string()))
+    }))
+}
+
+/// The oracle list a case actually scores. Scripted mode (fake_contract)
+/// applies every declared oracle — the script makes the transcript
+/// reproducible. A real provider swaps to capability mode, which drops the
+/// oracles that encode the scripted transcript (exact ledger, exact tool-call
+/// counts, exact-output equality, evidence-id pinning) because a real agent
+/// legitimately deviates from the script while still exercising the same
+/// capability; behavioural oracles still apply.
+fn effective_oracles(scenario: &BenchmarkScenarioV2, real_provider: bool) -> Vec<BenchmarkOracle> {
+    if !real_provider {
+        return scenario.oracles.clone();
+    }
+    scenario
+        .oracles
+        .iter()
+        .filter(|oracle| match oracle {
+            // The scripted ledger/count/evidence-id oracles pin the FakeTurn
+            // transcript; a real model legitimately deviates while still
+            // exercising the capability, so they cannot hold.
+            BenchmarkOracle::FixtureLedgerMatches { .. }
+            | BenchmarkOracle::ToolCallCount { .. }
+            | BenchmarkOracle::EvidenceCitationsValid { .. } => false,
+            // Exact *count* assertions are script-pinned. `$.tool_mutations`
+            // is NOT dropped: a mutation-free run is a hard safety property a
+            // real model must satisfy under reject_all_mutation. The
+            // `$.agent_output.*` assertions read the scripted JSON the Fake
+            // turns emit as their final text — a real model answers in prose,
+            // so they are dropped rather than marking a capable run failed.
+            BenchmarkOracle::JsonPathEquals { path, .. } => {
+                !matches!(
+                    path.as_str(),
+                    "$.tool_calls" | "$.tool_failures" | "$.steps"
+                ) && !path.starts_with("$.agent_output.")
+            }
+            BenchmarkOracle::JsonPathContains { path, .. } => !path.starts_with("$.agent_output."),
+            _ => true,
+        })
+        .cloned()
+        .collect()
 }
 
 fn benchmark_options(
@@ -359,6 +501,8 @@ fn benchmark_options(
         execution_policy: Some(policy),
         approval_policy,
         approval_decision,
+        model_client_factory: None,
+        capability_oracle_mode: false,
     })
 }
 
@@ -698,8 +842,12 @@ fn git_output<const N: usize>(args: [&str; N]) -> Option<String> {
 
 fn render_summary(manifest: &V2EvidenceManifest, cases: &[V2CaseReport]) -> String {
     let mut output = format!(
-        "# Benchmark V2: {}\n\n- Schema: {}\n- Cases: {}\n- Network: disabled\n- Package hash: `{}`\n\n| Case | Result | Safety | Quality | Hard failures |\n|---|---|---|---|---|\n",
-        manifest.suite, manifest.schema_version, manifest.case_count, manifest.package_hash,
+        "# Benchmark V2: {}\n\n- Schema: {}\n- Cases: {}\n- Network: {}\n- Package hash: `{}`\n\n| Case | Result | Safety | Quality | Hard failures |\n|---|---|---|---|---|\n",
+        manifest.suite,
+        manifest.schema_version,
+        manifest.case_count,
+        manifest.network_mode,
+        manifest.package_hash,
     );
     for case in cases {
         output.push_str(&format!(

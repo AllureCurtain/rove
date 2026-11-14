@@ -15,6 +15,7 @@ use rove_foundation::root::{Workspace, WorkspaceKind};
 use rove_foundation::types::{
     ApprovalDecision, ApprovalPolicy, JobId, RunId, SessionId, TerminationReason,
 };
+use rove_models::ModelClient;
 use rove_models::fake::{FakeModelClient, FakeTurn};
 use rove_state::state::artifacts::RunArtifactRecorder;
 use rove_state::state::store::{RunHandle, StateStore};
@@ -87,7 +88,12 @@ pub async fn run_benchmark_suite(
     Ok(report)
 }
 
-#[derive(Debug, Clone)]
+/// Builds one `ModelClient` per engine construction. A cancel-resume task
+/// builds two engines, so the factory is called once per engine rather than
+/// sharing a single client across the whole task.
+pub(crate) type ModelClientFactory =
+    Box<dyn Fn() -> std::io::Result<Box<dyn ModelClient>> + Send + Sync>;
+
 pub(crate) struct BenchmarkRunOptions {
     pub agent_selector: Option<AgentSelector>,
     pub workspace_agent_authorized: bool,
@@ -97,6 +103,15 @@ pub(crate) struct BenchmarkRunOptions {
     pub execution_policy: Option<ExecutionPolicy>,
     pub approval_policy: ApprovalPolicy,
     pub approval_decision: ApprovalDecision,
+    /// Model-client factory injected by the caller. Called once per engine
+    /// construction (a cancel-resume task builds two engines). `None` keeps
+    /// the deterministic scripted `FakeModelClient` driven by `task.turns`.
+    pub model_client_factory: Option<ModelClientFactory>,
+    /// Skips the exact-match V1 assertions (expected_output_contains,
+    /// expected_files content, expected_summary_contains, terminal==final)
+    /// that a non-scripted model cannot deterministically satisfy. Oracle
+    /// evaluation still runs on the real trace and report.
+    pub capability_oracle_mode: bool,
 }
 
 impl Default for BenchmarkRunOptions {
@@ -110,6 +125,8 @@ impl Default for BenchmarkRunOptions {
             execution_policy: None,
             approval_policy: ApprovalPolicy::Auto,
             approval_decision: ApprovalDecision::Reject,
+            model_client_factory: None,
+            capability_oracle_mode: false,
         }
     }
 }
@@ -197,42 +214,67 @@ pub(crate) async fn run_benchmark_task_with_options(
     let mut check_results = Vec::new();
     let mut failures = Vec::new();
 
-    for expected in &task.expected_output_contains {
-        if !output.as_deref().unwrap_or_default().contains(expected) {
-            failures.push(format!("output did not contain {expected:?}"));
-        }
-    }
-    for expected in &task.expected_files {
-        let path = workspace_root.join(&expected.path);
-        if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
-            failures.push(format!("expected file missing: {}", expected.path));
-        } else if !expected.content.is_empty() {
-            match tokio::fs::read_to_string(&path).await {
-                Ok(actual) if actual == expected.content => {}
-                Ok(_) => {
-                    failures.push(format!("expected file content mismatch: {}", expected.path))
-                }
-                Err(error) => failures.push(format!(
-                    "failed to read expected file {}: {error}",
-                    expected.path
-                )),
+    // Capability-oracle mode runs a real (non-scripted) model. The exact
+    // content/count assertions below encode the scripted transcript and cannot
+    // hold for a real agent; what the run must still produce is a completed
+    // report plus trace, which the oracle layer then scores behaviourally.
+    if !options.capability_oracle_mode {
+        for expected in &task.expected_output_contains {
+            if !output.as_deref().unwrap_or_default().contains(expected) {
+                failures.push(format!("output did not contain {expected:?}"));
             }
         }
-    }
-    if !task.expected_summary_contains.is_empty() {
-        match tokio::fs::read_to_string(&artifacts.task_state_json).await {
-            Ok(state_content) => {
-                for expected in &task.expected_summary_contains {
-                    if !state_content.contains(expected) {
-                        failures.push(format!(
-                            "task_state did not contain expected summary {expected:?}"
-                        ));
+        for expected in &task.expected_files {
+            let path = workspace_root.join(&expected.path);
+            if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+                failures.push(format!("expected file missing: {}", expected.path));
+            } else if !expected.content.is_empty() {
+                match tokio::fs::read_to_string(&path).await {
+                    Ok(actual) if actual == expected.content => {}
+                    Ok(_) => {
+                        failures.push(format!("expected file content mismatch: {}", expected.path))
+                    }
+                    Err(error) => failures.push(format!(
+                        "failed to read expected file {}: {error}",
+                        expected.path
+                    )),
+                }
+            }
+        }
+        if !task.expected_summary_contains.is_empty() {
+            match tokio::fs::read_to_string(&artifacts.task_state_json).await {
+                Ok(state_content) => {
+                    for expected in &task.expected_summary_contains {
+                        if !state_content.contains(expected) {
+                            failures.push(format!(
+                                "task_state did not contain expected summary {expected:?}"
+                            ));
+                        }
                     }
                 }
+                Err(e) => {
+                    failures.push(format!("failed to read task_state for summary check: {e}"))
+                }
             }
-            Err(e) => failures.push(format!("failed to read task_state for summary check: {e}")),
+        }
+        if reason != TerminationReason::Final {
+            failures.push(format!("expected final termination, got {reason:?}"));
+        }
+
+        for check in &task.checks {
+            let result = run_check(check, &workspace_root, &artifacts).await;
+            if !result.passed {
+                failures.push(format!(
+                    "[{}] {}: {}",
+                    result.kind, result.description, result.detail
+                ));
+            }
+            check_results.push(result);
         }
     }
+
+    // Artifact existence is asserted in both modes — the oracle layer cannot
+    // score a run whose report or trace is missing.
     for artifact in [
         &artifacts.trace_jsonl,
         &artifacts.task_state_json,
@@ -241,20 +283,6 @@ pub(crate) async fn run_benchmark_task_with_options(
         if !tokio::fs::try_exists(artifact).await.unwrap_or(false) {
             failures.push(format!("artifact missing: {}", artifact.display()));
         }
-    }
-    if reason != TerminationReason::Final {
-        failures.push(format!("expected final termination, got {reason:?}"));
-    }
-
-    for check in &task.checks {
-        let result = run_check(check, &workspace_root, &artifacts).await;
-        if !result.passed {
-            failures.push(format!(
-                "[{}] {}: {}",
-                result.kind, result.description, result.detail
-            ));
-        }
-        check_results.push(result);
     }
 
     Ok(BenchmarkTaskReport {
@@ -502,10 +530,13 @@ fn benchmark_engine(
     max_steps: u32,
     options: &BenchmarkRunOptions,
 ) -> std::io::Result<Engine> {
-    let model = Box::new(FakeModelClient::with_turns(
-        "benchmark fallback response".to_string(),
-        turns,
-    ));
+    let model: Box<dyn ModelClient> = match &options.model_client_factory {
+        Some(factory) => factory()?,
+        None => Box::new(FakeModelClient::with_turns(
+            "benchmark fallback response".to_string(),
+            turns,
+        )),
+    };
     let policy = ShellPolicy {
         timeout_ms: 10_000,
         max_output_bytes: 64 * 1024,

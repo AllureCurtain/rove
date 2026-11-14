@@ -21,8 +21,38 @@ pub struct BenchmarkSuiteV2 {
     #[serde(default)]
     pub profiles: Vec<String>,
     pub scenarios: Vec<BenchmarkScenarioV2>,
+    /// Provider profiles the matrix may reference by name. `fake_contract`
+    /// is built in and must not be redefined; any other id declared in
+    /// `matrix.provider_profiles` must resolve to an entry here and wires a
+    /// real `ModelClient` into the runner.
+    #[serde(default)]
+    pub providers: std::collections::BTreeMap<String, BenchmarkProviderProfile>,
     #[serde(default)]
     pub matrix: BenchmarkMatrix,
+}
+
+/// A real provider endpoint a V2 suite may run scenarios against.
+///
+/// The deterministic `fake_contract` profile needs no entry: it is the
+/// scripted fake already wired into the V1 bridge. Every other id in
+/// `matrix.provider_profiles` is looked up here and built through the same
+/// wire-protocol registry the product surfaces use, so a benchmark case
+/// exercises the real provider path rather than a bench-only shim.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkProviderProfile {
+    /// Product provider type: `openai`, `openai-responses`, `anthropic`,
+    /// `ollama`. Mapped to the wire protocol id by the same
+    /// `wire_protocol_for_provider_type` the app uses.
+    pub provider_type: String,
+    pub base_url: String,
+    pub model: String,
+    /// Environment variable holding the bearer credential. The variable is
+    /// read at case time; its value never lands in evidence because the
+    /// ledger and trace only carry the scenario traffic.
+    #[serde(default)]
+    pub auth_env: Option<String>,
+    #[serde(default)]
+    pub options: rove_models::ProviderOptions,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +71,16 @@ pub struct BenchmarkScenarioV2 {
     pub failures: Vec<FailureScheduleEntry>,
     #[serde(default)]
     pub oracles: Vec<BenchmarkOracle>,
+    /// How the oracle list is interpreted when the case runs against a real
+    /// provider. `"scripted"` (default) applies every oracle verbatim — the
+    /// exact counts, exact ledger and exact terminal status a `FakeTurn`
+    /// script makes reproducible. `"capability"` drops oracles that encode
+    /// the scripted transcript (exact counts, exact ledger, exact-output
+    /// equality) because a real model legitimately deviates from the script;
+    /// behavioural oracles (capability called/not-called, no-secret,
+    /// no-duplicate-mutation, artifact presence) still apply.
+    #[serde(default)]
+    pub oracles_mode: OracleMode,
     /// The scripted task is an ordinary public BenchmarkTask. It is optional
     /// for validation-only cases, but execution cases must provide one.
     #[serde(default)]
@@ -131,6 +171,17 @@ pub enum FailureOutcome {
     ResponseLossAfterCommit,
 }
 
+/// Oracle strictness for a case. Scripted mode is the deterministic
+/// regression gate; capability mode scores whether the scenario's exercised
+/// capability happened without pinning the transcript a real model produced.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OracleMode {
+    #[default]
+    Scripted,
+    Capability,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BenchmarkOracle {
@@ -206,6 +257,16 @@ pub enum BenchmarkOracle {
         #[serde(default)]
         hard: bool,
     },
+    /// The workspace file at `path` exists and its content contains `text`.
+    /// This is the capability-oracle counterpart of `expected_files`: it
+    /// asserts the edit a real agent made actually landed in the workspace,
+    /// without pinning the transcript the model used to get there.
+    WorkspaceFileContains {
+        path: String,
+        text: String,
+        #[serde(default)]
+        hard: bool,
+    },
 }
 
 impl BenchmarkOracle {
@@ -224,7 +285,8 @@ impl BenchmarkOracle {
             | Self::NoSecretPattern { hard }
             | Self::NoDuplicateExternalEffect { hard }
             | Self::TerminalStatus { hard, .. }
-            | Self::OutputNotContains { hard, .. } => *hard,
+            | Self::OutputNotContains { hard, .. }
+            | Self::WorkspaceFileContains { hard, .. } => *hard,
         }
     }
 }
@@ -451,6 +513,38 @@ impl BenchmarkSuiteV2 {
                     "matrix profile '{profile}' is not declared by the suite"
                 ));
             }
+        }
+        for provider in &self.matrix.provider_profiles {
+            if provider == "fake_contract" {
+                continue;
+            }
+            match self.providers.get(provider) {
+                Some(definition) => {
+                    if !matches!(
+                        definition.provider_type.as_str(),
+                        "openai" | "openai-responses" | "anthropic" | "ollama"
+                    ) {
+                        errors.push(format!(
+                            "provider '{provider}' has unsupported provider_type '{}'",
+                            definition.provider_type
+                        ));
+                    }
+                    if definition.base_url.trim().is_empty() && definition.provider_type != "ollama"
+                    {
+                        errors.push(format!("provider '{provider}' has an empty base_url"));
+                    }
+                    if definition.model.trim().is_empty() {
+                        errors.push(format!("provider '{provider}' has an empty model"));
+                    }
+                }
+                None => errors.push(format!(
+                    "matrix provider '{provider}' has no entry in suite.providers"
+                )),
+            }
+        }
+        if self.providers.contains_key("fake_contract") {
+            errors
+                .push("suite.providers must not redefine the built-in 'fake_contract'".to_string());
         }
         if errors.is_empty() {
             Ok(())

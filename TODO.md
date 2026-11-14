@@ -11,11 +11,10 @@ Updated: 2026-11-14
 
 Ordered by priority.
 
-1. **Real-provider benchmark suite** — `benchmarks/coding-agent` is green on `fake_contract`; run it against `deepseek-flash` for a measured real-model result. (Cost: ~1.7M token/turn observed on chatty runs.)
-2. **Stranded-queue auto-recovery design** — `needs_attention` is now a ~30s window before escalation (PR #83); the remaining question is whether/when a *failed-but-drainable* turn should auto-confirm rather than require the Recover click. Deliberate-consent trade-offs in `docs/decisions.md`.
-3. **Issue #30 — Web+API plan approval bar** (approve-mode split + reject, design doc §6 `PlanApprovalBar`). Unimplemented feature (size M): locate pending plan-approval state (StreamEvent / product controls / `input_needed`), build `PlanApprovalBar` above the composer, persist chosen mode to `default_approval_policy`. Not started.
-4. **TUI history follow-up** — browse beyond a single run's display budget and show nested subagent details; the current run browser marks these limits explicitly.
-5. **F.5 TUI part** — queued successor messages resume delivery after a TUI restart (CLI).
+1. **Stranded-queue auto-recovery design** — `needs_attention` is now a ~30s window before escalation (PR #83); the remaining question is whether/when a *failed-but-drainable* turn should auto-confirm rather than require the Recover click. Deliberate-consent trade-offs in `docs/decisions.md`.
+2. **Issue #30 — Web+API plan approval bar** (approve-mode split + reject, design doc §6 `PlanApprovalBar`). Unimplemented feature (size M): locate pending plan-approval state (StreamEvent / product controls / `input_needed`), build `PlanApprovalBar` above the composer, persist chosen mode to `default_approval_policy`. Not started.
+3. **TUI history follow-up** — browse beyond a single run's display budget and show nested subagent details; the current run browser marks these limits explicitly.
+4. **F.5 TUI part** — queued successor messages resume delivery after a TUI restart (CLI).
 
 ## Known local-machine issues (not CI)
 
@@ -39,6 +38,7 @@ Ordered by priority.
 
 Keep only the last 10 entries.
 
+- 2026-11-14 Real-provider benchmark suite `benchmarks/coding-agent-live` verified end-to-end on `deepseek-flash` (PR TBD): a `ModelClientFactory` injected at `BenchmarkRunOptions` replaces the hardwired `FakeModelClient`, provider resolved through the same `default_wire_protocol_registry` + credential-from-`auth_env` as the product; per-scenario `oracles_mode: "capability"` drops transcript-pinned oracles for behavioural ones (new `workspace_file_contains` kind). All 5 scenarios PASS (K04 = real cancel+resume with no replayed mutation; K05 = rejected write with `tool_mutations: []`). ~24–44k tokens/case. Deterministic `fake_contract` suite unchanged and still green; live suite is not a CI gate. Defect fixed in-flight: `max_steps` 8→24 for exploratory real models.
 - 2026-11-14 Real-provider engineering pilot (P0): supervised `deepseek-flash`/`v4-pro` trial of the Web console via ego-lite. 12-row task matrix all PASS on `main` — understand code, bounded change (regression-replay = real upstream `31cbfdb`), approve/deny, continue+queue, cancel, refresh/restart recovery, duplicate-launch refusal, byte-exact inspect+revert, workspace+fork isolation, long history, typed failure paths. Exposed 7 defects; 4 fixed in-flight (`rove_bin` path `3deb4cd`, per-step budget `717b156`/`6693bbb`, context 128k `5190b6b`, verify-key retention `42b1b44`), 1 open (issue #80), 1 mitigated (stranded-queue PR #83), 1 noted (model behavior). Summary `evidence/pilot/PILOT_REPORT.md` (PR #81); per-run `PILOT.md` pre-registered→actual→verify→verdict.
 - 2026-11-14 Transcript projection no longer drops tool-call cards at ~2,000 events (issue #80, PR #82): `MAX_SNAPSHOT_EVENTS` 2000→50000 + reader `MAX_EVENTS_PER_RUN`/`MAX_TOTAL_EVENTS` 20000→50000/25000→60000. Verified real-provider: a 4042-event `deepseek-flash` turn projected whole with `partial_reasons` empty and the `edit_file` rollback card at seq 4040-4042 (PR #84 evidence).
 - 2026-11-14 Stranded-queue `needs_attention` deadlock mitigated (PR #83): successor start redrive window ~7s→~30s (4→6 attempts, backoff 1s/2s/4s/8s/15s). Transient provider/workspace failures self-heal inside the window; persistent misconfiguration still escalates and the confirm/Recover path is unchanged.
