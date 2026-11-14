@@ -28,18 +28,20 @@ use super::validation::{
 
 const CATALOG_SNAPSHOT_ATTEMPTS: usize = 3;
 const MAX_TRANSCRIPT_RUNS: usize = 256;
-/// One run may deliver this many canonical events in a single page. Subagent
-/// delegation (#31) makes real runs chatty — a parent turn that fans out
-/// several subagent events per tool call crosses the old 2,000 window quickly,
-/// and the cap surfaced only as an unexplained `response_limit_reached`
-/// partial reason mid-run with no cursor to continue from. 20k covers the
-/// observed delegation runs with headroom while `MAX_TOTAL_EVENTS` still
-/// bounds the whole response.
-const MAX_EVENTS_PER_RUN: usize = 20_000;
-/// Total canonical events across every run segment in one response. Raised in
-/// step with `MAX_EVENTS_PER_RUN` so a single maximal run still fits inside
-/// the response budget instead of ending at exactly its own ceiling.
-const MAX_TOTAL_EVENTS: usize = 25_000;
+/// One run may deliver this many canonical events in a single page. Chatty
+/// real-provider models inflate this far past tool-call count: a
+/// `deepseek-flash` turn emits tens of thousands of `thinking_delta`/`llm_chunk`
+/// rows, all indexed and all projected (the thinking block and answer text are
+/// rebuilt from them). A single observed run reached ~32k indexed events, so
+/// the old 20k window still truncated mid-run (issue #80). The byte caps below
+/// bound the payload — 32k deltas are only ~4 MiB — so the count bound can sit
+/// above the largest observed run with headroom.
+const MAX_EVENTS_PER_RUN: usize = 50_000;
+/// Total canonical events across every run segment in one response. Kept above
+/// `MAX_EVENTS_PER_RUN` so a single maximal run still fits inside the response
+/// budget instead of ending at exactly its own ceiling, with room for the
+/// neighbouring run segments a real page carries.
+const MAX_TOTAL_EVENTS: usize = 60_000;
 const MAX_EVENT_JSON_BYTES: usize = 1_048_576;
 const MAX_TOTAL_EVENT_JSON_BYTES: usize = 16 * 1_048_576;
 const MAX_REPORT_BYTES: usize = 256 * 1_024;

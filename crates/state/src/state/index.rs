@@ -11,7 +11,16 @@ use rove_foundation::events::StreamEvent;
 
 pub const CURRENT_SCHEMA_VERSION: i64 = 6;
 const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
-const MAX_SNAPSHOT_EVENTS: usize = 2_000;
+/// Upper bound on the durable events one `run_event_snapshot` read returns.
+///
+/// This is a load-time bound, not a data cap: every caller supplies its own
+/// `limit` and the per-event / total payload byte limits below bound memory.
+/// The old 2,000 clamp silently truncated the product transcript projection
+/// mid-run — the reader asked for `MAX_EVENTS_PER_RUN` but the index returned
+/// at most 2,000 rows, surfacing only as an unexplained `response_limit_reached`
+/// partial that dropped late tool-call cards (issue #80). Delegated real runs
+/// reach ~32k indexed events; 50k leaves headroom.
+const MAX_SNAPSHOT_EVENTS: usize = 50_000;
 const MAX_SNAPSHOT_EVENT_JSON_BYTES: usize = 1_048_576;
 const MAX_SNAPSHOT_EVENT_JSON_TOTAL_BYTES: usize = 16 * 1_048_576;
 const RUNS_BY_JOB_INDEX: &str = "idx_runs_job_started";
@@ -3667,6 +3676,37 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(bounded_snapshot_prefix_len(&metadata, 17), 16);
+    }
+
+    #[test]
+    fn snapshot_event_count_bound_covers_chatty_runs() {
+        // Regression for issue #80: a real delegated run crosses 2,000 indexed
+        // events easily, and the old `MAX_SNAPSHOT_EVENTS = 2_000` clamp made
+        // `run_event_snapshot` return at most 2,000 rows + `has_more` even when
+        // the caller asked for more — dropping late tool-call cards from the
+        // product transcript. The byte caps bound payload, not the count.
+        let (_temp, index, _session_id, job_id, run_id) = indexed_run();
+        let event = StreamEvent::RunStarted {
+            run_id,
+            job_id,
+            user_message: "chatty".to_string(),
+            content_blocks: Vec::new(),
+        };
+        // Keep each row tiny so the total-payload cap (16 MiB) is never the
+        // reason a row is held back — only the count bound is under test.
+        let small_json = r#"{"type":"run_started"}"#;
+        for seq in 1..=2_500_u64 {
+            index.append_event(run_id, seq, &event, small_json).unwrap();
+        }
+
+        let snapshot = index
+            .run_event_snapshot(run_id, 0, usize::MAX)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(snapshot.events.len(), 2_500);
+        assert!(!snapshot.has_more);
+        assert_eq!(snapshot.high_water_seq, 2_500);
     }
 
     #[test]
