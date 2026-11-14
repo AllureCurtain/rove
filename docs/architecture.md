@@ -1,5 +1,7 @@
 # Architecture
 
+For a self-contained 10-minute description aimed at a reviewer, start with [docs/system-overview.md](system-overview.md); this file is the detailed reference. A rendered layer diagram lives at [docs/architecture.svg](architecture.svg).
+
 ## Overview
 
 ```
