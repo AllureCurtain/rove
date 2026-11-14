@@ -220,7 +220,37 @@ pub struct JobStateResponse {
     #[serde(default, skip_serializing_if = "is_false")]
     pub answer_aborted: bool,
     pub pending_approvals: Vec<PendingApprovalResponse>,
+    /// Plans awaiting an approve/reject decision on the plan gate. Kept
+    /// separate from `pending_approvals` (tool calls) because a plan decision
+    /// carries an approval-mode choice, not just approve/reject.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_plan_approvals: Vec<PendingPlanApprovalResponse>,
     pub pending_inputs: Vec<PendingInputResponse>,
+}
+
+/// A pending plan gate projected to the interface.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PendingPlanApprovalResponse {
+    /// Pending-approval id the `/jobs/{job_id}/plan-approvals/{approval_id}`
+    /// route resolves against. Minted per gate, not the plan ULID.
+    #[schema(value_type = String, format = "ulid")]
+    pub approval_id: CallId,
+    /// The drafted plan under review.
+    pub plan: rove_foundation::types::TaskPlan,
+    /// Approval modes the interface may offer (`ask`, `auto`).
+    #[schema(value_type = Vec<String>)]
+    pub offered_modes: Vec<rove_foundation::types::ApprovalPolicy>,
+}
+
+/// Decision submitted to a pending plan gate.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SubmitPlanApprovalRequest {
+    /// `"reject"` refuses the plan outright. Any of the offered modes
+    /// (`"ask"`, `"auto"`) approves it and sets the run's approval policy for
+    /// the plan's steps — the approve-mode split.
+    #[schema(value_type = String, example = "auto")]
+    pub mode: String,
 }
 
 /// Whether a run kept a partial answer: the user stopped the turn after it had

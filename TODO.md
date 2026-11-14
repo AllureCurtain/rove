@@ -12,7 +12,7 @@ Updated: 2026-11-14
 Ordered by priority.
 
 1. **Stranded-queue auto-recovery design** — `needs_attention` is now a ~30s window before escalation (PR #83); the remaining question is whether/when a *failed-but-drainable* turn should auto-confirm rather than require the Recover click. Deliberate-consent trade-offs in `docs/decisions.md`.
-2. **Issue #30 — Web+API plan approval bar** (approve-mode split + reject, design doc §6 `PlanApprovalBar`). Unimplemented feature (size M): locate pending plan-approval state (StreamEvent / product controls / `input_needed`), build `PlanApprovalBar` above the composer, persist chosen mode to `default_approval_policy`. Not started.
+2. **Issue #30 — Web+API plan approval bar** (approve-mode split + reject, design doc §6 `PlanApprovalBar`). Engine+API landed (PR pending): `PlanApprovalProvider` gate in the plan loop emits `plan_approval_needed`/`plan_approval_resolved`, attached under `Ask`; `POST /jobs/{id}/plan-approvals/{id}` resolves with an approve-mode or reject; `pending_plan_approvals` is on job state. Remaining Web slice: `PlanApprovalBar` above the composer + persist chosen mode to `default_approval_policy`.
 3. **TUI history follow-up** — browse beyond a single run's display budget and show nested subagent details; the current run browser marks these limits explicitly.
 4. **F.5 TUI part** — queued successor messages resume delivery after a TUI restart (CLI).
 

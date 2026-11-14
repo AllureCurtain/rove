@@ -450,6 +450,7 @@ pub(crate) fn new_job_record(input: NewJobRecord<'_>) -> Arc<JobRecord> {
         status: Mutex::new(RunStatus::Running),
         events: Mutex::new(Vec::new()),
         pending_approvals: Mutex::new(HashMap::new()),
+        pending_plan_approvals: Mutex::new(HashMap::new()),
         pending_inputs: Mutex::new(HashMap::new()),
         tx,
         handle: Mutex::new(None),

@@ -219,6 +219,86 @@ pub trait ToolApprovalProvider: Send + Sync {
     }
 }
 
+/// Plan-approval request sent from the engine to an interface after the
+/// planner drafts a plan and before the first step runs.
+///
+/// The interface answers with the approval mode the user picked, which is
+/// also the approval policy the engine should apply to the plan's steps —
+/// the approve-mode split is what distinguishes a plan gate from a tool
+/// gate: approving a plan is simultaneously a decision about how the rest of
+/// the run may mutate the workspace.
+#[derive(Debug, Clone)]
+pub struct PlanApprovalRequest {
+    /// Identifies this pending plan decision on the interface's side (the
+    /// pending-approval id). Not the plan's ULID — a fresh CallId is minted so
+    /// the plan gate can share the existing pending-approval channel.
+    pub approval_id: CallId,
+    pub plan: TaskPlan,
+    /// Approval modes the interface may offer, in display order. Always
+    /// non-empty; the engine derives it from the run's active policy.
+    pub offered_modes: Vec<ApprovalPolicy>,
+}
+
+/// The interface's answer to a [`PlanApprovalRequest`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanApprovalDecision {
+    /// Run the plan under the given approval policy (one of the offered
+    /// modes). `Ask` keeps per-tool approval; `Auto` lets the run proceed;
+    /// `Never` is a valid mode when the interface wants a read-only plan.
+    Approve(ApprovalPolicy),
+    /// Refuse the plan; the run terminates without executing a step.
+    Reject,
+}
+
+/// A registered plan-approval request whose interface decision is awaited.
+pub struct PendingPlanApproval {
+    response: Pin<Box<dyn Future<Output = PlanApprovalDecision> + Send + 'static>>,
+}
+
+impl PendingPlanApproval {
+    pub fn new<F>(response: F) -> Self
+    where
+        F: Future<Output = PlanApprovalDecision> + Send + 'static,
+    {
+        Self {
+            response: Box::pin(response),
+        }
+    }
+
+    pub async fn resolve(self) -> PlanApprovalDecision {
+        self.response.await
+    }
+}
+
+impl std::fmt::Debug for PendingPlanApproval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingPlanApproval")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Interface-provided channel for approving a drafted plan before execution.
+///
+/// Engines without a provider keep the historical behavior: a drafted plan
+/// runs immediately under the run's configured policy. A provider that fails
+/// closed (default `begin_plan_approval`) rejects the plan rather than
+/// silently bypassing the gate.
+#[allow(clippy::double_must_use)]
+#[async_trait]
+pub trait PlanApprovalProvider: Send + Sync {
+    /// Registers a pending plan approval and returns a future that resolves
+    /// to the interface's decision. The default fails closed so a surface
+    /// that cannot answer never lets a plan execute unreviewed.
+    async fn begin_plan_approval(
+        &self,
+        _request: PlanApprovalRequest,
+    ) -> Result<PendingPlanApproval, ToolError> {
+        Err(ToolError::ExecutionFailed {
+            reason: "plan approval provider must implement begin_plan_approval".to_string(),
+        })
+    }
+}
+
 /// User input request sent from a tool to an interface.
 #[derive(Debug, Clone)]
 pub struct UserInputRequest {

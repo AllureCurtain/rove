@@ -39,8 +39,16 @@ pub(crate) async fn assemble_job_engine(
             index: state_store.index.clone(),
         }) as Arc<dyn ToolApprovalProvider>
     });
+    // The plan gate attaches under `Ask`, matching the tool-approval gate: an
+    // `Auto` run executes its drafted plan unconditionally and a `Never` run
+    // refuses it, so only `Ask` leaves a decision worth surfacing.
+    let plan_approval_provider = (approval_policy == ApprovalPolicy::Ask).then(|| {
+        Arc::new(ApiPlanApprovalProvider {
+            record: record.clone(),
+        }) as Arc<dyn PlanApprovalProvider>
+    });
 
-    let engine = build_engine(EngineOptions {
+    let mut engine = build_engine(EngineOptions {
         model,
         workspace: &workspace,
         config: &config,
@@ -62,6 +70,9 @@ pub(crate) async fn assemble_job_engine(
     // per-subagent stop route cancels the exact tokens the run's `task`
     // calls register.
     .with_subagents(record.subagents.clone());
+    if let Some(provider) = plan_approval_provider {
+        engine = engine.with_plan_approval_provider(provider);
+    }
     let mcp_config_path = config.workspace_bounded_mcp_config_path()?;
     state.inner.mcp_health.write().await.insert(
         mcp_config_path,

@@ -1301,6 +1301,19 @@ impl From<&StreamEvent> for RunViewUpdate {
                 input_id: *input_id,
                 prompt: prompt.clone(),
             },
+            StreamEvent::PlanApprovalNeeded { plan, .. } => Self::ModelStatus {
+                status: "plan_approval".to_string(),
+                message: format!("Plan awaiting approval: {} step(s).", plan.steps.len()),
+            },
+            StreamEvent::PlanApprovalResolved {
+                approved_policy, ..
+            } => Self::ModelStatus {
+                status: "plan_approval".to_string(),
+                message: match approved_policy {
+                    Some(policy) => format!("Plan approved under {policy:?} approval policy."),
+                    None => "Plan rejected.".to_string(),
+                },
+            },
             StreamEvent::PlanCreated {
                 plan,
                 plan_revision,

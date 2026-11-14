@@ -186,6 +186,7 @@ pub(crate) async fn run_job_supervisor(
     let terminal_status = terminal_run_status(&terminal);
     if matches!(terminal_status, RunStatus::Cancelled | RunStatus::Error) {
         reject_pending_approvals(&record, &state_store.index).await;
+        reject_pending_plan_approvals(&record).await;
         reject_pending_inputs(&record, &state_store.index).await;
     }
 
@@ -1024,6 +1025,7 @@ pub(crate) async fn recover_job_supervisor_panic(
         }
     };
     reject_pending_approvals(record, &state_store.index).await;
+    reject_pending_plan_approvals(record).await;
     reject_pending_inputs(record, &state_store.index).await;
     let finish_outcome = AssertUnwindSafe(finish_product_turn_needs_attention(
         product_turn,

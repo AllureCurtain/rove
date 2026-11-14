@@ -9,7 +9,8 @@ use crate::execution::{
 };
 use crate::prompt_metadata::PromptBuildMetadata;
 use crate::types::{
-    JobId, PlanStep, PromptCompactionState, RunId, SessionId, TaskPlan, TerminationReason,
+    ApprovalPolicy, JobId, PlanStep, PromptCompactionState, RunId, SessionId, TaskPlan,
+    TerminationReason,
 };
 use rove_core::{CallId, ToolArtifactRef, ToolError, ToolExecutionMetadata, ToolResult};
 use rove_models::{AssistantTurn, ToolCallRef, Usage};
@@ -250,6 +251,37 @@ pub enum StreamEvent {
         #[schema(value_type = String, format = "ulid")]
         input_id: CallId,
         prompt: String,
+    },
+
+    /// A drafted plan is waiting for interface approval before its first
+    /// step runs.
+    ///
+    /// Carries the plan again (the projection should not have to correlate
+    /// back to `PlanCreated`) plus the pending-approval id the interface
+    /// answers against, and the approval modes it may offer. Only emitted
+    /// when a `PlanApprovalProvider` is attached to the engine; a run
+    /// without the provider never produces this event.
+    PlanApprovalNeeded {
+        #[schema(value_type = String, format = "ulid")]
+        approval_id: CallId,
+        plan: TaskPlan,
+        /// Stable identity of the plan being gated, flattened for the same
+        /// reason as `PlanCreated`.
+        #[serde(flatten)]
+        identity: PlanIdentity,
+        #[schema(value_type = Vec<String>)]
+        offered_modes: Vec<ApprovalPolicy>,
+    },
+
+    /// The interface answered a `PlanApprovalNeeded`. Recorded so the trace
+    /// carries the chosen approval mode, not just the fact the run
+    /// proceeded; a rejection is followed by `RunCompleted`.
+    PlanApprovalResolved {
+        #[schema(value_type = String, format = "ulid")]
+        approval_id: CallId,
+        /// The approval mode the run continues under, or `null` on reject.
+        #[schema(value_type = Option<String>)]
+        approved_policy: Option<ApprovalPolicy>,
     },
 
     /// A plan has been drafted for this run.
@@ -729,6 +761,24 @@ impl StreamEvent {
                 input_id: *input_id,
                 prompt: "[review input request omitted]".to_string(),
             },
+            Self::PlanApprovalNeeded {
+                approval_id,
+                plan,
+                identity,
+                offered_modes,
+            } => Self::PlanApprovalNeeded {
+                approval_id: *approval_id,
+                plan: redact_task_plan(plan),
+                identity: identity.clone(),
+                offered_modes: offered_modes.clone(),
+            },
+            Self::PlanApprovalResolved {
+                approval_id,
+                approved_policy,
+            } => Self::PlanApprovalResolved {
+                approval_id: *approval_id,
+                approved_policy: *approved_policy,
+            },
             Self::PlanCreated {
                 plan,
                 identity,
@@ -871,6 +921,8 @@ impl StreamEvent {
             Self::McpServerDegraded { .. } => "mcp_server_degraded",
             Self::McpCapabilitiesRefreshed { .. } => "mcp_capabilities_refreshed",
             Self::InputNeeded { .. } => "input_needed",
+            Self::PlanApprovalNeeded { .. } => "plan_approval_needed",
+            Self::PlanApprovalResolved { .. } => "plan_approval_resolved",
             Self::PlanCreated { .. } => "plan_created",
             Self::PlanStepStarted { .. } => "plan_step_started",
             Self::StepResult { .. } => "step_result",
