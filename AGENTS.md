@@ -78,6 +78,7 @@ cd apps/web && pnpm test && pnpm typecheck             # Web
 | API work | docs/api.md, `apps/api/openapi.json` (snapshot), and runtime `/api/openapi.json` |
 | UI work | DESIGN.md |
 | Web information architecture, default visibility, interactions | docs/web-console-design.md |
+| Desktop host plan, packaging matrix, OS acceptance | docs/desktop-plan.md |
 | Environment, commands, tests, release, Git process | docs/development.md |
 | Changing the technical approach | docs/decisions.md |
 | User-visible feature changes | docs/user-guide.md |
