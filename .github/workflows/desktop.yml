@@ -6,7 +6,19 @@ name: Desktop
 # excludes it via `cargo --exclude rove-desktop`. Runtime-side breaking
 # changes that slip past this filter are still caught by clippy/test on the
 # main workflow's other crates and by local/release-gate builds.
+#
+# Two jobs:
+#   lint    — clippy + test on Ubuntu (cheap, fast feedback on host code).
+#   package — `cargo tauri build` on each OS producing unsigned native bundles
+#             (.app/.dmg, .msi/.nsis, .deb/.AppImage) as workflow artifacts.
+#             This is the "does it bundle" standing answer from
+#             docs/desktop-plan.md Track 2; signing is a separate gate and
+#             intentionally not wired here.
 
+# The package matrix proves the per-OS toolchain produces a bundle; the WebView
+# content inside it is covered by the main web CI job, so apps/web changes do
+# not retrigger this workflow. Bump `frontendDist` content expectations by
+# touching tauri.conf.json or this workflow instead.
 on:
   push:
     branches: [main]
@@ -35,7 +47,7 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  desktop:
+  lint:
     name: desktop clippy + test
     runs-on: ubuntu-latest
     steps:
@@ -64,3 +76,71 @@ jobs:
 
       - name: cargo test
         run: cargo test -p rove-desktop
+
+  package:
+    name: bundle ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        run: |
+          corepack enable pnpm
+          pnpm config set store-dir ~/.pnpm-store
+        shell: bash
+
+      - name: Cache pnpm store
+        uses: actions/cache@v5
+        with:
+          path: ~/.pnpm-store
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('apps/web/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-pnpm-
+
+      # tauri.conf.json's beforeBuildCommand runs `pnpm build:desktop` in
+      # apps/web, producing the `desktop-dist` the WebView loads; only the
+      # dependency install happens here so the command has pnpm available.
+      - name: pnpm install
+        working-directory: apps/web
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install Linux desktop build dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev
+
+      - name: cargo tauri build (unsigned)
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: apps/desktop
+
+      - name: Upload unsigned bundles
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rove-desktop-${{ matrix.os }}-bundle
+          path: |
+            target/release/bundle/
+            apps/desktop/target/release/bundle/
+          if-no-files-found: warn
+          retention-days: 14
