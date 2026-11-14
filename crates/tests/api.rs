@@ -486,6 +486,9 @@ async fn deleting_the_product_catalog_recovers_the_session_list_on_the_next_star
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let session = create_product_session(&app, &workspace_id, "Recovered by ownership").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap().to_string();
     configure_product_session_model(&app, &session_id, "fake-raw", 1).await;
 
@@ -529,6 +532,9 @@ async fn deleting_the_product_catalog_recovers_the_session_list_on_the_next_star
 
     let recovered =
         router(ApiState::new(Workspace::detect(server.path()).unwrap(), config.clone()).unwrap());
+    // The rebuilt catalog resets preferences to defaults; restore `auto` so the
+    // next turn is not held at the plan-approval gate.
+    set_product_default_approval_auto(&recovered).await;
     // Recovery runs off the boot path, so the list is polled rather than assumed
     // ready the instant the state is constructed.
     let mut sessions = serde_json::Value::Null;
@@ -605,6 +611,9 @@ async fn product_session_model_changes_apply_from_the_next_run_and_keep_snapshot
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Session model snapshots").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
 
     let initial_response = app
@@ -742,6 +751,9 @@ async fn product_session_usage_aggregates_report_totals_with_local_zero_cost() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Session usage rollup").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake-raw", 2).await;
 
@@ -940,6 +952,9 @@ async fn product_session_artifacts_list_system_files_after_a_completed_run() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Artifacts session").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake", 2).await;
 
@@ -994,6 +1009,9 @@ async fn product_session_evidence_export_is_complete_bounded_and_redacted_in_all
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Evidence export session").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake-raw", 3).await;
 
@@ -1175,6 +1193,9 @@ async fn product_known_credentials_are_redacted_on_every_structured_emitting_sur
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Authority redaction").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap().to_string();
     configure_product_session_model(&app, &session_id, "fake-raw", 3).await;
     // A file in the workspace whose preview must not hand the credential back.
@@ -1858,6 +1879,9 @@ async fn active_product_sessions_reject_archive_session_delete_and_workspace_del
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Active mutation guard").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake-raw", 1).await;
     let active = post_json(
@@ -3838,6 +3862,9 @@ async fn product_sessions_in_one_workspace_resume_their_own_exact_runs() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session_a = create_product_session(&app, workspace_id, "Session A").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_b = create_product_session(&app, workspace_id, "Session B").await;
     let session_a_id = session_a["id"].as_str().unwrap();
     let session_b_id = session_b["id"].as_str().unwrap();
@@ -3929,6 +3956,9 @@ async fn product_session_fork_replays_exactly_and_keeps_child_history_independen
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let parent = create_product_session(&app, &workspace_id, "Fork parent").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let parent_id = parent["id"].as_str().unwrap().to_string();
     let source = create_product_job(&app, &parent_id, "Durable fork source").await;
     let source_state = wait_for_done(app.clone(), source.job_id.to_string()).await;
@@ -4139,6 +4169,9 @@ async fn product_session_fork_child_starts_with_a_clean_compaction_breaker() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let parent = create_product_session(&app, &workspace_id, "Fork breaker parent").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let parent_id = parent["id"].as_str().unwrap().to_string();
     let source = create_product_job(&app, &parent_id, "Breaker fork source").await;
     let source_state = wait_for_done(app.clone(), source.job_id.to_string()).await;
@@ -4252,6 +4285,9 @@ async fn product_session_fork_rejects_incomplete_and_active_sources() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let empty = create_product_session(&app, workspace_id, "No durable fork source").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let empty_id = empty["id"].as_str().unwrap();
     let incomplete = post_json(
         &app,
@@ -4453,6 +4489,9 @@ async fn product_message_fork_cuts_the_child_before_the_edited_user_message() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let parent = create_product_session(&app, &workspace_id, "Edit and resend parent").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let parent_id = parent["id"].as_str().unwrap().to_string();
 
     // Turn one is an ordinary job: it is the earlier history the child keeps.
@@ -4673,6 +4712,9 @@ async fn product_message_fork_from_a_runs_trigger_message_keeps_no_parent_entrie
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let parent = create_product_session(&app, &workspace_id, "Whole run edit parent").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let parent_id = parent["id"].as_str().unwrap().to_string();
 
     // The session's very first turn is a unified message, so the edit target is
@@ -4807,6 +4849,9 @@ async fn product_message_fork_rejects_unusable_truncation_targets() {
     let parent = create_product_session(&app, &workspace_id, "Edit rejection parent").await;
     let parent_id = parent["id"].as_str().unwrap().to_string();
     let fork_uri = format!("/product/sessions/{parent_id}/forks");
+    // The default `ask` policy now holds the turn at the plan-approval gate
+    // (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
 
     let first = create_product_job(&app, &parent_id, PARENT_FIRST).await;
     let first_state = wait_for_done(app.clone(), first.job_id.to_string()).await;
@@ -4999,6 +5044,9 @@ async fn product_session_resume_fails_closed_when_exact_task_state_is_missing() 
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Missing state").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     let first = create_product_job(&app, session_id, "durable first turn").await;
     wait_for_done(app.clone(), first.job_id.to_string()).await;
@@ -5216,6 +5264,9 @@ async fn product_message_search_finds_hits_and_rejects_every_malformed_request()
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Message search").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap().to_string();
     configure_product_session_model(&app, &session_id, "fake-raw", 2).await;
     hold_product_session_turn_open(&app, &session_id).await;
@@ -5373,6 +5424,9 @@ async fn product_message_search_answers_a_secret_shaped_multi_byte_message() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Secret-shaped search").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap().to_string();
     configure_product_session_model(&app, &session_id, "fake-raw", 2).await;
     hold_product_session_turn_open(&app, &session_id).await;
@@ -5411,6 +5465,9 @@ async fn product_message_search_pages_by_cursor_and_never_leaks_neighbouring_tex
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Message search paging").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap().to_string();
     configure_product_session_model(&app, &session_id, "fake-raw", 2).await;
     hold_product_session_turn_open(&app, &session_id).await;
@@ -5513,6 +5570,9 @@ async fn product_message_search_is_session_scoped_and_authorized_like_the_messag
     let second_workspace = create_product_workspace(&app, second_folder.path()).await;
     let first =
         create_product_session(&app, first_workspace["id"].as_str().unwrap(), "First").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let second =
         create_product_session(&app, second_workspace["id"].as_str().unwrap(), "Second").await;
     let first_id = first["id"].as_str().unwrap().to_string();
@@ -5637,6 +5697,8 @@ async fn product_session_with_a_held_turn(
     workspace_id: &str,
     title: &str,
 ) -> String {
+    // `auto`: the turn must reach request_input, not the plan-approval gate.
+    set_product_default_approval_auto(app).await;
     let session = create_product_session(app, workspace_id, title).await;
     let session_id = session["id"].as_str().unwrap().to_string();
     configure_product_session_model(app, &session_id, "fake-raw", 2).await;
@@ -5656,6 +5718,9 @@ async fn product_search_covers_a_whole_workspace_and_pages_without_gaps_or_repea
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let other_workspace = create_product_workspace(&app, other_folder.path()).await;
     let other_workspace_id = other_workspace["id"].as_str().unwrap().to_string();
+    // The default `ask` policy now holds the turn at the plan-approval gate
+    // (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
 
     let mut written: Vec<(String, i64)> = Vec::new();
     for (index, title) in ["First", "Second", "Third"].iter().enumerate() {
@@ -5795,6 +5860,9 @@ async fn product_search_rejects_every_malformed_request_with_a_typed_failure() {
     // A session with no run and no message, for the scopes that must answer an
     // empty page rather than a failure.
     let quiet = create_product_session(&app, &workspace_id, "Quiet").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let quiet_id = quiet["id"].as_str().unwrap().to_string();
 
     let session_scope = encode_query_value(&format!("session:{session_id}"));
@@ -6002,6 +6070,9 @@ async fn product_trace_search_finds_a_run_by_something_only_the_event_trace_carr
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Trace search").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap().to_string();
     configure_product_session_model(&app, &session_id, "fake-raw", 2).await;
     // The marker exists only as a tool argument. It is not in any message body,
@@ -6164,6 +6235,9 @@ async fn product_trace_search_redacts_the_trace_line_before_excerpting_it() {
     // gains a new secret-shaped string.
     let canary = "sk-export-content-canary-058761eb";
     let session = create_product_session(&app, workspace_id, "Trace secret").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap().to_string();
     configure_product_session_model(&app, &session_id, "fake-raw", 2).await;
     hold_product_session_turn_open_with_prompt(&app, &session_id, &format!("canary {canary}"))
@@ -6246,6 +6320,9 @@ async fn product_trace_search_reports_a_cleaned_trace_instead_of_no_matches() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Cleaned trace").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap().to_string();
     configure_product_session_model(&app, &session_id, "fake-raw", 2).await;
 
@@ -6291,6 +6368,9 @@ async fn product_resume_reports_unavailable_when_the_catalog_profile_is_deleted(
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Deleted Provider resume").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     let profile = post_json(
         &app,
@@ -6376,6 +6456,9 @@ async fn product_resume_rejects_same_selection_after_provider_identity_drift() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Changed Provider resume").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     let profile = post_json(
         &app,
@@ -6459,6 +6542,9 @@ async fn product_session_resume_rejects_a_mismatched_runtime_run_identity() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Corrupt run identity").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     let first = create_product_job(&app, session_id, "durable first turn").await;
     wait_for_done(app.clone(), first.job_id.to_string()).await;
@@ -6511,6 +6597,9 @@ async fn product_session_resume_rejects_invalid_native_tool_call_ids() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Corrupt tool history").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     let first = create_product_job(&app, session_id, "durable first turn").await;
     wait_for_done(app.clone(), first.job_id.to_string()).await;
@@ -6619,6 +6708,9 @@ async fn product_job_state_omits_the_salvage_marker_when_no_text_was_kept() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Salvage marker").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake-raw", 1).await;
     let waiting_message = serde_json::json!({
@@ -6722,6 +6814,9 @@ async fn product_cancel_after_streaming_marks_job_state_and_the_transcript() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Streaming stop").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     select_product_session_profile(&app, session_id, "scripted", "scripted-fake").await;
 
@@ -6888,6 +6983,9 @@ async fn product_cancel_releases_the_single_turn_claim_before_continuation() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Cancel flow").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake-raw", 1).await;
     let waiting_message = serde_json::json!({
@@ -6991,6 +7089,9 @@ async fn product_steer_route_is_idempotent_and_applies_after_an_input_safe_point
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Steer safe point").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake-raw", 2).await;
 
@@ -7078,6 +7179,9 @@ async fn product_steer_submitted_during_generation_applies_after_the_tool_safe_p
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Generation steer").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     let key_env = unique_env_key("ROVE_TEST_GENERATION_STEER_KEY");
     unsafe {
@@ -7231,6 +7335,9 @@ async fn product_followup_after_final_is_server_owned_and_starts_one_successor()
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Follow-up ownership").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake-raw", 2).await;
 
@@ -7416,6 +7523,9 @@ async fn product_queue_reorder_is_validated_atomic_and_drives_the_next_turns() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Queue reorder").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake-raw", 2).await;
 
@@ -7684,6 +7794,9 @@ async fn product_successor_promotion_never_steers_the_live_run_and_survives_revo
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Successor promotion").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake-raw", 2).await;
 
@@ -7841,6 +7954,9 @@ async fn product_queue_order_survives_a_reopen_and_keeps_one_claim_per_session()
             let workspace_id = workspace["id"].as_str().unwrap();
             let session =
                 create_product_session(&app, workspace_id, "Queue survives restart").await;
+            // The default `ask` policy now holds the turn at the plan-approval
+            // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+            set_product_default_approval_auto(&app).await;
             let session_id = session["id"].as_str().unwrap();
             configure_product_session_model(&app, session_id, "fake-raw", 2).await;
 
@@ -8010,6 +8126,9 @@ async fn product_requeued_successor_is_redriven_without_another_user_action() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Requeued successor redrive").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake-raw", 2).await;
 
@@ -8080,6 +8199,9 @@ async fn product_successor_start_attempts_are_bounded_and_escalate_to_needs_atte
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Bounded successor redrive").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake-raw", 2).await;
 
@@ -8164,6 +8286,9 @@ async fn product_nonfinal_followups_require_confirmation_and_pending_controls_ca
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Follow-up confirmation").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake-raw", 2).await;
 
@@ -8618,6 +8743,35 @@ async fn operator_store_revocation_cancels_an_active_api_job() {
     let session = create_product_session(&app, workspace_id, "External revocation").await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake-raw", 1).await;
+    // Run under `auto` so the product-turn plan gate does not hold the job
+    // before it reaches the request_input pause this test exercises.
+    let prefs = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/preferences")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let prefs: serde_json::Value = decode_json(prefs).await;
+    let updated_prefs = request_json(
+        &app,
+        "PUT",
+        "/product/preferences",
+        serde_json::json!({
+            "schema_version": 1,
+            "expected_revision": prefs["revision"],
+            "theme": "system",
+            "default_approval_policy": "auto",
+            "active_workspace_id": null,
+            "active_session_id": null,
+            "provider_selection": null
+        }),
+    )
+    .await;
+    assert_eq!(updated_prefs.status(), StatusCode::OK);
     let granted = request_json(
         &app,
         "PUT",
@@ -13048,6 +13202,9 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
     })
     .to_string();
     let job = create_product_job(&app, session_id, &message).await;
+    // Under `ask` the drafted plan waits behind its own gate first (issue #30);
+    // approving it keeps `ask` so the MCP tool call still needs its approval.
+    approve_pending_plan(&app, &job.job_id.to_string(), "ask").await;
     let approval_state = wait_for_pending_approval(app.clone(), job.job_id.to_string()).await;
     let approval = approval_state.pending_approvals.first().unwrap();
     assert_eq!(approval.name, "mcp__mock_server__echo_remote");
@@ -13123,6 +13280,11 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
     let disabled_session_id = disabled_session["id"].as_str().unwrap();
     configure_product_session_model(&app, disabled_session_id, "fake-raw", 1).await;
     let disabled_job = create_product_job(&app, disabled_session_id, &message).await;
+    // This session's first turn drafts a fresh plan, so it also waits behind
+    // the plan gate under `ask` (issue #30). The disabled server leaves the
+    // tool unregistered, so no tool approval follows — the call fails
+    // directly.
+    approve_pending_plan(&app, &disabled_job.job_id.to_string(), "ask").await;
     let disabled_state = wait_for_done(app.clone(), disabled_job.job_id.to_string()).await;
     assert!(disabled_state.events.iter().any(|stored| matches!(
         &stored.event,
@@ -13158,6 +13320,7 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
     let optional_session_id = optional_session["id"].as_str().unwrap();
     configure_product_session_model(&app, optional_session_id, "fake", 1).await;
     let optional_job = create_product_job(&app, optional_session_id, "inspect safely").await;
+    approve_pending_plan(&app, &optional_job.job_id.to_string(), "auto").await;
     let optional_state = wait_for_done(app.clone(), optional_job.job_id.to_string()).await;
     assert_eq!(optional_state.status, RunStatus::Done);
 
@@ -13262,6 +13425,9 @@ async fn restricted_product_workspace_cannot_probe_or_activate_mcp() {
     assert!(!error.to_string().contains("058761eb"));
 
     let session = create_product_session(&app, workspace_id, "Restricted project").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake", 1).await;
     let job = create_product_job(&app, session_id, "inspect safely").await;
@@ -13501,6 +13667,9 @@ async fn product_long_session_deep_tree_large_dir_and_large_diff_stay_bounded() 
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let session = create_product_session(&app, &workspace_id, "Load smoke").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap().to_string();
 
     // --- Long session: consecutive turns keep exact ordinal and lineage. ---
@@ -13695,6 +13864,9 @@ async fn product_concurrent_multi_workspace_control_operations_stay_isolated_and
     let workspace_b_id = workspace_b["id"].as_str().unwrap().to_string();
 
     let session_a = create_product_session(&app, &workspace_a_id, "Concurrent A").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_a_id = session_a["id"].as_str().unwrap().to_string();
     let session_b = create_product_session(&app, &workspace_b_id, "Concurrent B").await;
     let session_b_id = session_b["id"].as_str().unwrap().to_string();
@@ -14576,6 +14748,9 @@ async fn product_artifacts_are_hashed_session_bound_and_report_cleanup() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Artifact evidence").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     let created = create_product_job(&app, session_id, "create artifact evidence").await;
     wait_for_done(app.clone(), created.job_id.to_string()).await;
@@ -14722,6 +14897,9 @@ async fn product_diff_returns_canonical_tool_and_git_patches() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Tool diff").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     let created = create_product_job(&app, session_id, "record a diff").await;
     wait_for_done(app.clone(), created.job_id.to_string()).await;
@@ -14848,6 +15026,9 @@ async fn product_mutation_revert_uses_exact_real_tool_bytes_and_refuses_active_t
             serde_json::json!({"tool":"write_file","args":{"path":path,"content":content}})
                 .to_string();
         let created = create_product_job(&app, session_id, &message).await;
+        // Under `ask` the drafted plan waits behind its own gate first
+        // (issue #30); approving it keeps `ask` so the write still pends.
+        approve_pending_plan(&app, &created.job_id.to_string(), "ask").await;
         let pending = wait_for_approval_event(app.clone(), created.job_id.to_string()).await;
         let endpoint = format!("/product/sessions/{session_id}/mutations/revert");
         let blocked = post_json(&app, &endpoint, serde_json::json!({"path":path})).await;
@@ -14922,6 +15103,9 @@ async fn product_mutation_revert_restores_real_overwrites_with_exact_line_ending
         }})
         .to_string();
         let created = create_product_job(&app, session_id, &message).await;
+        // Under `ask` the drafted plan waits behind its own gate first
+        // (issue #30); approving it keeps `ask` so the write still pends.
+        approve_pending_plan(&app, &created.job_id.to_string(), "ask").await;
         let pending = wait_for_approval_event(app.clone(), created.job_id.to_string()).await;
         let approval = &pending.pending_approvals[0];
         let approved = post_json(
@@ -14957,6 +15141,9 @@ async fn product_mutation_revert_deletes_a_created_file() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Revert create").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     let created = create_product_job(&app, session_id, "create a file").await;
     wait_for_done(app.clone(), created.job_id.to_string()).await;
@@ -15019,6 +15206,9 @@ async fn product_mutation_revert_refuses_a_tampered_created_file() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Revert tampered").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     let created = create_product_job(&app, session_id, "create then edit").await;
     wait_for_done(app.clone(), created.job_id.to_string()).await;
@@ -15106,6 +15296,9 @@ async fn product_mutation_revert_reverse_applies_an_update_in_a_repo() {
     let workspace: serde_json::Value = decode_json(workspace).await;
     let workspace_id = workspace["id"].as_str().unwrap();
     let session = create_product_session(&app, workspace_id, "Revert update").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap();
     let created = create_product_job(&app, session_id, "edit a tracked file").await;
     wait_for_done(app.clone(), created.job_id.to_string()).await;
@@ -15236,6 +15429,9 @@ async fn product_transcript_cursor_pages_older_runs_without_gaps_or_repeats() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let session = create_product_session(&app, &workspace_id, "Transcript pages").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap().to_string();
 
     run_product_turns(&app, &session_id, 1..=RUNS, |turn| {
@@ -15385,6 +15581,9 @@ async fn product_transcript_page_query_rejects_unbounded_pages() {
     let workspace = create_product_workspace(&app, folder.path()).await;
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let session = create_product_session(&app, &workspace_id, "Transcript page bounds").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let session_id = session["id"].as_str().unwrap().to_string();
 
     run_product_turns(&app, &session_id, 1..=3, |turn| {
@@ -15813,6 +16012,9 @@ impl ContractFixture {
         let workspace_id = workspace["id"].as_str().unwrap().to_string();
         let session = create_product_session(&app, &workspace_id, label).await;
         let session_id = session["id"].as_str().unwrap().to_string();
+        // `auto`: fixture turns must run to completion, not wait at the
+        // plan-approval gate that `ask` now raises (issue #30).
+        set_product_default_approval_auto(&app).await;
 
         let mut runs = Vec::new();
         for message in ["contract first turn", "contract second turn"] {
@@ -16553,6 +16755,9 @@ impl CompactionFixture {
         let workspace_id = workspace["id"].as_str().unwrap().to_string();
         let session = create_product_session(&app, &workspace_id, label).await;
         let session_id = session["id"].as_str().unwrap().to_string();
+        // `auto`: fixture turns must run to completion, not wait at the
+        // plan-approval gate that `ask` now raises (issue #30).
+        set_product_default_approval_auto(&app).await;
         let mut fixture = Self {
             _server: server,
             folder,
@@ -16714,7 +16919,26 @@ async fn product_session_compaction_refuses_a_session_with_an_active_turn() {
     // A genuinely active turn: the raw fake profile calls a tool, so the run
     // waits for an approval decision and the session stays running. Racing a
     // fast fake turn on purpose would be flaky; a pending approval is the same
-    // product state and is deterministic.
+    // product state and is deterministic. Switch the session preference back to
+    // `ask` first so both the plan gate and the tool call raise approvals.
+    let prefs = get_response(&fixture.app, "/product/preferences").await;
+    let prefs: serde_json::Value = decode_json(prefs).await;
+    let to_ask = request_json(
+        &fixture.app,
+        "PUT",
+        "/product/preferences",
+        serde_json::json!({
+            "schema_version": 1,
+            "expected_revision": prefs["revision"],
+            "theme": "system",
+            "default_approval_policy": "ask",
+            "active_workspace_id": null,
+            "active_session_id": null,
+            "provider_selection": null
+        }),
+    )
+    .await;
+    assert_eq!(to_ask.status(), StatusCode::OK);
     configure_product_session_model(&fixture.app, &fixture.session_id, "fake-raw", 1).await;
     let busy = create_product_job(
         &fixture.app,
@@ -16722,6 +16946,9 @@ async fn product_session_compaction_refuses_a_session_with_an_active_turn() {
         r#"{"tool":"write_file","args":{"path":"compaction-busy.txt","content":"ok"}}"#,
     )
     .await;
+    // The drafted plan waits behind its own gate first (issue #30); approving
+    // it with `ask` keeps the tool-call approval the test wants to hold on.
+    approve_pending_plan(&fixture.app, &busy.job_id.to_string(), "ask").await;
     let pending = wait_for_approval_event(fixture.app.clone(), busy.job_id.to_string()).await;
     let approval = pending
         .pending_approvals
@@ -17855,6 +18082,75 @@ async fn select_product_session_profile(
         "profile `{profile_id}` could not be selected: {}",
         raw_body(response).await
     );
+}
+
+/// Drives the product default approval policy to `auto` for tests that do not
+/// exercise approval UX. Since issue #30, product turns under `ask` hold their
+/// drafted plan behind a plan-approval gate, which would stall every turn in
+/// the suite; approval-flow tests set `ask` explicitly instead.
+async fn set_product_default_approval_auto(app: &axum::Router) {
+    let current = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/preferences")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(current.status(), StatusCode::OK);
+    let current: serde_json::Value = decode_json(current).await;
+    let updated = request_json(
+        app,
+        "PUT",
+        "/product/preferences",
+        serde_json::json!({
+            "schema_version": 1,
+            "expected_revision": current["revision"],
+            "theme": "system",
+            "default_approval_policy": "auto",
+            "active_workspace_id": null,
+            "active_session_id": null,
+            "provider_selection": null
+        }),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+}
+
+/// Waits for a product turn's plan-approval gate and approves it with `mode`,
+/// returning the state at resolution. Tests running under `ask` need this
+/// before the turn reaches whatever they actually observe.
+async fn approve_pending_plan(app: &axum::Router, job_id: &str, mode: &str) -> JobStateResponse {
+    let mut last_state = None;
+    for _ in 0..STATE_WAIT_ATTEMPTS {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/jobs/{job_id}/state"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let state: JobStateResponse = decode_json(response).await;
+        if let Some(pending) = state.pending_plan_approvals.first() {
+            let resolved = post_json(
+                app,
+                &format!("/jobs/{job_id}/plan-approvals/{}", pending.approval_id),
+                serde_json::json!({ "mode": mode }),
+            )
+            .await;
+            assert_eq!(resolved.status(), StatusCode::OK);
+            return decode_json(resolved).await;
+        }
+        last_state = Some(state);
+        tokio::time::sleep(STATE_WAIT_INTERVAL).await;
+    }
+    panic!("job never raised a plan-approval gate; last state: {last_state:?}");
 }
 
 async fn create_product_job(
@@ -19152,6 +19448,9 @@ async fn product_session_authorizations_project_request_and_decision_side() {
         r#"{"tool":"write_file","args":{"path":"auth-approved.txt","content":"ok"}}"#,
     )
     .await;
+    // Under `ask` the drafted plan waits behind its own gate first (issue #30);
+    // approving it keeps `ask` so the write still raises a pending approval.
+    approve_pending_plan(&app, &created.job_id.to_string(), "ask").await;
     let pending = wait_for_approval_event(app.clone(), created.job_id.to_string()).await;
     let approval = pending.pending_approvals.first().unwrap().clone();
 
@@ -19799,6 +20098,9 @@ async fn create_attachment_session(server: &Path) -> (Router, tempfile::TempDir,
     let workspace_id = workspace["id"].as_str().unwrap().to_string();
     let session = create_product_session(&app, &workspace_id, "Attachments").await;
     let session_id = session["id"].as_str().unwrap().to_string();
+    // `auto`: turns must run to the end, not stop at the plan-approval gate
+    // that `ask` raises since issue #30.
+    set_product_default_approval_auto(&app).await;
     // The caller keeps the folder alive: it is the workspace root, and the
     // payloads must be provably outside it.
     (app, folder, workspace_id, session_id)
@@ -20503,6 +20805,9 @@ async fn product_message_attachments_are_referenced_served_and_cascaded() {
     // the field is omitted, not sent as `[]`. It is checked in its own session so
     // this session runs exactly one turn and can be deleted deterministically.
     let legacy = create_product_session(&app, &workspace_id, "Legacy payload").await;
+    // The default `ask` policy now holds the turn at the plan-approval
+    // gate (issue #30); this test exercises other behavior, so runs use `auto`.
+    set_product_default_approval_auto(&app).await;
     let legacy_id = legacy["id"].as_str().unwrap().to_string();
     let plain = post_json(
         &app,
