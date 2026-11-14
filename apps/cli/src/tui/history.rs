@@ -99,9 +99,27 @@ async fn read_run(
             {
                 return Err(std::io::Error::other("saved event identity does not match"));
             }
-            // Child lifecycle events must not replace the parent's run identity
-            // or turn a child's completion into the parent's completion.
-            if matches!(event, StreamEvent::SubagentEvent { .. }) {
+            // A delegated subagent emits its own model/tool events under
+            // `SubagentEvent { parent_call_id, event }` — never a nested
+            // `SubagentEvent`, and never run-lifecycle events of its own
+            // (`RunStarted`/`RunCompleted` are parent-run facts; the kernel a
+            // subagent runs does not emit them). The live view flattens the
+            // envelope already, so `apply_event` sees through it. An envelope
+            // carrying a lifecycle event or a nested `SubagentEvent` is
+            // malformed — project it but flag the run partial, because the
+            // flattened child's `RunStarted`/`RunCompleted` would otherwise
+            // overwrite the parent's identity or terminal record.
+            let malformed_subagent = matches!(
+                &event,
+                StreamEvent::SubagentEvent { event: inner, .. }
+                    if matches!(
+                        inner.as_ref(),
+                        StreamEvent::SubagentEvent { .. }
+                            | StreamEvent::RunStarted { .. }
+                            | StreamEvent::RunCompleted { .. }
+                    )
+            );
+            if malformed_subagent {
                 partial = true;
                 continue;
             }
@@ -401,6 +419,72 @@ mod tests {
                 .unwrap()
                 .notice
                 .contains("partial history")
+        );
+    }
+
+    #[tokio::test]
+    async fn subagent_events_project_into_the_saved_run_without_marking_it_partial() {
+        let root = tempfile::tempdir().unwrap();
+        let store = StateStore::new(root.path());
+        let session = SessionId::new();
+        let job = JobId::new();
+        let run_id = RunId::new();
+        let run = store.start_run(session, job, run_id).unwrap();
+        run.trace_writer
+            .append(&StreamEvent::RunStarted {
+                run_id,
+                job_id: job,
+                user_message: "parent".into(),
+                content_blocks: Vec::new(),
+            })
+            .unwrap();
+        let sub_call = CallId::new();
+        for inner in [
+            StreamEvent::LlmChunk {
+                delta: "subagent answer".into(),
+            },
+            StreamEvent::ToolCallStarted {
+                call_id: CallId::new(),
+                tool_use_id: None,
+                name: "read_file".into(),
+                args: serde_json::json!({"path": "x"}),
+            },
+        ] {
+            run.trace_writer
+                .append(&StreamEvent::SubagentEvent {
+                    parent_call_id: sub_call,
+                    event: Box::new(inner),
+                })
+                .unwrap();
+        }
+        run.trace_writer
+            .append(&StreamEvent::RunCompleted {
+                reason: TerminationReason::Final,
+                output: Some("done".into()),
+            })
+            .unwrap();
+        store
+            .index
+            .record_report(run_id, &run.run_dir.join("report.json"), "success", "final")
+            .unwrap();
+
+        let saved = load_run(&store.index, session, run_id).await.unwrap();
+        assert!(
+            !saved.notice.contains("partial"),
+            "a legitimate subagent envelope must not flag the run partial: {}",
+            saved.notice
+        );
+        assert_eq!(
+            saved.view.assistant_text, "subagent answer",
+            "the flattened child delta must land in the parent's assistant text"
+        );
+        assert!(
+            saved
+                .view
+                .tool_calls
+                .iter()
+                .any(|tool| tool.name == "read_file"),
+            "the flattened child tool call must land in the parent's tool list"
         );
     }
 
