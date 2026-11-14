@@ -2,6 +2,15 @@
 
 New decisions go on top. Do not delete overturned decisions; mark them "superseded" and note which entry replaced them.
 
+## 2026-11-14 Per-step model-turn default raised to 48 for exploratory models
+
+- Status: active
+- Decision: `DEFAULT_MAX_MODEL_TURNS_PER_STEP` is now 48 (was 16). It remains the PlanReact per-step fallback ceiling; `max_steps` still maps to step attempts, and `max_total_tokens`/`max_wall_time_ms` bound the whole run.
+- Why: a real-model pilot turn (`deepseek-v4-pro`) exhausted 16 model turns inside a single read/explain step — an exploratory model interleaves one model turn per think→tool round and can spend ~48 tool calls gathering before converging. 16 starved real tool use even after the context-token baseline was fixed. 48 leaves headroom for an exploratory step to converge; the ceiling stays finite so a stuck step cannot drain the run.
+- Supersedes: the numeric value in "2026-11-14 Default per-step model-turn budget raised to 16" (the 4→16 rationale still stands; this re-sizes the same ceiling for observed real-model behavior).
+- Rejected: removing the per-step ceiling (a stuck step would drain the run budget silently); deriving it from `max_steps` (independent dimensions); treating it as a model-behavior fix only — the ceiling must not assume a convergent model.
+- Override: unchanged — `[runtime.execution].max_model_turns_per_step`, `ROVE_EXECUTION_MAX_MODEL_TURNS_PER_STEP`, or a trusted project `.rove/config.toml`.
+
 ## 2026-11-14 Context defaults sized for real provider windows; execution budgets gain operator surfaces
 
 - Status: active
