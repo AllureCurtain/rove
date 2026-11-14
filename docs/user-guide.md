@@ -65,7 +65,9 @@ A local Apple Silicon `.app` can be built from `apps/desktop` with `pnpm dlx @ta
 
 ## Closing Desktop
 
-Closing the Desktop window or choosing **Quit** cancels active tasks and waits up to five seconds for the local API to save their terminal state. Repeated close/quit requests share that wait. Unapproved tool calls remain unexecuted. On reopening, cancelled tasks stay cancelled; a forced termination or shutdown timeout may instead leave interrupted work that requires explicit recovery.
+By default, closing the Desktop window hides it to the system tray: the app, its embedded API, and any running task keep working, and the tray menu's **Show Rove** brings the window back. Settings → General → **Closing the window** switches the behavior to **Quit**, which exits the app on window close; the choice is stored in the host config and survives restarts. The tray menu's **Quit Rove** and the application-menu Quit always exit regardless of this setting.
+
+A real quit — the setting above set to **Quit**, the tray Quit item, or the application-menu Quit — cancels active tasks and waits up to five seconds for the local API to save their terminal state. Repeated quit requests share that wait. Unapproved tool calls remain unexecuted. On reopening, cancelled tasks stay cancelled; a forced termination or shutdown timeout may instead leave interrupted work that requires explicit recovery.
 
 If another Rove window or API host already uses the same data directory, a second start is refused. Return to the running app, or close it before reopening. Changing the API port does not permit sharing an active data directory. A process crash releases ownership automatically; do not delete `.rove-api.lock` to clear it. Separate data roots can run independently.
 

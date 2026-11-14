@@ -369,6 +369,24 @@ fn native_provider_secret(
     ))
 }
 
+/// The close action is read from process state (seeded from `desktop.json` at
+/// startup and updated by `set_close_action`), not re-read from disk, so the
+/// window event handler and the renderer can never disagree.
+#[command]
+pub fn get_close_action(app: AppHandle) -> Result<crate::config::CloseAction, String> {
+    let state = app.state::<crate::CloseActionState>();
+    let action = *state.0.read().unwrap_or_else(|e| e.into_inner());
+    Ok(action)
+}
+
+#[command]
+pub fn set_close_action(app: AppHandle, action: crate::config::CloseAction) -> Result<(), String> {
+    crate::config::save_close_action(action).map_err(|e| e.to_string())?;
+    let state = app.state::<crate::CloseActionState>();
+    *state.0.write().unwrap_or_else(|e| e.into_inner()) = action;
+    Ok(())
+}
+
 #[command]
 pub fn get_app_paths() -> Result<AppPaths, String> {
     let config_dir = crate::config::get_config_dir().map_err(|e| e.to_string())?;

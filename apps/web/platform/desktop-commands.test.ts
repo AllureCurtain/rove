@@ -1,13 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  desktopCloseActionAvailable,
   desktopExternalLinkOpenerAvailable,
   desktopProviderCredentialPromptAvailable,
   desktopWorkspacePickerAvailable,
+  getDesktopCloseAction,
   openDesktopExternalLink,
   probeDesktopProvider,
   promptDesktopProviderCredential,
   selectDesktopWorkspace,
+  setDesktopCloseAction,
   useDesktopProvider,
 } from "./desktop-commands";
 
@@ -171,6 +174,36 @@ describe("Desktop commands", () => {
     expect(JSON.stringify([probeInvoke.mock.calls, useInvoke.mock.calls])).not.toMatch(
       /api[_-]?key|password|secret|authorization/i,
     );
+  });
+
+  it("reads and writes the host close action with strict parsing", async () => {
+    installDesktopTransport();
+
+    expect(desktopCloseActionAvailable()).toBe(true);
+    const getInvoke = vi.fn().mockResolvedValue("hide_to_tray");
+    await expect(getDesktopCloseAction(getInvoke)).resolves.toBe("hide_to_tray");
+    expect(getInvoke).toHaveBeenCalledWith("get_close_action");
+
+    const setInvoke = vi.fn().mockResolvedValue(undefined);
+    await expect(setDesktopCloseAction("quit", setInvoke)).resolves.toBeUndefined();
+    expect(setInvoke).toHaveBeenCalledWith("set_close_action", { action: "quit" });
+
+    await expect(
+      getDesktopCloseAction(vi.fn().mockResolvedValue("minimize")),
+    ).rejects.toThrow(/invalid close action/i);
+  });
+
+  it("rejects close-action commands outside Desktop", async () => {
+    const invoke = vi.fn();
+
+    expect(desktopCloseActionAvailable()).toBe(false);
+    await expect(getDesktopCloseAction(invoke)).rejects.toThrow(
+      /requires the Rove Desktop host/i,
+    );
+    await expect(setDesktopCloseAction("quit", invoke)).rejects.toThrow(
+      /requires the Rove Desktop host/i,
+    );
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("rejects native Provider commands outside Desktop", async () => {

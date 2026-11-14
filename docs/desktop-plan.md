@@ -25,6 +25,11 @@ Already implemented and tested:
   (workspace-root allowlist + http/https allowlist).
 - `tauri.conf.json`: identifier `com.rove.agent`, CSP, NSIS perMachine,
   full icon set (`icons/` has icns/ico/png + Square logos).
+- Window-state persistence (`window-state.json` under the config dir) and
+  the platform app menu (PR #100).
+- System tray with Show/Quit menu; a window close defaults to hiding to
+  the tray and Settings → General can switch it to Quit — the choice lives
+  in `desktop.json` (`close_action`) and stays a host-local concern.
 - CI: `.github/workflows/desktop.yml` runs clippy+test on Ubuntu when the
   crate or workspace manifest changes.
 
@@ -42,9 +47,9 @@ Grouped by who can do it.
 
 | Item | Why | Effort |
 | --- | --- | --- |
-| Window-state persistence (`tauri-plugin-window-state`) | window resets to 1400×900 every launch | hours |
-| App menu (Edit/View/Window + About) | Tauri default menu is bare | hours |
-| Tray icon / minimize-to-tray (`tauri-plugin-tray-icon`) | long-running agent should not die on window close | 1–2 d |
+| ~~Window-state persistence~~ done in-house (PR #100; the plugin hardcodes `app_config_dir` and would bypass `ROVE_DESKTOP_ROOT`) | window resets to 1400×900 every launch | hours |
+| ~~App menu (Edit/View/Window + About)~~ done (PR #100) | Tauri default menu is bare | hours |
+| Tray icon / minimize-to-tray (tauri core `tray` module, `tray-icon` feature) | long-running agent should not die on window close | 1–2 d |
 | Notifications (`tauri-plugin-notification`) | surface run-done / needs_attention when unfocused | 1–2 d |
 | Drag-drop workspace folders onto window | nicer than picker only | hours |
 | Better packaging metadata | `copyright: ""`, generic description, `DeveloperTool` category | minutes |
@@ -86,7 +91,8 @@ feature lands everywhere or is explicitly platform-gated:
 | Folder picker | rfd (untested) | rfd (untested) | rfd (untested) |
 | Reveal in file manager | `explorer /select` | `open -R` | `xdg-open` |
 | External link | `open` crate | `open` crate | `open` crate |
-| Tray / notifications | not built | not built | not built |
+| Tray | Show/Quit menu, template icon | Show/Quit menu, template icon | Show/Quit menu |
+| Notifications | not built | not built | not built |
 
 Rule: when adding a host command, implement all three OS arms or document
 the gap in `docs/user-guide.md` the same day.
@@ -141,8 +147,10 @@ recording (see PILOT.md), filed as a follow-up, not blocking.
    `cargo tauri build` produce unsigned bundles as workflow artifacts.
 3. ~~**macOS acceptance run**~~ done (2026-11-14) — `.app` PASS on all six
    cells; evidence in `evidence/desktop/`.
-4. **Window-state + app menu** (normal PR): cheapest visible polish.
-5. **Tray + notifications** (normal PR): biggest UX gap for an agent that
+4. ~~**Window-state + app menu**~~ done (PR #100): in-house tracker under
+   `config/` + platform menu bar.
+5. **Tray + notifications** (normal PRs, split): tray close-action first
+   (this change), then notifications — biggest UX gap for an agent that
    runs long tasks.
 6. **Windows/Linux acceptance** when a machine is available; signing/notary
    last, gated on certs.

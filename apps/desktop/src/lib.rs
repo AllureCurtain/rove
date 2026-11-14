@@ -3,13 +3,19 @@ pub mod commands;
 pub mod config;
 mod lifecycle;
 mod menu;
+mod tray;
 mod window_state;
 
 use anyhow::Result;
 use lifecycle::{ExitAction, ExitGate};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tauri::{Manager, RunEvent, WebviewWindowBuilder, WindowEvent};
 use tracing::{error, info};
+
+/// Process-wide copy of the persisted `close_action`, so the window-event
+/// handler reads memory instead of disk on every close request.
+#[derive(Clone)]
+pub struct CloseActionState(pub Arc<RwLock<config::CloseAction>>);
 
 /// Initialize the desktop application
 pub fn init() -> Result<()> {
@@ -37,6 +43,7 @@ pub fn run() -> Result<()> {
     }
     config::install_crash_handler()?;
     let bearer_token = desktop_config.bearer_token.clone();
+    let close_action_state = CloseActionState(Arc::new(RwLock::new(desktop_config.close_action)));
     // Startup errors must reach main's native dialog, not panic inside Tauri's
     // setup callback (which runs after Builder::build returns).
     let server_state = tauri::async_runtime::block_on(setup_async(bearer_token.clone()))?;
@@ -55,6 +62,7 @@ pub fn run() -> Result<()> {
 
             app.manage(server_state);
             app.manage(commands::WorkspaceRoots::for_process());
+            app.manage(close_action_state);
             let window = WebviewWindowBuilder::from_config(app, &window_config)?
                 .initialization_script(init_script)
                 .build()?;
@@ -65,6 +73,7 @@ pub fn run() -> Result<()> {
             }
             app.manage(tracker);
             menu::install(app.handle())?;
+            tray::install(app.handle())?;
 
             Ok(())
         })
@@ -78,7 +87,18 @@ pub fn run() -> Result<()> {
             }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                window.app_handle().exit(0);
+                let hide_to_tray = window
+                    .app_handle()
+                    .try_state::<CloseActionState>()
+                    .map(|state| *state.0.read().unwrap_or_else(|e| e.into_inner()))
+                    == Some(config::CloseAction::HideToTray);
+                if hide_to_tray {
+                    // The app stays alive in the tray; Quit there (or the app
+                    // menu) still routes through the ExitRequested drain.
+                    let _ = window.hide();
+                } else {
+                    window.app_handle().exit(0);
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -89,6 +109,8 @@ pub fn run() -> Result<()> {
             commands::provider_profile_use,
             commands::open_external,
             commands::show_in_folder,
+            commands::get_close_action,
+            commands::set_close_action,
         ])
         .build(tauri::generate_context!())
         .map_err(|e| anyhow::anyhow!("Failed to build Tauri application: {}", e))?

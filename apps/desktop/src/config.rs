@@ -16,17 +16,33 @@ fn desktop_root() -> Result<Option<PathBuf>> {
     Ok(Some(root))
 }
 
+/// What closing the last window does. Persisted in `desktop.json` so the
+/// choice survives restarts and stays a host-local concern.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseAction {
+    /// Hide the window and keep the app alive in the system tray.
+    #[default]
+    HideToTray,
+    /// Exit through the normal `ExitRequested` drain.
+    Quit,
+}
+
 /// Desktop application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DesktopConfig {
     /// Bearer token for API authentication
     pub bearer_token: String,
+    /// What a window close request does; defaults to minimizing to the tray.
+    #[serde(default)]
+    pub close_action: CloseAction,
 }
 
 impl Default for DesktopConfig {
     fn default() -> Self {
         Self {
             bearer_token: generate_bearer_token(),
+            close_action: CloseAction::default(),
         }
     }
 }
@@ -177,6 +193,34 @@ fn load_or_create_config_at(config_path: &std::path::Path) -> Result<DesktopConf
     }
 }
 
+/// Update `close_action` in the on-disk config, rewriting the file atomically.
+/// The read-modify-write races with a concurrent setter are acceptable: the
+/// field is user-driven and the last write wins.
+pub fn save_close_action(action: CloseAction) -> Result<()> {
+    save_close_action_at(&get_config_path()?, action)
+}
+
+fn save_close_action_at(config_path: &std::path::Path, action: CloseAction) -> Result<()> {
+    let mut config = load_or_create_config_at(config_path)?;
+    config.close_action = action;
+    write_config_atomically(config_path, &config)
+}
+
+fn write_config_atomically(config_path: &std::path::Path, config: &DesktopConfig) -> Result<()> {
+    use std::io::Write;
+    let parent = config_path
+        .parent()
+        .context("Config directory is missing")?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(&serde_json::to_vec_pretty(config)?)?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(config_path)
+        .map_err(|error| error.error)
+        .context("Failed to publish desktop config")?;
+    Ok(())
+}
+
 /// Install a minimal crash marker without recording panic payloads, which may
 /// contain provider credentials or user content. The normal stderr hook is
 /// intentionally replaced so secrets cannot be copied into a crash log.
@@ -254,6 +298,30 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[test]
+    fn close_action_defaults_to_hide_to_tray_and_round_trips() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config/desktop.json");
+        let config = load_or_create_config_at(&path).unwrap();
+        assert_eq!(config.close_action, CloseAction::HideToTray);
+        // A config written before the field existed must still load.
+        std::fs::write(&path, r#"{"bearer_token":"token"}"#).unwrap();
+        let config = load_or_create_config_at(&path).unwrap();
+        assert_eq!(config.close_action, CloseAction::HideToTray);
+    }
+
+    #[test]
+    fn save_close_action_rewrites_config_preserving_token() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config/desktop.json");
+        let config = load_or_create_config_at(&path).unwrap();
+        save_close_action_at(&path, CloseAction::Quit).unwrap();
+        let reloaded: DesktopConfig =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(reloaded.close_action, CloseAction::Quit);
+        assert_eq!(reloaded.bearer_token, config.bearer_token);
     }
 
     #[test]
