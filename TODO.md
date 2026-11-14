@@ -11,9 +11,9 @@ Updated: 2026-11-14
 
 Ordered by priority.
 
-1. **Stranded-queue auto-recovery design** — `needs_attention` is now a ~30s window before escalation (PR #83); the remaining question is whether/when a *failed-but-drainable* turn should auto-confirm rather than require the Recover click. Deliberate-consent trade-offs in `docs/decisions.md`.
+1. ~~**Stranded-queue auto-recovery design**~~ recorded (PR #89): auto-confirm stays off — a requeue-exhausted turn already proved the transient window insufficient, and direct abandons are persistent failures where retrying deterministically fails. Recover remains the explicit consent path; a directory-level recover-all shortcut is the open follow-up if friction remains.
 2. ~~**Issue #30 — plan approval bar**~~ done (PRs #87 + #88 merged). `PlanApprovalProvider` gate emits `plan_approval_needed`/`plan_approval_resolved` on the first draft of each product-session turn under `Ask` (follow-ups re-draft and re-gate); `POST /jobs/{id}/plan-approvals/{id}` resolves with an approve-mode (which becomes the run's tool-approval policy) or reject; `pending_plan_approvals` on job state; `PlanApprovalBar` above the composer splits approve-mode + reject and persists the mode to `default_approval_policy`.
-3. **TUI history follow-up** — browse beyond a single run's display budget and show nested subagent details; the current run browser marks these limits explicitly.
+3. ~~**TUI history follow-up**~~ done. Subagent events now project into saved history without partial (PR #92); display-budget paging recorded as a no (PR #93) — the bound protects memory on long real-provider runs whose folded deltas are already deduplicated by the timeline.
 4. ~~**F.5 TUI part**~~ done (PR #90 merged). TUI launch now drains a queued successor the same way the boundary does: after the stranded-claim redrive, it claims the oldest `queued` message and starts the reserved run. `claim_next_tui_successor` shares the stranded path's provider gate so a queue survives onboarding. `needs_attention` stays explicit — queued delivery ≠ auto-recovery.
 
 ## Known local-machine issues (not CI)
