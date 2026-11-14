@@ -24,3 +24,7 @@
 .env
 .tmp/
 /.release-gate/
+# Tauri generates this per-OS schema from tauri.conf.json; it is byte-identical
+# to the checked-in desktop-schema.json template, not source. Ignoring it keeps
+# `git add -A` from sweeping a generated copy into a commit.
+/apps/desktop/gen/schemas/macOS-schema.json
