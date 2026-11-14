@@ -39,10 +39,13 @@ pub(crate) async fn assemble_job_engine(
             index: state_store.index.clone(),
         }) as Arc<dyn ToolApprovalProvider>
     });
-    // The plan gate attaches under `Ask`, matching the tool-approval gate: an
-    // `Auto` run executes its drafted plan unconditionally and a `Never` run
-    // refuses it, so only `Ask` leaves a decision worth surfacing.
-    let plan_approval_provider = (approval_policy == ApprovalPolicy::Ask).then(|| {
+    // The plan gate is attached only for product-session turns under `Ask`:
+    // those have a UI surface able to answer the gate. Generic `/jobs` runs
+    // keep the historical unconditional execution (no interface to resolve a
+    // pending gate), and `Auto`/`Never` leave no decision worth surfacing.
+    let plan_approval_provider = (approval_policy == ApprovalPolicy::Ask
+        && record.product_session_id.is_some())
+    .then(|| {
         Arc::new(ApiPlanApprovalProvider {
             record: record.clone(),
         }) as Arc<dyn PlanApprovalProvider>
