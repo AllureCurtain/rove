@@ -69,10 +69,8 @@ fn stdout_bin(stdout: &[u8]) -> Option<PathBuf> {
             .and_then(|t| t.get("name"))
             .and_then(|n| n.as_str())
             == Some("rove");
-        if matches_rove {
-            if let Some(exe) = value.get("executable").and_then(|e| e.as_str()) {
-                return Some(PathBuf::from(exe));
-            }
+        if matches_rove && let Some(exe) = value.get("executable").and_then(|e| e.as_str()) {
+            return Some(PathBuf::from(exe));
         }
     }
     None
