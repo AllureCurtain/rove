@@ -44,12 +44,14 @@ pub fn run() -> Result<()> {
     }
     config::install_crash_handler()?;
     let bearer_token = desktop_config.bearer_token.clone();
+    let notifications_token = bearer_token.clone();
     let close_action_state = CloseActionState(Arc::new(RwLock::new(desktop_config.close_action)));
     // Startup errors must reach main's native dialog, not panic inside Tauri's
     // setup callback (which runs after Builder::build returns).
     let server_state = tauri::async_runtime::block_on(setup_async(bearer_token.clone()))?;
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             let api_url = server_state.base_url.clone().unwrap_or_default();
             let init_script = desktop_init_script(&bearer_token, &api_url)?;
@@ -75,6 +77,14 @@ pub fn run() -> Result<()> {
             app.manage(tracker);
             menu::install(app.handle())?;
             tray::install(app.handle())?;
+            if let Some(state) = app.try_state::<ApiServerState>() {
+                notifications::spawn(
+                    state.inner().clone(),
+                    app.handle().clone(),
+                    notifications_token.clone(),
+                    state.stop_token(),
+                );
+            }
 
             Ok(())
         })
@@ -215,6 +225,9 @@ pub struct ApiServerState {
     pub(crate) api_state: rove_api::ApiState,
     exit_gate: Arc<ExitGate>,
     shutdown_complete: Arc<tokio::sync::OnceCell<()>>,
+    /// Stops background consumers of the embedded API (the notification pump)
+    /// before the server itself is asked to drain.
+    stop: tokio_util::sync::CancellationToken,
 }
 
 impl ApiServerState {
@@ -225,12 +238,18 @@ impl ApiServerState {
             inner: Arc::new(tokio::sync::Mutex::new(Some(handle))),
             exit_gate: Arc::new(ExitGate::default()),
             shutdown_complete: Arc::new(tokio::sync::OnceCell::new()),
+            stop: tokio_util::sync::CancellationToken::new(),
         }
+    }
+
+    pub(crate) fn stop_token(&self) -> tokio_util::sync::CancellationToken {
+        self.stop.clone()
     }
 
     async fn shutdown_api(&self) {
         self.shutdown_complete
             .get_or_init(|| async {
+                self.stop.cancel();
                 let handle = self.inner.lock().await.take();
                 if let Some(handle) = handle {
                     if let Err(error) = handle.shutdown().await {
