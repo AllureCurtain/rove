@@ -11,6 +11,7 @@ mod writer;
 
 pub use document::{
     ModelDefaults, USER_CONFIG_SCHEMA_VERSION, UserConfigDocument, UserConfigError,
+    UserRuntimeConfig,
 };
 pub use loader::UserConfigLoader;
 pub use paths::{USER_CONFIG_ROOT_ENV, UserConfigPaths};

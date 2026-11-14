@@ -107,7 +107,7 @@ Recovery: API construction first takes exclusive OS file ownership of the Produc
     memory/{MEMORY.md, topics/, sessions/}
     session-model-selections/  tasks/<name>/  .migration/
 <platform Desktop config/state/log roots>  ROVE_DESKTOP_ROOT optionally groups these under config/, state/, logs/
-~/.rove/config.toml                   user provider catalog (ROVE_CONFIG_ROOT override); stores credential references only
+~/.rove/config.toml                   user provider catalog + `[runtime.execution]` budgets (ROVE_CONFIG_ROOT override); stores credential references only, never literal secrets
 ```
 
 - Project directories only carry Trust-gated project config: `.rove/config.toml`, `.env`, `AGENTS.md`, AgentDefinition packages.

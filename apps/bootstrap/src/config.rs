@@ -485,9 +485,14 @@ impl Default for RuntimeConfig {
             planner_prompt_path: PathBuf::from("prompts/planner.md"),
             model_compaction_enabled: false,
             compaction_failure_threshold: 3,
-            context_soft_limit_tokens: 24_000,
-            context_hard_limit_tokens: 30_000,
-            context_reserved_tokens: 4_000,
+            // Sized for a ~128k-token provider window: the hard limit matches
+            // the window, soft leaves a full reserved-sized compaction buffer
+            // below it, and reserved keeps headroom for the model's answer plus
+            // message framing. Operators on smaller windows tune the trio down
+            // through config/env; the 30k-era defaults only fit the Fake model.
+            context_soft_limit_tokens: 96_000,
+            context_hard_limit_tokens: 128_000,
+            context_reserved_tokens: 16_000,
             execution: ExecutionConfig::default(),
             agent: AgentConfig::default(),
             recovery: RecoveryConfig::default(),
@@ -1693,7 +1698,87 @@ struct RuntimeConfigLayer {
     #[serde(skip_serializing_if = "Option::is_none")]
     context_reserved_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    execution: Option<ExecutionConfigLayer>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<AgentConfigLayer>,
+}
+
+/// Serialize-only projection of [`ExecutionConfig`] for layered overrides.
+///
+/// Every field is `Option` + `skip_serializing_if`, so a layer that sets one
+/// budget does not serialize the rest as empty values that would replace an
+/// earlier layer's configured values in figment's `merge` (which replaces
+/// rather than coalesces non-dict values, including `Empty`).
+#[derive(Debug, Default, Serialize)]
+struct ExecutionConfigLayer {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evaluator_mode: Option<ExecutionEvaluatorMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finalizer_policy: Option<ExecutionFinalizerPolicy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_plan_steps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_step_attempts: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_model_turns: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_model_turns_per_step: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tool_calls: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tool_calls_per_step: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_plan_revisions: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_model_repairs: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_finalization_turns: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_wall_time_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_total_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_cost_microunits: Option<u64>,
+}
+
+impl ExecutionConfigLayer {
+    fn is_empty(&self) -> bool {
+        self.evaluator_mode.is_none()
+            && self.finalizer_policy.is_none()
+            && self.max_plan_steps.is_none()
+            && self.max_step_attempts.is_none()
+            && self.max_model_turns.is_none()
+            && self.max_model_turns_per_step.is_none()
+            && self.max_tool_calls.is_none()
+            && self.max_tool_calls_per_step.is_none()
+            && self.max_plan_revisions.is_none()
+            && self.max_model_repairs.is_none()
+            && self.max_finalization_turns.is_none()
+            && self.max_wall_time_ms.is_none()
+            && self.max_total_tokens.is_none()
+            && self.max_cost_microunits.is_none()
+    }
+}
+
+impl From<&ExecutionConfig> for ExecutionConfigLayer {
+    fn from(config: &ExecutionConfig) -> Self {
+        Self {
+            evaluator_mode: config.evaluator_mode,
+            finalizer_policy: config.finalizer_policy,
+            max_plan_steps: config.max_plan_steps,
+            max_step_attempts: config.max_step_attempts,
+            max_model_turns: config.max_model_turns,
+            max_model_turns_per_step: config.max_model_turns_per_step,
+            max_tool_calls: config.max_tool_calls,
+            max_tool_calls_per_step: config.max_tool_calls_per_step,
+            max_plan_revisions: config.max_plan_revisions,
+            max_model_repairs: config.max_model_repairs,
+            max_finalization_turns: config.max_finalization_turns,
+            max_wall_time_ms: config.max_wall_time_ms,
+            max_total_tokens: config.max_total_tokens,
+            max_cost_microunits: config.max_cost_microunits,
+        }
+    }
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -1825,7 +1910,12 @@ fn user_document_to_app_layer(
     for profile in profiles.values_mut() {
         profile.rebase_secret_paths(credential_root);
     }
+    let runtime = (!document.runtime.execution.is_empty()).then(|| RuntimeConfigLayer {
+        execution: Some(ExecutionConfigLayer::from(&document.runtime.execution)),
+        ..RuntimeConfigLayer::default()
+    });
     AppConfigLayer {
+        runtime,
         provider: Some(ProviderConfigLayer {
             active: document.model.default_profile.clone(),
             profiles: (!profiles.is_empty()).then_some(profiles),
@@ -1931,6 +2021,73 @@ fn env_layer(
         runtime.context_reserved_tokens = Some(parse_env("ROVE_CONTEXT_RESERVED_TOKENS", &value)?);
         keys.push("ROVE_CONTEXT_RESERVED_TOKENS".to_string());
     }
+    // Numeric execution budgets are operator-facing through env; the
+    // `evaluator_mode`/`finalizer_policy` enums stay config-file-only so env
+    // cannot smuggle in a second spelling of the enum values.
+    let mut execution = ExecutionConfigLayer::default();
+    for (field, slot) in [
+        (
+            "ROVE_EXECUTION_MAX_PLAN_STEPS",
+            &mut execution.max_plan_steps,
+        ),
+        (
+            "ROVE_EXECUTION_MAX_STEP_ATTEMPTS",
+            &mut execution.max_step_attempts,
+        ),
+        (
+            "ROVE_EXECUTION_MAX_MODEL_TURNS",
+            &mut execution.max_model_turns,
+        ),
+        (
+            "ROVE_EXECUTION_MAX_MODEL_TURNS_PER_STEP",
+            &mut execution.max_model_turns_per_step,
+        ),
+        (
+            "ROVE_EXECUTION_MAX_TOOL_CALLS",
+            &mut execution.max_tool_calls,
+        ),
+        (
+            "ROVE_EXECUTION_MAX_TOOL_CALLS_PER_STEP",
+            &mut execution.max_tool_calls_per_step,
+        ),
+        (
+            "ROVE_EXECUTION_MAX_PLAN_REVISIONS",
+            &mut execution.max_plan_revisions,
+        ),
+        (
+            "ROVE_EXECUTION_MAX_MODEL_REPAIRS",
+            &mut execution.max_model_repairs,
+        ),
+        (
+            "ROVE_EXECUTION_MAX_FINALIZATION_TURNS",
+            &mut execution.max_finalization_turns,
+        ),
+    ] {
+        if let Some(value) = env_string(field) {
+            *slot = Some(parse_env(field, &value)?);
+            keys.push(field.to_string());
+        }
+    }
+    for (field, slot) in [
+        (
+            "ROVE_EXECUTION_MAX_WALL_TIME_MS",
+            &mut execution.max_wall_time_ms,
+        ),
+        (
+            "ROVE_EXECUTION_MAX_TOTAL_TOKENS",
+            &mut execution.max_total_tokens,
+        ),
+        (
+            "ROVE_EXECUTION_MAX_COST_MICROUNITS",
+            &mut execution.max_cost_microunits,
+        ),
+    ] {
+        if let Some(value) = env_string(field) {
+            *slot = Some(parse_env(field, &value)?);
+            keys.push(field.to_string());
+        }
+    }
+    runtime.execution = Some(execution).filter(|layer| !layer.is_empty());
     let mut agent = AgentConfigLayer::default();
     if let Some(value) = env_string("ROVE_AGENT") {
         agent.selector = Some(value);
@@ -2125,6 +2282,10 @@ fn project_environment_value_allowed(
         | "ROVE_PROVIDER_FALLBACK_PROFILES"
         | "ROVE_MODEL"
         | "ROVE_FALLBACK_MODELS" => capabilities.provider_credentials,
+        // Execution budgets only bound work; they cannot grant capabilities or
+        // reach outside the workspace, so they share the default project
+        // configuration gate rather than a narrower one.
+        name if name.starts_with("ROVE_EXECUTION_") => capabilities.project_configuration,
         "ROVE_MCP_CONFIG" => capabilities.mcp_processes,
         "ROVE_SYSTEM_PROMPT"
         | "ROVE_PLANNER_PROMPT"
@@ -2273,6 +2434,7 @@ fn has_runtime_values(layer: &RuntimeConfigLayer) -> bool {
         || layer.context_soft_limit_tokens.is_some()
         || layer.context_hard_limit_tokens.is_some()
         || layer.context_reserved_tokens.is_some()
+        || layer.execution.is_some()
         || layer.agent.is_some()
 }
 
@@ -2391,6 +2553,18 @@ mod tests {
             "ROVE_CONTEXT_SOFT_LIMIT_TOKENS",
             "ROVE_CONTEXT_HARD_LIMIT_TOKENS",
             "ROVE_CONTEXT_RESERVED_TOKENS",
+            "ROVE_EXECUTION_MAX_PLAN_STEPS",
+            "ROVE_EXECUTION_MAX_STEP_ATTEMPTS",
+            "ROVE_EXECUTION_MAX_MODEL_TURNS",
+            "ROVE_EXECUTION_MAX_MODEL_TURNS_PER_STEP",
+            "ROVE_EXECUTION_MAX_TOOL_CALLS",
+            "ROVE_EXECUTION_MAX_TOOL_CALLS_PER_STEP",
+            "ROVE_EXECUTION_MAX_PLAN_REVISIONS",
+            "ROVE_EXECUTION_MAX_MODEL_REPAIRS",
+            "ROVE_EXECUTION_MAX_FINALIZATION_TURNS",
+            "ROVE_EXECUTION_MAX_WALL_TIME_MS",
+            "ROVE_EXECUTION_MAX_TOTAL_TOKENS",
+            "ROVE_EXECUTION_MAX_COST_MICROUNITS",
             "ROVE_AGENT",
             "ROVE_WORKSPACE_INSTRUCTIONS",
             "ROVE_ALLOW_REMEDIATION_PROCEDURES",
@@ -3396,6 +3570,149 @@ max_total_tokens = 500000
         ));
         assert_eq!(resolved.budgets.max_model_turns, Some(30));
         resolved.validate().unwrap();
+        clear_config_env();
+    }
+
+    #[test]
+    fn user_config_execution_section_reaches_the_runtime() {
+        let _guard = env_lock();
+        clear_config_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_user_config(
+            &tmp,
+            r#"
+schema_version = 1
+[model]
+default_profile = "local"
+default_model = "user-model"
+[provider.profiles.local]
+provider_type = "ollama"
+base_url = "http://localhost:11434"
+model = "user-model"
+
+[runtime.execution]
+max_model_turns_per_step = 32
+max_tool_calls = 200
+"#,
+        );
+
+        let config = AppConfig::load(tmp.path(), AppConfigOverrides::default()).unwrap();
+
+        let execution = &config.runtime.execution;
+        assert_eq!(execution.max_model_turns_per_step, Some(32));
+        assert_eq!(execution.max_tool_calls, Some(200));
+        assert!(
+            config.source_summary.user_config_loaded,
+            "the user document must record that it contributed values"
+        );
+
+        let resolved = execution.apply_to(ExecutionPolicy::from_max_steps_and_plan_flag(
+            config.runtime.max_steps,
+            true,
+        ));
+        assert_eq!(resolved.budgets.max_model_turns_per_step, Some(32));
+        assert_eq!(resolved.budgets.max_tool_calls, Some(200));
+        resolved.validate().unwrap();
+        clear_config_env();
+    }
+
+    #[test]
+    fn project_execution_config_overrides_the_user_config_layer() {
+        let _guard = env_lock();
+        clear_config_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_user_config(
+            &tmp,
+            r#"
+schema_version = 1
+[runtime.execution]
+max_model_turns_per_step = 32
+max_tool_calls = 200
+"#,
+        );
+        let config_dir = tmp.path().join(".rove");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[runtime.execution]
+max_tool_calls = 40
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(tmp.path(), trusted_overrides()).unwrap();
+
+        let execution = &config.runtime.execution;
+        assert_eq!(
+            execution.max_tool_calls,
+            Some(40),
+            "the project layer sits above the user layer"
+        );
+        assert_eq!(
+            execution.max_model_turns_per_step,
+            Some(32),
+            "a dimension the project did not set keeps the user-layer value"
+        );
+        clear_config_env();
+    }
+
+    #[test]
+    fn execution_env_vars_overlay_user_and_project_layers() {
+        let _guard = env_lock();
+        clear_config_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_user_config(
+            &tmp,
+            r#"
+schema_version = 1
+[runtime.execution]
+max_model_turns_per_step = 32
+max_tool_calls = 200
+"#,
+        );
+        unsafe {
+            std::env::set_var("ROVE_EXECUTION_MAX_MODEL_TURNS_PER_STEP", "48");
+            std::env::set_var("ROVE_EXECUTION_MAX_TOTAL_TOKENS", "900000");
+        }
+
+        let config = AppConfig::load(tmp.path(), AppConfigOverrides::default()).unwrap();
+
+        let execution = &config.runtime.execution;
+        assert_eq!(execution.max_model_turns_per_step, Some(48));
+        assert_eq!(execution.max_total_tokens, Some(900_000));
+        assert_eq!(
+            execution.max_tool_calls,
+            Some(200),
+            "env only replaces the dimensions it names"
+        );
+        assert!(
+            config
+                .source_summary
+                .env_keys
+                .contains(&"ROVE_EXECUTION_MAX_MODEL_TURNS_PER_STEP".to_string())
+        );
+        clear_config_env();
+    }
+
+    #[test]
+    fn an_invalid_execution_env_var_fails_the_load() {
+        let _guard = env_lock();
+        clear_config_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_user_config(&tmp, "schema_version = 1");
+        unsafe {
+            std::env::set_var("ROVE_EXECUTION_MAX_TOOL_CALLS", "not-a-number");
+        }
+
+        let error = AppConfig::load(tmp.path(), AppConfigOverrides::default()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("ROVE_EXECUTION_MAX_TOOL_CALLS is invalid"),
+            "unexpected error: {error}"
+        );
         clear_config_env();
     }
 

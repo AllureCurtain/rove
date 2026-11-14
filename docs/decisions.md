@@ -2,6 +2,13 @@
 
 New decisions go on top. Do not delete overturned decisions; mark them "superseded" and note which entry replaced them.
 
+## 2026-11-14 Context defaults sized for real provider windows; execution budgets gain operator surfaces
+
+- Status: active
+- Decision: the `runtime.context_*` token defaults move from `soft 24_000` / `hard 30_000` / `reserved 4_000` to `soft 96_000` / `hard 128_000` / `reserved 16_000`, sized for a ~128k-token provider window. `runtime.execution.*` budgets become settable from the user config (`[runtime.execution]` in `~/.rove/config.toml`, a new `runtime` section on `UserConfigDocument`) and from `ROVE_EXECUTION_*` env vars for every numeric budget dimension; `evaluator_mode`/`finalizer_policy` stay config-file-only. The env layer and user layer project through a new all-`Option` `ExecutionConfigLayer`, because figment `merge` replaces non-dict values (including `Empty`) rather than coalescing them — a shared `ExecutionConfig` serialization would have written `None` fields as empty values that erase earlier layers.
+- Why: a pilot against a real ~128k-window provider (DeepSeek) showed the shipped defaults — sized when only the deterministic Fake model ran — killed real tool-using runs on `context_token_limit`, and `runtime.execution.*` had no operator-facing surface at all: setting it required a trusted project's `.rove/config.toml`, so an operator could not raise `max_model_turns_per_step` for every workspace.
+- Boundary: `reserved < hard` and `soft < hard` validation is unchanged; operators on smaller windows tune the trio down together. `COMPACTION_REQUEST_MAX_BYTES` in `crates/engine/src/context/compaction.rs` keeps its "bound = the shipped default window" derivation and moves with these defaults. The `.env`-scoped path for `ROVE_EXECUTION_*` gates on the same `project_configuration` capability as `ROVE_MAX_STEPS`. Auto-recovery of stranded (`needs_attention`) session queues is deliberately not in scope — see the follow-up noted in the PR.
+
 ## 2026-11-10 Adopt Google Rust Style; reopen the rove-runtime crate split
 
 - Status: active

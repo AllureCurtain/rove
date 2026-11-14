@@ -17,9 +17,11 @@ system_prompt_path = "prompts/system.md"
 planner_prompt_path = "prompts/planner.md"
 model_compaction_enabled = false
 compaction_failure_threshold = 3
-context_soft_limit_tokens = 24000
-context_hard_limit_tokens = 30000
-context_reserved_tokens = 4000
+# Defaults sized for a ~128k-token provider window (soft < hard, reserved <
+# hard). Smaller windows need all three tuned down together.
+context_soft_limit_tokens = 96000
+context_hard_limit_tokens = 128000
+context_reserved_tokens = 16000
 
 [provider]
 # Profiles-only config. `fake` is the required provider for the deterministic

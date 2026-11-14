@@ -284,4 +284,43 @@ mod tests {
             .expect("activation error must remain downcastable through anyhow");
         assert_eq!(activation_error.code(), "workspace_source_not_authorized");
     }
+
+    #[test]
+    fn configured_execution_budgets_reach_the_engine_policy() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(temp.path()).unwrap();
+        let mut config = AppConfig::default();
+        config.rebase_to_workspace(&workspace.root);
+        config.runtime.execution.max_model_turns_per_step = Some(32);
+        config.runtime.execution.max_tool_calls = Some(200);
+
+        let engine = build_engine_with_registry(
+            EngineOptions {
+                model: Box::new(FakeModelClient::new("unused".to_string())),
+                workspace: &workspace,
+                config: &config,
+                max_steps: 8,
+                agent_selector: None,
+                approval_policy: ApprovalPolicy::Never,
+                input_provider: None,
+                approval_provider: None,
+                environment: None,
+                run_model_snapshot: None,
+            },
+            ToolRegistry::new(),
+        )
+        .unwrap();
+
+        let policy = engine
+            .runtime_identity()
+            .execution_policy
+            .expect("engine assembly always resolves an execution policy");
+        assert_eq!(policy.budgets.max_model_turns_per_step, Some(32));
+        assert_eq!(policy.budgets.max_tool_calls, Some(200));
+        assert_eq!(
+            policy.budgets.max_step_attempts,
+            Some(8),
+            "unset dimensions keep the max_steps projection"
+        );
+    }
 }

@@ -85,7 +85,7 @@ Purpose: bound how much work a run and each plan step may do.
 
 Defaults: `max_steps` (default 20) caps planned step attempts. Each plan step additionally gets its own model-turn ceiling, `max_model_turns_per_step` (default 16), so one step can alternate thinking with tool calls and still synthesize a conclusion without draining the whole run.
 
-Override: once the `project_configuration` trust capability is granted, a workspace `.rove/config.toml` may set any `[runtime.execution]` field — `max_plan_steps`, `max_step_attempts`, `max_model_turns`, `max_model_turns_per_step`, `max_tool_calls`, `max_tool_calls_per_step`, `max_plan_revisions`, `max_model_repairs`, `max_finalization_turns`, `max_wall_time_ms`, `max_total_tokens`, `max_cost_microunits`. Example:
+Override: the user config (`~/.rove/config.toml` by default) may set any `[runtime.execution]` field, and once the `project_configuration` trust capability is granted a workspace `.rove/config.toml` may do the same — `max_plan_steps`, `max_step_attempts`, `max_model_turns`, `max_model_turns_per_step`, `max_tool_calls`, `max_tool_calls_per_step`, `max_plan_revisions`, `max_model_repairs`, `max_finalization_turns`, `max_wall_time_ms`, `max_total_tokens`, `max_cost_microunits`. The numeric fields also accept `ROVE_EXECUTION_*` environment variables (`ROVE_EXECUTION_MAX_MODEL_TURNS_PER_STEP`, `ROVE_EXECUTION_MAX_MODEL_TURNS`, `ROVE_EXECUTION_MAX_TOOL_CALLS`, `ROVE_EXECUTION_MAX_TOOL_CALLS_PER_STEP`, `ROVE_EXECUTION_MAX_STEP_ATTEMPTS`, `ROVE_EXECUTION_MAX_PLAN_STEPS`, `ROVE_EXECUTION_MAX_PLAN_REVISIONS`, `ROVE_EXECUTION_MAX_MODEL_REPAIRS`, `ROVE_EXECUTION_MAX_FINALIZATION_TURNS`, `ROVE_EXECUTION_MAX_WALL_TIME_MS`, `ROVE_EXECUTION_MAX_TOTAL_TOKENS`, `ROVE_EXECUTION_MAX_COST_MICROUNITS`); `evaluator_mode` and `finalizer_policy` remain config-file-only. Precedence is user config < project config < env.
 
 ```toml
 [runtime.execution]
@@ -93,6 +93,8 @@ max_model_turns_per_step = 24
 ```
 
 Zero is rejected at load; a per-step limit may not exceed its matching global limit.
+
+The context window ceiling follows the same layering: `context_hard_limit_tokens` (default 128_000) refuses a prompt that outgrows the window, `context_soft_limit_tokens` (default 96_000) triggers automatic compaction, and `context_reserved_tokens` (default 16_000) keeps headroom for the answer. Set `ROVE_CONTEXT_HARD_LIMIT_TOKENS`, `ROVE_CONTEXT_SOFT_LIMIT_TOKENS` and `ROVE_CONTEXT_RESERVED_TOKENS` — or the matching `[runtime]` keys — for models with smaller windows; `reserved` and `soft` must both stay below `hard`.
 
 ## Reviewing changes (Review)
 
