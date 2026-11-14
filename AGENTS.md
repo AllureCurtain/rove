@@ -73,6 +73,7 @@ cd apps/web && pnpm test && pnpm typecheck             # Web
 | When | Read |
 | --- | --- |
 | Starting any task | TODO.md |
+| Reviewer / newcomer, 10-minute system description | docs/system-overview.md |
 | Module boundaries, data flow, state directories | docs/architecture.md |
 | API work | docs/api.md, `apps/api/openapi.json` (snapshot), and runtime `/api/openapi.json` |
 | UI work | DESIGN.md |

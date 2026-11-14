@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 616" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', sans-serif" role="img" aria-label="rove layered architecture">
+  <defs>
+    <style>
+      .layer   { fill: #f3f3f3; stroke: #b9b9b9; stroke-width: 1; }
+      .crate   { fill: #ffffff; stroke: #d0d0d0; stroke-width: 1; }
+      .title   { fill: #1a1c1f; font-size: 12.5px; font-weight: 600; }
+      .note    { fill: #5d5d5d; font-size: 11px; }
+      .band    { fill: #5d5d5d; font-size: 10.5px; font-weight: 600; letter-spacing: .06em; }
+      .arrow   { stroke: #8a8a8a; stroke-width: 1.3; fill: none; marker-end: url(#ah); }
+      @media (prefers-color-scheme: dark) {
+        .layer { fill: #212121; stroke: #4a4a4a; }
+        .crate { fill: #2a2a2a; stroke: #4a4a4a; }
+        .title { fill: #ffffff; }
+        .note  { fill: #9e9e9e; }
+        .band  { fill: #9e9e9e; }
+        .arrow { stroke: #8a8a8a; }
+      }
+    </style>
+    <marker id="ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a8a8a"/>
+    </marker>
+  </defs>
+
+  <!-- ===== Surfaces ===== -->
+  <text class="band" x="24" y="28">SURFACES — each is a thin shell over one runtime</text>
+  <g>
+    <rect class="crate" x="24"  y="40" width="170" height="52" rx="8"/>
+    <text class="title" x="109" y="63" text-anchor="middle">Desktop</text>
+    <text class="note"  x="109" y="80" text-anchor="middle">Tauri 2 · embeds rove-api</text>
+
+    <rect class="crate" x="214" y="40" width="170" height="52" rx="8"/>
+    <text class="title" x="299" y="63" text-anchor="middle">Web console</text>
+    <text class="note"  x="299" y="80" text-anchor="middle">Next.js 16 · apps/web</text>
+
+    <rect class="crate" x="404" y="40" width="170" height="52" rx="8"/>
+    <text class="title" x="489" y="63" text-anchor="middle">CLI / TUI</text>
+    <text class="note"  x="489" y="80" text-anchor="middle">rove · ratatui</text>
+
+    <rect class="crate" x="594" y="40" width="170" height="52" rx="8"/>
+    <text class="title" x="679" y="63" text-anchor="middle">Benchmarks</text>
+    <text class="note"  x="679" y="80" text-anchor="middle">rove-bench · deterministic</text>
+  </g>
+
+  <!-- edges: Web console and Desktop to rove-api -->
+  <path class="arrow" d="M299,92 L299,120 L560,120 L560,150 L560,150"/>
+  <path class="arrow" d="M560,150 L560,152"/>
+  <path class="arrow" d="M109,92 L109,132 L560,132 L560,152"/>
+
+  <!-- rove-api: HTTP edge for Web/Desktop -->
+  <rect class="crate" x="560" y="152" width="204" height="44" rx="8"/>
+  <text class="title" x="662" y="171" text-anchor="middle">rove-api</text>
+  <text class="note"  x="662" y="187" text-anchor="middle">HTTP · SSE · OpenAPI · serves Web</text>
+
+  <!-- ===== Assembly ===== -->
+  <text class="band" x="24" y="228">ASSEMBLY</text>
+  <rect class="layer" x="24" y="238" width="740" height="60" rx="10"/>
+  <rect class="crate" x="40" y="250" width="708" height="36" rx="7"/>
+  <text class="title" x="58" y="273">rove-app-bootstrap</text>
+  <text class="note"  x="732" y="273" text-anchor="end">AppConfig layering · Project Trust · provider catalog · Engine assembly</text>
+
+  <!-- CLI/TUI and benchmarks go straight to bootstrap -->
+  <path class="arrow" d="M489,92 L489,112 L370,112 L370,210 L388,210 L388,238"/>
+  <path class="arrow" d="M679,92 L679,118 L740,118 L740,210 L412,210 L412,238"/>
+  <path class="arrow" d="M662,196 L662,212 L400,212 L400,238"/>
+
+  <!-- ===== Orchestration ===== -->
+  <text class="band" x="24" y="334">ORCHESTRATION</text>
+  <rect class="layer" x="24" y="344" width="740" height="60" rx="10"/>
+  <rect class="crate" x="40" y="356" width="708" height="36" rx="7"/>
+  <text class="title" x="58" y="379">rove-engine</text>
+  <text class="note"  x="732" y="379" text-anchor="end">Engine · planning / StepRunner · delegate turn-driver · context &amp; compaction</text>
+  <path class="arrow" d="M400,298 L400,344"/>
+
+  <!-- ===== Domain layer ===== -->
+  <text class="band" x="24" y="440">DOMAIN</text>
+  <rect class="layer" x="24" y="450" width="740" height="74" rx="10"/>
+  <g>
+    <rect class="crate" x="40"  y="462" width="170" height="50" rx="7"/>
+    <text class="title" x="125" y="484" text-anchor="middle">rove-tools</text>
+    <text class="note"  x="125" y="501" text-anchor="middle">tools · Executor · hooks · MCP</text>
+
+    <rect class="crate" x="222" y="462" width="170" height="50" rx="7"/>
+    <text class="title" x="307" y="484" text-anchor="middle">rove-state</text>
+    <text class="note"  x="307" y="501" text-anchor="middle">run state · trace · SQLite</text>
+
+    <rect class="crate" x="404" y="462" width="170" height="50" rx="7"/>
+    <text class="title" x="489" y="484" text-anchor="middle">rove-review</text>
+    <text class="note"  x="489" y="501" text-anchor="middle">read-only Review</text>
+
+    <rect class="crate" x="586" y="462" width="170" height="50" rx="7"/>
+    <text class="title" x="671" y="484" text-anchor="middle">rove-agents</text>
+    <text class="note"  x="671" y="501" text-anchor="middle">AgentDefinition · profiles</text>
+  </g>
+  <path class="arrow" d="M400,404 L400,426 L125,426 L125,450"/>
+  <path class="arrow" d="M400,426 L307,426 L307,450"/>
+  <path class="arrow" d="M400,426 L489,426 L489,450"/>
+  <path class="arrow" d="M400,426 L671,426 L671,450"/>
+
+  <!-- ===== Base ===== -->
+  <text class="band" x="24" y="560">BASE</text>
+  <rect class="layer" x="24" y="570" width="740" height="48" rx="10"/>
+  <g>
+    <rect class="crate" x="40"  y="578" width="238" height="30" rx="7"/>
+    <text class="title" x="159" y="598" text-anchor="middle">rove-foundation <tspan class="note" font-weight="400">serialized data</tspan></text>
+
+    <rect class="crate" x="290" y="578" width="140" height="30" rx="7"/>
+    <text class="title" x="360" y="598" text-anchor="middle">rove-core <tspan class="note" font-weight="400">kernel</tspan></text>
+
+    <rect class="crate" x="442" y="578" width="170" height="30" rx="7"/>
+    <text class="title" x="527" y="598" text-anchor="middle">rove-models <tspan class="note" font-weight="400">providers</tspan></text>
+
+    <rect class="crate" x="624" y="578" width="132" height="30" rx="7"/>
+    <text class="title" x="690" y="598" text-anchor="middle">rove-protocol</text>
+  </g>
+  <path class="arrow" d="M125,512 L125,540 L159,540 L159,566"/>
+  <path class="arrow" d="M307,512 L307,540 L360,540 L360,566"/>
+  <path class="arrow" d="M489,512 L489,540 L527,540 L527,566"/>
+  <path class="arrow" d="M671,512 L671,540 L690,540 L690,566"/>
+</svg>
