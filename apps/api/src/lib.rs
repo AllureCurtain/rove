@@ -107,21 +107,25 @@ const PRODUCT_EVENT_NOTIFY_BUFFER: usize = 64;
 pub(crate) const PRODUCT_MIGRATION_PREPARATION_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Total start attempts one queued successor is allowed per process: the initial
-/// claim plus three re-drains. A successor that still cannot start is abandoned
+/// claim plus five re-drains. A successor that still cannot start is abandoned
 /// to the visible `needs_attention` state instead of being retried forever.
 ///
 /// The budget lives in this process, so a restart re-arms it. That is deliberate:
 /// the queue itself is durable, boot recovery re-drains it, and a restart is
 /// itself a change to the process state the failure may have depended on.
-const FOLLOWUP_START_MAX_ATTEMPTS: u32 = 4;
-/// Wait before the first re-drain. It doubles per failed attempt (1s, 2s, 4s),
-/// so the whole window is about seven seconds: long enough for a transient
-/// store, workspace, or catalog failure to clear, short enough that a persistent
-/// misconfiguration becomes visible in the same interactive session.
+const FOLLOWUP_START_MAX_ATTEMPTS: u32 = 6;
+/// Wait before the first re-drain. It doubles per failed attempt (1s, 2s, 4s,
+/// 8s, 15s), so the whole window is about thirty seconds. The old ~7s window
+/// stranded a queued successor on any transient provider/workspace hiccup —
+/// the operator was still mid-fix or the provider still mid-timeout when the
+/// budget ran out, and every failure forced a manual "Recover session" click
+/// (#80 pilot finding). Thirty seconds covers the observed recovery latencies
+/// while a persistent misconfiguration still escalates inside the same
+/// interactive session.
 const FOLLOWUP_REDRIVE_INITIAL_BACKOFF: Duration = Duration::from_millis(1_000);
 /// Hard ceiling on a single re-drain delay, so a larger attempt budget cannot
 /// turn into an unbounded wait.
-const FOLLOWUP_REDRIVE_MAX_BACKOFF: Duration = Duration::from_secs(4);
+const FOLLOWUP_REDRIVE_MAX_BACKOFF: Duration = Duration::from_secs(15);
 /// Upper bound on successors tracked for re-draining at once. The count is
 /// forgotten as soon as a successor starts or escalates, so this only binds
 /// under churn.
