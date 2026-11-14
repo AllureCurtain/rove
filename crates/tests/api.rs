@@ -8089,9 +8089,10 @@ async fn product_successor_start_attempts_are_bounded_and_escalate_to_needs_atte
     wait_for_released_successor_claim(server.path(), session_id).await;
 
     // The failure persists, so the start attempts must run out — one initial
-    // claim plus three re-drains, each after its own backoff (1s, 2s, 4s) — and
-    // the message must stop looking queued. The budget here is deliberately
-    // generous: the wait is on the implemented schedule, not on the assertion.
+    // claim plus five re-drains, each after its own backoff (1s, 2s, 4s, 8s,
+    // 15s) — and the message must stop looking queued. The budget here is
+    // deliberately generous: the wait is on the implemented schedule, not on
+    // the assertion.
     wait_for_product_control_status_within(
         &app,
         session_id,
@@ -8119,7 +8120,7 @@ async fn product_successor_start_attempts_are_bounded_and_escalate_to_needs_atte
         .as_str()
         .unwrap_or_else(|| panic!("an escalated successor must say why: {message}"));
     assert!(
-        reason.contains("successor start failed 4 times"),
+        reason.contains("successor start failed 6 times"),
         "the escalation must state the exhausted budget: {reason}"
     );
     assert!(
