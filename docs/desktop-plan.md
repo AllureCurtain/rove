@@ -1,7 +1,8 @@
 # Desktop plan — making the Tauri host a real product
 
-Status: design agreed 2026-11-14; implementation not started. Owner runs
-platform-specific acceptance; everything else is normal branch+PR work.
+Status: in-house feature/build work **done** as of 2026-11-14 (PRs #96–#102);
+macOS acceptance PASS. Remaining work needs machines or certificates the
+owner must supply — see "Needs a real OS" / "Needs outside resources".
 
 ## What exists today (do not re-scope)
 
@@ -56,8 +57,8 @@ Grouped by who can do it.
 | ~~App menu (Edit/View/Window + About)~~ done (PR #100) | Tauri default menu is bare | hours |
 | ~~Tray icon / minimize-to-tray~~ done (PR #101: tauri core `tray` module + `desktop.json` close_action) | long-running agent should not die on window close | 1–2 d |
 | ~~Notifications~~ done (`tauri-plugin-notification` 2.4; SSE-driven, fires only when unfocused) | surface run-done / needs_attention when unfocused | 1–2 d |
-| Drag-drop workspace folders onto window | nicer than picker only | hours |
-| Better packaging metadata | `copyright: ""`, generic description, `DeveloperTool` category | minutes |
+| Drag-drop workspace folders onto window | nicer than picker only — open follow-up, not scheduled | hours |
+| ~~Better packaging metadata~~ done (PR #97: copyright, descriptions, real bundle fields) | was `copyright: ""`, generic description | minutes |
 | Auto-update (`tauri-plugin-updater`) | needs signed release channel first | later |
 | Deep links `rove://` | nice-to-have | later |
 
